@@ -1,0 +1,43 @@
+[package]
+name = "dasshboard"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "dasshboard_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# SSH client + key loading (used starting Phase 2 — SessionManager, russh client, PTY/shell).
+russh = "0.62.2"
+russh-keys = "0.49.2"
+# Pinned directly (not just a transitive dep of russh) to turn on
+# "prebuilt-nasm": russh's default crypto backend (aws-lc-rs) needs NASM to
+# assemble its optimized routines, which isn't installed in this environment
+# and isn't a prerequisite we install ourselves. "prebuilt-nasm" downloads
+# AWS's prebuilt NASM objects at build time instead, avoiding the local
+# NASM requirement. See HANDOFF.md Phase 0 entry.
+aws-lc-rs = { version = "1.17.1", features = ["prebuilt-nasm"] }
+# OS keychain for device secrets (used starting Phase 1 — SecretStore).
+keyring = "4.1.5"
+# Async runtime backing SessionManager's per-session tasks (used starting Phase 2).
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+# Device/profile/session ids (used starting Phase 1).
+uuid = { version = "1.24.0", features = ["v4", "serde"] }
+# Typed error enums for AppError (used starting Phase 1).
+thiserror = "2.0.18"
+
