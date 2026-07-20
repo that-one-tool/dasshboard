@@ -32,6 +32,19 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   size/position remembered across restarts, and a clean SSH disconnect of every
   session on app close.
 
+## Build from source
+
+```sh
+npm run tauri build
+```
+
+Produces installers under `src-tauri/target/release/bundle/`, for whichever
+platform you build on: on Windows, an NSIS `.exe` and an MSI
+(`bundle/nsis/`, `bundle/msi/`); on Linux, a `.deb` and an RPM
+(`bundle/deb/`, `bundle/rpm/`). Building requires the Tauri bundling toolchain
+for your target (see the prerequisites link above) and the same `npm install`
+step from "Run (development)".
+
 ## Developping
 
 ### Prerequisites
@@ -66,16 +79,6 @@ npm run check
 
 The Rust SSH integration tests run entirely in-process against a throwaway
 `russh` server — no Docker or external SSH daemon needed.
-
-### Build (installer)
-
-```sh
-npm run tauri build
-```
-
-Produces a Windows installer (NSIS `.exe` and/or MSI) under
-`src-tauri/target/release/bundle/`. Building requires the Tauri bundling
-toolchain for your target (see the prerequisites link above).
 
 ### Where your data lives
 

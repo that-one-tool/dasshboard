@@ -1,0 +1,112 @@
+name: release
+
+# Draft -> build -> publish a CrabNebula Cloud release with Windows (msi, nsis)
+# and Linux (deb, rpm) installers. Adapted from
+# https://docs.crabnebula.dev/cloud/ci/tauri-v2-workflow/ (desktop-only: no
+# macOS/Android/iOS jobs, since this app doesn't target those platforms).
+#
+# Required repo secrets:
+#   CN_API_KEY                         - CrabNebula Cloud API key for that-one-tool/dasshboard
+#   TAURI_SIGNING_PRIVATE_KEY          - updater signing private key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD - password for the private key above
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CN_APPLICATION: "that-one-tool/dasshboard"
+
+jobs:
+  # CrabNebula/Tauri read the release version from src-tauri/tauri.conf.json
+  # (Cargo.toml as its own fallback) — never from package.json. Fail fast if
+  # the three drift apart instead of silently releasing the wrong version.
+  check-versions:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: verify package.json, tauri.conf.json, and Cargo.toml versions match
+        run: |
+          PKG_VERSION=$(jq -r .version package.json)
+          TAURI_VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          CARGO_VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "package.json: $PKG_VERSION"
+          echo "tauri.conf.json: $TAURI_VERSION"
+          echo "Cargo.toml: $CARGO_VERSION"
+          if [ "$PKG_VERSION" != "$TAURI_VERSION" ] || [ "$PKG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Version mismatch: package.json=$PKG_VERSION tauri.conf.json=$TAURI_VERSION Cargo.toml=$CARGO_VERSION"
+            exit 1
+          fi
+
+  draft:
+    needs: check-versions
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: create draft release
+        uses: crabnebula-dev/cloud-release@v0
+        with:
+          command: release draft ${{ env.CN_APPLICATION }} --framework tauri
+          api-key: ${{ secrets.CN_API_KEY }}
+
+  build:
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-22.04
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      - name: install Rust stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      # Tauri's official Linux prerequisites for building + bundling
+      # (deb/rpm bundling itself is pure-Rust, no extra system tool needed).
+      - name: install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: install npm dependencies
+        run: npm ci
+
+      - name: build Tauri app
+        run: npm exec tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: upload assets
+        uses: crabnebula-dev/cloud-release@v0
+        with:
+          command: release upload ${{ env.CN_APPLICATION }} --framework tauri
+          api-key: ${{ secrets.CN_API_KEY }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: publish release
+        uses: crabnebula-dev/cloud-release@v0
+        with:
+          command: release publish ${{ env.CN_APPLICATION }} --framework tauri
+          api-key: ${{ secrets.CN_API_KEY }}
