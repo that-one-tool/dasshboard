@@ -32,6 +32,10 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   size/position remembered across restarts, and a clean SSH disconnect of every
   session on app close.
 
+## Download
+
+App is published through CrabNebula Cloud. You can easily find the latest release for Windows and Linux on the [App's page](https://web.crabnebula.cloud/that-one-tool/dasshboard/releases/).
+
 ## Build from source
 
 ```sh
