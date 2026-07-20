@@ -31,12 +31,14 @@ body {
   background-color: #1e1e1e;
 }
 
-.app {
+/* ============================================================================
+ * Main layout
+ * ============================================================================ */
+
+.app-layout {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: 12px;
-  gap: 8px;
 }
 
 .app-header {
@@ -44,6 +46,8 @@ body {
   align-items: baseline;
   gap: 12px;
   flex: 0 0 auto;
+  padding: 12px;
+  border-bottom: 1px solid #3c3c3c;
 }
 
 .app-header h1 {
@@ -52,18 +56,1014 @@ body {
 }
 
 .version-banner {
-  margin: 0;
+  /* `margin-left: auto` pushes the banner (and the settings button after it) to
+   * the right edge of the header, so it sits next to the settings button rather
+   * than beside the title. */
+  margin: 0 0 0 auto;
   color: #9cdcfe;
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 0.85rem;
 }
 
-.terminal-pane {
+.app-content {
+  display: flex;
   flex: 1 1 auto;
   min-height: 0;
+  gap: 8px;
+  padding: 8px;
+}
+
+/* ============================================================================
+ * Sidebar (device list)
+ * ============================================================================ */
+
+/* The sidebar is a transparent container; Devices and Profiles are each their
+ * own boxed section (Phase 6). */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 0 0 auto;
+}
+
+.device-list,
+.profile-list {
+  background-color: #252526;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  padding: 8px;
+  flex: 0 0 auto;
+}
+
+.device-manager {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.device-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  border-bottom: 1px solid #3c3c3c;
+}
+
+/* Shared section-title typography for the sidebar's Devices and Profiles
+ * headers so the two sections read as the same kind of section (Phase 6). */
+.device-list-header h2,
+.sidebar-section-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #d4d4d4;
+}
+
+.device-list-header h2 {
+  flex: 1 1 auto;
+}
+
+/* Small actions row under a sidebar section header (Export / Import). Shared by
+ * the Devices and Profiles sections so the two stay symmetric; both use
+ * `.btn-small`. The 8px top/bottom spacing matches on both sides so the row sits
+ * the same distance below the header line in each section. */
+.section-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 4px 0;
+  margin-bottom: 8px;
+}
+
+.device-list-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.device-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  background-color: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+  font-size: 0.9rem;
+}
+
+.device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.device-name {
+  font-weight: 500;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.device-host {
+  font-size: 0.8rem;
+  color: #9cdcfe;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.device-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.empty-state {
+  padding: 16px 8px;
+  text-align: center;
+  color: #858585;
+  font-size: 0.9rem;
+}
+
+/* ============================================================================
+ * Main content area
+ * ============================================================================ */
+
+.main-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 8px;
+}
+
+.pane-root {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+/* ============================================================================
+ * Grid of panes (Phase 3)
+ * ============================================================================ */
+
+/* Overrides `.pane-root`'s flex layout: toolbar on top, grid area below. */
+.grid-root {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-height: 0;
+}
+
+.grid-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.grid-toolbar-label {
+  color: #858585;
+  font-size: 0.85rem;
+  margin-right: 4px;
+}
+
+.grid-preset-btn {
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.grid-preset-btn.grid-preset-active {
+  background-color: #007acc;
+  border-color: #007acc;
+  color: #fff;
+}
+
+.grid-container {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+}
+
+.grid-cell {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.grid-cell-focused .pane {
+  border-color: #007acc;
+  box-shadow: 0 0 0 1px #007acc inset;
+}
+
+/* Splitters are absolutely positioned over the grid at track boundaries so they
+ * are independent of the CSS Grid track structure (SPEC §7, 6px hit area). */
+.grid-splitter {
+  position: absolute;
+  z-index: 10;
+  background-color: transparent;
+}
+
+.grid-splitter-col {
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  transform: translateX(-3px);
+  cursor: col-resize;
+}
+
+.grid-splitter-row {
+  left: 0;
+  right: 0;
+  height: 6px;
+  transform: translateY(-3px);
+  cursor: row-resize;
+}
+
+.grid-splitter:hover {
+  background-color: rgba(0, 122, 204, 0.4);
+}
+
+/* Keep the resize cursor and suppress text selection for the whole drag. */
+body.grid-dragging-col,
+body.grid-dragging-col * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+body.grid-dragging-row,
+body.grid-dragging-row * {
+  cursor: row-resize !important;
+  user-select: none;
+}
+
+.confirm-message {
+  margin: 0;
+  padding: 16px;
+  color: #c4c4c4;
+  font-size: 0.9rem;
+}
+
+.confirm-content .form-actions {
+  padding: 12px 16px;
+}
+
+/* ============================================================================
+ * SSH terminal pane (Phase 2)
+ * ============================================================================ */
+
+.pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
   background-color: #1e1e1e;
   border: 1px solid #3c3c3c;
   border-radius: 4px;
-  padding: 4px;
   overflow: hidden;
+}
+
+.pane-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background-color: #252526;
+  border-bottom: 1px solid #3c3c3c;
+}
+
+.pane-device-select {
+  flex: 0 1 320px;
+  min-width: 0;
+  padding: 5px 8px;
+  background-color: #3c3c3c;
+  color: #d4d4d4;
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+.pane-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background-color: #6a6a6a;
+}
+
+.pane-status-idle {
+  background-color: #6a6a6a;
+}
+.pane-status-connecting {
+  background-color: #d7b32c;
+}
+.pane-status-connected {
+  background-color: #3fb950;
+}
+.pane-status-disconnected,
+.pane-status-error {
+  background-color: #f14c4c;
+}
+
+.pane-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px;
+}
+
+.pane-terminal {
+  position: absolute;
+  inset: 4px;
+  overflow: hidden;
+}
+
+.pane-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(30, 30, 30, 0.82);
+  z-index: 5;
+}
+
+.overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  padding: 24px;
+  max-width: 80%;
+}
+
+.overlay-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #d4d4d4;
+}
+
+.pane-overlay.overlay-error .overlay-title {
+  color: #f14c4c;
+}
+
+.overlay-detail {
+  color: #a0a0a0;
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+
+.overlay-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #3c3c3c;
+  border-top-color: #007acc;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Host-key trust dialog */
+.hostkey-content {
+  max-width: 560px;
+}
+
+.hostkey-lead {
+  color: #c4c4c4;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  margin: 0 0 12px;
+}
+
+.hostkey-facts {
+  margin: 0 0 16px;
+  display: grid;
+  gap: 6px;
+}
+
+.hostkey-facts > div {
+  display: flex;
+  gap: 8px;
+}
+
+.hostkey-facts dt {
+  flex: 0 0 90px;
+  color: #858585;
+  font-size: 0.85rem;
+}
+
+.hostkey-facts dd {
+  margin: 0;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 0.85rem;
+  color: #d4d4d4;
+  word-break: break-all;
+}
+
+.hostkey-content.hostkey-danger {
+  border: 1px solid #f14c4c;
+}
+
+.hostkey-content.hostkey-danger .hostkey-heading {
+  color: #f14c4c;
+}
+
+/* ============================================================================
+ * Buttons
+ * ============================================================================ */
+
+.btn {
+  padding: 6px 12px;
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+  background-color: #3c3c3c;
+  color: #d4d4d4;
+  font-size: 0.9rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 150ms ease-in-out;
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  background-color: #4c4c4c;
+  border-color: #4c4c4c;
+}
+
+.btn:active:not(:disabled) {
+  background-color: #5c5c5c;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background-color: #007acc;
+  border-color: #007acc;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: #1084d7;
+  border-color: #1084d7;
+}
+
+.btn-secondary {
+  background-color: #3c3c3c;
+  border-color: #3c3c3c;
+}
+
+/* Destructive actions (Delete, session teardown). Placed after `.btn` and using
+ * `:not(:disabled)` on hover — like `.btn-primary` — so the red actually wins
+ * the cascade over the base `.btn` background. */
+.btn-danger {
+  background-color: #a11f1f;
+  border-color: #a11f1f;
+  color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: #c62828;
+  border-color: #c62828;
+}
+
+.btn-small {
+  padding: 4px 8px;
+  font-size: 0.8rem;
+}
+
+/* Icon-only button: a compact square that centers an inline SVG (see ui/icons).
+ * Sits in an action row next to text buttons; the row's flex `stretch` keeps it
+ * the same height as its neighbours. */
+.btn-icon {
+  padding: 4px 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.btn-icon svg {
+  display: block;
+}
+
+.device-add-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+  font-weight: bold;
+}
+
+.btn-test-connection {
+  flex: 0 0 auto;
+}
+
+/* ============================================================================
+ * Dialog
+ * ============================================================================ */
+
+.dialog {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  opacity: 1;
+  transition: opacity 150ms ease-in-out;
+}
+
+.dialog-hidden {
+  opacity: 0;
+  pointer-events: none;
+  /* `visibility: hidden` also removes the hidden dialog's controls from the tab
+   * order — otherwise the persistent (device / host-key) dialogs stay reachable
+   * by keyboard even while invisible. */
+  visibility: hidden;
+}
+
+.dialog-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  cursor: pointer;
+}
+
+.dialog-content {
+  position: relative;
+  background-color: #252526;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  padding: 0;
+  max-width: 500px;
+  width: 90%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border-bottom: 1px solid #3c3c3c;
+  flex: 0 0 auto;
+}
+
+.dialog-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  flex: 1 1 auto;
+}
+
+.dialog-close-btn {
+  background: none;
+  border: none;
+  color: #d4d4d4;
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 150ms ease-in-out;
+}
+
+.dialog-close-btn:hover {
+  color: #fff;
+}
+
+.device-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+
+/* ============================================================================
+ * Form elements
+ * ============================================================================ */
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-group label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #d4d4d4;
+}
+
+.form-group input[type="text"],
+.form-group input[type="password"],
+.form-group input[type="number"] {
+  padding: 8px 10px;
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  font-size: 0.9rem;
+  font-family: inherit;
+  transition: border-color 150ms ease-in-out;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #007acc;
+  box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
+}
+
+.form-group input::placeholder {
+  color: #858585;
+}
+
+.form-fieldset {
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.form-fieldset legend {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #d4d4d4;
+  margin-bottom: 8px;
+}
+
+.form-group label[for^="device-"]::before,
+.form-group input[type="radio"] {
+  vertical-align: middle;
+}
+
+.form-group input[type="radio"] {
+  margin-right: 6px;
+  cursor: pointer;
+}
+
+.form-group label input[type="radio"] + span {
+  margin-left: 4px;
+}
+
+.form-fieldset .form-group label {
+  display: inline-flex;
+  align-items: center;
+  font-weight: normal;
+  margin-right: 16px;
+  cursor: pointer;
+}
+
+.form-fieldset .form-group label input {
+  margin: 0 6px 0 0;
+}
+
+.auth-method-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px 12px;
+  background-color: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+}
+
+.auth-method-hidden {
+  display: none;
+}
+
+.error-text {
+  font-size: 0.8rem;
+  color: #f48771;
+  /* Collapse to nothing when empty so five fields don't reserve ~5 blank lines
+   * (which forced the editor to scroll); it grows only when an error is shown. */
+  min-height: 0;
+}
+
+.error-text:empty {
+  display: none;
+}
+
+.form-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-top: 8px;
+  border-top: 1px solid #3c3c3c;
+  flex: 0 0 auto;
+}
+
+/* ============================================================================
+ * Toast notifications
+ * ============================================================================ */
+
+.toast-container {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  z-index: 2000;
+}
+
+.toast {
+  padding: 12px 16px;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  animation: slideIn 200ms ease-out;
+  pointer-events: auto;
+}
+
+.toast-error {
+  background-color: #c23030;
+  color: #fff;
+  border: 1px solid #d75c5c;
+}
+
+.toast-success {
+  background-color: #007acc;
+  color: #fff;
+  border: 1px solid #1084d7;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ============================================================================
+ * Scrollbars
+ * ============================================================================ */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #464647;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #5c5c5c;
+}
+
+/* ============================================================================
+ * Profiles (Phase 4): sidebar list + toolbar bar with dirty dot
+ * ========================================================================== */
+
+
+/* Mirrors `.device-list-header`: padded, underlined section title. */
+.sidebar-section-title {
+  padding: 8px 4px;
+  border-bottom: 1px solid #3c3c3c;
+}
+
+.sidebar-empty {
+  font-size: 12px;
+  color: #808080;
+  margin: 4px 0;
+}
+
+/* Laid out exactly like `.device-item` — name on the left, icon actions on the
+ * right at the same level — so the two sidebar sections read identically. */
+.profile-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  background-color: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+  margin-bottom: 6px;
+  font-size: 0.9rem;
+}
+
+.profile-item-loaded {
+  border-color: #007acc;
+}
+
+.profile-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+  font-size: 0.9rem;
+  font-weight: 500;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.profile-item-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profile-name:hover {
+  color: #ffffff;
+}
+
+.profile-item-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+/* Filled "default" star gets the gold tint the old inline marker used, so the
+ * default profile stays visually obvious at a glance. */
+.btn-star-active {
+  color: #e2c08d;
+}
+
+.btn-star-active:hover:not(:disabled) {
+  color: #f0d4a8;
+}
+
+/* Toolbar bar for the current profile */
+.profile-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background-color: #252526;
+  border-bottom: 1px solid #3c3c3c;
+  font-size: 13px;
+}
+
+.profile-current-label {
+  color: #9d9d9d;
+}
+
+.profile-current-name {
+  color: #d4d4d4;
+  font-weight: 600;
+}
+
+.profile-dirty-dot {
+  color: #e2c08d;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.profile-bar-spacer {
+  flex: 1 1 auto;
+}
+
+/* Prompt dialog (Save As / Rename) reuses the shared .dialog styling. The body
+ * isn't in a padded wrapper, so inset the input and actions directly (matches
+ * `.settings-content` / `.confirm-content` — Phase 6). */
+.prompt-input {
+  width: calc(100% - 32px);
+  box-sizing: border-box;
+  padding: 8px;
+  margin: 16px 16px 12px;
+  background-color: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  color: #d4d4d4;
+  font-size: 14px;
+}
+
+.prompt-content .form-actions {
+  padding: 12px 16px;
+}
+
+.prompt-input:focus {
+  outline: none;
+  border-color: #007acc;
+  box-shadow: 0 0 0 1px #007acc inset;
+}
+
+/* ============================================================================
+ * Settings (Phase 5): header button + terminal-settings dialog
+ * ========================================================================== */
+
+.settings-btn {
+  background: none;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  color: #d4d4d4;
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.settings-btn:hover {
+  background-color: #3c3c3c;
+}
+
+/* The settings body isn't wrapped in a padded form like the device editor, so
+ * pad its fields and actions directly (matches `.confirm-content` — Phase 6). */
+.settings-content .form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 0 16px;
+}
+
+.settings-content .form-field:first-of-type {
+  margin-top: 16px;
+}
+
+.settings-content .form-actions {
+  padding: 12px 16px;
+}
+
+.settings-content .form-field > span {
+  font-size: 12px;
+  color: #9d9d9d;
+}
+
+.settings-content input,
+.settings-content select {
+  padding: 8px;
+  background-color: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  color: #d4d4d4;
+  font-size: 14px;
+}
+
+.settings-content input:focus,
+.settings-content select:focus {
+  outline: none;
+  border-color: #007acc;
+  box-shadow: 0 0 0 1px #007acc inset;
+}
+
+/* Auto-reconnect checkbox in the device editor (Phase 5) */
+.form-group-checkbox label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.form-group-checkbox input[type="checkbox"] {
+  width: auto;
+  margin: 0;
 }

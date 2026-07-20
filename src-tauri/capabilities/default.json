@@ -5,6 +5,9 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:default"
+    "opener:default",
+    "window-state:default",
+    "dialog:allow-open",
+    "dialog:allow-save"
   ]
 }

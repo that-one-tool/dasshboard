@@ -9,18 +9,28 @@
   </head>
 
   <body>
-    <main class="app">
+    <div class="app-layout">
       <header class="app-header">
         <h1>DaSSHboard</h1>
         <p id="version-banner" class="version-banner">
           Contacting backend&hellip;
         </p>
+        <button type="button" id="settings-btn" class="settings-btn"
+          title="Terminal settings" aria-label="Terminal settings">&#9881;</button>
       </header>
-      <section
-        id="terminal"
-        class="terminal-pane"
-        aria-label="Placeholder terminal"
-      ></section>
-    </main>
+
+      <div class="app-content">
+        <aside class="sidebar">
+          <div class="device-list"></div>
+          <div class="profile-list"></div>
+        </aside>
+
+        <main class="main-content">
+          <div id="profile-bar" class="profile-bar" role="toolbar"
+            aria-label="Current profile"></div>
+          <div id="pane-root" class="pane-root" aria-label="SSH terminal"></div>
+        </main>
+      </div>
+    </div>
   </body>
 </html>

@@ -6,9 +6,11 @@
  * pure logic).
  */
 export function formatPingMessage(version: string): string {
-  const trimmed = version.trim();
-  if (trimmed.length === 0) {
-    return "DaSSHboard: backend did not report a version";
-  }
-  return `DaSSHboard backend v${trimmed} — IPC round trip OK`;
+	const trimmed = version.trim();
+
+	if (trimmed.length === 0) {
+		return "Backend did not report a version";
+	}
+
+	return `v${trimmed}`;
 }
