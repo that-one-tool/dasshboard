@@ -60,31 +60,38 @@ impl Device {
     /// non-empty `keyPath`. `port` is already type-bounded to `u16` (max
     /// 65535), so only the lower bound needs an explicit check.
     pub fn validate(&self) -> Result<(), AppError> {
-        if self.name.trim().is_empty() {
-            return Err(AppError::Validation("name must not be empty".to_string()));
-        }
-        if self.host.trim().is_empty() {
-            return Err(AppError::Validation("host must not be empty".to_string()));
-        }
-        if self.username.trim().is_empty() {
-            return Err(AppError::Validation(
-                "username must not be empty".to_string(),
-            ));
-        }
+        require_non_empty(&self.name, "name must not be empty")?;
+        require_non_empty(&self.host, "host must not be empty")?;
+        require_non_empty(&self.username, "username must not be empty")?;
+        self.validate_port()?;
+        self.validate_auth()
+    }
+
+    fn validate_port(&self) -> Result<(), AppError> {
         if self.port == 0 {
             return Err(AppError::Validation(
                 "port must be between 1 and 65535".to_string(),
             ));
         }
+        Ok(())
+    }
+
+    /// `key` auth requires a non-empty `keyPath`; `password` auth has nothing
+    /// extra to check here (the secret itself lives in the keyring).
+    fn validate_auth(&self) -> Result<(), AppError> {
         if let Auth::Key { key_path } = &self.auth {
-            if key_path.trim().is_empty() {
-                return Err(AppError::Validation(
-                    "keyPath must not be empty for key auth".to_string(),
-                ));
-            }
+            require_non_empty(key_path, "keyPath must not be empty for key auth")?;
         }
         Ok(())
     }
+}
+
+/// Returns `AppError::Validation(message)` if `value` is empty once trimmed.
+fn require_non_empty(value: &str, message: &str) -> Result<(), AppError> {
+    if value.trim().is_empty() {
+        return Err(AppError::Validation(message.to_string()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

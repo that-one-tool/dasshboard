@@ -31,18 +31,11 @@ use store::DeviceStore;
 
 /// Returns the application's semantic version, as recorded in `Cargo.toml`.
 ///
-/// Kept as a small pure function (rather than inlined in the `ping` command)
-/// so it has a unit test independent of the Tauri runtime.
-fn app_version() -> String {
+/// Kept as a small pure function (rather than inlined in the `ping` command,
+/// which lives in `commands.rs`) so it has a unit test independent of the Tauri
+/// runtime.
+pub(crate) fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
-}
-
-/// Walking-skeleton IPC command (Phase 0): proves the frontend <-> backend
-/// round trip works end to end. Later phases add the real commands from
-/// SPEC.md section 5.
-#[tauri::command]
-fn ping() -> String {
-    app_version()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -102,7 +95,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            ping,
+            commands::ping,
             commands::list_devices,
             commands::save_device,
             commands::delete_device,
@@ -118,10 +111,10 @@ pub fn run() {
             commands::set_default_profile,
             commands::get_settings,
             commands::save_settings,
-            transfer::export_devices,
-            transfer::import_devices,
-            transfer::export_profiles,
-            transfer::import_profiles,
+            commands::export_devices,
+            commands::import_devices,
+            commands::export_profiles,
+            commands::import_profiles,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

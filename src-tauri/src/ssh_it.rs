@@ -30,7 +30,8 @@ use tokio::sync::mpsc;
 use crate::error::AppError;
 use crate::known_hosts::{KnownHost, KnownHostsStore};
 use crate::session::{
-    AuthCredentials, HostKeyPromptPayload, SessionManager, SessionSink, SessionStatus,
+    AuthCredentials, ConnectParams, HostKeyPromptPayload, SessionManager, SessionSink,
+    SessionStatus,
 };
 
 /// Throwaway ed25519 host key for the in-process test server. Generated once
@@ -234,11 +235,35 @@ fn manager_with(dir: &std::path::Path, prompt_timeout: Duration) -> Arc<SessionM
         known_hosts,
         Duration::from_secs(10),
         prompt_timeout,
+        Duration::from_secs(10),
     ))
 }
 
 fn password_creds() -> AuthCredentials {
     AuthCredentials::Password(TEST_PASSWORD.to_string())
+}
+
+/// Spawn a password-auth session against the local test server with the
+/// standard 80x24 PTY. Every integration test uses this same shape, so this
+/// keeps the call sites to just `id` + `sink` (B8: `ConnectParams`).
+fn spawn_pw_session(
+    manager: &Arc<SessionManager>,
+    id: &str,
+    port: u16,
+    sink: Arc<dyn SessionSink>,
+) {
+    manager.spawn_session(
+        id.to_string(),
+        ConnectParams {
+            host: "127.0.0.1".to_string(),
+            port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            cols: 80,
+            rows: 24,
+        },
+        sink,
+    );
 }
 
 /* ------------------------------------------------------------------------- *
@@ -306,6 +331,7 @@ async fn unreachable_host_is_ssh_connect() {
         known_hosts,
         Duration::from_secs(3),
         Duration::from_secs(60),
+        Duration::from_secs(10),
     ));
 
     // Bind then drop a listener to obtain a port that is (almost certainly) closed.
@@ -331,6 +357,57 @@ async fn unreachable_host_is_ssh_connect() {
     );
 }
 
+/// B3 regression: a host that completes the TCP handshake but then never
+/// speaks SSH (no version banner, ever) must not hang `test_connection`
+/// forever. Before the B3 fix, only `TcpStream::connect` was ever
+/// timeout-bound — `client::connect_stream` (the SSH version exchange + KEX)
+/// had no deadline, so this scenario hung indefinitely. Uses short
+/// connect/prompt/handshake timeouts so the overall `establish` deadline
+/// (their sum — see `SessionManager::overall_establish_timeout`) is reached
+/// quickly, and wraps the call in an outer `tokio::time::timeout` as a test
+/// safety net so a regression fails fast instead of hanging the suite.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn peer_accepts_tcp_but_never_speaks_ssh_times_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let known_hosts = Arc::new(KnownHostsStore::load(dir.path().to_path_buf()));
+    let manager = Arc::new(SessionManager::new(
+        known_hosts,
+        Duration::from_millis(300),
+        Duration::from_millis(300),
+        Duration::from_millis(300),
+    ));
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    // Accept the connection and then go silent forever — no SSH banner, ever.
+    tokio::spawn(async move {
+        if let Ok((stream, _)) = listener.accept().await {
+            let _keep_socket_open = stream;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
+
+    let (sink, _chans) = new_sink();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        manager.test_connection(
+            "127.0.0.1".to_string(),
+            port,
+            TEST_USER.to_string(),
+            password_creds(),
+            sink,
+        ),
+    )
+    .await
+    .expect("establish must be bounded by an overall deadline, not hang forever");
+
+    assert!(
+        matches!(result, Err(AppError::SshConnect(_))),
+        "expected a timeout SshConnect error, got {result:?}"
+    );
+}
+
 /* ------------------------------------------------------------------------- *
  * Live session — PTY echo + cleanup
  * ------------------------------------------------------------------------- */
@@ -343,16 +420,7 @@ async fn echo_through_pty_and_clean_disconnect() {
     let manager = manager_with(dir.path(), Duration::from_secs(60));
 
     let (sink, mut chans) = new_sink();
-    manager.spawn_session(
-        "s1".to_string(),
-        "127.0.0.1".to_string(),
-        port,
-        TEST_USER.to_string(),
-        password_creds(),
-        80,
-        24,
-        sink,
-    );
+    spawn_pw_session(&manager, "s1", port, sink);
 
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
@@ -423,16 +491,7 @@ async fn host_key_accept_persists_tofu() {
     let port = spawn_test_server(TEST_PASSWORD).await;
 
     let (sink, mut chans) = new_sink();
-    manager.spawn_session(
-        "s1".to_string(),
-        "127.0.0.1".to_string(),
-        port,
-        TEST_USER.to_string(),
-        password_creds(),
-        80,
-        24,
-        sink,
-    );
+    spawn_pw_session(&manager, "s1", port, sink);
 
     // First contact ⇒ prompt with changed:false.
     let prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
@@ -463,16 +522,7 @@ async fn host_key_reject_fails_with_host_key_rejected() {
     let port = spawn_test_server(TEST_PASSWORD).await;
 
     let (sink, mut chans) = new_sink();
-    manager.spawn_session(
-        "s1".to_string(),
-        "127.0.0.1".to_string(),
-        port,
-        TEST_USER.to_string(),
-        password_creds(),
-        80,
-        24,
-        sink,
-    );
+    spawn_pw_session(&manager, "s1", port, sink);
 
     let prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
         .await
@@ -517,16 +567,7 @@ async fn changed_host_key_prompts_with_changed_true_and_overwrites_on_accept() {
     let manager = manager_with(dir.path(), Duration::from_secs(60));
 
     let (sink, mut chans) = new_sink();
-    manager.spawn_session(
-        "s1".to_string(),
-        "127.0.0.1".to_string(),
-        port,
-        TEST_USER.to_string(),
-        password_creds(),
-        80,
-        24,
-        sink,
-    );
+    spawn_pw_session(&manager, "s1", port, sink);
 
     let prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
         .await
@@ -556,16 +597,7 @@ async fn host_key_prompt_timeout_rejects() {
     let port = spawn_test_server(TEST_PASSWORD).await;
 
     let (sink, mut chans) = new_sink();
-    manager.spawn_session(
-        "s1".to_string(),
-        "127.0.0.1".to_string(),
-        port,
-        TEST_USER.to_string(),
-        password_creds(),
-        80,
-        24,
-        sink,
-    );
+    spawn_pw_session(&manager, "s1", port, sink);
 
     // A prompt is emitted, but we deliberately never respond.
     let _prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
@@ -639,16 +671,7 @@ async fn disconnect_all_closes_every_session() {
     let mut kept = Vec::new();
     for i in 0..3 {
         let (sink, mut chans) = new_sink();
-        manager.spawn_session(
-            format!("s{i}"),
-            "127.0.0.1".to_string(),
-            port,
-            TEST_USER.to_string(),
-            password_creds(),
-            80,
-            24,
-            sink,
-        );
+        spawn_pw_session(&manager, &format!("s{i}"), port, sink);
         let (status, message) = await_settled(&mut chans.status_rx).await;
         assert_eq!(status, SessionStatus::Connected, "message={message:?}");
         kept.push(chans); // keep the sink receivers alive for the session's lifetime
@@ -679,16 +702,7 @@ async fn disconnect_while_host_key_prompt_pending_cleans_up() {
     let port = spawn_test_server(TEST_PASSWORD).await;
 
     let (sink, mut chans) = new_sink();
-    manager.spawn_session(
-        "s1".to_string(),
-        "127.0.0.1".to_string(),
-        port,
-        TEST_USER.to_string(),
-        password_creds(),
-        80,
-        24,
-        sink,
-    );
+    spawn_pw_session(&manager, "s1", port, sink);
 
     // Wait for the prompt, then disconnect without answering it.
     let _prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
@@ -793,16 +807,7 @@ async fn four_concurrent_sessions_route_io_independently() {
     let mut channels = Vec::new();
     for i in 0..4 {
         let (sink, chans) = new_sink();
-        manager.spawn_session(
-            format!("s{i}"),
-            "127.0.0.1".to_string(),
-            port,
-            TEST_USER.to_string(),
-            password_creds(),
-            80,
-            24,
-            sink,
-        );
+        spawn_pw_session(&manager, &format!("s{i}"), port, sink);
         channels.push(chans);
     }
 
@@ -885,16 +890,7 @@ async fn connect_disconnect_churn_leaks_nothing() {
     for _ in 0..40 {
         let (sink, _chans) = new_sink();
         let sid = next_id();
-        manager.spawn_session(
-            sid.clone(),
-            "127.0.0.1".to_string(),
-            port,
-            TEST_USER.to_string(),
-            password_creds(),
-            80,
-            24,
-            sink,
-        );
+        spawn_pw_session(&manager, &sid, port, sink);
         manager.disconnect(&sid).await;
     }
 
@@ -904,16 +900,7 @@ async fn connect_disconnect_churn_leaks_nothing() {
     for _ in 0..12 {
         let (sink, chans) = new_sink();
         let sid = next_id();
-        manager.spawn_session(
-            sid.clone(),
-            "127.0.0.1".to_string(),
-            port,
-            TEST_USER.to_string(),
-            password_creds(),
-            80,
-            24,
-            sink,
-        );
+        spawn_pw_session(&manager, &sid, port, sink);
         batch.push((sid, chans));
     }
     for (sid, _chans) in batch.iter().rev() {
@@ -927,16 +914,7 @@ async fn connect_disconnect_churn_leaks_nothing() {
     for _ in 0..4 {
         let (sink, mut chans) = new_sink();
         let sid = next_id();
-        manager.spawn_session(
-            sid.clone(),
-            "127.0.0.1".to_string(),
-            port,
-            TEST_USER.to_string(),
-            password_creds(),
-            80,
-            24,
-            sink,
-        );
+        spawn_pw_session(&manager, &sid, port, sink);
         let (status, message) = await_settled(&mut chans.status_rx).await;
         assert_eq!(
             status,

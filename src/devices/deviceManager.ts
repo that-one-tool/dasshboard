@@ -473,8 +473,7 @@ export class DeviceManagerImpl {
     }
 
     try {
-      const isNewDevice = this.editingDeviceId === null;
-      const secretToSend = decideSecretToSend(isNewDevice, values.secret ?? "");
+      const secretToSend = decideSecretToSend(values.secret ?? "");
 
       const device = values as Device;
       await saveDevice(device, secretToSend);
@@ -484,9 +483,10 @@ export class DeviceManagerImpl {
       await this.loadDevices();
     } catch (err) {
       const error = err as AppError;
-      this.displayFieldErrors([
-        { field: "general", message: error.message },
-      ]);
+      // F10: no `#device-general` element exists in the dialog markup, so
+      // routing a general save failure through `displayFieldErrors` was a
+      // silent no-op. The toast below is the only (and sufficient) surface
+      // for this error.
       this.options.onError?.(error);
     }
   }

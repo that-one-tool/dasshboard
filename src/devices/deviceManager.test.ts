@@ -299,3 +299,48 @@ describe("device import/export", () => {
     expect(callsTo("list_devices").length).toBe(1); // only the initial load
   });
 });
+
+/**
+ * F10 regression: a save failure used to route through `displayFieldErrors`
+ * with `field: "general"`, which maps to a `#device-general` selector that
+ * does not exist anywhere in the dialog markup — a silent no-op. The fix
+ * drops that dead call; the error must still reach the user, but only via
+ * `onError` (the toast), never via a field error node.
+ */
+describe("device save failure (F10)", () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_devices") return [deviceA, deviceB];
+      if (cmd === "save_device") {
+        throw { code: "Io", message: "disk is full" };
+      }
+      return undefined;
+    });
+  });
+
+  it("surfaces a save failure via onError and never via a dead field-error node", async () => {
+    const onError = vi.fn();
+    document.body.innerHTML = '<div class="device-list"></div>';
+    const el = q<HTMLElement>(document, ".device-list");
+    const manager = new DeviceManagerImpl(el, { onError });
+    await manager.init();
+
+    q<HTMLButtonElement>(el, `.btn-edit[data-device-id="${deviceA.id}"]`).click();
+    const form = q<HTMLFormElement>(el, "#device-form");
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+
+    expect(onError).toHaveBeenCalledWith({ code: "Io", message: "disk is full" });
+    // No `.error-text` in the form ever received the failure message — there
+    // is no element the old `field: "general"` mapping could have targeted.
+    const errorTexts = Array.from(form.querySelectorAll(".error-text"));
+    expect(errorTexts.every((n) => n.textContent === "")).toBe(true);
+    // The dialog stays open on failure (only a successful save closes it).
+    expect(q<HTMLElement>(el, "#device-dialog").classList.contains("dialog-hidden")).toBe(
+      false,
+    );
+  });
+});

@@ -99,25 +99,35 @@ impl DeviceStore {
         }
         device.validate()?;
 
-        let mut devices = self.lock_devices();
-        match devices.iter_mut().find(|d| d.id == device.id) {
+        // Persist-then-commit: build the new list in a local `candidate` and
+        // only swap it into the guarded state once `persist()` has actually
+        // succeeded, so a write failure never leaves memory diverged from
+        // disk (the guard stays untouched on error).
+        let mut guard = self.lock_devices();
+        let mut candidate = guard.clone();
+        match candidate.iter_mut().find(|d| d.id == device.id) {
             Some(existing) => *existing = device.clone(),
-            None => devices.push(device.clone()),
+            None => candidate.push(device.clone()),
         }
-        self.persist(&devices)?;
+        self.persist(&candidate)?;
+        *guard = candidate;
         Ok(device)
     }
 
     /// Removes the device with the given id. Returns `AppError::NotFound`
     /// if no device with that id exists.
     pub fn delete(&self, id: &str) -> Result<(), AppError> {
-        let mut devices = self.lock_devices();
-        let index = devices
+        let mut guard = self.lock_devices();
+        let index = guard
             .iter()
             .position(|d| d.id == id)
             .ok_or_else(|| AppError::NotFound(format!("device '{id}' not found")))?;
-        devices.remove(index);
-        self.persist(&devices)?;
+        // Persist-then-commit (see `upsert`): mutate a local copy, persist
+        // it, then swap it in only on success.
+        let mut candidate = guard.clone();
+        candidate.remove(index);
+        self.persist(&candidate)?;
+        *guard = candidate;
         Ok(())
     }
 
@@ -321,6 +331,54 @@ mod tests {
         // valid devices.json alongside the backup.
         store.upsert(sample_device("NAS")).unwrap();
         assert!(dir.path().join(DEVICES_FILE).exists());
+    }
+
+    // -- B1: persist failure must not diverge memory from disk ------------
+
+    /// Forces the store's next `persist()` to fail: replaces the store's
+    /// target directory with a plain file, so `fs::create_dir_all` inside
+    /// `persist` errors instead of silently no-op'ing. Chosen over toggling
+    /// OS permission bits because read-only directories behave
+    /// inconsistently across platforms (notably Windows); "a file sits where
+    /// a directory is expected" fails deterministically everywhere.
+    fn block_store_dir_with_a_file(dir: &Path) {
+        if dir.is_dir() {
+            fs::remove_dir_all(dir).unwrap();
+        }
+        fs::write(dir, "blocking file").unwrap();
+    }
+
+    #[test]
+    fn upsert_leaves_memory_unchanged_when_persist_fails() {
+        let root = tempdir().unwrap();
+        let store_dir = root.path().join("store");
+        block_store_dir_with_a_file(&store_dir);
+        let store = DeviceStore::load(store_dir);
+
+        let err = store.upsert(sample_device("NAS")).unwrap_err();
+        assert!(matches!(err, AppError::Io(_)));
+        assert!(
+            store.list().is_empty(),
+            "a failed persist must not leave the upsert applied in memory"
+        );
+    }
+
+    #[test]
+    fn delete_leaves_memory_unchanged_when_persist_fails() {
+        let root = tempdir().unwrap();
+        let store_dir = root.path().join("store");
+        let store = DeviceStore::load(store_dir.clone());
+        let saved = store.upsert(sample_device("NAS")).unwrap();
+
+        block_store_dir_with_a_file(&store_dir);
+
+        let err = store.delete(&saved.id).unwrap_err();
+        assert!(matches!(err, AppError::Io(_)));
+        assert_eq!(
+            store.list(),
+            vec![saved],
+            "a failed persist must not leave the delete applied in memory"
+        );
     }
 
     #[test]

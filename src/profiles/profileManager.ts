@@ -44,6 +44,13 @@ export class ProfileManager {
   private defaultProfileId: string | null = null;
   /** The profile currently loaded into the workspace (null = unsaved 1x1). */
   private loaded: Profile | null = null;
+  /**
+   * Re-entrancy guard for Save / Save As / Rename (F12, same class as the
+   * `Grid.transitioning` guard): each opens a `prompt()`/persists across an
+   * `await`, so a double-click could otherwise stack two prompts and create
+   * two profiles from one intended save.
+   */
+  private busy = false;
 
   constructor(options: ProfileManagerOptions) {
     this.grid = options.grid;
@@ -220,15 +227,32 @@ export class ProfileManager {
   }
 
   private async save(): Promise<void> {
-    if (!this.loaded) {
-      // Nothing loaded yet → behave as Save As.
-      await this.saveAs();
-      return;
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      if (!this.loaded) {
+        // Nothing loaded yet → behave as Save As.
+        await this.performSaveAs();
+        return;
+      }
+      await this.persist({ ...this.loaded, ...snapshotToProfileFields(this.grid.snapshot()) }, "Saved");
+    } finally {
+      this.busy = false;
     }
-    await this.persist({ ...this.loaded, ...snapshotToProfileFields(this.grid.snapshot()) }, "Saved");
   }
 
   private async saveAs(): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      await this.performSaveAs();
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /** Shared Save-As body; callers (`save`, `saveAs`) hold the `busy` guard. */
+  private async performSaveAs(): Promise<void> {
     const name = await prompt("Save workspace as", "Name for this profile");
     if (name === null) return;
     const trimmed = name.trim();
@@ -243,15 +267,21 @@ export class ProfileManager {
   }
 
   private async rename(profile: Profile): Promise<void> {
-    const name = await prompt("Rename profile", "New name", profile.name);
-    if (name === null) return;
-    const trimmed = name.trim();
-    if (!trimmed) {
-      this.options.onError("Profile name must not be empty");
-      return;
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      const name = await prompt("Rename profile", "New name", profile.name);
+      if (name === null) return;
+      const trimmed = name.trim();
+      if (!trimmed) {
+        this.options.onError("Profile name must not be empty");
+        return;
+      }
+      // Rename keeps the profile's stored layout; only the name changes.
+      await this.persist({ ...profile, name: trimmed }, "Renamed");
+    } finally {
+      this.busy = false;
     }
-    // Rename keeps the profile's stored layout; only the name changes.
-    await this.persist({ ...profile, name: trimmed }, "Renamed");
   }
 
   private async persist(profile: Profile, verb: string): Promise<void> {

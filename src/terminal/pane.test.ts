@@ -107,6 +107,60 @@ describe("TerminalPane right-click paste listener", () => {
   });
 });
 
+describe("TerminalPane.startSession re-entrancy guard", () => {
+  beforeEach(() => {
+    h.statusHandler = null;
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    vi.mocked(connect).mockClear();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText, writeText: vi.fn(async () => {}) },
+    });
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  // Guards F1: a double-click on Connect used to re-enter startSession() while
+  // the first call was suspended at `await connect(...)`, disposing the
+  // in-flight terminal, cross-wiring the channel's onmessage, and orphaning a
+  // second backend session. FAILS (connect called twice) without the
+  // `connecting` guard.
+  it("ignores a second startSession() call while the first is still awaiting connect()", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+
+    let resolveConnect: (id: string) => void = () => {};
+    vi.mocked(connect).mockImplementationOnce(
+      () =>
+        new Promise<string>((res) => {
+          resolveConnect = res;
+        }),
+    );
+
+    const start = () =>
+      (pane as unknown as { startSession(): Promise<void> }).startSession();
+
+    // Call A starts and suspends at `await connect(...)`; call B fires while A
+    // is still in flight (the synchronous portion of A — including tearing
+    // down/creating the terminal — has already run by the time B is invoked).
+    const terminalBefore = (pane as unknown as { terminal: unknown }).terminal;
+    const pA = start();
+    const pB = start();
+
+    resolveConnect(h.sessionId);
+    await Promise.all([pA, pB]);
+    await flush();
+
+    expect(vi.mocked(connect)).toHaveBeenCalledTimes(1);
+    // The terminal created by call A is still the live one — B did not tear it
+    // down and replace it with a second terminal.
+    const terminalAfter = (pane as unknown as { terminal: unknown }).terminal;
+    expect(terminalAfter).not.toBe(terminalBefore);
+    expect(pane.hasLiveSession()).toBe(true);
+  });
+});
+
 describe("TerminalPane.dispose", () => {
   beforeEach(() => {
     h.statusHandler = null;
@@ -369,5 +423,38 @@ describe("TerminalPane referential cleanup (Phase 4)", () => {
     await pane.refreshDevices();
 
     expect(pane.getDeviceId()).toBeNull();
+  });
+
+  // Guards F2: deleting the device behind an *actively connected* pane used to
+  // only call hideOverlay() (forcing an idle dot) while leaving `connected`/
+  // `sessionId` set — the pane then lied about being idle while a real backend
+  // SSH session was still open. FAILS if the live session isn't force-torn-down
+  // (hasLiveSession() stays true, or `disconnect` is never called) when its
+  // device disappears mid-session.
+  it("force-disconnects a live session when its device is deleted, and reflects idle honestly", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+
+    await (
+      pane as unknown as { startSession(): Promise<void> }
+    ).startSession();
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    expect(pane.hasLiveSession()).toBe(true);
+
+    vi.mocked(disconnect).mockClear();
+    vi.mocked(listDevices).mockResolvedValueOnce([]);
+    await pane.refreshDevices();
+
+    expect(pane.getDeviceId()).toBeNull();
+    expect(pane.hasLiveSession()).toBe(false);
+    expect(vi.mocked(disconnect)).toHaveBeenCalledWith(h.sessionId);
+
+    const dot = q<HTMLElement>(root, ".pane-status-dot");
+    expect(dot.className).toContain("pane-status-idle");
+    const overlay = q<HTMLElement>(root, ".pane-overlay");
+    expect(overlay.classList.contains("dialog-hidden")).toBe(true);
   });
 });

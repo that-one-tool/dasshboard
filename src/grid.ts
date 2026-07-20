@@ -17,6 +17,7 @@ import {
   shrinkConfirmMessage,
   PRESET_IDS,
   type GridModel,
+  type PaneRemap,
   type PresetId,
 } from "./gridModel";
 import { shouldConfirmTeardown, type WorkspaceSnapshot } from "./profiles/workspace";
@@ -145,66 +146,89 @@ export class Grid {
    * (SPEC §7). Kept panes (and their live sessions) are preserved in place.
    */
   private async setPreset(id: PresetId): Promise<void> {
-    const container = this.container;
+    const container = this.beginTransition();
     if (!container) return;
-
-    // Ignore a second transition while one is still in flight. Without this,
-    // overlapping calls (a rapid double-click, or two quick preset clicks when
-    // neither needs the confirm dialog) run concurrently against the same
-    // `this.cells` snapshot; whichever finishes last overwrites `this.cells` and
-    // orphans cells the other already appended to the DOM — their
-    // ResizeObserver / `session_status` listener / xterm Terminal / live SSH
-    // session then become permanently unreachable by `dispose()`.
-    if (this.transitioning) return;
-    this.transitioning = true;
-    this.setPresetButtonsDisabled(true);
     try {
       const next = presetToModel(id);
       const remap = remapPanes(this.cells.length, paneCount(next));
+      if (!(await this.confirmDropIfLive(remap.dropped))) return;
 
-      if (remap.dropped.length > 0) {
-        const liveCount = remap.dropped.filter(
-          (i) => this.cells[i]?.pane.hasLiveSession() ?? false,
-        ).length;
-        if (liveCount > 0) {
-          const ok = await confirm(shrinkConfirmMessage(liveCount), {
-            title: "Close sessions?",
-            confirmLabel: "Continue",
-            danger: true,
-          });
-          if (!ok) return;
-        }
-      }
-
-      // Tear down dropped panes (disposes listeners/observers and closes any
-      // backend session — see TerminalPane.dispose).
-      for (const i of remap.dropped) {
-        const cell = this.cells[i];
-        if (!cell) continue;
-        cell.pane.dispose();
-        cell.wrapper.remove();
-      }
-
-      const kept = this.cells.slice(0, paneCount(next));
-      const added: Cell[] = [];
-      for (let i = 0; i < remap.added.length; i++) {
-        added.push(await this.createCell());
-      }
-      this.cells = [...kept, ...added];
-      this.model = next;
-
-      // Re-order DOM to match the new row-major cell list (appendChild moves the
-      // kept nodes; new nodes are inserted at the end).
-      for (const cell of this.cells) container.appendChild(cell.wrapper);
-
-      this.applyLayout();
-      this.updateToolbarActive();
-      this.setFocus(Math.min(this.focusedIndex, this.cells.length - 1), false);
+      await this.rebuildCellsForPreset(container, next, remap);
       this.emitChange();
     } finally {
-      this.transitioning = false;
-      this.setPresetButtonsDisabled(false);
+      this.endTransition();
     }
+  }
+
+  /**
+   * Marks a layout transition as in flight and returns the container to operate
+   * on, or `null` if one can't start right now — either there's no container
+   * yet, or a transition is already running. Claiming exclusivity here, before
+   * any `await`, is what stops overlapping `setPreset`/`applyProfile` calls from
+   * interleaving mutations of `this.cells`/`this.model`: without it, whichever
+   * call finished last would overwrite `this.cells` and orphan cells the other
+   * appended to the DOM — their ResizeObserver / `session_status` listener /
+   * xterm Terminal / live SSH session then unreachable by `dispose()`.
+   */
+  private beginTransition(): HTMLElement | null {
+    if (!this.container || this.transitioning) return null;
+    this.transitioning = true;
+    this.setPresetButtonsDisabled(true);
+    return this.container;
+  }
+
+  /** Releases the transition claim taken by {@link beginTransition}. */
+  private endTransition(): void {
+    this.transitioning = false;
+    this.setPresetButtonsDisabled(false);
+  }
+
+  /** Confirms tearing down any live sessions among the cells a shrink would drop. */
+  private async confirmDropIfLive(dropped: number[]): Promise<boolean> {
+    const liveCount = dropped.filter(
+      (i) => this.cells[i]?.pane.hasLiveSession() ?? false,
+    ).length;
+    if (liveCount === 0) return true;
+    return confirm(shrinkConfirmMessage(liveCount), {
+      title: "Close sessions?",
+      confirmLabel: "Continue",
+      danger: true,
+    });
+  }
+
+  /**
+   * Tears down the panes a preset switch drops, creates the panes it adds, and
+   * re-renders the layout/focus around the resulting cell list.
+   */
+  private async rebuildCellsForPreset(
+    container: HTMLElement,
+    next: GridModel,
+    remap: PaneRemap,
+  ): Promise<void> {
+    // Tear down dropped panes (disposes listeners/observers and closes any
+    // backend session — see TerminalPane.dispose).
+    for (const i of remap.dropped) {
+      const cell = this.cells[i];
+      if (!cell) continue;
+      cell.pane.dispose();
+      cell.wrapper.remove();
+    }
+
+    const kept = this.cells.slice(0, paneCount(next));
+    const added: Cell[] = [];
+    for (let i = 0; i < remap.added.length; i++) {
+      added.push(await this.createCell());
+    }
+    this.cells = [...kept, ...added];
+    this.model = next;
+
+    // Re-order DOM to match the new row-major cell list (appendChild moves the
+    // kept nodes; new nodes are inserted at the end).
+    for (const cell of this.cells) container.appendChild(cell.wrapper);
+
+    this.applyLayout();
+    this.updateToolbarActive();
+    this.setFocus(Math.min(this.focusedIndex, this.cells.length - 1), false);
   }
 
   /** Notifies the profile manager that the workspace saved-state may have changed. */
@@ -250,71 +274,81 @@ export class Grid {
     profile: Profile,
     opts: { confirmTeardown?: boolean } = {},
   ): Promise<boolean> {
-    const container = this.container;
-    if (!container || this.transitioning) return false;
-
-    // Claim exclusivity BEFORE the confirm-dialog await (mirrors setPreset). If
-    // the guard were set only after the await, a second load — or a setPreset —
-    // fired while the confirm dialog is still open would also pass the
-    // `!this.transitioning` check and run concurrently, interleaving mutations of
-    // this.cells/this.model and corrupting the grid (e.g. a 2-pane model with 3
-    // live cells, which the backend then refuses to save).
-    this.transitioning = true;
-    this.setPresetButtonsDisabled(true);
+    const container = this.beginTransition();
+    if (!container) return false;
     try {
-      const confirmTeardown = opts.confirmTeardown ?? true;
-      if (confirmTeardown && shouldConfirmTeardown(this.liveSessionCount())) {
-        const ok = await confirm(shrinkConfirmMessage(this.liveSessionCount()), {
-          title: "Close sessions?",
-          confirmLabel: "Continue",
-          danger: true,
-        });
-        if (!ok) return false;
+      if (!(await this.confirmProfileTeardown(opts.confirmTeardown ?? true))) {
+        return false;
       }
-
-      this.loading = true;
-      try {
-        // Tear the current grid down completely (disposes listeners/observers and
-        // closes any live session), then build fresh cells for the profile shape.
-        for (const cell of this.cells) {
-          cell.pane.dispose();
-          cell.wrapper.remove();
-        }
-        this.cells = [];
-        this.model = {
-          rows: profile.grid.rows,
-          cols: profile.grid.cols,
-          rowSizes: [...profile.grid.rowSizes],
-          colSizes: [...profile.grid.colSizes],
-        };
-
-        const count = paneCount(this.model);
-        for (let i = 0; i < count; i++) {
-          this.cells.push(await this.createCell());
-        }
-        container.append(...this.cells.map((c) => c.wrapper));
-        this.applyLayout();
-        this.updateToolbarActive();
-        this.focusedIndex = 0;
-        this.setFocus(0, false);
-
-        // Assign devices, then auto-connect all assigned panes in parallel.
-        const connects: Promise<void>[] = [];
-        this.cells.forEach((cell, i) => {
-          const deviceId = profile.panes[i]?.deviceId ?? null;
-          cell.pane.assignDevice(deviceId);
-          if (deviceId) connects.push(cell.pane.connectAssigned());
-        });
-        await Promise.allSettled(connects);
-      } finally {
-        this.loading = false;
-      }
+      await this.loadProfileCells(container, profile);
     } finally {
-      this.transitioning = false;
-      this.setPresetButtonsDisabled(false);
+      this.endTransition();
     }
     this.emitChange();
     return true;
+  }
+
+  /** Confirms tearing down any live sessions before loading a profile over them. */
+  private async confirmProfileTeardown(confirmTeardown: boolean): Promise<boolean> {
+    if (!confirmTeardown || !shouldConfirmTeardown(this.liveSessionCount())) {
+      return true;
+    }
+    return confirm(shrinkConfirmMessage(this.liveSessionCount()), {
+      title: "Close sessions?",
+      confirmLabel: "Continue",
+      danger: true,
+    });
+  }
+
+  /**
+   * Tears the current grid down completely, rebuilds it to the profile's shape,
+   * then assigns and auto-connects the profile's panes.
+   */
+  private async loadProfileCells(container: HTMLElement, profile: Profile): Promise<void> {
+    this.loading = true;
+    try {
+      this.teardownAllCells();
+      this.model = {
+        rows: profile.grid.rows,
+        cols: profile.grid.cols,
+        rowSizes: [...profile.grid.rowSizes],
+        colSizes: [...profile.grid.colSizes],
+      };
+
+      const count = paneCount(this.model);
+      for (let i = 0; i < count; i++) {
+        this.cells.push(await this.createCell());
+      }
+      container.append(...this.cells.map((c) => c.wrapper));
+      this.applyLayout();
+      this.updateToolbarActive();
+      this.focusedIndex = 0;
+      this.setFocus(0, false);
+
+      await this.connectProfilePanes(profile);
+    } finally {
+      this.loading = false;
+    }
+  }
+
+  /** Disposes every current pane (closing any live session) and clears the grid. */
+  private teardownAllCells(): void {
+    for (const cell of this.cells) {
+      cell.pane.dispose();
+      cell.wrapper.remove();
+    }
+    this.cells = [];
+  }
+
+  /** Assigns each cell's device from the profile, then connects the assigned ones in parallel. */
+  private async connectProfilePanes(profile: Profile): Promise<void> {
+    const connects: Promise<void>[] = [];
+    this.cells.forEach((cell, i) => {
+      const deviceId = profile.panes[i]?.deviceId ?? null;
+      cell.pane.assignDevice(deviceId);
+      if (deviceId) connects.push(cell.pane.connectAssigned());
+    });
+    await Promise.allSettled(connects);
   }
 
   /** Enables/disables the preset buttons for the duration of a transition. */
@@ -371,6 +405,15 @@ export class Grid {
    * Layout (CSS grid tracks + splitters)
    * ---------------------------------------------------------------------- */
 
+  /**
+   * Applies the current model's track sizes to the grid, then updates the
+   * splitter overlay. A splitter drag calls this every animation frame with the
+   * track *count* unchanged (only sizes move) — rebuilding every splitter node
+   * on each tick would churn the DOM up to 60x/sec and drop `:hover`/`:active`
+   * state on the dragged splitter. So the splitter count per axis is checked
+   * first: unchanged ⇒ reposition the existing nodes in place (cheap, keeps
+   * their listeners); changed (a preset/profile switch) ⇒ full rebuild.
+   */
   private applyLayout(): void {
     const container = this.container;
     if (!container) return;
@@ -381,7 +424,38 @@ export class Grid {
       .map((f) => `${f}fr`)
       .join(" ");
 
-    // Rebuild splitter overlay (cells are left untouched so live panes persist).
+    if (this.splitterShapeMatches(container)) {
+      this.repositionSplitters(container);
+    } else {
+      this.rebuildSplitters(container);
+    }
+  }
+
+  /** True when the DOM already has exactly the col/row splitter count the model needs. */
+  private splitterShapeMatches(container: HTMLElement): boolean {
+    const expectedCols = Math.max(0, this.model.colSizes.length - 1);
+    const expectedRows = Math.max(0, this.model.rowSizes.length - 1);
+    const actualCols = container.querySelectorAll(".grid-splitter-col").length;
+    const actualRows = container.querySelectorAll(".grid-splitter-row").length;
+    return actualCols === expectedCols && actualRows === expectedRows;
+  }
+
+  /** Moves existing splitter nodes to the current boundary fractions, in place. */
+  private repositionSplitters(container: HTMLElement): void {
+    const cols = container.querySelectorAll<HTMLElement>(".grid-splitter-col");
+    cumulativeFractions(this.model.colSizes).forEach((frac, i) => {
+      const el = cols[i];
+      if (el) el.style.left = `${frac * 100}%`;
+    });
+    const rows = container.querySelectorAll<HTMLElement>(".grid-splitter-row");
+    cumulativeFractions(this.model.rowSizes).forEach((frac, i) => {
+      const el = rows[i];
+      if (el) el.style.top = `${frac * 100}%`;
+    });
+  }
+
+  /** Removes and recreates every splitter (cells are left untouched). */
+  private rebuildSplitters(container: HTMLElement): void {
     for (const s of container.querySelectorAll(".grid-splitter")) s.remove();
     cumulativeFractions(this.model.colSizes).forEach((frac, boundary) => {
       container.appendChild(this.makeSplitter("col", boundary, frac));

@@ -18,17 +18,10 @@
  * - Empty secret field: return `undefined` (don't set a secret / leave keyring alone)
  * - Non-empty secret: return the secret value
  *
- * The `isNewDevice` parameter is included for future extensibility and to make the
- * intent explicit at call sites.
- *
- * @param _isNewDevice - true if creating a new device, false if editing (currently unused)
  * @param secretValue - the current value of the secret input field
  * @returns the secret to include in the payload, or `undefined` to omit the field
  */
-export function decideSecretToSend(
-  _isNewDevice: boolean,
-  secretValue: string,
-): string | undefined {
+export function decideSecretToSend(secretValue: string): string | undefined {
   // If the secret field is empty (user didn't type anything), don't include it
   if (secretValue === "") {
     return undefined;

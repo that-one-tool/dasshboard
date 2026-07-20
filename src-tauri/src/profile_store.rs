@@ -131,12 +131,21 @@ impl ProfileStore {
         }
         profile.validate()?;
 
-        let mut state = self.lock_state();
-        match state.profiles.iter_mut().find(|p| p.id == profile.id) {
+        // Persist-then-commit (mirrors `DeviceStore::upsert`): mutate a local
+        // copy of the profile list, persist it, and only swap it into the
+        // guarded state once `persist()` succeeds.
+        let mut guard = self.lock_state();
+        let mut profiles = guard.profiles.clone();
+        match profiles.iter_mut().find(|p| p.id == profile.id) {
             Some(existing) => *existing = profile.clone(),
-            None => state.profiles.push(profile.clone()),
+            None => profiles.push(profile.clone()),
         }
-        self.persist(&state)?;
+        let candidate = ProfilesState {
+            default_profile_id: guard.default_profile_id.clone(),
+            profiles,
+        };
+        self.persist(&candidate)?;
+        *guard = candidate;
         Ok(profile)
     }
 
@@ -145,17 +154,27 @@ impl ProfileStore {
     /// default, `defaultProfileId` is cleared to `null` (SPEC.md §5) so it
     /// never dangles.
     pub fn delete(&self, id: &str) -> Result<(), AppError> {
-        let mut state = self.lock_state();
-        let index = state
+        let mut guard = self.lock_state();
+        let index = guard
             .profiles
             .iter()
             .position(|p| p.id == id)
             .ok_or_else(|| AppError::NotFound(format!("profile '{id}' not found")))?;
-        state.profiles.remove(index);
-        if state.default_profile_id.as_deref() == Some(id) {
-            state.default_profile_id = None;
-        }
-        self.persist(&state)?;
+
+        // Persist-then-commit (see `upsert`).
+        let mut profiles = guard.profiles.clone();
+        profiles.remove(index);
+        let default_profile_id = if guard.default_profile_id.as_deref() == Some(id) {
+            None
+        } else {
+            guard.default_profile_id.clone()
+        };
+        let candidate = ProfilesState {
+            default_profile_id,
+            profiles,
+        };
+        self.persist(&candidate)?;
+        *guard = candidate;
         Ok(())
     }
 
@@ -166,14 +185,19 @@ impl ProfileStore {
     /// the default at it, so there's no legitimate case for setting a
     /// default to an id that doesn't exist yet.
     pub fn set_default(&self, profile_id: Option<String>) -> Result<(), AppError> {
-        let mut state = self.lock_state();
+        let mut guard = self.lock_state();
         if let Some(id) = &profile_id {
-            if !state.profiles.iter().any(|p| &p.id == id) {
+            if !guard.profiles.iter().any(|p| &p.id == id) {
                 return Err(AppError::NotFound(format!("profile '{id}' not found")));
             }
         }
-        state.default_profile_id = profile_id;
-        self.persist(&state)?;
+        // Persist-then-commit (see `upsert`).
+        let candidate = ProfilesState {
+            default_profile_id: profile_id,
+            profiles: guard.profiles.clone(),
+        };
+        self.persist(&candidate)?;
+        *guard = candidate;
         Ok(())
     }
 
@@ -183,9 +207,10 @@ impl ProfileStore {
     /// so deleting a device that no profile references doesn't rewrite
     /// `profiles.json` (or create it) needlessly.
     pub fn clear_device(&self, device_id: &str) -> Result<(), AppError> {
-        let mut state = self.lock_state();
+        let mut guard = self.lock_state();
+        let mut profiles = guard.profiles.clone();
         let mut changed = false;
-        for profile in state.profiles.iter_mut() {
+        for profile in profiles.iter_mut() {
             for pane in profile.panes.iter_mut() {
                 if pane.device_id.as_deref() == Some(device_id) {
                     pane.device_id = None;
@@ -194,7 +219,13 @@ impl ProfileStore {
             }
         }
         if changed {
-            self.persist(&state)?;
+            // Persist-then-commit (see `upsert`).
+            let candidate = ProfilesState {
+                default_profile_id: guard.default_profile_id.clone(),
+                profiles,
+            };
+            self.persist(&candidate)?;
+            *guard = candidate;
         }
         Ok(())
     }
@@ -414,6 +445,91 @@ mod tests {
         // The store is still usable afterward.
         store.upsert(sample_profile("Homelab")).unwrap();
         assert!(dir.path().join(PROFILES_FILE).exists());
+    }
+
+    // -- B1: persist failure must not diverge memory from disk ------------
+
+    /// Forces the store's next `persist()` to fail (see the identical helper
+    /// in `store.rs` for why a blocking file, not a permission bit, is used).
+    fn block_store_dir_with_a_file(dir: &Path) {
+        if dir.is_dir() {
+            fs::remove_dir_all(dir).unwrap();
+        }
+        fs::write(dir, "blocking file").unwrap();
+    }
+
+    #[test]
+    fn upsert_leaves_memory_unchanged_when_persist_fails() {
+        let root = tempdir().unwrap();
+        let store_dir = root.path().join("store");
+        block_store_dir_with_a_file(&store_dir);
+        let store = ProfileStore::load(store_dir);
+
+        let err = store.upsert(sample_profile("Homelab")).unwrap_err();
+        assert!(matches!(err, AppError::Io(_)));
+        assert!(
+            store.list().profiles.is_empty(),
+            "a failed persist must not leave the upsert applied in memory"
+        );
+    }
+
+    #[test]
+    fn delete_leaves_memory_unchanged_when_persist_fails() {
+        let root = tempdir().unwrap();
+        let store_dir = root.path().join("store");
+        let store = ProfileStore::load(store_dir.clone());
+        let saved = store.upsert(sample_profile("Homelab")).unwrap();
+
+        block_store_dir_with_a_file(&store_dir);
+
+        let err = store.delete(&saved.id).unwrap_err();
+        assert!(matches!(err, AppError::Io(_)));
+        assert_eq!(
+            store.list().profiles,
+            vec![saved],
+            "a failed persist must not leave the delete applied in memory"
+        );
+    }
+
+    #[test]
+    fn set_default_leaves_memory_unchanged_when_persist_fails() {
+        let root = tempdir().unwrap();
+        let store_dir = root.path().join("store");
+        let store = ProfileStore::load(store_dir.clone());
+        let saved = store.upsert(sample_profile("Homelab")).unwrap();
+
+        block_store_dir_with_a_file(&store_dir);
+
+        let err = store.set_default(Some(saved.id)).unwrap_err();
+        assert!(matches!(err, AppError::Io(_)));
+        assert_eq!(
+            store.list().default_profile_id,
+            None,
+            "a failed persist must not leave the default applied in memory"
+        );
+    }
+
+    #[test]
+    fn clear_device_leaves_memory_unchanged_when_persist_fails() {
+        let root = tempdir().unwrap();
+        let store_dir = root.path().join("store");
+        let store = ProfileStore::load(store_dir.clone());
+        let saved = store
+            .upsert(sample_profile_with_devices(
+                "Homelab",
+                [Some("dev-1"), None],
+            ))
+            .unwrap();
+
+        block_store_dir_with_a_file(&store_dir);
+
+        let err = store.clear_device("dev-1").unwrap_err();
+        assert!(matches!(err, AppError::Io(_)));
+        assert_eq!(
+            store.list().profiles,
+            vec![saved],
+            "a failed persist must not leave the referential cleanup applied in memory"
+        );
     }
 
     #[test]

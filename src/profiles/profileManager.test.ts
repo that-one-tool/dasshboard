@@ -270,6 +270,62 @@ describe("ProfileManager dirty state + save", () => {
   });
 });
 
+describe("ProfileManager busy guard (F12)", () => {
+  it("does not open two Save As prompts on a rapid double click", async () => {
+    const g = fakeGrid(snapshot([null, null]));
+    vi.mocked(listProfiles).mockResolvedValue({ defaultProfileId: null, profiles: [] });
+
+    const mgr = new ProfileManager({ grid: g.grid, onError: vi.fn(), onSuccess: vi.fn() });
+    await mgr.init(null);
+    await flush();
+
+    const btn = document.querySelector<HTMLButtonElement>('[data-action="save-as"]');
+    btn?.click();
+    btn?.click();
+
+    // Only one `prompt()` dialog reached the DOM — the second click was
+    // swallowed by the busy guard before it could open another.
+    expect(document.querySelectorAll(".prompt-dialog").length).toBe(1);
+
+    // Clean up the still-open prompt so it doesn't leak into later tests.
+    document
+      .querySelector<HTMLButtonElement>('.prompt-dialog [data-action="cancel"]')
+      ?.click();
+    await flush();
+  });
+
+  it("does not persist twice when Save is double-clicked while a profile is loaded", async () => {
+    const g = fakeGrid(snapshot(["dev-1", null]));
+    vi.mocked(listProfiles).mockResolvedValue({
+      defaultProfileId: "p1",
+      profiles: [profile(["dev-1", null])],
+    });
+    let resolveSave: (p: Profile) => void = () => {};
+    vi.mocked(saveProfile).mockImplementation(
+      () =>
+        new Promise<Profile>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+
+    const mgr = new ProfileManager({ grid: g.grid, onError: vi.fn(), onSuccess: vi.fn() });
+    await mgr.init(null);
+    await flush();
+
+    const btn = document.querySelector<HTMLButtonElement>('[data-action="save"]');
+    btn?.click();
+    btn?.click();
+    await flush();
+
+    // The first click's `saveProfile` call is still pending; the second
+    // click must have been blocked by the guard, not queued a second call.
+    expect(vi.mocked(saveProfile)).toHaveBeenCalledTimes(1);
+
+    resolveSave(profile(["dev-1", null]));
+    await flush();
+  });
+});
+
 describe("ProfileManager import/export", () => {
   const JSON_FILTER = { name: "JSON", extensions: ["json"] };
 

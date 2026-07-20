@@ -130,6 +130,63 @@ describe("Grid pane teardown", () => {
   });
 });
 
+describe("Grid splitter drag DOM churn (F4)", () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  /** Narrow view into the private drag state / callback exercised by a drag tick. */
+  interface DragInternals {
+    drag: { axis: "col" | "row"; boundary: number } | null;
+    dragPointer: { x: number; y: number };
+    applyDrag: () => void;
+  }
+
+  function dragInternals(grid: Grid): DragInternals {
+    return grid as unknown as DragInternals;
+  }
+
+  // Guards F4: `applyDrag` (the rAF drag callback) used to call `applyLayout()`,
+  // which removed and recreated every `.grid-splitter` node — including the one
+  // being dragged — on every frame. FAILS (splitter identities change) if a
+  // drag tick with an unchanged track count goes back to a full rebuild instead
+  // of repositioning the existing nodes in place.
+  it("repositions existing splitters during a drag tick instead of recreating them", async () => {
+    const grid = makeGrid();
+    await grid.init();
+    await internals(grid).setPreset("2x2"); // 1 col splitter + 1 row splitter
+
+    const before = Array.from(
+      document.querySelectorAll<HTMLElement>(".grid-splitter"),
+    );
+    expect(before.length).toBe(2);
+
+    const drag = dragInternals(grid);
+    drag.drag = { axis: "col", boundary: 0 };
+    drag.dragPointer = { x: 100, y: 100 };
+    drag.applyDrag();
+
+    const after = Array.from(
+      document.querySelectorAll<HTMLElement>(".grid-splitter"),
+    );
+    expect(after.length).toBe(2);
+    // Same DOM node identities — not torn down and recreated.
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+  });
+
+  // A shape change (different splitter count per axis) must still fully rebuild.
+  it("still rebuilds splitters when the track count changes (preset switch)", async () => {
+    const grid = makeGrid();
+    await grid.init(); // 1x1 → 0 splitters
+    expect(document.querySelectorAll(".grid-splitter").length).toBe(0);
+
+    await internals(grid).setPreset("2x2");
+    expect(document.querySelectorAll(".grid-splitter-col").length).toBe(1);
+    expect(document.querySelectorAll(".grid-splitter-row").length).toBe(1);
+  });
+});
+
 describe("Grid profiles (Phase 4)", () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="pane-root"></div>';

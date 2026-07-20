@@ -8,6 +8,7 @@
 //! them to `camelCase` on the wire by default (e.g. `device_id` here is
 //! invoked from the frontend as `{ deviceId: ... }`).
 
+use std::path::Path;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -19,7 +20,9 @@ use crate::device::{Auth, Device};
 use crate::error::AppError;
 use crate::profile::Profile;
 use crate::profile_store::ProfileList;
-use crate::session::{AuthCredentials, HostKeyPromptPayload, SessionSink, SessionStatus};
+use crate::session::{
+    AuthCredentials, ConnectParams, HostKeyPromptPayload, SessionSink, SessionStatus,
+};
 use crate::settings::Settings;
 use crate::state::AppState;
 
@@ -27,13 +30,48 @@ fn list_devices_impl(state: &AppState) -> Vec<Device> {
     state.device_store.list()
 }
 
+/// Writes/clears the keyring entry for a save (B2 fix: this runs *before*
+/// the device is persisted, so a keyring failure never leaves `devices.json`
+/// claiming an auth method with no matching credential — see
+/// `save_device_impl`).
+///
+/// `secret: Some` writes it verbatim. `secret: None` usually means "leave the
+/// existing keyring entry untouched" (the common edit case behind SPEC §7's
+/// "unchanged" placeholder); but if the auth method just changed, any stored
+/// secret belongs to the *old* method — a password is not a key passphrase
+/// and vice versa — so it's deleted instead, per SPEC §4's rule that a `key`
+/// device with no passphrase has NO secret stored.
+fn write_secret_for_save(
+    state: &AppState,
+    device_id: &str,
+    previous_method: Option<&'static str>,
+    incoming_method: &'static str,
+    secret: Option<String>,
+) -> Result<(), AppError> {
+    match secret {
+        Some(secret) => state.secret_store.set(device_id, &secret),
+        None if previous_method.is_some_and(|prev| prev != incoming_method) => {
+            state.secret_store.delete(device_id)
+        }
+        None => Ok(()),
+    }
+}
+
 fn save_device_impl(
     state: &AppState,
-    device: Device,
+    mut device: Device,
     secret: Option<String>,
 ) -> Result<Device, AppError> {
+    // Assign the id up front (mirrors `DeviceStore::upsert`'s own id
+    // assignment, which is then a no-op) so the secret can be written under
+    // the device's final id *before* anything is persisted to devices.json.
+    if device.id.trim().is_empty() {
+        device.id = Uuid::new_v4().to_string();
+    }
+    device.validate()?;
+
     // Capture the previously-stored auth method (if this is an edit of an
-    // existing device) *before* the upsert overwrites it, so we can tell
+    // existing device) before anything below changes it, so we can tell
     // whether the auth method is changing.
     let previous_method = state
         .device_store
@@ -43,25 +81,12 @@ fn save_device_impl(
         .map(|d| d.auth.method_name());
     let incoming_method = device.auth.method_name();
 
-    let saved = state.device_store.upsert(device)?;
+    // B2: write the secret first. If the keyring write fails, we return here
+    // and `device_store.upsert` never runs, so a device can never end up on
+    // disk claiming an auth method with no matching keyring entry.
+    write_secret_for_save(state, &device.id, previous_method, incoming_method, secret)?;
 
-    match secret {
-        // A new secret was supplied: write it verbatim.
-        Some(secret) => state.secret_store.set(&saved.id, &secret)?,
-        // No secret supplied. The usual meaning is "leave the existing keyring
-        // entry untouched" (the common edit case behind SPEC §7's "unchanged"
-        // placeholder). But if the auth method just changed, any stored secret
-        // belongs to the *old* method — a password is not a key passphrase and
-        // vice versa — and Phase 2's SSH auth would otherwise misuse it. Per
-        // SPEC §4 a `key` device with no passphrase must have NO secret stored,
-        // so clear the stranded secret on an auth-method change.
-        None => {
-            if previous_method.is_some_and(|prev| prev != incoming_method) {
-                state.secret_store.delete(&saved.id)?;
-            }
-        }
-    }
-    Ok(saved)
+    state.device_store.upsert(device)
 }
 
 fn delete_device_impl(state: &AppState, device_id: &str) -> Result<(), AppError> {
@@ -77,6 +102,15 @@ fn delete_device_impl(state: &AppState, device_id: &str) -> Result<(), AppError>
     // profile pane that referenced it, so a saved layout never points at a device
     // that no longer exists. Only rewrites profiles.json if a pane referenced it.
     let profile_res = state.profile_store.clear_device(device_id);
+    // B4: `secret_res?` below returns first on a double failure, which would
+    // otherwise silently discard `profile_res`'s error. Log it so a double
+    // cleanup failure isn't invisible (matches the non-fatal `eprintln!`
+    // pattern used elsewhere in the stores).
+    if let (Err(secret_err), Err(profile_err)) = (&secret_res, &profile_res) {
+        eprintln!(
+            "[DaSSHboard] delete_device({device_id}): keyring cleanup failed ({secret_err}) AND profile cleanup failed ({profile_err}); only the keyring error is returned to the caller"
+        );
+    }
     secret_res?;
     profile_res?;
     Ok(())
@@ -317,12 +351,14 @@ pub async fn connect(
     });
     state.session_manager.spawn_session(
         session_id.clone(),
-        device.host,
-        device.port,
-        device.username,
-        creds,
-        cols,
-        rows,
+        ConnectParams {
+            host: device.host,
+            port: device.port,
+            username: device.username,
+            creds,
+            cols,
+            rows,
+        },
         sink,
     );
     Ok(session_id)
@@ -392,6 +428,48 @@ pub async fn test_connection(
         .await
 }
 
+/* ============================================================================
+ * Diagnostics
+ * ============================================================================ */
+
+/// Walking-skeleton IPC command (Phase 0): proves the frontend <-> backend
+/// round trip works end to end. Returns the app's semantic version.
+#[tauri::command]
+pub fn ping() -> String {
+    crate::app_version()
+}
+
+/* ============================================================================
+ * Import/export commands (PLAN-import-export.md). The `*_impl` logic lives in
+ * `transfer.rs`; the `path` argument is `camelCase` on the wire.
+ * ============================================================================ */
+
+/// Export all devices to `path` (never includes secrets — `Device` has none).
+#[tauri::command]
+pub fn export_devices(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
+    crate::transfer::export_devices_impl(&state, Path::new(&path))
+}
+
+/// Import devices from `path`: validate every item, then upsert by id
+/// (all-or-nothing).
+#[tauri::command]
+pub fn import_devices(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
+    crate::transfer::import_devices_impl(&state, Path::new(&path))
+}
+
+/// Export all profiles to `path` (excludes `defaultProfileId`).
+#[tauri::command]
+pub fn export_profiles(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
+    crate::transfer::export_profiles_impl(&state, Path::new(&path))
+}
+
+/// Import profiles from `path`: validate every item, then upsert by id. Leaves
+/// `defaultProfileId` untouched.
+#[tauri::command]
+pub fn import_profiles(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
+    crate::transfer::import_profiles_impl(&state, Path::new(&path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,7 +477,7 @@ mod tests {
     use crate::known_hosts::KnownHostsStore;
     use crate::profile::{Grid, Pane};
     use crate::profile_store::ProfileStore;
-    use crate::secret::InMemorySecretStore;
+    use crate::secret::{FailingSecretStore, InMemorySecretStore};
     use crate::session::SessionManager;
     use crate::settings::SettingsStore;
     use crate::store::DeviceStore;
@@ -412,6 +490,22 @@ mod tests {
             profile_store: ProfileStore::load(dir.to_path_buf()),
             settings_store: SettingsStore::load(dir.to_path_buf()),
             secret_store: Arc::new(InMemorySecretStore::new()),
+            session_manager: Arc::new(SessionManager::with_defaults(known_hosts)),
+        }
+    }
+
+    /// Same as `test_state`, but with an injectable `secret_store` — used by
+    /// the B2 tests, which need a `SecretStore` that can be told to fail.
+    fn test_state_with_secret_store(
+        dir: &std::path::Path,
+        secret_store: Arc<dyn crate::secret::SecretStore>,
+    ) -> AppState {
+        let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
+        AppState {
+            device_store: DeviceStore::load(dir.to_path_buf()),
+            profile_store: ProfileStore::load(dir.to_path_buf()),
+            settings_store: SettingsStore::load(dir.to_path_buf()),
+            secret_store,
             session_manager: Arc::new(SessionManager::with_defaults(known_hosts)),
         }
     }
@@ -537,6 +631,51 @@ mod tests {
         );
     }
 
+    // -- B2: secret-write failure must not leave an orphaned device -------
+
+    #[test]
+    fn save_device_does_not_persist_device_when_secret_write_fails() {
+        let dir = tempdir().unwrap();
+        let secret_store = Arc::new(FailingSecretStore::new());
+        secret_store.fail_next_set();
+        let state = test_state_with_secret_store(dir.path(), secret_store);
+
+        let err =
+            save_device_impl(&state, sample_device(), Some("hunter2".to_string())).unwrap_err();
+
+        assert!(matches!(err, AppError::Keyring(_)));
+        assert!(
+            list_devices_impl(&state).is_empty(),
+            "a device must not be persisted claiming a credential that failed to write"
+        );
+    }
+
+    #[test]
+    fn save_device_edit_does_not_persist_when_secret_write_fails() {
+        // Same as above, but for an edit of an already-saved device: the
+        // pre-existing on-disk device must be left exactly as it was.
+        let dir = tempdir().unwrap();
+        let secret_store = Arc::new(FailingSecretStore::new());
+        let state = test_state_with_secret_store(
+            dir.path(),
+            Arc::clone(&secret_store) as Arc<dyn crate::secret::SecretStore>,
+        );
+        let saved = save_device_impl(&state, sample_device(), Some("hunter2".to_string())).unwrap();
+
+        let mut edited = saved.clone();
+        edited.host = "10.0.0.1".to_string();
+        secret_store.fail_next_set();
+
+        let err = save_device_impl(&state, edited, Some("newpass".to_string())).unwrap_err();
+
+        assert!(matches!(err, AppError::Keyring(_)));
+        assert_eq!(
+            list_devices_impl(&state),
+            vec![saved],
+            "a failed secret write must leave the previously-saved device untouched"
+        );
+    }
+
     #[test]
     fn delete_device_removes_device_and_its_secret() {
         let dir = tempdir().unwrap();
@@ -555,6 +694,32 @@ mod tests {
         let state = test_state(dir.path());
         let err = delete_device_impl(&state, "does-not-exist").unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    // -- B4: a double cleanup failure must still return the keyring error --
+
+    #[test]
+    fn delete_device_returns_keyring_error_when_secret_delete_fails() {
+        // Regression coverage for B4: even when both cleanups are attempted,
+        // the caller must still see the (first) keyring error rather than it
+        // being swallowed. The profile-cleanup error being dropped in that
+        // case is a deliberate, logged trade-off (see the `eprintln!` in
+        // `delete_device_impl`), not something a test can assert on stderr,
+        // so this test only pins the still-returned error.
+        let dir = tempdir().unwrap();
+        let secret_store = Arc::new(FailingSecretStore::new());
+        secret_store.fail_next_delete();
+        let state = test_state_with_secret_store(
+            dir.path(),
+            Arc::clone(&secret_store) as Arc<dyn crate::secret::SecretStore>,
+        );
+        let saved = save_device_impl(&state, sample_device(), Some("hunter2".to_string())).unwrap();
+
+        let err = delete_device_impl(&state, &saved.id).unwrap_err();
+
+        assert!(matches!(err, AppError::Keyring(_)));
+        // The device itself is still gone — cleanup failures don't resurrect it.
+        assert!(list_devices_impl(&state).is_empty());
     }
 
     #[test]

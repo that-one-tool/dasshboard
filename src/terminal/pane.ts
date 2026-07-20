@@ -70,6 +70,13 @@ export class TerminalPane {
   private sessionId: string | null = null;
   private deviceId: string | null = null;
   private connected = false;
+  // Re-entrancy guard: `startSession()` mutates state across an
+  // `await connect(...)` that can take seconds (a real SSH handshake). Without
+  // this, a double-click on Connect re-enters while the first call is still
+  // suspended, disposing the in-flight terminal, cross-wiring the channel's
+  // `onmessage` into the new one, and orphaning the first call's backend
+  // session (never reachable again). Mirrors `Grid.transitioning`.
+  private connecting = false;
   // While a splitter drag is in progress the grid throttles PTY resizes: the
   // terminal still re-fits visually on every layout change, but `resize_pty` is
   // deferred to drag end (see grid.ts) to avoid spamming the backend.
@@ -108,42 +115,80 @@ export class TerminalPane {
     // re-persisted into a profile on the next Save (referential integrity: the
     // backend already nulled it out of profiles.json, and getDeviceId() feeds the
     // profile snapshot). `onChange` lets the dirty-state dot recompute.
-    if (
-      this.deviceId &&
-      this.deviceId !== "" &&
-      !this.devices.some((d) => d.id === this.deviceId)
-    ) {
+    if (this.assignedDeviceWasDeleted()) {
       this.deviceId = null;
-      // The device we were connected to / reconnecting toward is gone: abandon
-      // any pending auto-reconnect (there's nothing to reconnect to) and drop
-      // back to the idle empty-pane state rather than a stale "Reconnecting…".
-      this.cancelReconnectTimer();
-      this.reconnecting = false;
-      this.reconnectAttempts = 0;
-      this.userInitiated = false;
-      this.hideOverlay();
+      this.abandonSessionForDeletedDevice();
       this.options.onChange?.();
     }
+    this.renderDeviceOptions();
+    this.updateControls();
+  }
+
+  /** True when this pane's assigned device is no longer in the device list. */
+  private assignedDeviceWasDeleted(): boolean {
+    return (
+      !!this.deviceId &&
+      this.deviceId !== "" &&
+      !this.devices.some((d) => d.id === this.deviceId)
+    );
+  }
+
+  /**
+   * The device we were connected to / reconnecting toward is gone: abandon any
+   * pending auto-reconnect (there's nothing to reconnect to) and force down any
+   * live session rather than merely hiding the overlay — leaving
+   * `connected`/`sessionId` set while showing an idle dot would let the pane lie
+   * about being idle while a real backend session is still open. Ends at the
+   * idle empty-pane state either way.
+   */
+  private abandonSessionForDeletedDevice(): void {
+    this.cancelReconnectTimer();
+    this.reconnecting = false;
+    this.reconnectAttempts = 0;
+    this.userInitiated = true;
+    if (this.sessionId) void disconnect(this.sessionId);
+    this.connected = false;
+    this.sessionId = null;
+    this.stopResizeObserver();
+    this.userInitiated = false;
+    this.hideOverlay();
+  }
+
+  /** (Re)populates the device `<select>`, preserving the current selection. */
+  private renderDeviceOptions(): void {
     const select = requireEl<HTMLSelectElement>(this.root, ".pane-device-select");
     const previous = this.deviceId ?? select.value;
     select.innerHTML = "";
     if (this.devices.length === 0) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "No devices — add one in the sidebar";
-      opt.disabled = true;
-      opt.selected = true;
-      select.appendChild(opt);
-    } else {
-      for (const device of this.devices) {
-        const opt = document.createElement("option");
-        opt.value = device.id;
-        opt.textContent = `${device.name} (${device.host}:${device.port})`;
-        if (device.id === previous) opt.selected = true;
-        select.appendChild(opt);
-      }
+      this.appendEmptyDeviceOption(select);
+      return;
     }
-    this.updateControls();
+    for (const device of this.devices) {
+      this.appendDeviceOption(select, device, previous);
+    }
+  }
+
+  /** The disabled placeholder shown when there are no devices to pick from. */
+  private appendEmptyDeviceOption(select: HTMLSelectElement): void {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "No devices — add one in the sidebar";
+    opt.disabled = true;
+    opt.selected = true;
+    select.appendChild(opt);
+  }
+
+  /** One device option, selected if it matches the prior selection. */
+  private appendDeviceOption(
+    select: HTMLSelectElement,
+    device: Device,
+    previous: string,
+  ): void {
+    const opt = document.createElement("option");
+    opt.value = device.id;
+    opt.textContent = `${device.name} (${device.host}:${device.port})`;
+    if (device.id === previous) opt.selected = true;
+    select.appendChild(opt);
   }
 
   private renderUI(): void {
@@ -239,21 +284,51 @@ export class TerminalPane {
   }
 
   private async startSession(fromReconnect = false): Promise<void> {
-    const select = requireEl<HTMLSelectElement>(this.root, ".pane-device-select");
-    // A reconnect must target the pane's *assigned* device only — never the
-    // dropdown's fallback, which after a device deletion could be some other
-    // device sitting at index 0. The `?? select.value` fallback is only for the
-    // initial manual connect (user picked from the dropdown, no change event yet).
-    const deviceId = fromReconnect ? this.deviceId : (this.deviceId ?? select.value);
-    if (!deviceId) {
-      if (fromReconnect) {
-        // Nothing left to reconnect to (device removed) — stop, don't hang.
-        this.reconnecting = false;
-        this.reconnectAttempts = 0;
-        this.renderOverlay(overlayForStatus("error", "Device is no longer available"));
-      }
-      return;
+    // Block re-entrancy for the whole attempt (through connect() resolving or
+    // rejecting), not just until the button re-renders — see the `connecting`
+    // field comment for why the async window is dangerous.
+    if (this.connecting) return;
+    this.connecting = true;
+    try {
+      const deviceId = this.resolveConnectDeviceId(fromReconnect);
+      if (!deviceId) return;
+
+      this.claimDevice(deviceId);
+      const terminal = this.createSessionTerminal();
+
+      // Immediate feedback before the backend's own `connecting` event arrives.
+      this.applyStatus("connecting");
+      this.setStatusDot("connecting");
+
+      await this.establishConnection(deviceId, terminal);
+    } finally {
+      this.connecting = false;
     }
+  }
+
+  /**
+   * Resolves which device a connect attempt targets. A reconnect must target
+   * the pane's *assigned* device only — never the dropdown's fallback, which
+   * after a device deletion could be some other device sitting at index 0. The
+   * `?? select.value` fallback is only for the initial manual connect (user
+   * picked from the dropdown, no change event yet). Returns `null` and, for a
+   * reconnect with nothing left to reconnect to (device removed), renders the
+   * terminal error overlay instead of hanging.
+   */
+  private resolveConnectDeviceId(fromReconnect: boolean): string | null {
+    const select = requireEl<HTMLSelectElement>(this.root, ".pane-device-select");
+    const deviceId = fromReconnect ? this.deviceId : (this.deviceId ?? select.value);
+    if (deviceId) return deviceId;
+    if (fromReconnect) {
+      this.reconnecting = false;
+      this.reconnectAttempts = 0;
+      this.renderOverlay(overlayForStatus("error", "Device is no longer available"));
+    }
+    return null;
+  }
+
+  /** Records the target device as this pane's assignment and clears drop state. */
+  private claimDevice(deviceId: string): void {
     const deviceChanged = this.deviceId !== deviceId;
     this.deviceId = deviceId;
     // A fresh connect attempt: any drop that follows is unexpected (until the
@@ -261,7 +336,10 @@ export class TerminalPane {
     this.userInitiated = false;
     // Connecting a device to a previously-empty pane changes the saved-state.
     if (deviceChanged) this.options.onChange?.();
+  }
 
+  /** Builds a fresh xterm.js terminal for a new connection attempt. */
+  private createSessionTerminal(): Terminal {
     // Fresh terminal per connection (no stale scrollback from a prior session).
     this.teardownTerminal();
     const settings = this.options.getTerminalSettings?.() ?? DEFAULT_TERMINAL_SETTINGS;
@@ -300,11 +378,11 @@ export class TerminalPane {
 
     this.terminal = terminal;
     this.fitAddon = fitAddon;
+    return terminal;
+  }
 
-    // Immediate feedback before the backend's own `connecting` event arrives.
-    this.applyStatus("connecting");
-    this.setStatusDot("connecting");
-
+  /** Opens the backend session and wires the data channel into the terminal. */
+  private async establishConnection(deviceId: string, terminal: Terminal): Promise<void> {
     const channel = newDataChannel();
     channel.onmessage = (buffer) => {
       this.terminal?.write(new Uint8Array(buffer));
@@ -354,32 +432,42 @@ export class TerminalPane {
     this.setStatusDot(status);
 
     if (status === "connecting") {
-      // During an auto-reconnect the connecting frame keeps the reconnect
-      // context (attempt N of M + Cancel) rather than a bare "Connecting…".
-      if (this.reconnecting) {
-        this.renderReconnectOverlay();
-      } else {
-        this.renderOverlay(overlayForStatus(status, message));
-      }
-      return;
+      this.applyConnectingStatus(status, message);
+    } else if (status === "connected") {
+      this.applyConnectedStatus(status, message);
+    } else {
+      this.applyTerminatedStatus(status, message);
     }
+  }
 
-    if (status === "connected") {
-      this.connected = true;
-      // A successful connect ends any reconnect sequence. Clear `userInitiated`
-      // (a cancel-then-connect must not suppress reconnecting a *future* drop).
-      this.reconnecting = false;
-      this.reconnectAttempts = 0;
-      this.userInitiated = false;
-      this.cancelReconnectTimer();
-      this.terminal?.focus();
-      this.fitAddon?.fit();
+  /** During an auto-reconnect the connecting frame keeps the reconnect context
+   * (attempt N of M + Cancel) rather than a bare "Connecting…". */
+  private applyConnectingStatus(status: SessionStatus, message?: string): void {
+    if (this.reconnecting) {
+      this.renderReconnectOverlay();
+    } else {
       this.renderOverlay(overlayForStatus(status, message));
-      return;
     }
+  }
 
-    // disconnected | error: the session is over. Stop forwarding input and free
-    // the frontend mirror; the terminal stays visible (frozen) under the overlay.
+  private applyConnectedStatus(status: SessionStatus, message?: string): void {
+    this.connected = true;
+    // A successful connect ends any reconnect sequence. Clear `userInitiated`
+    // (a cancel-then-connect must not suppress reconnecting a *future* drop).
+    this.reconnecting = false;
+    this.reconnectAttempts = 0;
+    this.userInitiated = false;
+    this.cancelReconnectTimer();
+    this.terminal?.focus();
+    this.fitAddon?.fit();
+    this.renderOverlay(overlayForStatus(status, message));
+  }
+
+  /** disconnected | error: the session is over. Stop forwarding input and free
+   * the frontend mirror; the terminal stays visible (frozen) under the overlay.
+   * Schedules a backoff reconnect instead of the normal error overlay when the
+   * drop was unexpected and the device opted into auto-reconnect. */
+  private applyTerminatedStatus(status: SessionStatus, message?: string): void {
     this.connected = false;
     this.sessionId = null;
     this.stopResizeObserver();
@@ -388,8 +476,6 @@ export class TerminalPane {
     const wasUserInitiated = this.userInitiated;
     this.userInitiated = false;
 
-    // Unexpected drop + the device opted into auto-reconnect + attempts left ⇒
-    // schedule another attempt with backoff instead of the normal error overlay.
     if (
       !wasUserInitiated &&
       canReconnect(this.deviceAutoReconnect(), this.reconnectAttempts)

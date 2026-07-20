@@ -49,6 +49,11 @@ use crate::known_hosts::{KnownHost, KnownHostsStore, Verdict};
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default host-key trust-prompt timeout — SPEC.md §6 (reject on elapse).
 pub const DEFAULT_PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Default slack budgeted for the SSH version exchange/KEX and the
+/// authentication exchange, on top of whatever `DEFAULT_CONNECT_TIMEOUT` and
+/// `DEFAULT_PROMPT_TIMEOUT` already cover (B3). Together they form the
+/// overall `establish` deadline — see `SessionManager::overall_establish_timeout`.
+pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Keepalive cadence — SPEC.md §6.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// PTY terminal type requested from the server — SPEC.md §6.
@@ -134,6 +139,19 @@ pub trait SessionSink: Send + Sync {
     /// An unknown/changed host key needs the user's decision →
     /// `host_key_prompt` event.
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload);
+}
+
+/// The connection-shaped parameters for a session (as opposed to bookkeeping
+/// like `session_id`/`sink`), bundled so `spawn_session`/`run_session` don't
+/// need six-plus positional parameters of their own (B8). Constructed by the
+/// `connect` command in `commands.rs`, hence `pub(crate)`.
+pub(crate) struct ConnectParams {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) username: String,
+    pub(crate) creds: AuthCredentials,
+    pub(crate) cols: u32,
+    pub(crate) rows: u32,
 }
 
 /// Control messages sent to a session task via its mpsc handle.
@@ -223,6 +241,60 @@ struct SshHandler {
     prompt_timeout: Duration,
 }
 
+impl SshHandler {
+    /// Emit the host-key prompt event and await the user's decision, bounded
+    /// by `prompt_timeout`, holding no lock while waiting. The prompt is
+    /// registered BEFORE the event is emitted, so a very fast user reply can
+    /// never race ahead of the receiver existing. Returns `false` on timeout
+    /// or a dropped sender (session torn down mid-prompt) — the registry
+    /// entry is removed on every exit path via the `PromptGuard`.
+    async fn await_host_key_decision(
+        &self,
+        key_type: &str,
+        fingerprint: &str,
+        changed: bool,
+    ) -> bool {
+        let prompt_id = Uuid::new_v4().to_string();
+        let (rx, _guard) = self.prompts.register(prompt_id.clone());
+
+        self.sink.on_host_key_prompt(HostKeyPromptPayload {
+            prompt_id,
+            host: self.host.clone(),
+            port: self.port,
+            key_type: key_type.to_string(),
+            fingerprint: fingerprint.to_string(),
+            changed,
+        });
+
+        match timeout(self.prompt_timeout, rx).await {
+            Ok(Ok(accept)) => accept,
+            Ok(Err(_)) => false, // sender dropped => treat as reject
+            Err(_) => false,     // timed out => reject (SPEC §6)
+        }
+    }
+
+    /// Persist an accepted host key (TOFU) / overwrite on accepted change.
+    /// The write is a blocking `create_dir_all`+`write`+`rename` syscall
+    /// sequence, so it runs on `spawn_blocking` rather than directly on this
+    /// async handler task (which is driving the SSH transport). A persistence
+    /// failure is non-fatal (the user is simply re-prompted next time) and is
+    /// only logged — the message never contains secret material.
+    async fn persist_trusted_key(&self, key_type: String, fingerprint: String) {
+        let known_hosts = Arc::clone(&self.known_hosts);
+        let host = self.host.clone();
+        let port = self.port;
+        let entry = KnownHost {
+            key_type,
+            fingerprint,
+        };
+        match tokio::task::spawn_blocking(move || known_hosts.trust(&host, port, entry)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => eprintln!("[DaSSHboard] failed to persist trusted host key: {err}"),
+            Err(join_err) => eprintln!("[DaSSHboard] host-key persist task failed: {join_err}"),
+        }
+    }
+}
+
 impl client::Handler for SshHandler {
     type Error = russh::Error;
 
@@ -242,62 +314,17 @@ impl client::Handler for SshHandler {
             Verdict::Changed => true,
         };
 
-        // Register the prompt BEFORE emitting the event, so a very fast user
-        // reply can never race ahead of the receiver existing.
-        let prompt_id = Uuid::new_v4().to_string();
-        let (rx, _guard) = self.prompts.register(prompt_id.clone());
-
-        self.sink.on_host_key_prompt(HostKeyPromptPayload {
-            prompt_id,
-            host: self.host.clone(),
-            port: self.port,
-            key_type: key_type.clone(),
-            fingerprint: fingerprint.clone(),
-            changed,
-        });
-
-        // Await the user's decision with a timeout, holding NO lock. On
-        // timeout or a dropped sender (session torn down) we reject. `_guard`
-        // removes the registry entry when this scope ends regardless of path.
-        let accepted = match timeout(self.prompt_timeout, rx).await {
-            Ok(Ok(accept)) => accept,
-            Ok(Err(_)) => false, // sender dropped => treat as reject
-            Err(_) => false,     // timed out => reject (SPEC §6)
-        };
+        let accepted = self
+            .await_host_key_decision(&key_type, &fingerprint, changed)
+            .await;
 
         if accepted {
-            // Persist TOFU / overwrite on accepted change. The write is a
-            // blocking `create_dir_all`+`write`+`rename` syscall sequence, so
-            // it runs on `spawn_blocking` rather than directly on this async
-            // handler task (which is driving the SSH transport). It happens
-            // AFTER the prompt has already resolved, so it does not touch the
-            // register-before-emit ordering or the await/timeout flow above,
-            // and no lock is held across the await (`trust` locks only briefly
-            // inside itself). A persistence failure is non-fatal (the user is
-            // simply re-prompted next time); the message never contains secret
-            // material.
-            let known_hosts = Arc::clone(&self.known_hosts);
-            let host = self.host.clone();
-            let port = self.port;
-            let entry = KnownHost {
-                key_type,
-                fingerprint,
-            };
-            match tokio::task::spawn_blocking(move || known_hosts.trust(&host, port, entry)).await {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
-                    eprintln!("[DaSSHboard] failed to persist trusted host key: {err}")
-                }
-                Err(join_err) => {
-                    eprintln!("[DaSSHboard] host-key persist task failed: {join_err}")
-                }
-            }
-            Ok(true)
-        } else {
-            // Returning false makes russh abort the handshake with
-            // `Error::UnknownKey`, which `establish` maps to `HostKeyRejected`.
-            Ok(false)
+            self.persist_trusted_key(key_type, fingerprint).await;
         }
+
+        // Ok(false) makes russh abort the handshake with `Error::UnknownKey`,
+        // which `establish` maps to `HostKeyRejected`.
+        Ok(accepted)
     }
 }
 
@@ -313,9 +340,11 @@ fn map_connect_err(err: russh::Error) -> AppError {
 }
 
 /// Connect + authenticate (no shell). Tauri-free; used by both the live
-/// session task and `test_connection`. The 10 s timeout wraps only reaching
+/// session task and `test_connection`. `connect_timeout` bounds only reaching
 /// the host (TCP connect); the subsequent handshake may legitimately block on
-/// the host-key prompt, which has its own 60 s cap inside the handler.
+/// the host-key prompt, which has its own cap inside the handler. Callers
+/// needing an overall bound on the whole flow (B3) should go through
+/// [`establish_with_deadline`] instead of calling this directly.
 async fn establish(
     host: &str,
     port: u16,
@@ -389,6 +418,36 @@ async fn establish(
     Ok(handle)
 }
 
+/// Wrap [`establish`] with an overall deadline covering the ENTIRE
+/// handshake+auth flow — not just the TCP connect `establish` already bounds
+/// internally (B3). A host that accepts TCP but never speaks SSH, or stalls
+/// mid-auth, is therefore always bounded. `overall_timeout` must be sized
+/// generously above the prompt-wait cap so a connection legitimately waiting
+/// on the host-key prompt is never cut off early — see
+/// `SessionManager::overall_establish_timeout`, which builds it from
+/// `connect_timeout + prompt_timeout + handshake_timeout`.
+async fn establish_with_deadline(
+    host: &str,
+    port: u16,
+    username: &str,
+    creds: &AuthCredentials,
+    handler: SshHandler,
+    connect_timeout: Duration,
+    overall_timeout: Duration,
+) -> Result<client::Handle<SshHandler>, AppError> {
+    match timeout(
+        overall_timeout,
+        establish(host, port, username, creds, handler, connect_timeout),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(AppError::SshConnect(format!(
+            "connecting to {host}:{port} timed out during the SSH handshake or authentication"
+        ))),
+    }
+}
+
 /// Open a session channel, request a PTY + shell, then pump bytes both ways
 /// and send keepalives until the channel closes or a disconnect is requested.
 async fn run_shell(
@@ -418,46 +477,66 @@ async fn run_shell(
     keepalive.tick().await; // consume the immediate first tick
 
     loop {
-        tokio::select! {
-            msg = channel.wait() => {
-                match msg {
-                    Some(ChannelMsg::Data { ref data }) => sink.on_data(data),
-                    Some(ChannelMsg::ExtendedData { ref data, .. }) => sink.on_data(data),
-                    // Remote closed the channel (shell exited) or the transport
-                    // ended: clean disconnect.
-                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
-                    // Ignore the exit status itself; the following Close ends us.
-                    _ => {}
-                }
-            }
-            ctrl = control_rx.recv() => {
-                match ctrl {
-                    Some(SessionControl::Write(bytes)) => {
-                        if channel.data(&bytes[..]).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(SessionControl::Resize { cols, rows }) => {
-                        // A failed window-change isn't fatal to the session.
-                        let _ = channel.window_change(cols, rows, 0, 0).await;
-                    }
-                    // Explicit disconnect, or the manager dropped the handle.
-                    Some(SessionControl::Disconnect) | None => {
-                        let _ = channel.eof().await;
-                        let _ = channel.close().await;
-                        break;
-                    }
-                }
-            }
-            _ = keepalive.tick() => {
-                if handle.send_keepalive(false).await.is_err() {
-                    break;
-                }
-            }
+        let keep_running = tokio::select! {
+            msg = channel.wait() => handle_channel_msg(msg, &sink),
+            ctrl = control_rx.recv() => handle_control(ctrl, &mut channel).await,
+            _ = keepalive.tick() => handle_keepalive(&handle).await,
+        };
+        if !keep_running {
+            break;
         }
     }
 
     Ok(())
+}
+
+/// Route one message off the server channel: stream data to the sink, or
+/// signal the pump loop to stop on EOF/close/transport-end. Returns whether
+/// the loop should keep running.
+fn handle_channel_msg(msg: Option<ChannelMsg>, sink: &Arc<dyn SessionSink>) -> bool {
+    match msg {
+        Some(ChannelMsg::Data { ref data }) => {
+            sink.on_data(data);
+            true
+        }
+        Some(ChannelMsg::ExtendedData { ref data, .. }) => {
+            sink.on_data(data);
+            true
+        }
+        // Remote closed the channel (shell exited) or the transport ended:
+        // clean disconnect.
+        Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => false,
+        // Ignore the exit status itself; the following Close ends us.
+        _ => true,
+    }
+}
+
+/// Apply one control message (keystrokes, resize, or disconnect) to the
+/// channel. Returns whether the pump loop should keep running.
+async fn handle_control(
+    ctrl: Option<SessionControl>,
+    channel: &mut russh::Channel<client::Msg>,
+) -> bool {
+    match ctrl {
+        Some(SessionControl::Write(bytes)) => channel.data(&bytes[..]).await.is_ok(),
+        Some(SessionControl::Resize { cols, rows }) => {
+            // A failed window-change isn't fatal to the session.
+            let _ = channel.window_change(cols, rows, 0, 0).await;
+            true
+        }
+        // Explicit disconnect, or the manager dropped the handle.
+        Some(SessionControl::Disconnect) | None => {
+            let _ = channel.eof().await;
+            let _ = channel.close().await;
+            false
+        }
+    }
+}
+
+/// Send one keepalive ping. Returns whether the pump loop should keep running
+/// (a failed keepalive means the transport is gone).
+async fn handle_keepalive(handle: &client::Handle<SshHandler>) -> bool {
+    handle.send_keepalive(false).await.is_ok()
 }
 
 /// Drain control messages until a disconnect (or the manager drops the
@@ -475,19 +554,16 @@ async fn wait_for_disconnect(rx: &mut mpsc::Receiver<SessionControl>) {
 
 /// The full lifecycle of one session task: connect+auth (racing an early
 /// disconnect), then shell. Returns `Ok(())` for any clean end and `Err` for a
-/// failure that should surface as `session_status: error`.
-#[allow(clippy::too_many_arguments)]
+/// failure that should surface as `session_status: error`. `overall_timeout`
+/// is the B3 backstop covering the whole handshake+auth flow — see
+/// `establish_with_deadline`.
 async fn run_session(
-    host: String,
-    port: u16,
-    username: String,
-    creds: AuthCredentials,
+    params: ConnectParams,
     handler: SshHandler,
     connect_timeout: Duration,
+    overall_timeout: Duration,
     sink: Arc<dyn SessionSink>,
     mut control_rx: mpsc::Receiver<SessionControl>,
-    cols: u32,
-    rows: u32,
 ) -> Result<(), AppError> {
     let handle = tokio::select! {
         biased;
@@ -495,11 +571,19 @@ async fn run_session(
         // `establish` future drops the handler (and any PromptGuard within),
         // so a pending host-key prompt is cleaned up too.
         _ = wait_for_disconnect(&mut control_rx) => return Ok(()),
-        result = establish(&host, port, &username, &creds, handler, connect_timeout) => result?,
+        result = establish_with_deadline(
+            &params.host,
+            params.port,
+            &params.username,
+            &params.creds,
+            handler,
+            connect_timeout,
+            overall_timeout,
+        ) => result?,
     };
 
     sink.on_status(SessionStatus::Connected, None);
-    run_shell(handle, sink, control_rx, cols, rows).await
+    run_shell(handle, sink, control_rx, params.cols, params.rows).await
 }
 
 /// Owns all live sessions and the host-key machinery. Lives in Tauri managed
@@ -510,6 +594,7 @@ pub struct SessionManager {
     known_hosts: Arc<KnownHostsStore>,
     connect_timeout: Duration,
     prompt_timeout: Duration,
+    handshake_timeout: Duration,
 }
 
 impl SessionManager {
@@ -517,6 +602,7 @@ impl SessionManager {
         known_hosts: Arc<KnownHostsStore>,
         connect_timeout: Duration,
         prompt_timeout: Duration,
+        handshake_timeout: Duration,
     ) -> Self {
         SessionManager {
             sessions: Mutex::new(HashMap::new()),
@@ -524,13 +610,28 @@ impl SessionManager {
             known_hosts,
             connect_timeout,
             prompt_timeout,
+            handshake_timeout,
         }
     }
 
     /// Production constructor with the SPEC §6 timeouts (10 s connect,
-    /// 60 s prompt).
+    /// 60 s prompt, 30 s handshake/auth slack).
     pub fn with_defaults(known_hosts: Arc<KnownHostsStore>) -> Self {
-        Self::new(known_hosts, DEFAULT_CONNECT_TIMEOUT, DEFAULT_PROMPT_TIMEOUT)
+        Self::new(
+            known_hosts,
+            DEFAULT_CONNECT_TIMEOUT,
+            DEFAULT_PROMPT_TIMEOUT,
+            DEFAULT_HANDSHAKE_TIMEOUT,
+        )
+    }
+
+    /// Overall deadline for one `establish` call: TCP connect + SSH
+    /// handshake + any host-key prompt wait + authentication (B3). Bounds a
+    /// peer that accepts TCP but never speaks SSH, or stalls mid-auth, while
+    /// staying generously above `prompt_timeout` alone so a connection
+    /// legitimately waiting on the host-key prompt is never cut off early.
+    fn overall_establish_timeout(&self) -> Duration {
+        self.connect_timeout + self.prompt_timeout + self.handshake_timeout
     }
 
     /// Number of live sessions currently tracked. Used by the app-close handler
@@ -569,16 +670,11 @@ impl SessionManager {
     /// Spawn a live shell session. Inserts the handle synchronously (so the map
     /// reflects the session the instant this returns) and drives the rest on a
     /// tokio task that removes its own entry on exit.
-    #[allow(clippy::too_many_arguments)]
+    ///
     pub fn spawn_session(
         self: &Arc<Self>,
         session_id: String,
-        host: String,
-        port: u16,
-        username: String,
-        creds: AuthCredentials,
-        cols: u32,
-        rows: u32,
+        params: ConnectParams,
         sink: Arc<dyn SessionSink>,
     ) {
         let (control_tx, control_rx) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
@@ -589,24 +685,21 @@ impl SessionManager {
             },
         );
 
-        let handler = self.build_handler(host.clone(), port, Arc::clone(&sink));
+        let handler = self.build_handler(params.host.clone(), params.port, Arc::clone(&sink));
         let manager = Arc::clone(self);
         let connect_timeout = self.connect_timeout;
+        let overall_timeout = self.overall_establish_timeout();
 
         tokio::spawn(async move {
             sink.on_status(SessionStatus::Connecting, None);
 
             let result = run_session(
-                host,
-                port,
-                username,
-                creds,
+                params,
                 handler,
                 connect_timeout,
+                overall_timeout,
                 Arc::clone(&sink),
                 control_rx,
-                cols,
-                rows,
             )
             .await;
 
@@ -669,7 +762,9 @@ impl SessionManager {
 
     /// Connect + authenticate + close, no shell (SPEC §5, `test_connection`).
     /// Uses the same host-key path as a real connect, so a first-contact test
-    /// can raise a trust prompt just like a live session.
+    /// can raise a trust prompt just like a live session. Bounded by the same
+    /// overall `establish` deadline as a live session (B3), so an
+    /// unresponsive-but-TCP-accepting host can no longer hang this forever.
     pub async fn test_connection(
         &self,
         host: String,
@@ -679,13 +774,14 @@ impl SessionManager {
         sink: Arc<dyn SessionSink>,
     ) -> Result<(), AppError> {
         let handler = self.build_handler(host.clone(), port, sink);
-        let handle = establish(
+        let handle = establish_with_deadline(
             &host,
             port,
             &username,
             &creds,
             handler,
             self.connect_timeout,
+            self.overall_establish_timeout(),
         )
         .await?;
         // Best-effort clean close; the result of `test_connection` is the auth

@@ -1,11 +1,10 @@
 //! Import/export of devices and profiles as self-describing JSON files
 //! (PLAN-import-export.md). The frontend obtains a path from the native
-//! dialog plugin; these commands do the actual file read/write.
-//!
-//! Mirrors the `commands.rs` pattern: each `#[tauri::command]` is a thin
-//! wrapper over a testable `*_impl(&AppState, &Path)` free function, and the
-//! JSON shaping is factored into pure (no-disk) helpers so the envelope and
-//! validation logic can be unit-tested without touching the filesystem.
+//! dialog plugin; the `pub(crate)` `*_impl(&AppState, &Path)` functions here do
+//! the actual file read/write and are what the `#[tauri::command]` wrappers in
+//! `commands.rs` call. The JSON shaping is factored into pure (no-disk) helpers
+//! so the envelope and validation logic can be unit-tested without touching the
+//! filesystem.
 //!
 //! Security note: devices never carry secret material — `Device` has no
 //! secret field (secrets live in the OS keyring, keyed by device id), so
@@ -16,7 +15,6 @@ use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
 
 use crate::device::Device;
 use crate::error::AppError;
@@ -125,7 +123,7 @@ fn parse_profiles_import(contents: &str) -> Result<Vec<Profile>, AppError> {
 
 /// Write all devices to `path` as the export envelope (pretty JSON,
 /// overwriting any existing file). Returns the count written.
-fn export_devices_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
+pub(crate) fn export_devices_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
     let devices = state.device_store.list();
     fs::write(path, devices_to_export_json(&devices))?;
     Ok(devices.len() as u32)
@@ -135,7 +133,7 @@ fn export_devices_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
 /// anything is written (all-or-nothing); each keeps its `id` (empty ⇒ a fresh
 /// UUID, existing ⇒ replaced in place), so re-importing the same file is
 /// idempotent. Returns the count imported.
-fn import_devices_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
+pub(crate) fn import_devices_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
     let contents = fs::read_to_string(path)?;
     let devices = parse_devices_import(&contents)?;
     let count = devices.len() as u32;
@@ -147,7 +145,7 @@ fn import_devices_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
 
 /// Write all profiles to `path` as the export envelope (excludes
 /// `defaultProfileId`). Returns the count written.
-fn export_profiles_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
+pub(crate) fn export_profiles_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
     let profiles = state.profile_store.list().profiles;
     fs::write(path, profiles_to_export_json(&profiles))?;
     Ok(profiles.len() as u32)
@@ -155,7 +153,7 @@ fn export_profiles_impl(state: &AppState, path: &Path) -> Result<u32, AppError> 
 
 /// Read/validate/upsert profiles from `path` (all-or-nothing, upsert by id).
 /// Does not touch `defaultProfileId`. Returns the count imported.
-fn import_profiles_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
+pub(crate) fn import_profiles_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
     let contents = fs::read_to_string(path)?;
     let profiles = parse_profiles_import(&contents)?;
     let count = profiles.len() as u32;
@@ -163,36 +161,6 @@ fn import_profiles_impl(state: &AppState, path: &Path) -> Result<u32, AppError> 
         state.profile_store.upsert(profile)?;
     }
     Ok(count)
-}
-
-/* ============================================================================
- * Tauri command wrappers. Argument `path` is `camelCase` on the wire.
- * ============================================================================ */
-
-/// Export all devices to `path` (never includes secrets — `Device` has none).
-#[tauri::command]
-pub fn export_devices(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
-    export_devices_impl(&state, Path::new(&path))
-}
-
-/// Import devices from `path`: validate every item, then upsert by id
-/// (all-or-nothing).
-#[tauri::command]
-pub fn import_devices(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
-    import_devices_impl(&state, Path::new(&path))
-}
-
-/// Export all profiles to `path` (excludes `defaultProfileId`).
-#[tauri::command]
-pub fn export_profiles(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
-    export_profiles_impl(&state, Path::new(&path))
-}
-
-/// Import profiles from `path`: validate every item, then upsert by id. Leaves
-/// `defaultProfileId` untouched.
-#[tauri::command]
-pub fn import_profiles(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
-    import_profiles_impl(&state, Path::new(&path))
 }
 
 #[cfg(test)]

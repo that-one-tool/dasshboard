@@ -155,10 +155,14 @@ impl SettingsStore {
     /// Replace the settings wholesale, sanitizing first, and persist atomically
     /// (SPEC.md §5 `save_settings`). Returns the stored (sanitized) settings.
     pub fn save(&self, settings: Settings) -> Result<Settings, AppError> {
+        // Persist-then-commit (mirrors `DeviceStore::upsert`): hold the guard
+        // across `persist` and only swap the value in once the write succeeds,
+        // so a failed write never diverges memory from disk AND two concurrent
+        // saves can't commit to memory in the opposite order they hit the disk.
         let sanitized = settings.sanitized();
         let mut guard = self.lock();
-        *guard = sanitized.clone();
         self.persist(&sanitized)?;
+        *guard = sanitized.clone();
         Ok(sanitized)
     }
 
@@ -289,6 +293,29 @@ mod tests {
         let s = store.get();
         assert_eq!(s.terminal.font_size, 14);
         assert_eq!(s.last_profile_id, None);
+    }
+
+    // -- B1: persist failure must not diverge memory from disk ------------
+
+    #[test]
+    fn save_leaves_memory_unchanged_when_persist_fails() {
+        let root = tempdir().unwrap();
+        let store_dir = root.path().join("store");
+        // Block the store's target directory with a plain file so
+        // `persist`'s `create_dir_all` fails deterministically (see the
+        // identical technique in `store.rs`/`profile_store.rs`).
+        fs::write(&store_dir, "blocking file").unwrap();
+        let store = SettingsStore::load(store_dir);
+
+        let mut s = store.get();
+        s.terminal.font_size = 20;
+        let err = store.save(s).unwrap_err();
+        assert!(matches!(err, AppError::Io(_)));
+        assert_eq!(
+            store.get().terminal.font_size,
+            DEFAULT_FONT_SIZE,
+            "a failed persist must not leave the save applied in memory"
+        );
     }
 
     #[test]

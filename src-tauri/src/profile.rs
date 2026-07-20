@@ -51,20 +51,43 @@ impl Profile {
         if self.name.trim().is_empty() {
             return Err(AppError::Validation("name must not be empty".to_string()));
         }
+        self.validate_grid_dims()?;
+        self.validate_pane_count()?;
+        self.validate_size_arrays()
+    }
+
+    fn validate_grid_dims(&self) -> Result<(), AppError> {
         if self.grid.rows == 0 || self.grid.cols == 0 {
             return Err(AppError::Validation(
                 "grid rows and cols must be at least 1".to_string(),
             ));
         }
-        let expected_panes = self.grid.rows as usize * self.grid.cols as usize;
-        if self.panes.len() != expected_panes {
+        Ok(())
+    }
+
+    fn validate_pane_count(&self) -> Result<(), AppError> {
+        let expected = self.expected_pane_count()?;
+        if self.panes.len() != expected {
             return Err(AppError::Validation(format!(
-                "expected {expected_panes} panes for a {}x{} grid, got {}",
+                "expected {expected} panes for a {}x{} grid, got {}",
                 self.grid.rows,
                 self.grid.cols,
                 self.panes.len()
             )));
         }
+        Ok(())
+    }
+
+    /// `rows * cols`. `checked_mul` guards a 32-bit build where the product
+    /// could wrap `usize`; on 64-bit desktop targets it can't overflow, but the
+    /// check costs nothing and removes the assumption.
+    fn expected_pane_count(&self) -> Result<usize, AppError> {
+        (self.grid.rows as usize)
+            .checked_mul(self.grid.cols as usize)
+            .ok_or_else(|| AppError::Validation("grid dimensions overflow".to_string()))
+    }
+
+    fn validate_size_arrays(&self) -> Result<(), AppError> {
         if self.grid.row_sizes.len() != self.grid.rows as usize {
             return Err(AppError::Validation(
                 "rowSizes must have one entry per row".to_string(),

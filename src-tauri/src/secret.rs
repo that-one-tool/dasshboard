@@ -18,13 +18,10 @@ const SERVICE: &str = "DaSSHboard";
 /// boundary is the right place to keep keyring access mockable.
 pub trait SecretStore: Send + Sync {
     fn set(&self, device_id: &str, secret: &str) -> Result<(), AppError>;
-    // Not called by any Phase 1 command (no command reads a secret back to
-    // the frontend — SPEC.md §5/§8) or by production code yet at all; Phase
-    // 2's SSH auth is the first real caller. Exercised by this module's own
-    // tests today. `#[allow(dead_code)]` avoids a spurious warning on plain
-    // `cargo build`/`cargo clippy`, where `#[cfg(test)]` code doesn't count
-    // as a call site.
-    #[allow(dead_code)]
+    /// Reads back the stored secret, if any. Never exposed to the frontend —
+    /// called only from `commands::resolve_credentials` on every `connect`
+    /// and `test_connection`, to build the `AuthCredentials` used to
+    /// authenticate (SPEC.md §6).
     fn get(&self, device_id: &str) -> Result<Option<String>, AppError>;
     /// Deletes the secret for `device_id`. Idempotent: a missing entry is
     /// not an error (SPEC.md §5, `delete_device` notes).
@@ -122,6 +119,78 @@ impl SecretStore for InMemorySecretStore {
     }
 }
 
+/// Fallible test double for B2 coverage: `InMemorySecretStore::set` can never
+/// fail, so no existing test could exercise "device persisted, secret write
+/// failed" (a keyring locked/unavailable, or a dismissed OS credential
+/// prompt). Wraps an `InMemorySecretStore` and lets a test arm `set`/`delete`
+/// to fail exactly once, then fall back to normal in-memory behavior.
+#[cfg(test)]
+#[derive(Default)]
+pub struct FailingSecretStore {
+    inner: InMemorySecretStore,
+    fail_next_set: Mutex<bool>,
+    fail_next_delete: Mutex<bool>,
+}
+
+#[cfg(test)]
+impl FailingSecretStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The next `set` call returns `Err(AppError::Keyring(..))` instead of
+    /// writing; subsequent calls behave normally again.
+    pub fn fail_next_set(&self) {
+        Self::arm(&self.fail_next_set);
+    }
+
+    /// The next `delete` call returns `Err(AppError::Keyring(..))` instead of
+    /// deleting; subsequent calls behave normally again.
+    pub fn fail_next_delete(&self) {
+        Self::arm(&self.fail_next_delete);
+    }
+
+    /// Test helper: true if a secret is currently stored for `device_id`.
+    pub fn contains(&self, device_id: &str) -> bool {
+        self.inner.contains(device_id)
+    }
+
+    fn arm(flag: &Mutex<bool>) {
+        *flag.lock().unwrap_or_else(|p| p.into_inner()) = true;
+    }
+
+    /// Consumes the flag if armed; `true` means "fail this call".
+    fn take(flag: &Mutex<bool>) -> bool {
+        let mut guard = flag.lock().unwrap_or_else(|p| p.into_inner());
+        std::mem::take(&mut *guard)
+    }
+}
+
+#[cfg(test)]
+impl SecretStore for FailingSecretStore {
+    fn set(&self, device_id: &str, secret: &str) -> Result<(), AppError> {
+        if Self::take(&self.fail_next_set) {
+            return Err(AppError::Keyring(
+                "simulated keyring set failure".to_string(),
+            ));
+        }
+        self.inner.set(device_id, secret)
+    }
+
+    fn get(&self, device_id: &str) -> Result<Option<String>, AppError> {
+        self.inner.get(device_id)
+    }
+
+    fn delete(&self, device_id: &str) -> Result<(), AppError> {
+        if Self::take(&self.fail_next_delete) {
+            return Err(AppError::Keyring(
+                "simulated keyring delete failure".to_string(),
+            ));
+        }
+        self.inner.delete(device_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +230,40 @@ mod tests {
         store.set("device-1", "old").unwrap();
         store.set("device-1", "new").unwrap();
         assert_eq!(store.get("device-1").unwrap(), Some("new".to_string()));
+    }
+
+    #[test]
+    fn failing_store_fails_exactly_the_next_set_then_recovers() {
+        let store = FailingSecretStore::new();
+        store.fail_next_set();
+
+        assert!(matches!(
+            store.set("device-1", "hunter2").unwrap_err(),
+            AppError::Keyring(_)
+        ));
+        assert!(!store.contains("device-1"), "the failed set must not write");
+
+        // Not armed again ⇒ behaves like a normal store.
+        store.set("device-1", "hunter2").unwrap();
+        assert_eq!(store.get("device-1").unwrap(), Some("hunter2".to_string()));
+    }
+
+    #[test]
+    fn failing_store_fails_exactly_the_next_delete_then_recovers() {
+        let store = FailingSecretStore::new();
+        store.set("device-1", "hunter2").unwrap();
+        store.fail_next_delete();
+
+        assert!(matches!(
+            store.delete("device-1").unwrap_err(),
+            AppError::Keyring(_)
+        ));
+        assert!(
+            store.contains("device-1"),
+            "the failed delete must not remove the secret"
+        );
+
+        store.delete("device-1").unwrap();
+        assert!(!store.contains("device-1"));
     }
 }
