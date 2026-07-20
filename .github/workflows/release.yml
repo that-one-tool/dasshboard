@@ -69,7 +69,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "lts/*"
+          node-version: "24"
 
       - name: install Rust stable
         uses: actions-rust-lang/setup-rust-toolchain@v1

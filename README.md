@@ -49,7 +49,7 @@ step from "Run (development)".
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) 20+ and npm
+- [Node.js](https://nodejs.org/) 24+ and npm
 - [Rust](https://rustup.rs/) (stable) with the MSVC toolchain on Windows
 - The Tauri prerequisites for your OS — see
   [tauri.app/start/prerequisites](https://tauri.app/start/prerequisites/)
