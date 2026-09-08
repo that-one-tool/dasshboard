@@ -109,6 +109,12 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 async function initApp(): Promise<void> {
+	// Warm the bundled icon font before any terminal renders, so Nerd Font /
+	// Powerline glyphs in remote prompts aren't briefly blank on first paint.
+	// Best-effort: unsupported/failed loads just fall through (the font also
+	// loads lazily the first time a glyph needs it).
+	void document.fonts?.load('16px "Symbols Nerd Font Mono"').catch(() => {});
+
 	initVersionBanner();
 
 	// Host-key trust dialog reacts to `host_key_prompt` events from any source

@@ -1,3 +1,17 @@
+/* Bundled icon font: Symbols Nerd Font Mono (icons-only Nerd Font). Used only
+ * as a per-glyph fallback in the terminal font chain so Powerline / Nerd Font
+ * glyphs in remote prompts (zsh + Powerlevel10k, oh-my-zsh, starship, …) render
+ * even when no Nerd Font is installed. Latin/text still comes from Cascadia Mono
+ * — this face carries no ASCII glyphs. Licensed under the SIL OFL; see
+ * assets/fonts/LICENSE-SymbolsNerdFont.txt. */
+@font-face {
+  font-family: "Symbols Nerd Font Mono";
+  src: url("./assets/fonts/SymbolsNerdFontMono-Regular.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;

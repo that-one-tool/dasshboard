@@ -9,7 +9,9 @@ import type { TerminalSettings, TerminalTheme } from "../ipc";
 /** Matches the backend `SettingsStore` defaults (SPEC §4). */
 export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
   fontSize: 14,
-  fontFamily: '"Cascadia Mono", Consolas, monospace',
+  // Icon font first (icons-only, no ASCII) so Nerd/Powerline glyphs win per-glyph
+  // and text falls through to Cascadia; see DEFAULT_FONT_FAMILY in settings.rs.
+  fontFamily: '"Symbols Nerd Font Mono", "Cascadia Mono", Consolas, monospace',
   theme: "dark",
 };
 
