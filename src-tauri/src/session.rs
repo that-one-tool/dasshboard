@@ -35,7 +35,7 @@ use std::time::Duration;
 use russh::client;
 use russh::keys::ssh_key::{HashAlg, PublicKey};
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
-use russh::ChannelMsg;
+use russh::{ChannelMsg, Pty};
 use serde::Serialize;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
@@ -58,6 +58,22 @@ pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// PTY terminal type requested from the server — SPEC.md §6.
 const TERM: &str = "xterm-256color";
+/// PTY terminal modes sent with the `pty-req`. `IUTF8` (RFC-8160, opcode 42)
+/// tells the server's line discipline the terminal is UTF-8, so cooked-mode
+/// erase (backspace/word-kill) deletes a whole multibyte character instead of a
+/// single byte — otherwise a dangling partial sequence renders as `�` in the
+/// terminal. `1` = enabled.
+const PTY_MODES: &[(Pty, u32)] = &[(Pty::IUTF8, 1)];
+/// UTF-8 locale forwarded to the remote so programs emit UTF-8 output (e.g.
+/// `ls` of accented filenames, `man`, ncurses box-drawing) instead of legacy
+/// 8-bit bytes that render as `�`. Sent as `LANG` + `LC_CTYPE`; `LC_CTYPE`
+/// is the piece that governs character encoding. `C.UTF-8` is used because
+/// glibc guarantees it without installed locale data — unlike `en_US.UTF-8`,
+/// which is absent on many minimal images and would fall back to non-UTF-8.
+/// Best-effort: a server whose `AcceptEnv` doesn't allow these silently drops
+/// them (we send `want_reply = false`), which is why `IUTF8` above is the
+/// primary fix and this is the complement for program *output*.
+const LOCALE_ENV: &[(&str, &str)] = &[("LANG", "C.UTF-8"), ("LC_CTYPE", "C.UTF-8")];
 /// Bound on the per-session control channel. Backpressure here means the UI is
 /// producing keystrokes faster than the SSH task drains them, which never
 /// realistically happens; the bound just keeps the channel from being
@@ -463,9 +479,15 @@ async fn run_shell(
         .map_err(|e| AppError::SshChannel(format!("could not open session channel: {e}")))?;
 
     channel
-        .request_pty(false, TERM, cols, rows, 0, 0, &[])
+        .request_pty(false, TERM, cols, rows, 0, 0, PTY_MODES)
         .await
         .map_err(|e| AppError::SshChannel(format!("PTY request failed: {e}")))?;
+
+    // Best-effort locale hint (see `LOCALE_ENV`). `want_reply = false` so a
+    // server that rejects the vars via `AcceptEnv` doesn't fail the session.
+    for (name, value) in LOCALE_ENV {
+        let _ = channel.set_env(false, *name, *value).await;
+    }
 
     channel
         .request_shell(true)
