@@ -75,7 +75,7 @@ describe("SettingsController.init", () => {
     expect(onError).toHaveBeenCalledWith("disk error");
     expect(controller.terminalSettings()).toEqual({
       fontSize: 14,
-      fontFamily: '"Symbols Nerd Font Mono", "Cascadia Mono", Consolas, monospace',
+      fontFamily: '"Cascadia Mono", Consolas, monospace',
       theme: "dark",
     });
     expect(controller.lastProfileId()).toBeNull();

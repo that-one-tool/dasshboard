@@ -22,14 +22,11 @@ const CURRENT_VERSION: u32 = 1;
 const MIN_FONT_SIZE: u32 = 6;
 const MAX_FONT_SIZE: u32 = 40;
 const DEFAULT_FONT_SIZE: u32 = 14;
-// `Symbols Nerd Font Mono` is listed FIRST on purpose: it carries only Nerd /
-// Powerline icon glyphs (no ASCII, box-drawing, or CJK), so it wins per-glyph
-// for those codepoints while every text character falls through to Cascadia
-// Mono. Listing it after Cascadia does NOT work — Cascadia claims the PUA
-// codepoints with its own `.notdef` box and the browser never reaches the
-// icon font.
-const DEFAULT_FONT_FAMILY: &str =
-    "\"Symbols Nerd Font Mono\", \"Cascadia Mono\", Consolas, monospace";
+// User-facing default: the text font only. The bundled icon font is NOT stored
+// here — the frontend injects it into the live render chain at terminal-creation
+// time (see `withIconFont` in terminalSettings.ts), so icons work regardless of
+// what font the user has saved or later picks.
+const DEFAULT_FONT_FAMILY: &str = "\"Cascadia Mono\", Consolas, monospace";
 
 /// Which built-in xterm theme to apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

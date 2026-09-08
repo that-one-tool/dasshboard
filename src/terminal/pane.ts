@@ -26,7 +26,11 @@ import {
   type TerminalSettings,
 } from "../ipc";
 import { overlayForStatus } from "./overlay";
-import { DEFAULT_TERMINAL_SETTINGS, xtermThemeFor } from "./terminalSettings";
+import {
+  DEFAULT_TERMINAL_SETTINGS,
+  withIconFont,
+  xtermThemeFor,
+} from "./terminalSettings";
 import {
   MAX_RECONNECT_ATTEMPTS,
   canReconnect,
@@ -356,7 +360,7 @@ export class TerminalPane {
     const settings = this.options.getTerminalSettings?.() ?? DEFAULT_TERMINAL_SETTINGS;
     const terminal = new Terminal({
       cursorBlink: true,
-      fontFamily: settings.fontFamily,
+      fontFamily: withIconFont(settings.fontFamily),
       fontSize: settings.fontSize,
       theme: xtermThemeFor(settings.theme),
       // Required to access `terminal.unicode` and load the Unicode 11 addon.
@@ -654,7 +658,7 @@ export class TerminalPane {
     const terminal = this.terminal;
     if (!terminal) return;
     terminal.options.fontSize = settings.fontSize;
-    terminal.options.fontFamily = settings.fontFamily;
+    terminal.options.fontFamily = withIconFont(settings.fontFamily);
     terminal.options.theme = xtermThemeFor(settings.theme);
     this.syncSize();
   }
