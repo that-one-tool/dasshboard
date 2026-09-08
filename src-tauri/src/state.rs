@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::profile_store::ProfileStore;
 use crate::secret::SecretStore;
+use crate::serial::SerialSessionManager;
 use crate::session::SessionManager;
 use crate::settings::SettingsStore;
 use crate::store::DeviceStore;
@@ -26,4 +27,8 @@ pub struct AppState {
     /// Owns the live SSH sessions (SPEC.md §3). Behind an `Arc` because
     /// `spawn_session` needs an owned handle to move into each session task.
     pub session_manager: Arc<SessionManager>,
+    /// Owns the live serial/COM sessions — the serial analogue of
+    /// `session_manager`. A session id belongs to exactly one of the two
+    /// managers; the command layer routes write/resize/disconnect by ownership.
+    pub serial_manager: Arc<SerialSessionManager>,
 }

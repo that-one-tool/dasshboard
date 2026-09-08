@@ -5,7 +5,7 @@
  * tested independently and reused across UI components.
  */
 
-import type { Device } from "../ipc";
+import type { Auth, DeviceKind, FlowControl, Parity } from "../ipc";
 
 export interface ValidationError {
   field: string;
@@ -13,24 +13,55 @@ export interface ValidationError {
 }
 
 /**
- * Validates a device's fields according to backend rules (SPEC section 4).
- *
- * Returns an array of validation errors. Empty array means valid.
- *
- * Rules:
- * - name: non-empty
- * - host: non-empty
- * - port: integer in range 1–65535
- * - username: non-empty
- * - auth.keyPath: non-empty when method is "key"
+ * The loose, all-optional shape the device editor form produces before a save
+ * (a partial view of either device kind). Validation and the save payload work
+ * off this rather than the strict `Device` union, since a half-filled form is
+ * not yet a valid device of either kind.
  */
-export function validateDevice(device: Partial<Device>): ValidationError[] {
+export interface DeviceFormValues {
+  kind?: DeviceKind;
+  name?: string;
+  // SSH
+  host?: string;
+  port?: number;
+  username?: string;
+  auth?: Auth;
+  // Serial
+  portName?: string;
+  baudRate?: number;
+  dataBits?: number;
+  parity?: Parity;
+  stopBits?: number;
+  flowControl?: FlowControl;
+  autoReconnect?: boolean;
+}
+
+/**
+ * Validates a device's fields according to backend rules (SPEC section 4).
+ * Returns an array of validation errors; empty means valid.
+ *
+ * Common: `name` non-empty. SSH: `host`/`username` non-empty, `port` an integer
+ * in 1–65535, and `keyPath` non-empty for key auth. Serial: `portName`
+ * non-empty and `baudRate` a positive integer.
+ */
+export function validateDevice(device: DeviceFormValues): ValidationError[] {
   const errors: ValidationError[] = [];
 
   if (!device.name || device.name.trim() === "") {
     errors.push({ field: "name", message: "Name is required" });
   }
 
+  if (device.kind === "serial") {
+    validateSerial(device, errors);
+  } else {
+    validateSsh(device, errors);
+  }
+
+  return errors;
+}
+
+/** SSH field rules: non-empty host/username, a valid port, key-auth keyPath. */
+function validateSsh(device: DeviceFormValues, errors: ValidationError[]): void {
   if (!device.host || device.host.trim() === "") {
     errors.push({ field: "host", message: "Host is required" });
   }
@@ -58,8 +89,25 @@ export function validateDevice(device: Partial<Device>): ValidationError[] {
       });
     }
   }
+}
 
-  return errors;
+/** Serial field rules: non-empty portName and a positive integer baudRate. */
+function validateSerial(
+  device: DeviceFormValues,
+  errors: ValidationError[],
+): void {
+  if (!device.portName || device.portName.trim() === "") {
+    errors.push({ field: "portName", message: "Port name is required" });
+  }
+
+  if (device.baudRate === undefined || device.baudRate === null) {
+    errors.push({ field: "baudRate", message: "Baud rate is required" });
+  } else if (!Number.isInteger(device.baudRate) || device.baudRate < 1) {
+    errors.push({
+      field: "baudRate",
+      message: "Baud rate must be a positive number",
+    });
+  }
 }
 
 /**

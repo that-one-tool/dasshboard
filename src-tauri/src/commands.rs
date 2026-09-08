@@ -16,10 +16,11 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
-use crate::device::{Auth, Device};
+use crate::device::{Auth, Connection, Device};
 use crate::error::AppError;
 use crate::profile::Profile;
 use crate::profile_store::ProfileList;
+use crate::serial::SerialParams;
 use crate::session::{
     AuthCredentials, ConnectParams, HostKeyPromptPayload, SessionSink, SessionStatus,
 };
@@ -70,16 +71,22 @@ fn save_device_impl(
     }
     device.validate()?;
 
-    // Capture the previously-stored auth method (if this is an edit of an
-    // existing device) before anything below changes it, so we can tell
-    // whether the auth method is changing.
+    // A serial device has NO secret (SPEC §4): never store one, even if the
+    // frontend erroneously supplied it. Dropping it here also means the
+    // ssh→serial edit path below sees the method change and clears any stale
+    // password/passphrase left over from when the device was SSH.
+    let secret = if device.is_serial() { None } else { secret };
+
+    // Capture the previously-stored secret "slot" (SSH auth method, or "serial")
+    // if this is an edit of an existing device, before anything below changes
+    // it, so we can tell whether the slot is changing.
     let previous_method = state
         .device_store
         .list()
         .into_iter()
         .find(|d| d.id == device.id)
-        .map(|d| d.auth.method_name());
-    let incoming_method = device.auth.method_name();
+        .map(|d| d.secret_method());
+    let incoming_method = device.secret_method();
 
     // B2: write the secret first. If the keyring write fails, we return here
     // and `device_store.upsert` never runs, so a device can never end up on
@@ -320,12 +327,25 @@ async fn resolve_credentials(
     state: &AppState,
     device: &Device,
 ) -> Result<AuthCredentials, AppError> {
+    let auth = ssh_auth_of(device)?;
     let secret_store = Arc::clone(&state.secret_store);
     let device_id = device.id.clone();
     let stored = tokio::task::spawn_blocking(move || secret_store.get(&device_id))
         .await
         .map_err(|e| AppError::Keyring(format!("secret lookup task failed: {e}")))??;
-    credentials_from(&device.auth, stored)
+    credentials_from(auth, stored)
+}
+
+/// The SSH `Auth` of a device, or an error for a serial device (which has no
+/// credentials). `connect`/`test_connection` only call this on the SSH branch,
+/// so the error is a defensive guard, never hit in the normal flow.
+fn ssh_auth_of(device: &Device) -> Result<&Auth, AppError> {
+    match &device.connection {
+        Connection::Ssh { auth, .. } => Ok(auth),
+        Connection::Serial { .. } => Err(AppError::Validation(
+            "serial devices have no SSH credentials".to_string(),
+        )),
+    }
 }
 
 /// Open a live shell session (SPEC §5). Returns the new `sessionId`; the shell
@@ -342,26 +362,66 @@ pub async fn connect(
     on_data: Channel<InvokeResponseBody>,
 ) -> Result<String, AppError> {
     let device = find_device(&state, &device_id)?;
-    let creds = resolve_credentials(&state, &device).await?;
     let session_id = Uuid::new_v4().to_string();
     let sink: Arc<dyn SessionSink> = Arc::new(TauriSessionSink {
         app,
         session_id: session_id.clone(),
         channel: Some(on_data),
     });
-    state.session_manager.spawn_session(
-        session_id.clone(),
-        ConnectParams {
-            host: device.host,
-            port: device.port,
-            username: device.username,
-            creds,
-            cols,
-            rows,
-        },
-        sink,
-    );
+    match &device.connection {
+        Connection::Ssh {
+            host,
+            port,
+            username,
+            ..
+        } => {
+            let creds = resolve_credentials(&state, &device).await?;
+            state.session_manager.spawn_session(
+                session_id.clone(),
+                ConnectParams {
+                    host: host.clone(),
+                    port: *port,
+                    username: username.clone(),
+                    creds,
+                    cols,
+                    rows,
+                },
+                sink,
+            );
+        }
+        Connection::Serial { .. } => {
+            state.serial_manager.spawn_session(
+                session_id.clone(),
+                serial_params_of(&device.connection),
+                sink,
+            );
+        }
+    }
     Ok(session_id)
+}
+
+/// Build [`SerialParams`] from a `Connection::Serial`. A defensive `expect`
+/// covers the impossible SSH case — callers only reach this on the serial
+/// branch of a `match`.
+fn serial_params_of(connection: &Connection) -> SerialParams {
+    match connection {
+        Connection::Serial {
+            port_name,
+            baud_rate,
+            data_bits,
+            parity,
+            stop_bits,
+            flow_control,
+        } => SerialParams {
+            port_name: port_name.clone(),
+            baud_rate: *baud_rate,
+            data_bits: *data_bits,
+            parity: *parity,
+            stop_bits: *stop_bits,
+            flow_control: *flow_control,
+        },
+        Connection::Ssh { .. } => unreachable!("serial_params_of called on an SSH connection"),
+    }
 }
 
 /// Forward keystrokes to a session (SPEC §5). Unknown/closed session ⇒ no-op.
@@ -371,13 +431,24 @@ pub async fn write_stdin(
     session_id: String,
     data: String,
 ) -> Result<(), AppError> {
-    // Clone the `Arc` out so no managed-state guard is held across the `.await`.
-    let manager = Arc::clone(&state.session_manager);
-    manager.write_stdin(&session_id, data.into_bytes()).await;
+    let bytes = data.into_bytes();
+    // Route to whichever manager owns the session. `owns` locks+releases the
+    // map synchronously (no guard held across the `.await`); the `Arc` is cloned
+    // out before awaiting. An unknown id is a no-op in either manager.
+    if state.session_manager.owns(&session_id) {
+        Arc::clone(&state.session_manager)
+            .write_stdin(&session_id, bytes)
+            .await;
+    } else {
+        Arc::clone(&state.serial_manager)
+            .write_stdin(&session_id, bytes)
+            .await;
+    }
     Ok(())
 }
 
-/// Resize a session's PTY (SPEC §5). Unknown/closed session ⇒ no-op.
+/// Resize a session's terminal (SPEC §5). Unknown/closed session ⇒ no-op. A
+/// serial session has no window size, so its resize is a no-op.
 #[tauri::command]
 pub async fn resize_pty(
     state: State<'_, AppState>,
@@ -385,17 +456,29 @@ pub async fn resize_pty(
     cols: u32,
     rows: u32,
 ) -> Result<(), AppError> {
-    let manager = Arc::clone(&state.session_manager);
-    manager.resize_pty(&session_id, cols, rows).await;
+    if state.session_manager.owns(&session_id) {
+        Arc::clone(&state.session_manager)
+            .resize_pty(&session_id, cols, rows)
+            .await;
+    } else {
+        state.serial_manager.resize_pty(&session_id, cols, rows);
+    }
     Ok(())
 }
 
 /// Gracefully disconnect a session (SPEC §5). Idempotent: an unknown
-/// `sessionId` is a no-op.
+/// `sessionId` is a no-op. Routes to whichever manager owns it.
 #[tauri::command]
 pub async fn disconnect(state: State<'_, AppState>, session_id: String) -> Result<(), AppError> {
-    let manager = Arc::clone(&state.session_manager);
-    manager.disconnect(&session_id).await;
+    if state.session_manager.owns(&session_id) {
+        Arc::clone(&state.session_manager)
+            .disconnect(&session_id)
+            .await;
+    } else {
+        Arc::clone(&state.serial_manager)
+            .disconnect(&session_id)
+            .await;
+    }
     Ok(())
 }
 
@@ -416,16 +499,33 @@ pub async fn test_connection(
     device_id: String,
 ) -> Result<(), AppError> {
     let device = find_device(&state, &device_id)?;
-    let creds = resolve_credentials(&state, &device).await?;
-    let manager = Arc::clone(&state.session_manager);
-    let sink: Arc<dyn SessionSink> = Arc::new(TauriSessionSink {
-        app,
-        session_id: format!("test-{device_id}"),
-        channel: None,
-    });
-    manager
-        .test_connection(device.host, device.port, device.username, creds, sink)
-        .await
+    match &device.connection {
+        Connection::Ssh {
+            host,
+            port,
+            username,
+            ..
+        } => {
+            let creds = resolve_credentials(&state, &device).await?;
+            let manager = Arc::clone(&state.session_manager);
+            let sink: Arc<dyn SessionSink> = Arc::new(TauriSessionSink {
+                app,
+                session_id: format!("test-{device_id}"),
+                channel: None,
+            });
+            manager
+                .test_connection(host.clone(), *port, username.clone(), creds, sink)
+                .await
+        }
+        // Serial has no auth or host key: "connected" simply means the port
+        // opened. No sink is needed (nothing streams).
+        Connection::Serial { .. } => {
+            state
+                .serial_manager
+                .test_connection(serial_params_of(&device.connection))
+                .await
+        }
+    }
 }
 
 /* ============================================================================
@@ -473,11 +573,12 @@ pub fn import_profiles(state: State<'_, AppState>, path: String) -> Result<u32, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device::Auth;
+    use crate::device::{Auth, Connection};
     use crate::known_hosts::KnownHostsStore;
     use crate::profile::{Grid, Pane};
     use crate::profile_store::ProfileStore;
     use crate::secret::{FailingSecretStore, InMemorySecretStore};
+    use crate::serial::SerialSessionManager;
     use crate::session::SessionManager;
     use crate::settings::SettingsStore;
     use crate::store::DeviceStore;
@@ -491,6 +592,7 @@ mod tests {
             settings_store: SettingsStore::load(dir.to_path_buf()),
             secret_store: Arc::new(InMemorySecretStore::new()),
             session_manager: Arc::new(SessionManager::with_defaults(known_hosts)),
+            serial_manager: Arc::new(SerialSessionManager::new()),
         }
     }
 
@@ -507,6 +609,7 @@ mod tests {
             settings_store: SettingsStore::load(dir.to_path_buf()),
             secret_store,
             session_manager: Arc::new(SessionManager::with_defaults(known_hosts)),
+            serial_manager: Arc::new(SerialSessionManager::new()),
         }
     }
 
@@ -514,11 +617,44 @@ mod tests {
         Device {
             id: String::new(),
             name: "NAS".to_string(),
-            host: "192.168.1.10".to_string(),
-            port: 22,
-            username: "admin".to_string(),
-            auth: Auth::Password,
+            connection: Connection::Ssh {
+                host: "192.168.1.10".to_string(),
+                port: 22,
+                username: "admin".to_string(),
+                auth: Auth::Password,
+            },
             auto_reconnect: false,
+        }
+    }
+
+    fn sample_serial_device() -> Device {
+        Device {
+            id: String::new(),
+            name: "Arduino".to_string(),
+            connection: Connection::Serial {
+                port_name: "COM3".to_string(),
+                baud_rate: 115200,
+                data_bits: 8,
+                parity: crate::device::Parity::None,
+                stop_bits: 1,
+                flow_control: crate::device::FlowControl::None,
+            },
+            auto_reconnect: false,
+        }
+    }
+
+    /// Overwrite an SSH device's host in place (leaves the rest of the
+    /// connection untouched). A no-op on a serial device.
+    fn set_ssh_host(device: &mut Device, new_host: &str) {
+        if let Connection::Ssh { host, .. } = &mut device.connection {
+            *host = new_host.to_string();
+        }
+    }
+
+    /// Overwrite an SSH device's auth in place.
+    fn set_ssh_auth(device: &mut Device, new_auth: Auth) {
+        if let Connection::Ssh { auth, .. } = &mut device.connection {
+            *auth = new_auth;
         }
     }
 
@@ -599,9 +735,12 @@ mod tests {
         // must not survive as a phantom key passphrase (SPEC §4: a key device
         // with no passphrase has NO secret stored).
         let mut switched = saved.clone();
-        switched.auth = Auth::Key {
-            key_path: "C:/Users/x/.ssh/id_ed25519".to_string(),
-        };
+        set_ssh_auth(
+            &mut switched,
+            Auth::Key {
+                key_path: "C:/Users/x/.ssh/id_ed25519".to_string(),
+            },
+        );
         let switched = save_device_impl(&state, switched, None).unwrap();
 
         assert_eq!(
@@ -621,13 +760,59 @@ mod tests {
         let saved = save_device_impl(&state, sample_device(), Some("hunter2".to_string())).unwrap();
 
         let mut edited = saved.clone();
-        edited.host = "10.0.0.1".to_string(); // still password auth
+        set_ssh_host(&mut edited, "10.0.0.1"); // still password auth
         let edited = save_device_impl(&state, edited, None).unwrap();
 
         assert_eq!(
             state.secret_store.get(&edited.id).unwrap(),
             Some("hunter2".to_string()),
             "a same-method edit with no secret must not disturb the keyring"
+        );
+    }
+
+    #[test]
+    fn save_serial_device_never_stores_a_secret() {
+        // A serial device has no secret (SPEC §4). Even if a secret is supplied
+        // (e.g. a frontend bug), nothing must land in the keyring for its id.
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+
+        let saved =
+            save_device_impl(&state, sample_serial_device(), Some("nope".to_string())).unwrap();
+
+        assert!(saved.is_serial());
+        assert_eq!(state.secret_store.get(&saved.id).unwrap(), None);
+    }
+
+    #[test]
+    fn switching_ssh_to_serial_clears_the_old_secret() {
+        // Editing a password SSH device into a serial one must clear the now-
+        // meaningless stored password (the "slot" changed password → serial).
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+
+        let saved = save_device_impl(&state, sample_device(), Some("hunter2".to_string())).unwrap();
+        assert_eq!(
+            state.secret_store.get(&saved.id).unwrap(),
+            Some("hunter2".to_string())
+        );
+
+        let mut switched = saved.clone();
+        switched.connection = Connection::Serial {
+            port_name: "COM3".to_string(),
+            baud_rate: 9600,
+            data_bits: 8,
+            parity: crate::device::Parity::None,
+            stop_bits: 1,
+            flow_control: crate::device::FlowControl::None,
+        };
+        let switched = save_device_impl(&state, switched, None).unwrap();
+
+        assert!(switched.is_serial());
+        assert_eq!(
+            state.secret_store.get(&switched.id).unwrap(),
+            None,
+            "the old password must be cleared when switching to a serial device"
         );
     }
 
@@ -663,7 +848,7 @@ mod tests {
         let saved = save_device_impl(&state, sample_device(), Some("hunter2".to_string())).unwrap();
 
         let mut edited = saved.clone();
-        edited.host = "10.0.0.1".to_string();
+        set_ssh_host(&mut edited, "10.0.0.1");
         secret_store.fail_next_set();
 
         let err = save_device_impl(&state, edited, Some("newpass".to_string())).unwrap_err();
@@ -767,9 +952,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let state = test_state(dir.path());
         let mut device = sample_device();
-        device.auth = Auth::Key {
-            key_path: "C:/keys/id_ed25519".to_string(),
-        };
+        set_ssh_auth(
+            &mut device,
+            Auth::Key {
+                key_path: "C:/keys/id_ed25519".to_string(),
+            },
+        );
         // No secret ⇒ unencrypted key (SPEC §4), NOT an error.
         let saved = save_device_impl(&state, device, None).unwrap();
 
@@ -787,9 +975,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let state = test_state(dir.path());
         let mut device = sample_device();
-        device.auth = Auth::Key {
-            key_path: "C:/keys/id_ed25519".to_string(),
-        };
+        set_ssh_auth(
+            &mut device,
+            Auth::Key {
+                key_path: "C:/keys/id_ed25519".to_string(),
+            },
+        );
         let saved = save_device_impl(&state, device, Some("phrase".to_string())).unwrap();
 
         match resolve_credentials(&state, &saved).await.unwrap() {

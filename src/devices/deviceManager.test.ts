@@ -36,6 +36,7 @@ import { DeviceManagerImpl } from "./deviceManager";
 const deviceA: Device = {
   id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   name: "Alpha",
+  kind: "ssh",
   host: "10.0.0.1",
   port: 22,
   username: "alpha",
@@ -46,11 +47,25 @@ const deviceA: Device = {
 const deviceB: Device = {
   id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   name: "Bravo",
+  kind: "ssh",
   host: "10.0.0.2",
   port: 22,
   username: "bravo",
   auth: { method: "key", keyPath: "C:/keys/id_ed25519" },
   autoReconnect: true,
+};
+
+const serialDevice: Device = {
+  id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+  name: "Arduino",
+  kind: "serial",
+  portName: "COM3",
+  baudRate: 115200,
+  dataBits: 8,
+  parity: "none",
+  stopBits: 1,
+  flowControl: "none",
+  autoReconnect: false,
 };
 
 function q<T extends Element>(root: ParentNode, selector: string): T {
@@ -147,6 +162,75 @@ describe("device editor dialog secret hygiene", () => {
 });
 
 /**
+ * Serial (COM port) device editor: choosing the Serial connection type swaps the
+ * field group, saving a serial device sends the serial fields and NO secret, and
+ * editing an existing serial device repopulates it correctly.
+ */
+describe("serial device editor", () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(
+      async (cmd: string, payload?: Record<string, unknown>) => {
+        if (cmd === "list_devices") return [deviceA, serialDevice];
+        if (cmd === "save_device") return (payload?.device ?? {}) as Device;
+        return undefined;
+      },
+    );
+  });
+
+  function isHidden(container: HTMLElement, selector: string): boolean {
+    return q<HTMLElement>(container, selector).classList.contains(
+      "device-kind-hidden",
+    );
+  }
+
+  it("swaps to serial fields and saves a serial device with no secret", async () => {
+    const container = await setup();
+    q<HTMLButtonElement>(container, ".device-add-btn").click();
+
+    const kind = q<HTMLSelectElement>(container, "#device-kind");
+    kind.value = "serial";
+    kind.dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(isHidden(container, "#ssh-fields")).toBe(true);
+    expect(isHidden(container, "#serial-fields")).toBe(false);
+
+    q<HTMLInputElement>(container, "#device-name").value = "New Serial";
+    q<HTMLInputElement>(container, "#device-port-name").value = "COM7";
+    q<HTMLInputElement>(container, "#device-baud-rate").value = "9600";
+
+    q<HTMLFormElement>(container, "#device-form").dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+    await flush();
+
+    const call = invokeMock.mock.calls.find((c) => c[0] === "save_device");
+    expect(call).toBeTruthy();
+    const payload = call?.[1] as { device: Device; secret?: string };
+    expect(payload.device.kind).toBe("serial");
+    expect(payload.device).toMatchObject({ portName: "COM7", baudRate: 9600 });
+    // A serial device never carries a secret across the boundary.
+    expect("secret" in payload).toBe(false);
+  });
+
+  it("populates serial fields and hides SSH fields when editing a serial device", async () => {
+    const container = await setup();
+    q<HTMLButtonElement>(
+      container,
+      `.btn-edit[data-device-id="${serialDevice.id}"]`,
+    ).click();
+
+    expect(q<HTMLSelectElement>(container, "#device-kind").value).toBe("serial");
+    expect(q<HTMLInputElement>(container, "#device-port-name").value).toBe("COM3");
+    expect(q<HTMLInputElement>(container, "#device-baud-rate").value).toBe("115200");
+    expect(isHidden(container, "#ssh-fields")).toBe(true);
+    expect(isHidden(container, "#serial-fields")).toBe(false);
+  });
+});
+
+/**
  * Phase 6: device delete now goes through the shared in-app modal
  * (`src/ui/confirm.ts`) instead of the native blocking `window.confirm()`.
  * These guard that the modal is used, that it shows the raw device name (no
@@ -159,6 +243,7 @@ describe("device delete confirmation (Phase 6)", () => {
   const withAmp: Device = {
     id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
     name: "A & B",
+    kind: "ssh",
     host: "10.0.0.3",
     port: 22,
     username: "amp",

@@ -29,4 +29,15 @@ describe("decideSecretToSend", () => {
       expect(result).toBe(longSecret);
     });
   });
+
+  describe("serial devices", () => {
+    it("never sends a secret for a serial device, even if one was typed", () => {
+      // A serial device has no keyring secret (SPEC §4).
+      expect(decideSecretToSend("typed-anyway", "serial")).toBeUndefined();
+    });
+
+    it("still honors the secret for an explicit ssh kind", () => {
+      expect(decideSecretToSend("my-password", "ssh")).toBe("my-password");
+    });
+  });
 });

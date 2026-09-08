@@ -14,11 +14,15 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
 
 ## Features
 
-- **Device address book** — add/edit/delete SSH devices (host, port, username,
-  password **or** key-file auth with optional passphrase). Secrets are stored in
-  the OS keychain, never in a config file.
+- **Device address book** — add/edit/delete devices of two kinds:
+  - **SSH** — host, port, username, password **or** key-file auth with optional
+    passphrase. Secrets are stored in the OS keychain, never in a config file.
+  - **Serial / COM port** — a local serial device (e.g. `COM3` on Windows,
+    `/dev/ttyUSB0` on Linux) by port name + baud rate, with optional framing
+    params (data bits, parity, stop bits, flow control; defaults to 8-N-1, no
+    flow control). Serial devices have no host/auth and store **no** secret.
 - **Live multi-pane grid** — 1×1 up to 3×2 preset layouts, draggable splitters,
-  click-to-focus panes, each an independent SSH shell.
+  click-to-focus panes, each an independent SSH shell or serial terminal.
 - **Layout profiles** — save a workspace (grid + device assignments), set a
   default, and have it restore and auto-connect every pane on launch.
 - **Host-key TOFU** — trust-on-first-use prompts with a prominent warning when a
@@ -28,9 +32,10 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
 - **Terminal settings** — font size/family and dark/light theme, applied live to
   every terminal and persisted.
 - **Quality-of-life** — copy-on-select, `Ctrl+Shift+V` / right-click paste with a
-  multi-line paste confirmation, per-pane `host:port` tooltips, window
-  size/position remembered across restarts, and a clean SSH disconnect of every
-  session on app close.
+  multi-line paste confirmation, full UTF-8 output with correct wide-character
+  (CJK/emoji) width via the Unicode 11 table, per-pane `host:port` tooltips,
+  window size/position remembered across restarts, and a clean SSH disconnect of
+  every session on app close.
 
 ## Download
 
@@ -91,14 +96,15 @@ All config is stored in the Tauri app-config directory
 
 | File               | Contents                                       |
 | ------------------ | ---------------------------------------------- |
-| `devices.json`     | Saved devices (**never** secrets)              |
+| `devices.json`     | Saved devices, SSH or serial (**never** secrets) |
 | `profiles.json`    | Saved layout profiles + the default-profile id |
 | `settings.json`    | Terminal appearance + last-used grid shape     |
 | `known_hosts.json` | Trusted host keys (TOFU)                       |
 
 **Secrets** (passwords, key passphrases) live only in the OS keychain — on
 Windows, in **Credential Manager** under the service name `DaSSHboard`, keyed by
-device id. Deleting a device removes its keychain entry.
+device id. Deleting a device removes its keychain entry. **Serial devices have
+no secret**, so nothing is ever written to the keychain for them.
 
 ## Security notes
 
@@ -116,5 +122,5 @@ device id. Deleting a device removes its keychain entry.
   `terminal/` (pane, overlay, reconnect, settings), `devices/`, `profiles/`,
   `settings/`, `ipc.ts` (typed command wrappers).
 - `src-tauri/src/` — backend (Rust): stores (`store`, `profile_store`,
-  `settings`, `known_hosts`), `session` (SSH via `russh`), `commands`, `secret`
-  (keyring).
+  `settings`, `known_hosts`), `session` (SSH via `russh`), `serial` (serial/COM
+  via `tokio-serial`), `commands`, `secret` (keyring).

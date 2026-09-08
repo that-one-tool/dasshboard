@@ -168,11 +168,12 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use crate::device::Auth;
+    use crate::device::{Auth, Connection, FlowControl, Parity};
     use crate::known_hosts::KnownHostsStore;
     use crate::profile::{Grid, Pane};
     use crate::profile_store::ProfileStore;
     use crate::secret::InMemorySecretStore;
+    use crate::serial::SerialSessionManager;
     use crate::session::SessionManager;
     use crate::settings::SettingsStore;
     use crate::store::DeviceStore;
@@ -189,6 +190,7 @@ mod tests {
             settings_store: SettingsStore::load(dir.to_path_buf()),
             secret_store: Arc::new(InMemorySecretStore::new()),
             session_manager: Arc::new(SessionManager::with_defaults(known_hosts)),
+            serial_manager: Arc::new(SerialSessionManager::new()),
         }
     }
 
@@ -196,10 +198,28 @@ mod tests {
         Device {
             id: String::new(),
             name: name.to_string(),
-            host: "192.168.1.10".to_string(),
-            port: 22,
-            username: "admin".to_string(),
-            auth: Auth::Password,
+            connection: Connection::Ssh {
+                host: "192.168.1.10".to_string(),
+                port: 22,
+                username: "admin".to_string(),
+                auth: Auth::Password,
+            },
+            auto_reconnect: false,
+        }
+    }
+
+    fn sample_serial_device(name: &str) -> Device {
+        Device {
+            id: String::new(),
+            name: name.to_string(),
+            connection: Connection::Serial {
+                port_name: "COM3".to_string(),
+                baud_rate: 115200,
+                data_bits: 8,
+                parity: Parity::None,
+                stop_bits: 1,
+                flow_control: FlowControl::None,
+            },
             auto_reconnect: false,
         }
     }
@@ -277,6 +297,43 @@ mod tests {
         export_devices_impl(&src, &file).unwrap();
 
         // Import into a completely fresh state (fresh dir ⇒ empty store).
+        let dst_dir = tempdir().unwrap();
+        let dst = test_state(dst_dir.path());
+        let count = import_devices_impl(&dst, &file).unwrap();
+
+        assert_eq!(count, 2);
+        assert_eq!(dst.device_store.list(), original);
+    }
+
+    #[test]
+    fn serial_devices_round_trip_export_then_import() {
+        // A serial device must survive export→import exactly like an SSH one
+        // (it carries no secret and no host/auth, only its framing params).
+        let src_dir = tempdir().unwrap();
+        let src = test_state(src_dir.path());
+        src.device_store.upsert(sample_device("NAS")).unwrap();
+        src.device_store
+            .upsert(sample_serial_device("Arduino"))
+            .unwrap();
+        let original = src.device_store.list();
+
+        let file = src_dir.path().join("mixed-export.json");
+        export_devices_impl(&src, &file).unwrap();
+
+        // The serial device's kind is carried through the envelope verbatim.
+        let raw = fs::read_to_string(&file).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let serial = value["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["name"] == "Arduino")
+            .unwrap();
+        assert_eq!(serial["kind"], "serial");
+        assert_eq!(serial["portName"], "COM3");
+        assert_eq!(serial["baudRate"], 115200);
+        assert!(serial.get("host").is_none(), "serial carries no host");
+
         let dst_dir = tempdir().unwrap();
         let dst = test_state(dst_dir.path());
         let count = import_devices_impl(&dst, &file).unwrap();

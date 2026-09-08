@@ -8,6 +8,7 @@ mod known_hosts;
 mod profile;
 mod profile_store;
 mod secret;
+mod serial;
 mod session;
 mod settings;
 mod state;
@@ -24,6 +25,7 @@ use tauri::Manager;
 use known_hosts::KnownHostsStore;
 use profile_store::ProfileStore;
 use secret::KeyringSecretStore;
+use serial::SerialSessionManager;
 use session::SessionManager;
 use settings::SettingsStore;
 use state::AppState;
@@ -63,6 +65,8 @@ pub fn run() {
             // session tasks can consult/persist trust decisions.
             let known_hosts = Arc::new(KnownHostsStore::load(config_dir));
             let session_manager = Arc::new(SessionManager::with_defaults(known_hosts));
+            // Serial/COM sessions live in their own manager, alongside the SSH one.
+            let serial_manager = Arc::new(SerialSessionManager::new());
             let secret_store: Arc<dyn secret::SecretStore> = Arc::new(KeyringSecretStore);
             app.manage(AppState {
                 device_store,
@@ -70,6 +74,7 @@ pub fn run() {
                 settings_store,
                 secret_store,
                 session_manager,
+                serial_manager,
             });
             Ok(())
         })
@@ -82,14 +87,17 @@ pub fn run() {
             // `destroy()` to actually close. `destroy()` fires no further
             // `CloseRequested`, so there is no re-entrancy loop.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let manager = Arc::clone(&window.state::<AppState>().session_manager);
-                if manager.session_count() == 0 {
+                let state = window.state::<AppState>();
+                let manager = Arc::clone(&state.session_manager);
+                let serial = Arc::clone(&state.serial_manager);
+                if manager.session_count() == 0 && serial.session_count() == 0 {
                     return; // nothing live — let the close proceed normally.
                 }
                 api.prevent_close();
                 let window = window.clone();
                 tauri::async_runtime::spawn(async move {
                     manager.disconnect_all().await;
+                    serial.disconnect_all().await;
                     let _ = window.destroy();
                 });
             }

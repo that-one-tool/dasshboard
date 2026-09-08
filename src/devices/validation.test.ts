@@ -3,12 +3,12 @@ import {
   validateDevice,
   hasFieldError,
   getFieldError,
+  type DeviceFormValues,
 } from "./validation";
-import type { Device } from "../ipc";
 
 describe("validateDevice", () => {
   it("accepts a valid password device", () => {
-    const device: Partial<Device> = {
+    const device: DeviceFormValues = {
       name: "Test Device",
       host: "192.168.1.1",
       port: 22,
@@ -20,7 +20,7 @@ describe("validateDevice", () => {
   });
 
   it("accepts a valid key device with keyPath", () => {
-    const device: Partial<Device> = {
+    const device: DeviceFormValues = {
       name: "Test Device",
       host: "192.168.1.1",
       port: 22,
@@ -32,7 +32,7 @@ describe("validateDevice", () => {
   });
 
   it("rejects empty name", () => {
-    const device: Partial<Device> = {
+    const device: DeviceFormValues = {
       name: "",
       host: "192.168.1.1",
       port: 22,
@@ -44,7 +44,7 @@ describe("validateDevice", () => {
   });
 
   it("rejects whitespace-only name", () => {
-    const device: Partial<Device> = {
+    const device: DeviceFormValues = {
       name: "   ",
       host: "192.168.1.1",
       port: 22,
@@ -56,7 +56,7 @@ describe("validateDevice", () => {
   });
 
   it("rejects empty host", () => {
-    const device: Partial<Device> = {
+    const device: DeviceFormValues = {
       name: "Test",
       host: "",
       port: 22,
@@ -68,7 +68,7 @@ describe("validateDevice", () => {
   });
 
   it("rejects empty username", () => {
-    const device: Partial<Device> = {
+    const device: DeviceFormValues = {
       name: "Test",
       host: "192.168.1.1",
       port: 22,
@@ -81,7 +81,7 @@ describe("validateDevice", () => {
 
   describe("port validation", () => {
     it("accepts port 1", () => {
-      const device: Partial<Device> = {
+      const device: DeviceFormValues = {
         name: "Test",
         host: "192.168.1.1",
         port: 1,
@@ -93,7 +93,7 @@ describe("validateDevice", () => {
     });
 
     it("accepts port 65535", () => {
-      const device: Partial<Device> = {
+      const device: DeviceFormValues = {
         name: "Test",
         host: "192.168.1.1",
         port: 65535,
@@ -105,7 +105,7 @@ describe("validateDevice", () => {
     });
 
     it("rejects port 0", () => {
-      const device: Partial<Device> = {
+      const device: DeviceFormValues = {
         name: "Test",
         host: "192.168.1.1",
         port: 0,
@@ -117,7 +117,7 @@ describe("validateDevice", () => {
     });
 
     it("rejects port > 65535", () => {
-      const device: Partial<Device> = {
+      const device: DeviceFormValues = {
         name: "Test",
         host: "192.168.1.1",
         port: 65536,
@@ -129,7 +129,7 @@ describe("validateDevice", () => {
     });
 
     it("rejects negative port", () => {
-      const device: Partial<Device> = {
+      const device: DeviceFormValues = {
         name: "Test",
         host: "192.168.1.1",
         port: -1,
@@ -141,7 +141,7 @@ describe("validateDevice", () => {
     });
 
     it("rejects undefined port", () => {
-      const device: Partial<Device> = {
+      const device: DeviceFormValues = {
         name: "Test",
         host: "192.168.1.1",
         username: "user",
@@ -152,7 +152,7 @@ describe("validateDevice", () => {
     });
 
     it("rejects non-integer port", () => {
-      const device: Partial<Device> = {
+      const device: DeviceFormValues = {
         name: "Test",
         host: "192.168.1.1",
         port: 22.5,
@@ -166,7 +166,7 @@ describe("validateDevice", () => {
 
   describe("key auth validation", () => {
     it("rejects key device with empty keyPath", () => {
-      const device: Partial<Device> = {
+      const device: DeviceFormValues = {
         name: "Test",
         host: "192.168.1.1",
         port: 22,
@@ -178,7 +178,7 @@ describe("validateDevice", () => {
     });
 
     it("rejects key device with whitespace-only keyPath", () => {
-      const device: Partial<Device> = {
+      const device: DeviceFormValues = {
         name: "Test",
         host: "192.168.1.1",
         port: 22,
@@ -190,7 +190,7 @@ describe("validateDevice", () => {
     });
 
     it("does not validate keyPath when method is password", () => {
-      const device: Partial<Device> = {
+      const device: DeviceFormValues = {
         name: "Test",
         host: "192.168.1.1",
         port: 22,
@@ -199,6 +199,53 @@ describe("validateDevice", () => {
       };
       const errors = validateDevice(device);
       expect(errors.some((e) => e.field === "keyPath")).toBe(false);
+    });
+  });
+
+  describe("serial validation", () => {
+    it("accepts a valid serial device (port + baud)", () => {
+      const device: DeviceFormValues = {
+        kind: "serial",
+        name: "Arduino",
+        portName: "COM3",
+        baudRate: 115200,
+      };
+      expect(validateDevice(device)).toHaveLength(0);
+    });
+
+    it("rejects a serial device with an empty portName", () => {
+      const device: DeviceFormValues = {
+        kind: "serial",
+        name: "Arduino",
+        portName: "",
+        baudRate: 9600,
+      };
+      const errors = validateDevice(device);
+      expect(errors.some((e) => e.field === "portName")).toBe(true);
+    });
+
+    it("rejects a serial device with a zero baud rate", () => {
+      const device: DeviceFormValues = {
+        kind: "serial",
+        name: "Arduino",
+        portName: "COM3",
+        baudRate: 0,
+      };
+      const errors = validateDevice(device);
+      expect(errors.some((e) => e.field === "baudRate")).toBe(true);
+    });
+
+    it("does not require host/username/port for a serial device", () => {
+      const device: DeviceFormValues = {
+        kind: "serial",
+        name: "Arduino",
+        portName: "/dev/ttyUSB0",
+        baudRate: 9600,
+      };
+      const errors = validateDevice(device);
+      expect(errors.some((e) => e.field === "host")).toBe(false);
+      expect(errors.some((e) => e.field === "port")).toBe(false);
+      expect(errors.some((e) => e.field === "username")).toBe(false);
     });
   });
 

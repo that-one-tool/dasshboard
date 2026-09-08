@@ -160,17 +160,19 @@ impl DeviceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device::Auth;
+    use crate::device::{Auth, Connection};
     use tempfile::tempdir;
 
     fn sample_device(name: &str) -> Device {
         Device {
             id: String::new(),
             name: name.to_string(),
-            host: "192.168.1.10".to_string(),
-            port: 22,
-            username: "admin".to_string(),
-            auth: Auth::Password,
+            connection: Connection::Ssh {
+                host: "192.168.1.10".to_string(),
+                port: 22,
+                username: "admin".to_string(),
+                auth: Auth::Password,
+            },
             auto_reconnect: false,
         }
     }

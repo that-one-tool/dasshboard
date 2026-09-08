@@ -12,6 +12,7 @@
 
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import {
   connect,
   disconnect,
@@ -33,11 +34,21 @@ import {
 } from "./reconnect";
 import { isMultilinePaste, pasteConfirmMessage } from "./paste";
 import { confirm } from "../ui/confirm";
+import { deviceEndpoint } from "../devices/deviceEndpoint";
 
 function requireEl<E extends Element>(root: ParentNode, selector: string): E {
   const el = root.querySelector<E>(selector);
   if (!el) throw new Error(`Expected element not found: ${selector}`);
   return el;
+}
+
+// Re-exported so callers already importing it from this module keep working;
+// the implementation lives in the device domain (`../devices/deviceEndpoint`).
+export { deviceEndpoint };
+
+/** Dropdown label for a device: its name plus its endpoint. */
+export function deviceOptionLabel(device: Device): string {
+  return `${device.name} (${deviceEndpoint(device)})`;
 }
 
 export interface TerminalPaneOptions {
@@ -186,7 +197,7 @@ export class TerminalPane {
   ): void {
     const opt = document.createElement("option");
     opt.value = device.id;
-    opt.textContent = `${device.name} (${device.host}:${device.port})`;
+    opt.textContent = deviceOptionLabel(device);
     if (device.id === previous) opt.selected = true;
     select.appendChild(opt);
   }
@@ -348,9 +359,16 @@ export class TerminalPane {
       fontFamily: settings.fontFamily,
       fontSize: settings.fontSize,
       theme: xtermThemeFor(settings.theme),
+      // Required to access `terminal.unicode` and load the Unicode 11 addon.
+      allowProposedApi: true,
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
+    // Unicode 11 width table: measure CJK, emoji, and combining marks at the
+    // correct cell width so wide glyphs don't misalign the cursor (xterm.js
+    // defaults to the older Unicode 6 table).
+    terminal.loadAddon(new Unicode11Addon());
+    terminal.unicode.activeVersion = "11";
     const terminalEl = requireEl<HTMLElement>(this.root, ".pane-terminal");
     terminal.open(terminalEl);
     fitAddon.fit();
@@ -675,12 +693,13 @@ export class TerminalPane {
     if (this.connected && this.terminal) this.terminal.paste(text);
   }
 
-  /** Show the assigned device's host:port as a tooltip on the pane header. */
+  /** Show the assigned device's endpoint as a tooltip on the pane header
+   * (`host:port` for SSH, `portName @ baudRate` for serial). */
   private updateHeaderTooltip(): void {
     const header = this.root.querySelector<HTMLElement>(".pane-header");
     if (!header) return;
     const device = this.devices.find((d) => d.id === this.deviceId);
-    if (device) header.title = `${device.host}:${device.port}`;
+    if (device) header.title = deviceEndpoint(device);
     else header.removeAttribute("title");
   }
 

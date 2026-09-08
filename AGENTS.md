@@ -24,6 +24,9 @@ See `README.md` for features, prerequisites, and data-file layout.
   - `known_hosts.rs` — host-key TOFU store
   - `secret.rs` — OS keychain access; secrets never touch the JSON stores
   - `session.rs` — SSH sessions via `russh`
+  - `serial.rs` — serial/COM sessions via `tokio-serial`, reusing
+    `session.rs`'s `SessionSink`/`SessionStatus`; the byte pump is
+    stream-generic so it unit-tests against an in-memory pipe (no COM port)
   - `transfer.rs` — devices/profiles import-export
   - `state.rs` — `AppState` (managed Tauri state), `error.rs` — `AppError`
   - `ssh_it.rs` (test-only) — integration tests against an in-process throwaway

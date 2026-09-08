@@ -104,6 +104,7 @@ describe("saveDevice tri-state secret payload", () => {
 	const device: Device = {
 		id: "dev-1",
 		name: "Alpha",
+		kind: "ssh",
 		host: "10.0.0.1",
 		port: 22,
 		username: "root",

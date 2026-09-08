@@ -772,6 +772,11 @@ body.grid-dragging-row * {
   display: none;
 }
 
+/* Toggles the SSH-only vs serial-only field groups in the device editor. */
+.device-kind-hidden {
+  display: none;
+}
+
 .error-text {
   font-size: 0.8rem;
   color: #f48771;

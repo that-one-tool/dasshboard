@@ -642,6 +642,13 @@ impl SessionManager {
         self.lock_sessions().len()
     }
 
+    /// Whether this manager owns `session_id`. Lets the command layer route
+    /// write/resize/disconnect to the right manager (SSH vs serial) by
+    /// ownership. Locks only to check membership; never across an await.
+    pub fn owns(&self, session_id: &str) -> bool {
+        self.lock_sessions().contains_key(session_id)
+    }
+
     fn lock_sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, SessionHandle>> {
         self.sessions
             .lock()

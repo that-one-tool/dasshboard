@@ -1,6 +1,6 @@
 [package]
 name = "dasshboard"
-version = "1.0.2"
+version = "1.1.0"
 description = "A Tauri App"
 authors = ["That one tool"]
 edition = "2021"
@@ -41,6 +41,13 @@ aws-lc-rs = { version = "1.17.1", features = ["prebuilt-nasm"] }
 keyring = "4.1.5"
 # Async runtime backing SessionManager's per-session tasks (used starting Phase 2).
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+# Serial/COM device sessions (SerialSessionManager). Pinned exactly like the
+# other crates. `default-features = false` drops the `libudev` feature (Linux
+# port *enumeration*), which would otherwise pull a `libudev-dev` system
+# dependency; we open ports by name (never enumerate), so the core
+# `SerialStream` async byte stream — which does not need it — is all we use.
+# 5.4.4 is the latest release and resolves against the pinned tokio =1.53.0.
+tokio-serial = { version = "=5.4.4", default-features = false }
 # Device/profile/session ids (used starting Phase 1).
 uuid = { version = "1.24.0", features = ["v4", "serde"] }
 # Typed error enums for AppError (used starting Phase 1).

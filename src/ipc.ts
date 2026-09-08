@@ -27,16 +27,52 @@ export interface AuthKey {
 
 export type Auth = AuthPassword | AuthKey;
 
-export interface Device {
+/** Connection kind discriminator (mirrors the Rust `kind` tag). */
+export type DeviceKind = "ssh" | "serial";
+
+/** Serial parity bit. */
+export type Parity = "none" | "odd" | "even";
+/** Serial flow control. */
+export type FlowControl = "none" | "software" | "hardware";
+
+/** Fields shared by both device kinds. */
+interface DeviceCommon {
   id: string;
   name: string;
+  /** Phase 5: reconnect automatically on an unexpected drop (default false). */
+  autoReconnect: boolean;
+}
+
+/** An SSH target (the original device kind). */
+export interface SshDevice extends DeviceCommon {
+  kind: "ssh";
   host: string;
   port: number;
   username: string;
   auth: Auth;
-  /** Phase 5: reconnect automatically on an unexpected drop (default false). */
-  autoReconnect: boolean;
 }
+
+/**
+ * A serial/COM port device (e.g. `COM3` / `/dev/ttyUSB0`). Has no
+ * host/username/auth and no keyring secret — only the port + framing params.
+ */
+export interface SerialDevice extends DeviceCommon {
+  kind: "serial";
+  portName: string;
+  baudRate: number;
+  dataBits: number;
+  parity: Parity;
+  stopBits: number;
+  flowControl: FlowControl;
+}
+
+/**
+ * A saved device: an SSH target or a serial port, discriminated by `kind`
+ * (mirrors the Rust `Device` + flattened `Connection` tagged union). A legacy
+ * `devices.json` record without `kind` is read back by the backend as `"ssh"`,
+ * so every device the frontend sees carries a `kind`.
+ */
+export type Device = SshDevice | SerialDevice;
 
 /* ============================================================================
  * Error type (SPEC section 5)

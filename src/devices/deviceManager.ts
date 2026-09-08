@@ -5,7 +5,14 @@
  * State and validation logic are kept in separate modules for testability.
  */
 
-import type { Device, Auth, AppError } from "../ipc";
+import type {
+  Device,
+  Auth,
+  AppError,
+  DeviceKind,
+  FlowControl,
+  Parity,
+} from "../ipc";
 import {
   listDevices,
   saveDevice,
@@ -14,8 +21,9 @@ import {
   exportDevices,
   importDevices,
 } from "../ipc";
-import { validateDevice } from "./validation";
+import { validateDevice, type DeviceFormValues } from "./validation";
 import { decideSecretToSend } from "./savePayload";
+import { deviceEndpoint } from "./deviceEndpoint";
 import { confirm } from "../ui/confirm";
 import { pickJsonSavePath, pickJsonOpenPath } from "../ui/fileDialog";
 import { pencilIcon, trashIcon } from "../ui/icons";
@@ -112,6 +120,15 @@ export class DeviceManagerImpl {
             </div>
 
             <div class="form-group">
+              <label for="device-kind">Connection type</label>
+              <select id="device-kind">
+                <option value="ssh" selected>SSH</option>
+                <option value="serial">Serial (COM port)</option>
+              </select>
+            </div>
+
+            <div id="ssh-fields">
+            <div class="form-group">
               <label for="device-host">Host</label>
               <input id="device-host" type="text" placeholder="192.168.1.10" />
               <span class="error-text"></span>
@@ -183,6 +200,66 @@ export class DeviceManagerImpl {
                 <span class="error-text"></span>
               </div>
             </div>
+            </div>
+
+            <div id="serial-fields" class="device-kind-hidden">
+              <div class="form-group">
+                <label for="device-port-name">Port name</label>
+                <input
+                  id="device-port-name"
+                  type="text"
+                  placeholder="COM3 or /dev/ttyUSB0"
+                  autocomplete="off"
+                />
+                <span class="error-text"></span>
+              </div>
+              <div class="form-group">
+                <label for="device-baud-rate">Baud rate</label>
+                <input
+                  id="device-baud-rate"
+                  type="number"
+                  placeholder="115200"
+                  min="1"
+                  value="115200"
+                />
+                <span class="error-text"></span>
+              </div>
+              <fieldset class="form-fieldset">
+                <legend>Framing (advanced)</legend>
+                <div class="form-group">
+                  <label for="device-data-bits">Data bits</label>
+                  <select id="device-data-bits">
+                    <option value="8" selected>8</option>
+                    <option value="7">7</option>
+                    <option value="6">6</option>
+                    <option value="5">5</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="device-parity">Parity</label>
+                  <select id="device-parity">
+                    <option value="none" selected>None</option>
+                    <option value="odd">Odd</option>
+                    <option value="even">Even</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="device-stop-bits">Stop bits</label>
+                  <select id="device-stop-bits">
+                    <option value="1" selected>1</option>
+                    <option value="2">2</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="device-flow-control">Flow control</label>
+                  <select id="device-flow-control">
+                    <option value="none" selected>None</option>
+                    <option value="software">Software (XON/XOFF)</option>
+                    <option value="hardware">Hardware (RTS/CTS)</option>
+                  </select>
+                </div>
+              </fieldset>
+            </div>
 
             <div class="form-group form-group-checkbox">
               <label for="device-auto-reconnect">
@@ -234,6 +311,11 @@ export class DeviceManagerImpl {
       });
     });
 
+    // Connection-type selector (SSH vs serial): swaps which field group shows.
+    this.container
+      .querySelector("#device-kind")
+      ?.addEventListener("change", () => this.updateKindDisplay());
+
     // Auth method radio buttons
     const authRadios = this.container.querySelectorAll<HTMLInputElement>(
       'input[name="auth-method"]',
@@ -257,6 +339,24 @@ export class DeviceManagerImpl {
       ?.addEventListener("keydown", (e) => {
         if ((e as KeyboardEvent).key === "Escape") this.closeDialog();
       });
+  }
+
+  /** The connection kind currently selected in the dialog. */
+  private selectedKind(): DeviceKind {
+    return requireInput(this.container, "#device-kind").value === "serial"
+      ? "serial"
+      : "ssh";
+  }
+
+  /** Show the SSH field group or the serial field group, per the selector. */
+  private updateKindDisplay(): void {
+    const isSerial = this.selectedKind() === "serial";
+    this.container
+      .querySelector("#ssh-fields")
+      ?.classList.toggle("device-kind-hidden", isSerial);
+    this.container
+      .querySelector("#serial-fields")
+      ?.classList.toggle("device-kind-hidden", !isSerial);
   }
 
   private updateAuthMethodDisplay(): void {
@@ -298,6 +398,10 @@ export class DeviceManagerImpl {
     // the empty-field ⇒ omit-secret rule in `decideSecretToSend` holds.
     form.reset();
     this.clearSecretFields();
+    // `form.reset()` restores the kind selector to its default (SSH); reflect
+    // that in which field group is shown. The edit path re-runs this from
+    // `populateFormFromDevice` after setting the device's actual kind.
+    this.updateKindDisplay();
 
     if (deviceId === null) {
       // New device
@@ -361,6 +465,28 @@ export class DeviceManagerImpl {
     };
 
     setInputValue("#device-name", device.name);
+    setInputValue("#device-kind", device.kind);
+
+    if (device.kind === "serial") {
+      this.populateSerialFields(device, setInputValue);
+    } else {
+      this.populateSshFields(device, setInputValue);
+    }
+
+    const autoReconnect = this.container.querySelector<HTMLInputElement>(
+      "#device-auto-reconnect",
+    );
+    if (autoReconnect) autoReconnect.checked = device.autoReconnect ?? false;
+
+    this.updateKindDisplay();
+    this.updateAuthMethodDisplay();
+  }
+
+  /** Fill the SSH-only inputs (host/port/username/auth) from a device. */
+  private populateSshFields(
+    device: Extract<Device, { kind: "ssh" }>,
+    setInputValue: (selector: string, value: unknown) => void,
+  ): void {
     setInputValue("#device-host", device.host);
     setInputValue("#device-port", device.port);
     setInputValue("#device-username", device.username);
@@ -379,13 +505,19 @@ export class DeviceManagerImpl {
       // `keyPath` is directly accessible — no cast needed.
       setInputValue("#device-key-path", device.auth.keyPath);
     }
+  }
 
-    const autoReconnect = this.container.querySelector<HTMLInputElement>(
-      "#device-auto-reconnect",
-    );
-    if (autoReconnect) autoReconnect.checked = device.autoReconnect ?? false;
-
-    this.updateAuthMethodDisplay();
+  /** Fill the serial-only inputs (port + framing) from a device. */
+  private populateSerialFields(
+    device: Extract<Device, { kind: "serial" }>,
+    setInputValue: (selector: string, value: unknown) => void,
+  ): void {
+    setInputValue("#device-port-name", device.portName);
+    setInputValue("#device-baud-rate", device.baudRate);
+    setInputValue("#device-data-bits", device.dataBits);
+    setInputValue("#device-parity", device.parity);
+    setInputValue("#device-stop-bits", device.stopBits);
+    setInputValue("#device-flow-control", device.flowControl);
   }
 
   private setSecretPlaceholder(isEditing: boolean): void {
@@ -407,33 +539,55 @@ export class DeviceManagerImpl {
     }
   }
 
-  private getFormValues(): Partial<Device> & { secret?: string } {
+  private getFormValues(): DeviceFormValues & { id: string; secret: string } {
     const form = this.container.querySelector<HTMLFormElement>("#device-form");
-    if (!form) return {};
+    if (!form) return { id: "", secret: "" };
 
+    const base = {
+      id: this.editingDeviceId ?? "",
+      name: requireInput(form, "#device-name").value,
+      autoReconnect: requireInput(form, "#device-auto-reconnect").checked,
+      // Always read (the input is hidden, not removed, when serial is selected).
+      // `decideSecretToSend` drops it for a serial save.
+      secret: requireInput(form, "#device-secret").value,
+    };
+
+    if (this.selectedKind() === "serial") {
+      return { ...base, ...this.readSerialValues(form) };
+    }
+    return { ...base, ...this.readSshValues(form) };
+  }
+
+  /** Read the SSH-only inputs into a form-values fragment. */
+  private readSshValues(form: ParentNode): DeviceFormValues {
     const authMethod = requireInput(
       form,
       'input[name="auth-method"]:checked',
     ).value;
-    const secret = requireInput(form, "#device-secret").value;
-
-    let auth: Auth;
-    if (authMethod === "password") {
-      auth = { method: "password" };
-    } else {
-      const keyPath = requireInput(form, "#device-key-path").value;
-      auth = { method: "key", keyPath };
-    }
+    const auth: Auth =
+      authMethod === "password"
+        ? { method: "password" }
+        : { method: "key", keyPath: requireInput(form, "#device-key-path").value };
 
     return {
-      id: this.editingDeviceId ?? "",
-      name: requireInput(form, "#device-name").value,
+      kind: "ssh",
       host: requireInput(form, "#device-host").value,
       port: parseInt(requireInput(form, "#device-port").value, 10),
       username: requireInput(form, "#device-username").value,
       auth,
-      autoReconnect: requireInput(form, "#device-auto-reconnect").checked,
-      secret,
+    };
+  }
+
+  /** Read the serial-only inputs (port + framing) into a form-values fragment. */
+  private readSerialValues(form: ParentNode): DeviceFormValues {
+    return {
+      kind: "serial",
+      portName: requireInput(form, "#device-port-name").value,
+      baudRate: parseInt(requireInput(form, "#device-baud-rate").value, 10),
+      dataBits: parseInt(requireInput(form, "#device-data-bits").value, 10),
+      parity: requireInput(form, "#device-parity").value as Parity,
+      stopBits: parseInt(requireInput(form, "#device-stop-bits").value, 10),
+      flowControl: requireInput(form, "#device-flow-control").value as FlowControl,
     };
   }
 
@@ -466,16 +620,19 @@ export class DeviceManagerImpl {
     const values = this.getFormValues();
 
     // Client-side validation
-    const errors = validateDevice(values as Partial<Device>);
+    const errors = validateDevice(values);
     if (errors.length > 0) {
       this.displayFieldErrors(errors);
       return;
     }
 
     try {
-      const secretToSend = decideSecretToSend(values.secret ?? "");
+      const kind = values.kind ?? "ssh";
+      // A serial save never carries a secret (SPEC §4); `decideSecretToSend`
+      // enforces that regardless of the (hidden) secret field's contents.
+      const secretToSend = decideSecretToSend(values.secret ?? "", kind);
 
-      const device = values as Device;
+      const device = buildDeviceFromForm(values);
       await saveDevice(device, secretToSend);
 
       this.options.onSuccess?.("Device saved");
@@ -575,7 +732,7 @@ export class DeviceManagerImpl {
       <div class="device-item">
         <div class="device-info">
           <div class="device-name">${escapeHtml(device.name)}</div>
-          <div class="device-host">${escapeHtml(device.host)}:${device.port}</div>
+          <div class="device-host">${escapeHtml(deviceEndpoint(device))}</div>
         </div>
         <div class="device-actions">
           <button
@@ -645,6 +802,41 @@ export class DeviceManagerImpl {
       this.options.onError?.(error);
     }
   }
+}
+
+/**
+ * Builds the `Device` to save from validated form values, filling kind-specific
+ * defaults for completeness (validation has already run, so these defaults are
+ * only a type-level backstop). Exported for unit testing.
+ */
+export function buildDeviceFromForm(
+  values: DeviceFormValues & { id: string },
+): Device {
+  const common = {
+    id: values.id,
+    name: values.name ?? "",
+    autoReconnect: values.autoReconnect ?? false,
+  };
+  if (values.kind === "serial") {
+    return {
+      ...common,
+      kind: "serial",
+      portName: values.portName ?? "",
+      baudRate: values.baudRate ?? 0,
+      dataBits: values.dataBits ?? 8,
+      parity: values.parity ?? "none",
+      stopBits: values.stopBits ?? 1,
+      flowControl: values.flowControl ?? "none",
+    };
+  }
+  return {
+    ...common,
+    kind: "ssh",
+    host: values.host ?? "",
+    port: values.port ?? 0,
+    username: values.username ?? "",
+    auth: values.auth ?? { method: "password" },
+  };
 }
 
 /**

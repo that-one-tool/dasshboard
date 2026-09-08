@@ -22,6 +22,7 @@ const h = vi.hoisted(() => {
   const device = {
     id: "dev-1",
     name: "NAS",
+    kind: "ssh" as const,
     host: "10.0.0.1",
     port: 22,
     username: "admin",
@@ -49,8 +50,9 @@ vi.mock("../ipc", () => ({
 }));
 
 // Imported after the mock is registered so the module graph uses it.
-import { TerminalPane } from "./pane";
+import { TerminalPane, deviceEndpoint, deviceOptionLabel } from "./pane";
 import { connect, disconnect, listDevices } from "../ipc";
+import type { Device } from "../ipc";
 
 const readText = vi.fn(async () => "PASTED");
 
@@ -64,6 +66,42 @@ function q<T extends Element>(root: ParentNode, selector: string): T {
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 }
+
+describe("device dropdown label + tooltip", () => {
+  const ssh: Device = {
+    id: "s1",
+    name: "NAS",
+    kind: "ssh",
+    host: "10.0.0.1",
+    port: 22,
+    username: "admin",
+    auth: { method: "password" },
+    autoReconnect: false,
+  };
+
+  const serial: Device = {
+    id: "s2",
+    name: "Arduino",
+    kind: "serial",
+    portName: "COM3",
+    baudRate: 115200,
+    dataBits: 8,
+    parity: "none",
+    stopBits: 1,
+    flowControl: "none",
+    autoReconnect: false,
+  };
+
+  it("shows host:port for an SSH device", () => {
+    expect(deviceEndpoint(ssh)).toBe("10.0.0.1:22");
+    expect(deviceOptionLabel(ssh)).toBe("NAS (10.0.0.1:22)");
+  });
+
+  it("shows portName @ baudRate for a serial device (never host:port)", () => {
+    expect(deviceEndpoint(serial)).toBe("COM3 @ 115200");
+    expect(deviceOptionLabel(serial)).toBe("Arduino (COM3 @ 115200)");
+  });
+});
 
 describe("TerminalPane right-click paste listener", () => {
   beforeEach(() => {
@@ -397,6 +435,38 @@ describe("TerminalPane terminal settings (Phase 5)", () => {
 
     pane.applyTerminalSettings({ fontSize: 30, fontFamily: "B", theme: "light" });
     expect(terminalOf(pane)?.options.fontSize).toBe(30);
+  });
+});
+
+describe("TerminalPane wide-character support", () => {
+  const start = (pane: TerminalPane) =>
+    (pane as unknown as { startSession(): Promise<void> }).startSession();
+  const terminalOf = (pane: TerminalPane) =>
+    (pane as unknown as { terminal: { unicode: { activeVersion: string } } | null })
+      .terminal;
+
+  beforeEach(() => {
+    h.statusHandler = null;
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  // A session terminal must activate the Unicode 11 width table so CJK, emoji,
+  // and combining marks measure at the correct cell width (default is the
+  // Unicode 6 table). `activeVersion` can only be set to "11" once the
+  // Unicode11Addon has registered that version, so this asserts both that the
+  // addon is loaded and that it is activated. FAILS (default version) if the
+  // addon isn't loaded/activated in createSessionTerminal().
+  it("activates the Unicode 11 width table on a new session terminal", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    pane.assignDevice(h.device.id);
+
+    await start(pane);
+    await flush();
+
+    expect(terminalOf(pane)?.unicode.activeVersion).toBe("11");
   });
 });
 
