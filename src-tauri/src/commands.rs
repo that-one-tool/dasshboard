@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::device::{Auth, Connection, Device};
 use crate::error::AppError;
+use crate::known_hosts::KnownHostEntry;
 use crate::profile::Profile;
 use crate::profile_store::ProfileList;
 use crate::serial::SerialParams;
@@ -487,6 +488,27 @@ pub async fn disconnect(state: State<'_, AppState>, session_id: String) -> Resul
 #[tauri::command]
 pub fn respond_host_key(state: State<'_, AppState>, prompt_id: String, accept: bool) {
     state.session_manager.respond_host_key(&prompt_id, accept);
+}
+
+/// List every trusted host key for the management UI. Fingerprints are public
+/// data (not secrets), so this carries no keyring material.
+#[tauri::command]
+pub fn list_known_hosts(state: State<'_, AppState>) -> Result<Vec<KnownHostEntry>, AppError> {
+    Ok(state.session_manager.known_hosts().list())
+}
+
+/// Forget a trusted host by its `host:port` id (management UI). Async because
+/// the persist is a blocking `write`+`rename` syscall sequence, run on
+/// `spawn_blocking` so it never stalls the async runtime. Forgetting an id that
+/// no longer exists is not an error (`Ok(())`) — the row the user clicked is
+/// simply already gone.
+#[tauri::command]
+pub async fn forget_host(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
+    let known_hosts = state.session_manager.known_hosts();
+    tokio::task::spawn_blocking(move || known_hosts.forget(&id))
+        .await
+        .map_err(|e| AppError::Io(format!("forget-host task failed: {e}")))??;
+    Ok(())
 }
 
 /// Connect + authenticate + close, no shell (SPEC §5). Surfaces the auth

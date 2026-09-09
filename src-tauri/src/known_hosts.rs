@@ -33,6 +33,19 @@ pub struct KnownHost {
     pub fingerprint: String,
 }
 
+/// One trusted-host row surfaced to the management UI (`list_known_hosts`).
+/// Carries the composite `host:port` map key verbatim as `id` (which is also
+/// its display label and the handle `forget_host` takes back), so the frontend
+/// never has to re-parse or re-join host/port — and IPv6 hosts, which contain
+/// colons, stay unambiguous. Serialize-only: it is never read back from disk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownHostEntry {
+    pub id: String,
+    pub key_type: String,
+    pub fingerprint: String,
+}
+
 /// On-disk shape of `known_hosts.json`.
 #[derive(Debug, Serialize, Deserialize)]
 struct KnownHostsFile {
@@ -148,6 +161,40 @@ impl KnownHostsStore {
         self.lock_hosts().get(&host_key(host, port)).cloned()
     }
 
+    /// Snapshot of every trusted host for the management UI, sorted by `id`
+    /// (`host:port`) so the list has a stable order across calls. Locks only
+    /// to clone the map out; never across I/O.
+    pub fn list(&self) -> Vec<KnownHostEntry> {
+        let mut entries: Vec<KnownHostEntry> = self
+            .lock_hosts()
+            .iter()
+            .map(|(id, host)| KnownHostEntry {
+                id: id.clone(),
+                key_type: host.key_type.clone(),
+                fingerprint: host.fingerprint.clone(),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.id.cmp(&b.id));
+        entries
+    }
+
+    /// Forget a trusted host by its composite `id` (`host:port`), persisting
+    /// the store afterwards. Returns whether an entry was actually removed, so
+    /// forgetting an id that is already gone is a harmless `Ok(false)` (the row
+    /// the user clicked simply no longer exists) rather than an error. The
+    /// store is only rewritten when something changed.
+    pub fn forget(&self, id: &str) -> Result<bool, AppError> {
+        let snapshot = {
+            let mut hosts = self.lock_hosts();
+            if hosts.remove(id).is_none() {
+                return Ok(false);
+            }
+            hosts.clone()
+        };
+        self.persist(&snapshot)?;
+        Ok(true)
+    }
+
     fn lock_hosts(&self) -> std::sync::MutexGuard<'_, HashMap<String, KnownHost>> {
         self.hosts
             .lock()
@@ -243,6 +290,65 @@ mod tests {
 
         let reloaded = KnownHostsStore::load(dir.path().to_path_buf());
         assert_eq!(reloaded.get("h", 22), Some(ed25519("SHA256:new")));
+    }
+
+    #[test]
+    fn list_returns_all_hosts_sorted_by_id() {
+        let dir = tempdir().unwrap();
+        let store = KnownHostsStore::load(dir.path().to_path_buf());
+        store
+            .trust("zeta.example", 22, ed25519("SHA256:z"))
+            .unwrap();
+        store
+            .trust("alpha.example", 22, ed25519("SHA256:a"))
+            .unwrap();
+        store
+            .trust("alpha.example", 2222, ed25519("SHA256:b"))
+            .unwrap();
+
+        let ids: Vec<String> = store.list().into_iter().map(|e| e.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "alpha.example:22".to_string(),
+                "alpha.example:2222".to_string(),
+                "zeta.example:22".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_is_empty_for_a_fresh_store() {
+        let dir = tempdir().unwrap();
+        let store = KnownHostsStore::load(dir.path().to_path_buf());
+        assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn forget_removes_entry_and_persists() {
+        let dir = tempdir().unwrap();
+        let store = KnownHostsStore::load(dir.path().to_path_buf());
+        store.trust("h", 22, ed25519("SHA256:abc")).unwrap();
+
+        assert!(store.forget("h:22").unwrap(), "an existing host is removed");
+        assert_eq!(store.verdict("h", 22, "SHA256:abc"), Verdict::Unknown);
+
+        // The removal is durable: a fresh store no longer knows the host.
+        let reloaded = KnownHostsStore::load(dir.path().to_path_buf());
+        assert!(reloaded.get("h", 22).is_none());
+    }
+
+    #[test]
+    fn forget_unknown_id_is_ok_false_and_leaves_others() {
+        let dir = tempdir().unwrap();
+        let store = KnownHostsStore::load(dir.path().to_path_buf());
+        store.trust("h", 22, ed25519("SHA256:abc")).unwrap();
+
+        assert!(
+            !store.forget("nope:22").unwrap(),
+            "a missing id removes nothing"
+        );
+        assert_eq!(store.verdict("h", 22, "SHA256:abc"), Verdict::Known);
     }
 
     #[test]

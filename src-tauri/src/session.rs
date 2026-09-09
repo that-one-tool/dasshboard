@@ -647,6 +647,14 @@ impl SessionManager {
         )
     }
 
+    /// The host-key TOFU store this manager consults and persists to, shared
+    /// (behind an `Arc`) so the management commands (`list_known_hosts` /
+    /// `forget_host`) can read and mutate the same trust store the live
+    /// sessions use.
+    pub fn known_hosts(&self) -> Arc<KnownHostsStore> {
+        Arc::clone(&self.known_hosts)
+    }
+
     /// Overall deadline for one `establish` call: TCP connect + SSH
     /// handshake + any host-key prompt wait + authentication (B3). Bounds a
     /// peer that accepts TCP but never speaks SSH, or stalls mid-auth, while

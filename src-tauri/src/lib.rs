@@ -112,6 +112,8 @@ pub fn run() {
             commands::resize_pty,
             commands::disconnect,
             commands::respond_host_key,
+            commands::list_known_hosts,
+            commands::forget_host,
             commands::test_connection,
             commands::list_profiles,
             commands::save_profile,

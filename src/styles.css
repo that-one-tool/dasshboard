@@ -333,10 +333,6 @@ body.grid-dragging-row * {
   font-size: 0.9rem;
 }
 
-.confirm-content .form-actions {
-  padding: 12px 16px;
-}
-
 /* ============================================================================
  * SSH terminal pane (Phase 2)
  * ============================================================================ */
@@ -469,11 +465,13 @@ body.grid-dragging-row * {
   color: #c4c4c4;
   font-size: 0.9rem;
   line-height: 1.45;
-  margin: 0 0 12px;
+  margin: 0;
+  padding: 16px 16px 0;
 }
 
 .hostkey-facts {
-  margin: 0 0 16px;
+  margin: 0;
+  padding: 12px 16px 16px;
   display: grid;
   gap: 6px;
 }
@@ -803,13 +801,26 @@ body.grid-dragging-row * {
   display: none;
 }
 
+/* Dialog footer. By default the action row is a DIRECT child of
+ * `.dialog-content` (host-key, known-hosts, confirm, prompt, settings), which
+ * has no padding of its own, so the footer carries the full inset here — one
+ * place, so no dialog can end up with buttons flush to the edge. The device
+ * editor is the exception (its actions live inside the already-padded
+ * `.device-form`); it overrides the horizontal inset below. */
 .form-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
-  padding-top: 8px;
+  padding: 12px 16px;
   border-top: 1px solid #3c3c3c;
   flex: 0 0 auto;
+}
+
+/* The device editor's actions sit inside `.device-form` (padding: 16px), so
+ * the horizontal inset is already supplied — keep only the top gap above the
+ * separator. */
+.device-form .form-actions {
+  padding: 12px 0 0;
 }
 
 /* ============================================================================
@@ -1004,10 +1015,6 @@ body.grid-dragging-row * {
   font-size: 14px;
 }
 
-.prompt-content .form-actions {
-  padding: 12px 16px;
-}
-
 .prompt-input:focus {
   outline: none;
   border-color: #007acc;
@@ -1034,7 +1041,8 @@ body.grid-dragging-row * {
 }
 
 /* The settings body isn't wrapped in a padded form like the device editor, so
- * pad its fields and actions directly (matches `.confirm-content` — Phase 6). */
+ * pad its fields directly (the footer inset is handled by the shared
+ * `.form-actions` rule). */
 .settings-content .form-field {
   display: flex;
   flex-direction: column;
@@ -1045,10 +1053,6 @@ body.grid-dragging-row * {
 
 .settings-content .form-field:first-of-type {
   margin-top: 16px;
-}
-
-.settings-content .form-actions {
-  padding: 12px 16px;
 }
 
 .settings-content .form-field > span {
@@ -1085,4 +1089,86 @@ body.grid-dragging-row * {
 .form-group-checkbox input[type="checkbox"] {
   width: auto;
   margin: 0;
+}
+
+/* ============================================================================
+ * Settings: Security section + trusted-hosts management dialog
+ * ============================================================================ */
+
+.settings-section {
+  padding: 0 16px;
+  margin: 4px 0 16px;
+}
+
+.settings-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9d9d9d;
+  margin: 0 0 8px;
+}
+
+.known-hosts-content {
+  max-width: 620px;
+}
+
+.known-hosts-lead {
+  color: #c4c4c4;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  margin: 0;
+  padding: 16px 16px 12px;
+}
+
+.known-hosts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 16px 16px;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.known-hosts-empty {
+  color: #858585;
+  font-size: 0.9rem;
+  padding: 12px 0;
+}
+
+.known-hosts-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  background-color: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+}
+
+.known-hosts-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.known-hosts-id {
+  color: #d4d4d4;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.known-hosts-fp {
+  color: #858585;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+.known-hosts-forget {
+  flex: 0 0 auto;
 }

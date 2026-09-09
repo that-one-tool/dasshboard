@@ -9,6 +9,7 @@
 import type { Grid } from "../grid";
 import { getSettings, saveSettings, type Settings, type TerminalSettings } from "../ipc";
 import { DEFAULT_TERMINAL_SETTINGS } from "../terminal/terminalSettings";
+import { openKnownHostsDialog } from "./knownHostsDialog";
 
 export interface SettingsControllerOptions {
   grid: Grid;
@@ -109,6 +110,12 @@ export class SettingsController {
             <option value="light">Light</option>
           </select>
         </label>
+        <div class="settings-section">
+          <h3 class="settings-section-title">Security</h3>
+          <button type="button" class="btn btn-secondary" data-action="known-hosts">
+            Manage trusted hosts…
+          </button>
+        </div>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" data-action="close">Close</button>
         </div>
@@ -151,8 +158,11 @@ export class SettingsController {
     root.addEventListener("click", (e) => {
       const target = e.target;
       if (!(target instanceof HTMLElement)) return;
-      if (target.dataset.action === "close" || target.classList.contains("dialog-overlay")) {
+      const action = target.dataset.action;
+      if (action === "close" || target.classList.contains("dialog-overlay")) {
         close();
+      } else if (action === "known-hosts") {
+        openKnownHostsDialog({ onError: this.onError });
       }
     });
     root.addEventListener("keydown", (e) => {

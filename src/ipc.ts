@@ -247,6 +247,39 @@ export async function respondHostKey(
   }
 }
 
+/**
+ * One trusted-host row from the known-hosts store (management UI). `id` is the
+ * composite `host:port` key — used both as the display label and as the handle
+ * passed back to `forgetHost`. Fingerprints are public data, never secrets.
+ */
+export interface KnownHostEntry {
+  id: string;
+  keyType: string;
+  fingerprint: string;
+}
+
+/** Lists every trusted host key, sorted by `id` (`host:port`). */
+export async function listKnownHosts(): Promise<KnownHostEntry[]> {
+  try {
+    return await invoke<KnownHostEntry[]>("list_known_hosts");
+  } catch (err) {
+    throw normalizeError(err);
+  }
+}
+
+/**
+ * Forgets a trusted host by its `host:port` id. Forgetting an id that is
+ * already gone is not an error (the backend returns `Ok`); the next connect to
+ * that host will TOFU-prompt again.
+ */
+export async function forgetHost(id: string): Promise<void> {
+  try {
+    await invoke<void>("forget_host", { id });
+  } catch (err) {
+    throw normalizeError(err);
+  }
+}
+
 /** Connect + authenticate + close, no shell (SPEC §5). */
 export async function testConnection(deviceId: string): Promise<void> {
   try {

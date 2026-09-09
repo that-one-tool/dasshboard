@@ -40,6 +40,8 @@ import {
 	resizePty,
 	disconnect,
 	respondHostKey,
+	listKnownHosts,
+	forgetHost,
 	testConnection,
 	saveProfile,
 	deleteProfile,
@@ -224,6 +226,19 @@ describe("IPC command wrapper argument shapes", () => {
 		invokeMock.mockResolvedValue(undefined);
 		await testConnection("dev-1");
 		expect(invokeMock).toHaveBeenCalledWith("test_connection", { deviceId: "dev-1" });
+	});
+
+	it("listKnownHosts calls list_known_hosts and returns the rows", async () => {
+		const rows = [{ id: "10.0.0.1:22", keyType: "ssh-ed25519", fingerprint: "SHA256:abc" }];
+		invokeMock.mockResolvedValue(rows);
+		await expect(listKnownHosts()).resolves.toEqual(rows);
+		expect(invokeMock).toHaveBeenCalledWith("list_known_hosts");
+	});
+
+	it("forgetHost sends { id }", async () => {
+		invokeMock.mockResolvedValue(undefined);
+		await forgetHost("10.0.0.1:22");
+		expect(invokeMock).toHaveBeenCalledWith("forget_host", { id: "10.0.0.1:22" });
 	});
 
 	it("saveProfile sends { profile }", async () => {
