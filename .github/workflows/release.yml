@@ -82,6 +82,13 @@ jobs:
             - name: install Linux dependencies
               if: matrix.os == 'ubuntu-22.04'
               run: |
+                  # The GitHub ubuntu-22.04 runner ships with Google's apt repo
+                  # pre-added. It periodically serves a Packages index whose hash
+                  # doesn't match its Release file, which fails `apt-get update`
+                  # with a "Hash Sum mismatch" (exit 100) and blocks the build.
+                  # Chrome isn't needed to build/bundle Tauri, so drop that repo
+                  # (and any other pre-added third-party lists) before updating.
+                  sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/*.list.save
                   sudo apt-get update
                   sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
