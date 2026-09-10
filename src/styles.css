@@ -103,7 +103,8 @@ body {
 }
 
 .device-list,
-.profile-list {
+.profile-list,
+.tunnel-list {
   background-color: #252526;
   border: 1px solid #3c3c3c;
   border-radius: 4px;
@@ -692,6 +693,22 @@ body.grid-dragging-row * {
   flex: 1 1 auto;
 }
 
+/* The SSH/serial field groups are single children of `.device-form`, so the
+ * form's `gap` doesn't reach the fields *inside* them (Host, Port, Username,
+ * Authentication, Secret, …). Give each wrapper the same column gap so every
+ * field is evenly spaced, matching the top-level fields.
+ *
+ * The `:not(.device-kind-hidden)` guard is essential: an ID selector outweighs
+ * the `.device-kind-hidden { display: none }` toggle, so without it this rule's
+ * `display: flex` would force the hidden group visible (both SSH and serial
+ * fields showing at once). Excluding the hidden state lets the toggle win. */
+#ssh-fields:not(.device-kind-hidden),
+#serial-fields:not(.device-kind-hidden) {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 /* ============================================================================
  * Form elements
  * ============================================================================ */
@@ -738,6 +755,10 @@ body.grid-dragging-row * {
 }
 
 .form-fieldset legend {
+  /* Reset the native legend's default horizontal padding so "Authentication"
+   * aligns with the other field labels (Host, Port, …) rather than sitting a
+   * couple of pixels to their right. */
+  padding: 0;
   font-size: 0.9rem;
   font-weight: 500;
   color: #d4d4d4;
@@ -1171,4 +1192,224 @@ body.grid-dragging-row * {
 
 .known-hosts-forget {
   flex: 0 0 auto;
+}
+
+/* ============================================================================
+ * Port-forwarding editor (device dialog) + Tunnels sidebar card
+ * ============================================================================ */
+
+/* --- Forwarding section inside the device editor --- */
+
+.forwards-section {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+}
+
+.forwards-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.forwards-title {
+  color: #d4d4d4;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.forward-row {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr 0.8fr auto 1.3fr 0.8fr auto;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.forward-row input {
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  font-size: 0.8rem;
+}
+
+.forward-arrow {
+  color: #858585;
+  text-align: center;
+}
+
+.forward-remove {
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+  background: none;
+  color: #d4d4d4;
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 8px;
+}
+
+.forward-remove:hover {
+  background-color: #a11f1f;
+  border-color: #a11f1f;
+  color: #fff;
+}
+
+.forward-row .error-text {
+  grid-column: 1 / -1;
+  color: #f48771;
+  font-size: 0.75rem;
+}
+
+/* --- Tunnels sidebar card (a section like Devices / Profiles) --- */
+
+.tunnel-list-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+}
+
+.tunnels-empty {
+  color: #858585;
+  font-size: 0.85rem;
+  padding: 8px 4px 0;
+}
+
+.tunnel-card {
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+  padding: 8px;
+  background-color: #1e1e1e;
+}
+
+.tunnel-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tunnel-card-name {
+  flex: 1 1 auto;
+  color: #d4d4d4;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tunnel-chip {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background-color: #3c3c3c;
+  color: #d4d4d4;
+}
+
+.tunnel-chip.is-listening {
+  background-color: #1a4d2e;
+  color: #7fd8a0;
+}
+
+.tunnel-chip.is-connecting {
+  background-color: #4d431a;
+  color: #dccf7f;
+}
+
+.tunnel-chip.is-error {
+  background-color: #5a1d1d;
+  color: #f48771;
+}
+
+.tunnel-forwards {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.tunnel-forward {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.tunnel-forward-endpoint {
+  flex: 1 1 auto;
+  color: #9cdcfe;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tunnel-forward.is-unbound .tunnel-forward-endpoint {
+  color: #858585;
+  text-decoration: line-through;
+}
+
+.tunnel-forward-warn {
+  flex: 0 0 auto;
+  color: #f48771;
+  font-size: 0.72rem;
+}
+
+.tunnel-copy {
+  flex: 0 0 auto;
+}
+
+/* ============================================================================
+ * Dropdowns (select) — one consistent look app-wide
+ *
+ * Native `<select>` chrome differs per OS/browser and clashed with the dark
+ * theme (the Connection-type box looked unstyled). Reset the native appearance
+ * and paint a custom chevron so every dropdown matches the text inputs.
+ * ============================================================================ */
+
+.form-group select,
+.settings-content select,
+.pane-device-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  /* Inline SVG chevron (stroke #d4d4d4) — reads on both #1e1e1e and #3c3c3c. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4.5l4 4 4-4' fill='none' stroke='%23d4d4d4' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px;
+  padding-right: 30px;
+  cursor: pointer;
+}
+
+/* Box styling for the device-editor selects (Connection type + serial framing),
+ * matching `.form-group input`. */
+.form-group select {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  padding-left: 10px;
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  font-size: 0.9rem;
+  font-family: inherit;
+  transition: border-color 150ms ease-in-out;
+}
+
+.form-group select:focus {
+  outline: none;
+  border-color: #007acc;
+  box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
+}
+
+/* Remove the native focus ring on options list where supported. */
+.form-group select:focus-visible {
+  outline: none;
 }

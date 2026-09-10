@@ -56,6 +56,19 @@ pub enum Connection {
         port: u16,
         username: String,
         auth: Auth,
+        /// Local port-forwards (`ssh -L`) configured on this device; empty for a
+        /// device with no tunnels. `#[serde(default)]` keeps a devices.json
+        /// written before forwarding existed loadable (a missing `forwards` reads
+        /// back as `[]`) — the same always-emit-with-default pattern as
+        /// `auto_reconnect`, so the field is always present on the wire and the
+        /// frontend can rely on it existing.
+        #[serde(default)]
+        forwards: Vec<Forward>,
+        /// Start this device's tunnel automatically when the app launches (binds
+        /// all its `forwards`). Off by default; `#[serde(default)]` keeps older
+        /// records loadable (reads back as `false`).
+        #[serde(default)]
+        tunnel_auto_start: bool,
     },
     #[serde(rename_all = "camelCase")]
     Serial {
@@ -66,6 +79,33 @@ pub enum Connection {
         stop_bits: u8,
         flow_control: FlowControl,
     },
+}
+
+/// One local port-forward (`ssh -L`): the app binds `local_addr:local_port`
+/// locally and tunnels each accepted connection to `remote_host:remote_port` as
+/// resolved *from the SSH server*. Carries no secret material. `local_addr`
+/// defaults to loopback and validation rejects any non-loopback address
+/// (SPEC §8), so a saved forward is only ever reachable from this machine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Forward {
+    /// Stable UUIDv4, assigned by the editor so a forward keeps its identity
+    /// across edits (used later to key per-forward runtime status).
+    pub id: String,
+    /// Human label shown in the Tunnels UI, e.g. `"Postgres"`.
+    pub name: String,
+    /// Local bind address; defaults to `127.0.0.1`. Must be a loopback IP.
+    #[serde(default = "default_local_addr")]
+    pub local_addr: String,
+    pub local_port: u16,
+    /// Host the SSH server dials on our behalf (e.g. `127.0.0.1`, `db.internal`).
+    pub remote_host: String,
+    pub remote_port: u16,
+}
+
+/// Default local bind address for a forward: IPv4 loopback.
+fn default_local_addr() -> String {
+    "127.0.0.1".to_string()
 }
 
 /// Serial parity bit (default `None`). Serializes to `"none"`/`"odd"`/`"even"`.
@@ -121,6 +161,10 @@ struct ConnectionRaw {
     port: Option<u16>,
     username: Option<String>,
     auth: Option<Auth>,
+    #[serde(default)]
+    forwards: Vec<Forward>,
+    #[serde(default)]
+    tunnel_auto_start: bool,
     port_name: Option<String>,
     baud_rate: Option<u32>,
     #[serde(default = "default_data_bits")]
@@ -143,6 +187,8 @@ impl ConnectionRaw {
             port: self.port.ok_or("port")?,
             username: self.username.ok_or("username")?,
             auth: self.auth.ok_or("auth")?,
+            forwards: self.forwards,
+            tunnel_auto_start: self.tunnel_auto_start,
         })
     }
 
@@ -233,7 +279,9 @@ impl Device {
                 port,
                 username,
                 auth,
-            } => validate_ssh(host, *port, username, auth),
+                forwards,
+                tunnel_auto_start: _,
+            } => validate_ssh(host, *port, username, auth, forwards),
             Connection::Serial {
                 port_name,
                 baud_rate,
@@ -243,9 +291,16 @@ impl Device {
     }
 }
 
-/// SSH validation: non-empty host/username, a non-zero port, and (for `key`
-/// auth) a non-empty `keyPath`. The secret itself lives in the keyring.
-fn validate_ssh(host: &str, port: u16, username: &str, auth: &Auth) -> Result<(), AppError> {
+/// SSH validation: non-empty host/username, a non-zero port, (for `key` auth) a
+/// non-empty `keyPath`, and well-formed port-forwards. The secret itself lives
+/// in the keyring.
+fn validate_ssh(
+    host: &str,
+    port: u16,
+    username: &str,
+    auth: &Auth,
+    forwards: &[Forward],
+) -> Result<(), AppError> {
     require_non_empty(host, "host must not be empty")?;
     require_non_empty(username, "username must not be empty")?;
     if port == 0 {
@@ -256,7 +311,45 @@ fn validate_ssh(host: &str, port: u16, username: &str, auth: &Auth) -> Result<()
     if let Auth::Key { key_path } = auth {
         require_non_empty(key_path, "keyPath must not be empty for key auth")?;
     }
+    validate_forwards(forwards)
+}
+
+/// Port-forward validation: every forward must have a non-empty name and remote
+/// host, non-zero local/remote ports, a loopback `local_addr` (SPEC §8), and no
+/// two forwards may claim the same `(local_addr, local_port)` bind pair.
+fn validate_forwards(forwards: &[Forward]) -> Result<(), AppError> {
+    let mut seen = std::collections::HashSet::new();
+    for forward in forwards {
+        validate_one_forward(forward)?;
+        if !seen.insert((forward.local_addr.as_str(), forward.local_port)) {
+            return Err(AppError::Validation(format!(
+                "two forwards both bind {}:{}",
+                forward.local_addr, forward.local_port
+            )));
+        }
+    }
     Ok(())
+}
+
+/// Field-level checks for a single forward (SPEC §1). Split out so
+/// `validate_forwards` stays a simple iterate-and-dedupe loop.
+fn validate_one_forward(forward: &Forward) -> Result<(), AppError> {
+    require_non_empty(&forward.name, "forward name must not be empty")?;
+    require_non_empty(&forward.remote_host, "forward remoteHost must not be empty")?;
+    if forward.local_port == 0 || forward.remote_port == 0 {
+        return Err(AppError::Validation(
+            "forward ports must be between 1 and 65535".to_string(),
+        ));
+    }
+    match forward.local_addr.parse::<std::net::IpAddr>() {
+        Ok(addr) if addr.is_loopback() => Ok(()),
+        Ok(_) => Err(AppError::Validation(
+            "forward localAddr must be a loopback address".to_string(),
+        )),
+        Err(_) => Err(AppError::Validation(
+            "forward localAddr must be a valid IP address".to_string(),
+        )),
+    }
 }
 
 /// Serial validation: non-empty `portName` and a non-zero `baudRate`.
@@ -291,6 +384,8 @@ mod tests {
                 port: 22,
                 username: "admin".to_string(),
                 auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
             },
             auto_reconnect: false,
         }
@@ -305,8 +400,21 @@ mod tests {
                 auth: Auth::Key {
                     key_path: "C:/Users/x/.ssh/id_ed25519".to_string(),
                 },
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
             },
             ..valid_password_device()
+        }
+    }
+
+    fn sample_forward(name: &str, local_port: u16) -> Forward {
+        Forward {
+            id: format!("fwd-{name}"),
+            name: name.to_string(),
+            local_addr: "127.0.0.1".to_string(),
+            local_port,
+            remote_host: "127.0.0.1".to_string(),
+            remote_port: 5432,
         }
     }
 
@@ -340,6 +448,8 @@ mod tests {
                 "port": 22,
                 "username": "admin",
                 "auth": { "method": "password" },
+                "forwards": [],
+                "tunnelAutoStart": false,
                 "autoReconnect": false,
             })
         );
@@ -397,6 +507,8 @@ mod tests {
                 port: 22,
                 username: "admin".to_string(),
                 auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
             }
         );
         assert!(parsed.auto_reconnect);
@@ -477,6 +589,8 @@ mod tests {
                 port: 22,
                 username: "admin".to_string(),
                 auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
             },
             ..valid_password_device()
         };
@@ -494,6 +608,8 @@ mod tests {
                 port: 22,
                 username: String::new(),
                 auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
             },
             ..valid_password_device()
         };
@@ -511,6 +627,8 @@ mod tests {
                 port: 0,
                 username: "admin".to_string(),
                 auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
             },
             ..valid_password_device()
         };
@@ -528,6 +646,8 @@ mod tests {
                 port: 65535,
                 username: "admin".to_string(),
                 auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
             },
             ..valid_password_device()
         };
@@ -544,6 +664,8 @@ mod tests {
                 auth: Auth::Key {
                     key_path: "   ".to_string(),
                 },
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
             },
             ..valid_password_device()
         };
@@ -585,6 +707,144 @@ mod tests {
             },
             ..valid_serial_device()
         };
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    /// Build an SSH device carrying the given forwards.
+    fn device_with_forwards(forwards: Vec<Forward>) -> Device {
+        Device {
+            connection: Connection::Ssh {
+                host: "192.168.1.10".to_string(),
+                port: 22,
+                username: "admin".to_string(),
+                auth: Auth::Password,
+                forwards,
+                tunnel_auto_start: false,
+            },
+            ..valid_password_device()
+        }
+    }
+
+    #[test]
+    fn ssh_device_without_forwards_serializes_as_empty_array() {
+        // Like `auto_reconnect`, `forwards` is always emitted (empty as `[]`) so
+        // the frontend can rely on the field existing on every SSH device.
+        let value = serde_json::to_value(valid_password_device()).expect("serialize");
+        assert_eq!(value["forwards"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn legacy_ssh_record_loads_with_empty_forwards() {
+        // A devices.json written before forwarding existed has no `forwards`
+        // key; it must load as an SSH device with an empty forward list.
+        let legacy = r#"{ "id": "x", "name": "NAS", "host": "h", "port": 22, "username": "u", "auth": { "method": "password" } }"#;
+        let parsed: Device = serde_json::from_str(legacy).unwrap();
+        match parsed.connection {
+            Connection::Ssh { forwards, .. } => assert!(forwards.is_empty()),
+            other => panic!("expected SSH connection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn forwards_round_trip_through_json_with_camel_case() {
+        let device = device_with_forwards(vec![sample_forward("Postgres", 5432)]);
+        let value = serde_json::to_value(&device).expect("serialize");
+        assert_eq!(
+            value["forwards"],
+            serde_json::json!([{
+                "id": "fwd-Postgres",
+                "name": "Postgres",
+                "localAddr": "127.0.0.1",
+                "localPort": 5432,
+                "remoteHost": "127.0.0.1",
+                "remotePort": 5432,
+            }])
+        );
+        let back: Device = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(device, back);
+    }
+
+    #[test]
+    fn forward_local_addr_defaults_to_loopback_when_absent() {
+        // A minimal forward record (no localAddr) fills in 127.0.0.1.
+        let minimal = r#"{ "id": "f1", "name": "db", "localPort": 5432, "remoteHost": "10.0.0.5", "remotePort": 5432 }"#;
+        let parsed: Forward = serde_json::from_str(minimal).unwrap();
+        assert_eq!(parsed.local_addr, "127.0.0.1");
+    }
+
+    #[test]
+    fn accepts_valid_forwards() {
+        let device = device_with_forwards(vec![
+            sample_forward("Postgres", 5432),
+            sample_forward("Redis", 6379),
+        ]);
+        assert!(device.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_forward_bind_pair() {
+        let device = device_with_forwards(vec![
+            sample_forward("Postgres", 5432),
+            sample_forward("Postgres dup", 5432),
+        ]);
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_non_loopback_forward_local_addr() {
+        let mut forward = sample_forward("Postgres", 5432);
+        forward.local_addr = "0.0.0.0".to_string();
+        let device = device_with_forwards(vec![forward]);
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_malformed_forward_local_addr() {
+        let mut forward = sample_forward("Postgres", 5432);
+        forward.local_addr = "not-an-ip".to_string();
+        let device = device_with_forwards(vec![forward]);
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_forward_port() {
+        let mut forward = sample_forward("Postgres", 5432);
+        forward.remote_port = 0;
+        let device = device_with_forwards(vec![forward]);
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_forward_with_empty_remote_host() {
+        let mut forward = sample_forward("Postgres", 5432);
+        forward.remote_host = "  ".to_string();
+        let device = device_with_forwards(vec![forward]);
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_forward_with_empty_name() {
+        let mut forward = sample_forward("Postgres", 5432);
+        forward.name = String::new();
+        let device = device_with_forwards(vec![forward]);
         assert!(matches!(
             device.validate().unwrap_err(),
             AppError::Validation(_)

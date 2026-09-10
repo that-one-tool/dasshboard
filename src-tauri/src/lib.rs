@@ -14,6 +14,7 @@ mod settings;
 mod state;
 mod store;
 mod transfer;
+mod tunnel;
 
 #[cfg(test)]
 mod ssh_it;
@@ -30,6 +31,7 @@ use session::SessionManager;
 use settings::SettingsStore;
 use state::AppState;
 use store::DeviceStore;
+use tunnel::TunnelManager;
 
 /// Returns the application's semantic version, as recorded in `Cargo.toml`.
 ///
@@ -65,6 +67,11 @@ pub fn run() {
             // session tasks can consult/persist trust decisions.
             let known_hosts = Arc::new(KnownHostsStore::load(config_dir));
             let session_manager = Arc::new(SessionManager::with_defaults(known_hosts));
+            // Tunnels (local port-forwarding) share the SSH manager's host-key
+            // TOFU store, so a trust decision applies to shells and tunnels to
+            // the same host alike (SPEC tunnels §2/§4).
+            let tunnel_manager =
+                Arc::new(TunnelManager::with_defaults(session_manager.known_hosts()));
             // Serial/COM sessions live in their own manager, alongside the SSH one.
             let serial_manager = Arc::new(SerialSessionManager::new());
             let secret_store: Arc<dyn secret::SecretStore> = Arc::new(KeyringSecretStore);
@@ -74,6 +81,7 @@ pub fn run() {
                 settings_store,
                 secret_store,
                 session_manager,
+                tunnel_manager,
                 serial_manager,
             });
             Ok(())
@@ -90,7 +98,11 @@ pub fn run() {
                 let state = window.state::<AppState>();
                 let manager = Arc::clone(&state.session_manager);
                 let serial = Arc::clone(&state.serial_manager);
-                if manager.session_count() == 0 && serial.session_count() == 0 {
+                let tunnels = Arc::clone(&state.tunnel_manager);
+                if manager.session_count() == 0
+                    && serial.session_count() == 0
+                    && tunnels.tunnel_count() == 0
+                {
                     return; // nothing live — let the close proceed normally.
                 }
                 api.prevent_close();
@@ -98,6 +110,8 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     manager.disconnect_all().await;
                     serial.disconnect_all().await;
+                    // Release every bound local listener before the window goes away.
+                    tunnels.stop_all().await;
                     let _ = window.destroy();
                 });
             }
@@ -115,6 +129,9 @@ pub fn run() {
             commands::list_known_hosts,
             commands::forget_host,
             commands::test_connection,
+            commands::start_tunnel,
+            commands::stop_tunnel,
+            commands::list_tunnels,
             commands::list_profiles,
             commands::save_profile,
             commands::delete_profile,

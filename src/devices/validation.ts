@@ -5,7 +5,7 @@
  * tested independently and reused across UI components.
  */
 
-import type { Auth, DeviceKind, FlowControl, Parity } from "../ipc";
+import type { Auth, DeviceKind, FlowControl, Forward, Parity } from "../ipc";
 
 export interface ValidationError {
   field: string;
@@ -34,6 +34,10 @@ export interface DeviceFormValues {
   stopBits?: number;
   flowControl?: FlowControl;
   autoReconnect?: boolean;
+  // SSH forwards, edited by the forwarding sub-editor.
+  forwards?: Forward[];
+  // Start this device's tunnel automatically on app launch (SSH only).
+  tunnelAutoStart?: boolean;
 }
 
 /**

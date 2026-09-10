@@ -7,6 +7,7 @@ import { ProfileManager } from "./profiles/profileManager";
 import { SettingsController } from "./settings/settingsController";
 import { DEFAULT_TERMINAL_SETTINGS } from "./terminal/terminalSettings";
 import { initHostKeyDialog } from "./terminal/hostKeyDialog";
+import { initTunnelsPanel } from "./tunnels/tunnelsPanel";
 
 /** Calls the `ping` command and renders the result (proves IPC round trip). */
 function initVersionBanner(): void {
@@ -164,9 +165,18 @@ async function initApp(): Promise<void> {
 	};
 	await profileManager.init(settings.lastProfileId());
 
+	// Tunnels drawer (local port-forwarding): a header-toggled panel listing
+	// SSH devices with forwards, with Start/Stop + live status. Independent of
+	// the terminal grid (a tunnel has no terminal).
+	const tunnelsPanel = initTunnelsPanel({
+		onError: (error: AppError) => showToast(`Error: ${error.message}`, "error"),
+		onSuccess: (message: string) => showToast(message, "success"),
+	});
+
 	// Device manager: on any successful change, refresh every pane's device
 	// dropdown so a newly added/edited/deleted device shows up immediately; also
-	// re-sync profiles (a deleted device is nulled out of them backend-side).
+	// re-sync profiles (a deleted device is nulled out of them backend-side) and
+	// the tunnels drawer (a device's forwards may have changed).
 	initDeviceManager({
 		onError: (error: AppError) => {
 			console.error("Device error:", error);
@@ -176,6 +186,7 @@ async function initApp(): Promise<void> {
 			showToast(message, "success");
 			void grid.refreshDevices();
 			void profileManager.reload();
+			void tunnelsPanel.refresh();
 		},
 	});
 }

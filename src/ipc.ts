@@ -43,6 +43,22 @@ interface DeviceCommon {
   autoReconnect: boolean;
 }
 
+/**
+ * One local port-forward (`ssh -L`) on an SSH device: bind `localAddr:localPort`
+ * locally and tunnel each connection to `remoteHost:remotePort` as resolved from
+ * the SSH server. Mirrors the Rust `Forward`. `localAddr` is always a loopback
+ * address (enforced by validation). The backend always emits `forwards` (empty
+ * as `[]`), so every SSH device the frontend sees carries the field.
+ */
+export interface Forward {
+  id: string;
+  name: string;
+  localAddr: string;
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+}
+
 /** An SSH target (the original device kind). */
 export interface SshDevice extends DeviceCommon {
   kind: "ssh";
@@ -50,6 +66,10 @@ export interface SshDevice extends DeviceCommon {
   port: number;
   username: string;
   auth: Auth;
+  /** Configured local port-forwards; `[]` when the device has no tunnels. */
+  forwards: Forward[];
+  /** Start this device's tunnel automatically on app launch (binds all forwards). */
+  tunnelAutoStart: boolean;
 }
 
 /**
@@ -86,7 +106,8 @@ export type ErrorCode =
   | "SshAuth"
   | "SshConnect"
   | "SshChannel"
-  | "HostKeyRejected";
+  | "HostKeyRejected"
+  | "TunnelBind";
 
 export interface AppError {
   code: ErrorCode;
@@ -308,6 +329,79 @@ export function onHostKeyPrompt(
   return listen<HostKeyPromptEvent>("host_key_prompt", (e) =>
     handler(e.payload),
   );
+}
+
+/* ============================================================================
+ * Tunnel types & commands (local port-forwarding — SPEC tunnels §3)
+ * ============================================================================ */
+
+export type TunnelStatus =
+  | "connecting"
+  | "listening"
+  | "disconnected"
+  | "error";
+
+/** Per-forward bind state, carried on a `listening` `tunnel_status` event. */
+export interface ForwardStatus {
+  forwardId: string;
+  localAddr: string;
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+  /** `false` means this forward's local port could not be bound (in use). */
+  bound: boolean;
+}
+
+/** Payload of the `tunnel_status` event. `forwards` is populated on `listening`. */
+export interface TunnelStatusEvent {
+  tunnelId: string;
+  status: TunnelStatus;
+  message?: string;
+  forwards: ForwardStatus[];
+}
+
+/** One live tunnel as returned by `list_tunnels`. */
+export interface TunnelInfo {
+  tunnelId: string;
+  deviceId: string;
+}
+
+/**
+ * Starts a tunnel for a device: opens one SSH connection and binds a local
+ * listener for each of the device's forwards. Returns the new `tunnelId`; live
+ * state arrives via `onTunnelStatus`.
+ */
+export async function startTunnel(deviceId: string): Promise<string> {
+  try {
+    return await invoke<string>("start_tunnel", { deviceId });
+  } catch (err) {
+    throw normalizeError(err);
+  }
+}
+
+/** Stops a tunnel by id, releasing its bound local listeners. Idempotent. */
+export async function stopTunnel(tunnelId: string): Promise<void> {
+  try {
+    await invoke<void>("stop_tunnel", { tunnelId });
+  } catch (err) {
+    throw normalizeError(err);
+  }
+}
+
+/** Lists the currently-live tunnels (SPEC tunnels §3). */
+export async function listTunnels(): Promise<TunnelInfo[]> {
+  try {
+    return await invoke<TunnelInfo[]>("list_tunnels");
+  } catch (err) {
+    throw normalizeError(err);
+  }
+}
+
+/** Subscribes to `tunnel_status` events. Returns an unlisten function. */
+export function onTunnelStatus(
+  handler: (event: TunnelStatusEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<TunnelStatusEvent>("tunnel_status", (e) => handler(e.payload));
 }
 
 /* ============================================================================

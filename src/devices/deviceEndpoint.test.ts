@@ -10,6 +10,8 @@ const sshDevice: Device = {
   port: 22,
   username: "admin",
   auth: { method: "password" },
+  forwards: [],
+  tunnelAutoStart: false,
   autoReconnect: false,
 };
 

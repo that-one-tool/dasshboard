@@ -177,6 +177,7 @@ mod tests {
     use crate::session::SessionManager;
     use crate::settings::SettingsStore;
     use crate::store::DeviceStore;
+    use crate::tunnel::TunnelManager;
     use tempfile::tempdir;
     use uuid::Uuid;
 
@@ -184,12 +185,15 @@ mod tests {
     /// store stack plus an in-memory keyring, no Tauri runtime required.
     fn test_state(dir: &std::path::Path) -> AppState {
         let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
+        let session_manager = Arc::new(SessionManager::with_defaults(known_hosts));
+        let tunnel_manager = Arc::new(TunnelManager::with_defaults(session_manager.known_hosts()));
         AppState {
             device_store: DeviceStore::load(dir.to_path_buf()),
             profile_store: ProfileStore::load(dir.to_path_buf()),
             settings_store: SettingsStore::load(dir.to_path_buf()),
             secret_store: Arc::new(InMemorySecretStore::new()),
-            session_manager: Arc::new(SessionManager::with_defaults(known_hosts)),
+            session_manager,
+            tunnel_manager,
             serial_manager: Arc::new(SerialSessionManager::new()),
         }
     }
@@ -203,6 +207,8 @@ mod tests {
                 port: 22,
                 username: "admin".to_string(),
                 auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
             },
             auto_reconnect: false,
         }

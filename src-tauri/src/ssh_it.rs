@@ -24,15 +24,17 @@ use std::time::Duration;
 use russh::keys::{HashAlg, PrivateKey};
 use russh::server::{self, Auth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
+use crate::device::Forward;
 use crate::error::AppError;
 use crate::known_hosts::{KnownHost, KnownHostsStore};
 use crate::session::{
     AuthCredentials, ConnectParams, HostKeyPromptPayload, SessionManager, SessionSink,
     SessionStatus,
 };
+use crate::tunnel::{ForwardStatus, TunnelManager, TunnelParams, TunnelSink, TunnelStatus};
 
 /// Throwaway ed25519 host key for the in-process test server. Generated once
 /// with `ssh-keygen -t ed25519 -N ""`; it exists only to give the test server
@@ -91,6 +93,25 @@ impl server::Handler for TestServerHandler {
     async fn channel_open_session(
         &mut self,
         _channel: Channel<Msg>,
+        reply: server::ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        reply.accept().await;
+        Ok(())
+    }
+
+    /// Accept a `direct-tcpip` (local-forward) channel so the tunnel integration
+    /// test can round-trip bytes. The default impl rejects by dropping the reply
+    /// handle, so this override is required. Bytes sent on the channel are echoed
+    /// back by the shared `data` handler below — enough to prove the tunnel
+    /// carries traffic end to end (the "remote service" is a simple echo).
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        _channel: Channel<Msg>,
+        _host_to_connect: &str,
+        _port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
         reply: server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
@@ -934,4 +955,241 @@ async fn connect_disconnect_churn_leaks_nothing() {
         0,
         "connect/disconnect churn must leave zero live sessions"
     );
+}
+
+/* ------------------------------------------------------------------------- *
+ * Tunnels (local port-forwarding) — end-to-end round trip + cleanup
+ * ------------------------------------------------------------------------- */
+
+/// Test [`TunnelSink`] recording every status transition (with its per-forward
+/// bind state) into a channel.
+struct TestTunnelSink {
+    status_tx: mpsc::UnboundedSender<(TunnelStatus, Vec<ForwardStatus>)>,
+    prompt_tx: mpsc::UnboundedSender<HostKeyPromptPayload>,
+}
+
+impl TunnelSink for TestTunnelSink {
+    fn on_status(
+        &self,
+        status: TunnelStatus,
+        _message: Option<String>,
+        forwards: Vec<ForwardStatus>,
+    ) {
+        let _ = self.status_tx.send((status, forwards));
+    }
+    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
+        let _ = self.prompt_tx.send(payload);
+    }
+}
+
+struct TunnelSinkChannels {
+    status_rx: mpsc::UnboundedReceiver<(TunnelStatus, Vec<ForwardStatus>)>,
+    #[allow(dead_code)]
+    prompt_rx: mpsc::UnboundedReceiver<HostKeyPromptPayload>,
+}
+
+fn new_tunnel_sink() -> (Arc<dyn TunnelSink>, TunnelSinkChannels) {
+    let (status_tx, status_rx) = mpsc::unbounded_channel();
+    let (prompt_tx, prompt_rx) = mpsc::unbounded_channel();
+    let sink: Arc<dyn TunnelSink> = Arc::new(TestTunnelSink {
+        status_tx,
+        prompt_tx,
+    });
+    (
+        sink,
+        TunnelSinkChannels {
+            status_rx,
+            prompt_rx,
+        },
+    )
+}
+
+fn tunnel_manager_with(dir: &std::path::Path) -> Arc<TunnelManager> {
+    let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
+    Arc::new(TunnelManager::new(
+        known_hosts,
+        Duration::from_secs(10),
+        Duration::from_secs(60),
+        Duration::from_secs(10),
+    ))
+}
+
+/// Await the `Listening` status (past the initial `Connecting`), returning its
+/// per-forward statuses; fails if an `Error`/`Disconnected` arrives first.
+async fn await_listening(
+    status_rx: &mut mpsc::UnboundedReceiver<(TunnelStatus, Vec<ForwardStatus>)>,
+) -> Vec<ForwardStatus> {
+    loop {
+        let (status, forwards) = recv_timeout(status_rx, Duration::from_secs(10))
+            .await
+            .expect("a tunnel status within 10s");
+        match status {
+            TunnelStatus::Connecting => continue,
+            TunnelStatus::Listening => return forwards,
+            other => panic!("expected Listening, got {other:?}"),
+        }
+    }
+}
+
+/// Obtain an ephemeral local port that is (very likely) free by binding then
+/// dropping a listener — the port the tunnel will bind for its forward.
+async fn free_local_port() -> u16 {
+    let l = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    l.local_addr().unwrap().port()
+}
+
+/// A tunnel binds a local listener and round-trips bytes to the SSH server over
+/// a `direct-tcpip` channel; stopping it releases the listener and leaves no
+/// tracked tunnel. The in-process server echoes channel data, so writing to the
+/// local port and reading it back proves the whole forward path works.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tunnel_forwards_bytes_and_cleans_up() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_test_server(TEST_PASSWORD).await;
+    // Pre-trust the host key so the tunnel doesn't block on a TOFU prompt.
+    seed_trusted(dir.path(), port);
+    let manager = tunnel_manager_with(dir.path());
+
+    let local_port = free_local_port().await;
+    let forward = Forward {
+        id: "f1".to_string(),
+        name: "echo".to_string(),
+        local_addr: "127.0.0.1".to_string(),
+        local_port,
+        // The echo server ignores the direct-tcpip target, so any host:port works.
+        remote_host: "127.0.0.1".to_string(),
+        remote_port: 9,
+    };
+
+    let (sink, mut chans) = new_tunnel_sink();
+    manager.spawn_tunnel(
+        "t1".to_string(),
+        TunnelParams {
+            device_id: "dev-1".to_string(),
+            host: "127.0.0.1".to_string(),
+            port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            forwards: vec![forward],
+        },
+        sink,
+    );
+
+    // The forward must bind and the tunnel must report Listening.
+    let forwards = await_listening(&mut chans.status_rx).await;
+    assert_eq!(forwards.len(), 1);
+    assert!(forwards[0].bound, "the forward's local port must bind");
+    assert_eq!(manager.tunnel_count(), 1);
+
+    // Connect to the local end, write bytes, and read the echo back through the
+    // tunnel — retrying the connect briefly in case accept isn't ready yet.
+    let mut stream = None;
+    for _ in 0..50 {
+        match TcpStream::connect(("127.0.0.1", local_port)).await {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+    let mut stream = stream.expect("connect to the tunnel's local port");
+    stream.write_all(b"PING\n").await.expect("write to tunnel");
+
+    let mut buf = [0u8; 5];
+    let read = tokio::time::timeout(Duration::from_secs(10), stream.read_exact(&mut buf))
+        .await
+        .expect("the tunnel must echo bytes back within 10s");
+    assert!(read.is_ok(), "read echoed bytes: {read:?}");
+    assert_eq!(&buf, b"PING\n", "the tunnel must round-trip the bytes");
+
+    drop(stream);
+
+    // Stopping the tunnel releases the listener and clears the map entry.
+    manager.stop_tunnel("t1").await;
+    for _ in 0..50 {
+        if manager.tunnel_count() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        manager.tunnel_count(),
+        0,
+        "the tunnel entry must be cleaned up"
+    );
+
+    // The local port is free again after stop (the listener was released).
+    assert!(
+        TcpListener::bind(("127.0.0.1", local_port)).await.is_ok(),
+        "the local port must be released when the tunnel stops"
+    );
+}
+
+/// A tunnel whose only forward cannot bind its local port (already in use) ends
+/// with an error and leaves nothing tracked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tunnel_bind_failure_errors_and_cleans_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_test_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), port);
+    let manager = tunnel_manager_with(dir.path());
+
+    // Hold a listener on the local port so the tunnel's bind fails.
+    let occupied = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let local_port = occupied.local_addr().unwrap().port();
+
+    let forward = Forward {
+        id: "f1".to_string(),
+        name: "echo".to_string(),
+        local_addr: "127.0.0.1".to_string(),
+        local_port,
+        remote_host: "127.0.0.1".to_string(),
+        remote_port: 9,
+    };
+
+    let (sink, mut chans) = new_tunnel_sink();
+    manager.spawn_tunnel(
+        "t1".to_string(),
+        TunnelParams {
+            device_id: "dev-1".to_string(),
+            host: "127.0.0.1".to_string(),
+            port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            forwards: vec![forward],
+        },
+        sink,
+    );
+
+    // With no forward able to bind, the tunnel settles on Error, not Listening.
+    let mut saw_error = false;
+    for _ in 0..10 {
+        let (status, _) = recv_timeout(&mut chans.status_rx, Duration::from_secs(10))
+            .await
+            .expect("a tunnel status");
+        match status {
+            TunnelStatus::Connecting => continue,
+            TunnelStatus::Error => {
+                saw_error = true;
+                break;
+            }
+            other => panic!("expected Error when no forward binds, got {other:?}"),
+        }
+    }
+    assert!(
+        saw_error,
+        "a tunnel that binds nothing must surface an error"
+    );
+
+    for _ in 0..50 {
+        if manager.tunnel_count() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(manager.tunnel_count(), 0, "a failed tunnel must not leak");
+    drop(occupied);
 }

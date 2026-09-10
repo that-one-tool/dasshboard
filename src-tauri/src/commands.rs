@@ -16,7 +16,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
-use crate::device::{Auth, Connection, Device};
+use crate::device::{Auth, Connection, Device, Forward};
 use crate::error::AppError;
 use crate::known_hosts::KnownHostEntry;
 use crate::profile::Profile;
@@ -27,6 +27,7 @@ use crate::session::{
 };
 use crate::settings::Settings;
 use crate::state::AppState;
+use crate::tunnel::{ForwardStatus, TunnelInfo, TunnelParams, TunnelSink, TunnelStatus};
 
 fn list_devices_impl(state: &AppState) -> Vec<Device> {
     state.device_store.list()
@@ -484,10 +485,13 @@ pub async fn disconnect(state: State<'_, AppState>, session_id: String) -> Resul
 }
 
 /// Resolve a pending host-key trust prompt (SPEC §5). Unknown/stale prompt ⇒
-/// no-op.
+/// no-op. A prompt may belong to either a shell session or a tunnel (each
+/// manager has its own registry), so the response is fanned out to both; the
+/// one that owns the prompt resolves it and the other no-ops.
 #[tauri::command]
 pub fn respond_host_key(state: State<'_, AppState>, prompt_id: String, accept: bool) {
     state.session_manager.respond_host_key(&prompt_id, accept);
+    state.tunnel_manager.respond_host_key(&prompt_id, accept);
 }
 
 /// List every trusted host key for the management UI. Fingerprints are public
@@ -551,6 +555,132 @@ pub async fn test_connection(
 }
 
 /* ============================================================================
+ * Tunnel commands (SPEC tunnels §3)
+ * ============================================================================ */
+
+const TUNNEL_STATUS_EVENT: &str = "tunnel_status";
+
+/// Wire payload of the `tunnel_status` event, `camelCase`. `forwards` carries
+/// per-forward bind state on a `listening` status and is empty otherwise.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TunnelStatusPayload {
+    tunnel_id: String,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    forwards: Vec<ForwardStatus>,
+}
+
+/// Production [`TunnelSink`]: emits `tunnel_status` events and reuses the shared
+/// `host_key_prompt` event so a tunnel's first-contact trust prompt drives the
+/// same dialog a shell session does. Carries only the tunnel id and non-secret
+/// payloads — never a credential.
+struct TauriTunnelSink {
+    app: AppHandle,
+    tunnel_id: String,
+}
+
+impl TunnelSink for TauriTunnelSink {
+    fn on_status(
+        &self,
+        status: TunnelStatus,
+        message: Option<String>,
+        forwards: Vec<ForwardStatus>,
+    ) {
+        let _ = self.app.emit(
+            TUNNEL_STATUS_EVENT,
+            TunnelStatusPayload {
+                tunnel_id: self.tunnel_id.clone(),
+                status: status.as_str(),
+                message,
+                forwards,
+            },
+        );
+    }
+
+    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
+        let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
+    }
+}
+
+/// The SSH connection details + forwards of a device, or an error if the device
+/// is serial (no tunnels) or has no forwards configured (nothing to bind).
+fn tunnel_target_of(device: &Device) -> Result<(&str, u16, &str, &[Forward]), AppError> {
+    match &device.connection {
+        Connection::Ssh {
+            host,
+            port,
+            username,
+            forwards,
+            ..
+        } => {
+            if forwards.is_empty() {
+                return Err(AppError::Validation(
+                    "this device has no port forwards configured".to_string(),
+                ));
+            }
+            Ok((host, *port, username, forwards))
+        }
+        Connection::Serial { .. } => Err(AppError::Validation(
+            "serial devices do not support tunnels".to_string(),
+        )),
+    }
+}
+
+/// Start a tunnel for a device: open one SSH connection and bind a local
+/// listener for each of the device's forwards (SPEC tunnels §3). Returns the new
+/// `tunnelId`; the tunnel is driven on a background task reporting over
+/// `tunnel_status`.
+#[tauri::command]
+pub async fn start_tunnel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<String, AppError> {
+    let device = find_device(&state, &device_id)?;
+    let (host, port, username, forwards) = tunnel_target_of(&device)?;
+    let host = host.to_string();
+    let username = username.to_string();
+    let forwards = forwards.to_vec();
+
+    let creds = resolve_credentials(&state, &device).await?;
+    let tunnel_id = Uuid::new_v4().to_string();
+    let sink: Arc<dyn TunnelSink> = Arc::new(TauriTunnelSink {
+        app,
+        tunnel_id: tunnel_id.clone(),
+    });
+    state.tunnel_manager.spawn_tunnel(
+        tunnel_id.clone(),
+        TunnelParams {
+            device_id,
+            host,
+            port,
+            username,
+            creds,
+            forwards,
+        },
+        sink,
+    );
+    Ok(tunnel_id)
+}
+
+/// Stop a tunnel by id (SPEC tunnels §3), releasing its bound local listeners.
+/// Idempotent: an unknown/already-stopped tunnel is a no-op.
+#[tauri::command]
+pub async fn stop_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<(), AppError> {
+    state.tunnel_manager.stop_tunnel(&tunnel_id).await;
+    Ok(())
+}
+
+/// List the live tunnels (SPEC tunnels §3) so a freshly-mounted UI can show
+/// what is already running; live per-forward detail arrives via `tunnel_status`.
+#[tauri::command]
+pub fn list_tunnels(state: State<'_, AppState>) -> Result<Vec<TunnelInfo>, AppError> {
+    Ok(state.tunnel_manager.list())
+}
+
+/* ============================================================================
  * Diagnostics
  * ============================================================================ */
 
@@ -604,16 +734,20 @@ mod tests {
     use crate::session::SessionManager;
     use crate::settings::SettingsStore;
     use crate::store::DeviceStore;
+    use crate::tunnel::TunnelManager;
     use tempfile::tempdir;
 
     fn test_state(dir: &std::path::Path) -> AppState {
         let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
+        let session_manager = Arc::new(SessionManager::with_defaults(known_hosts));
+        let tunnel_manager = Arc::new(TunnelManager::with_defaults(session_manager.known_hosts()));
         AppState {
             device_store: DeviceStore::load(dir.to_path_buf()),
             profile_store: ProfileStore::load(dir.to_path_buf()),
             settings_store: SettingsStore::load(dir.to_path_buf()),
             secret_store: Arc::new(InMemorySecretStore::new()),
-            session_manager: Arc::new(SessionManager::with_defaults(known_hosts)),
+            session_manager,
+            tunnel_manager,
             serial_manager: Arc::new(SerialSessionManager::new()),
         }
     }
@@ -625,12 +759,15 @@ mod tests {
         secret_store: Arc<dyn crate::secret::SecretStore>,
     ) -> AppState {
         let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
+        let session_manager = Arc::new(SessionManager::with_defaults(known_hosts));
+        let tunnel_manager = Arc::new(TunnelManager::with_defaults(session_manager.known_hosts()));
         AppState {
             device_store: DeviceStore::load(dir.to_path_buf()),
             profile_store: ProfileStore::load(dir.to_path_buf()),
             settings_store: SettingsStore::load(dir.to_path_buf()),
             secret_store,
-            session_manager: Arc::new(SessionManager::with_defaults(known_hosts)),
+            session_manager,
+            tunnel_manager,
             serial_manager: Arc::new(SerialSessionManager::new()),
         }
     }
@@ -644,6 +781,8 @@ mod tests {
                 port: 22,
                 username: "admin".to_string(),
                 auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
             },
             auto_reconnect: false,
         }

@@ -111,6 +111,8 @@ describe("saveDevice tri-state secret payload", () => {
 		port: 22,
 		username: "root",
 		auth: { method: "password" },
+		forwards: [],
+		tunnelAutoStart: false,
 		autoReconnect: false,
 	};
 

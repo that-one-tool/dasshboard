@@ -11,7 +11,8 @@ See `README.md` for features, prerequisites, and data-file layout.
 - `src/` — frontend (TypeScript, no framework):
   - `grid.ts` / `gridModel.ts` — multi-pane grid layout
   - `terminal/` — pane, overlay, reconnect, paste, host-key dialog, terminal settings
-  - `devices/` — device CRUD, validation, save payloads
+  - `devices/` — device CRUD, validation, save payloads, the port-forward editor
+  - `tunnels/` — the Tunnels sidebar card (start/stop/status for local forwards)
   - `profiles/` — workspace/profile persistence
   - `settings/` — app settings controller
   - `ui/` — confirm dialogs, file dialog, icons
@@ -23,7 +24,10 @@ See `README.md` for features, prerequisites, and data-file layout.
   - `store.rs`, `profile_store.rs` — JSON persistence in the Tauri app-config dir
   - `known_hosts.rs` — host-key TOFU store
   - `secret.rs` — OS keychain access; secrets never touch the JSON stores
-  - `session.rs` — SSH sessions via `russh`
+  - `session.rs` — SSH shell sessions via `russh`
+  - `tunnel.rs` — SSH local port forwarding (`ssh -L`); reuses `session.rs`'s
+    connect + auth + host-key-TOFU path, then binds a local `TcpListener` per
+    forward and pumps each connection over a `direct-tcpip` channel
   - `serial.rs` — serial/COM sessions via `tokio-serial`, reusing
     `session.rs`'s `SessionSink`/`SessionStatus`; the byte pump is
     stream-generic so it unit-tests against an in-memory pipe (no COM port)

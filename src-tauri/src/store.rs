@@ -172,6 +172,8 @@ mod tests {
                 port: 22,
                 username: "admin".to_string(),
                 auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
             },
             auto_reconnect: false,
         }

@@ -248,7 +248,11 @@ impl PromptRegistry {
 /// russh client handler. The only frontend-facing thing it does is drive the
 /// host-key trust prompt; terminal I/O is handled via the `Channel` in the
 /// session task, not the handler's data callbacks.
-struct SshHandler {
+///
+/// `pub(crate)` so the tunnel layer (`tunnel.rs`) can reuse the exact same
+/// host-key-TOFU handshake path via [`establish_with_deadline`], rather than
+/// duplicating it — the shared-connect-path reuse called out in SPEC §2.
+pub(crate) struct SshHandler {
     sink: Arc<dyn SessionSink>,
     known_hosts: Arc<KnownHostsStore>,
     prompts: Arc<PromptRegistry>,
@@ -258,6 +262,28 @@ struct SshHandler {
 }
 
 impl SshHandler {
+    /// Construct a handler. Used by `SessionManager::build_handler` and, for
+    /// tunnels, by `tunnel.rs` (which shares the same known-hosts store + prompt
+    /// registry so host-key trust decisions are consistent across shells and
+    /// tunnels).
+    pub(crate) fn new(
+        sink: Arc<dyn SessionSink>,
+        known_hosts: Arc<KnownHostsStore>,
+        prompts: Arc<PromptRegistry>,
+        host: String,
+        port: u16,
+        prompt_timeout: Duration,
+    ) -> Self {
+        SshHandler {
+            sink,
+            known_hosts,
+            prompts,
+            host,
+            port,
+            prompt_timeout,
+        }
+    }
+
     /// Emit the host-key prompt event and await the user's decision, bounded
     /// by `prompt_timeout`, holding no lock while waiting. The prompt is
     /// registered BEFORE the event is emitted, so a very fast user reply can
@@ -442,7 +468,7 @@ async fn establish(
 /// on the host-key prompt is never cut off early — see
 /// `SessionManager::overall_establish_timeout`, which builds it from
 /// `connect_timeout + prompt_timeout + handshake_timeout`.
-async fn establish_with_deadline(
+pub(crate) async fn establish_with_deadline(
     host: &str,
     port: u16,
     username: &str,

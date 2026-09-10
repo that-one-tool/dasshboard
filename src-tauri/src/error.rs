@@ -37,6 +37,10 @@ pub enum AppError {
     /// or the prompt was dismissed (SPEC.md §6).
     #[error("{0}")]
     HostKeyRejected(String),
+    /// A tunnel's local listener could not be bound — the local port is already
+    /// in use, or binding it was refused (SPEC tunnels §5).
+    #[error("{0}")]
+    TunnelBind(String),
 }
 
 impl AppError {
@@ -50,6 +54,7 @@ impl AppError {
             AppError::SshConnect(_) => "SshConnect",
             AppError::SshChannel(_) => "SshChannel",
             AppError::HostKeyRejected(_) => "HostKeyRejected",
+            AppError::TunnelBind(_) => "TunnelBind",
         }
     }
 }
@@ -116,6 +121,7 @@ mod tests {
             (AppError::SshConnect("x".into()), "SshConnect"),
             (AppError::SshChannel("x".into()), "SshChannel"),
             (AppError::HostKeyRejected("x".into()), "HostKeyRejected"),
+            (AppError::TunnelBind("x".into()), "TunnelBind"),
         ];
         for (err, expected_code) in cases {
             assert_eq!(err.code(), expected_code);

@@ -23,6 +23,13 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
     flow control). Serial devices have no host/auth and store **no** secret.
 - **Live multi-pane grid** — 1×1 up to 3×2 preset layouts, draggable splitters,
   click-to-focus panes, each an independent SSH shell or serial terminal.
+- **SSH tunnels (local port forwarding)** — give an SSH device one or more
+  forwards (`ssh -L`): the app binds `127.0.0.1:<localPort>` locally and tunnels
+  each connection to `remoteHost:remotePort` as reached from the SSH server, so a
+  local client (e.g. a database GUI) can reach a remote service over SSH.
+  Start/stop per device from the **Tunnels** sidebar card with live status, copy
+  the local endpoint with a click, and optionally auto-start a device's tunnel on
+  app launch. Forwards bind loopback only.
 - **Layout profiles** — save a workspace (grid + device assignments), set a
   default, and have it restore and auto-connect every pane on launch.
 - **Host-key TOFU** — trust-on-first-use prompts with a prominent warning when a
@@ -119,8 +126,10 @@ no secret**, so nothing is ever written to the keychain for them.
 ## Project layout
 
 - `src/` — frontend (TypeScript): `grid.ts`/`gridModel.ts` (multi-pane grid),
-  `terminal/` (pane, overlay, reconnect, settings), `devices/`, `profiles/`,
+  `terminal/` (pane, overlay, reconnect, settings), `devices/` (CRUD + the
+  port-forward editor), `tunnels/` (the Tunnels sidebar card), `profiles/`,
   `settings/`, `ipc.ts` (typed command wrappers).
 - `src-tauri/src/` — backend (Rust): stores (`store`, `profile_store`,
-  `settings`, `known_hosts`), `session` (SSH via `russh`), `serial` (serial/COM
-  via `tokio-serial`), `commands`, `secret` (keyring).
+  `settings`, `known_hosts`), `session` (SSH shells via `russh`), `tunnel` (local
+  port forwarding, reusing `session`'s connect/host-key path), `serial`
+  (serial/COM via `tokio-serial`), `commands`, `secret` (keyring).

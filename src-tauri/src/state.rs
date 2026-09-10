@@ -11,6 +11,7 @@ use crate::serial::SerialSessionManager;
 use crate::session::SessionManager;
 use crate::settings::SettingsStore;
 use crate::store::DeviceStore;
+use crate::tunnel::TunnelManager;
 
 pub struct AppState {
     pub device_store: DeviceStore,
@@ -27,6 +28,10 @@ pub struct AppState {
     /// Owns the live SSH sessions (SPEC.md §3). Behind an `Arc` because
     /// `spawn_session` needs an owned handle to move into each session task.
     pub session_manager: Arc<SessionManager>,
+    /// Owns the live tunnels (local port-forwarding). Shares the SSH manager's
+    /// host-key TOFU store; behind an `Arc` because `spawn_tunnel` moves an owned
+    /// handle into each tunnel task.
+    pub tunnel_manager: Arc<TunnelManager>,
     /// Owns the live serial/COM sessions — the serial analogue of
     /// `session_manager`. A session id belongs to exactly one of the two
     /// managers; the command layer routes write/resize/disconnect by ownership.

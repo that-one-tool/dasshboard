@@ -41,6 +41,8 @@ const deviceA: Device = {
   port: 22,
   username: "alpha",
   auth: { method: "password" },
+  forwards: [],
+  tunnelAutoStart: false,
   autoReconnect: false,
 };
 
@@ -52,6 +54,8 @@ const deviceB: Device = {
   port: 22,
   username: "bravo",
   auth: { method: "key", keyPath: "C:/keys/id_ed25519" },
+  forwards: [],
+  tunnelAutoStart: false,
   autoReconnect: true,
 };
 
@@ -248,6 +252,8 @@ describe("device delete confirmation (Phase 6)", () => {
     port: 22,
     username: "amp",
     auth: { method: "password" },
+    forwards: [],
+    tunnelAutoStart: false,
     autoReconnect: false,
   };
 

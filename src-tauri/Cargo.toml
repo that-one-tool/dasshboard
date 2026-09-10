@@ -1,6 +1,6 @@
 [package]
 name = "dasshboard"
-version = "1.2.0"
+version = "1.3.0"
 description = "A Tauri App"
 authors = ["That one tool"]
 edition = "2021"

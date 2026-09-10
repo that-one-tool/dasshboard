@@ -22,6 +22,7 @@ import {
   importDevices,
 } from "../ipc";
 import { validateDevice, type DeviceFormValues } from "./validation";
+import { ForwardsEditor } from "./forwardsEditor";
 import { decideSecretToSend } from "./savePayload";
 import { deviceEndpoint } from "./deviceEndpoint";
 import { confirm } from "../ui/confirm";
@@ -65,6 +66,12 @@ export class DeviceManagerImpl {
   private options: DeviceManagerOptions;
   private devices: Device[] = [];
   private editingDeviceId: string | null = null;
+  /**
+   * The "Port forwarding" sub-editor for the SSH device dialog. Populated on
+   * open (from the device being edited, or empty for a new device) and read
+   * back on save. Created once the dialog markup exists (see `render`).
+   */
+  private forwardsEditor: ForwardsEditor | null = null;
 
   constructor(container: HTMLElement, options: DeviceManagerOptions) {
     this.container = container;
@@ -200,6 +207,14 @@ export class DeviceManagerImpl {
                 <span class="error-text"></span>
               </div>
             </div>
+
+            <div id="device-forwards" class="forwards-section"></div>
+            <div class="form-group form-group-checkbox">
+              <label for="device-tunnel-autostart">
+                <input id="device-tunnel-autostart" type="checkbox" />
+                Start tunnel automatically on app launch
+              </label>
+            </div>
             </div>
 
             <div id="serial-fields" class="device-kind-hidden">
@@ -215,13 +230,23 @@ export class DeviceManagerImpl {
               </div>
               <div class="form-group">
                 <label for="device-baud-rate">Baud rate</label>
-                <input
-                  id="device-baud-rate"
-                  type="number"
-                  placeholder="115200"
-                  min="1"
-                  value="115200"
-                />
+                <select id="device-baud-rate">
+                  <option value="300">300</option>
+                  <option value="1200">1200</option>
+                  <option value="2400">2400</option>
+                  <option value="4800">4800</option>
+                  <option value="9600">9600</option>
+                  <option value="19200">19200</option>
+                  <option value="38400">38400</option>
+                  <option value="57600">57600</option>
+                  <option value="74880">74880</option>
+                  <option value="115200" selected>115200</option>
+                  <option value="230400">230400</option>
+                  <option value="250000">250000</option>
+                  <option value="500000">500000</option>
+                  <option value="1000000">1000000</option>
+                  <option value="2000000">2000000</option>
+                </select>
                 <span class="error-text"></span>
               </div>
               <fieldset class="form-fieldset">
@@ -284,6 +309,12 @@ export class DeviceManagerImpl {
         </div>
       </div>
     `;
+
+    const forwardsContainer =
+      this.container.querySelector<HTMLElement>("#device-forwards");
+    if (forwardsContainer) {
+      this.forwardsEditor = new ForwardsEditor(forwardsContainer);
+    }
 
     this.attachEventListeners();
   }
@@ -403,6 +434,11 @@ export class DeviceManagerImpl {
     // `populateFormFromDevice` after setting the device's actual kind.
     this.updateKindDisplay();
 
+    // Start with an empty forwards list; the edit path fills it from the device
+    // below. Reset here so a cancelled edit can't leak forwards into the next
+    // device opened.
+    this.forwardsEditor?.setForwards([]);
+
     if (deviceId === null) {
       // New device
       title.textContent = "Add Device";
@@ -412,6 +448,9 @@ export class DeviceManagerImpl {
       const device = this.devices.find((d) => d.id === deviceId);
       if (!device) return;
 
+      if (device.kind === "ssh") {
+        this.forwardsEditor?.setForwards(device.forwards);
+      }
       title.textContent = "Edit Device";
       this.populateFormFromDevice(device);
       this.setSecretPlaceholder(true);
@@ -446,6 +485,7 @@ export class DeviceManagerImpl {
     // whether it was closed via Save, Cancel, the ✕, or the overlay.
     this.clearSecretFields();
     this.editingDeviceId = null;
+    this.forwardsEditor?.setForwards([]);
   }
 
   /** Blanks both secret inputs so no password/passphrase lingers in the DOM. */
@@ -505,6 +545,11 @@ export class DeviceManagerImpl {
       // `keyPath` is directly accessible — no cast needed.
       setInputValue("#device-key-path", device.auth.keyPath);
     }
+
+    const autoStart = this.container.querySelector<HTMLInputElement>(
+      "#device-tunnel-autostart",
+    );
+    if (autoStart) autoStart.checked = device.tunnelAutoStart ?? false;
   }
 
   /** Fill the serial-only inputs (port + framing) from a device. */
@@ -513,11 +558,29 @@ export class DeviceManagerImpl {
     setInputValue: (selector: string, value: unknown) => void,
   ): void {
     setInputValue("#device-port-name", device.portName);
+    // The baud-rate select offers the classic presets; a device saved with a
+    // non-standard rate (imported / hand-edited) gets that value added as an
+    // option so it still selects rather than silently snapping to a preset.
+    this.ensureBaudOption(device.baudRate);
     setInputValue("#device-baud-rate", device.baudRate);
     setInputValue("#device-data-bits", device.dataBits);
     setInputValue("#device-parity", device.parity);
     setInputValue("#device-stop-bits", device.stopBits);
     setInputValue("#device-flow-control", device.flowControl);
+  }
+
+  /** Add a one-off `<option>` for a non-preset baud rate so it can be selected. */
+  private ensureBaudOption(baudRate: number): void {
+    const select = this.container.querySelector<HTMLSelectElement>(
+      "#device-baud-rate",
+    );
+    if (!select) return;
+    const value = String(baudRate);
+    if (Array.from(select.options).some((o) => o.value === value)) return;
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = `${value} (custom)`;
+    select.appendChild(option);
   }
 
   private setSecretPlaceholder(isEditing: boolean): void {
@@ -575,6 +638,8 @@ export class DeviceManagerImpl {
       port: parseInt(requireInput(form, "#device-port").value, 10),
       username: requireInput(form, "#device-username").value,
       auth,
+      forwards: this.forwardsEditor?.getForwards() ?? [],
+      tunnelAutoStart: requireInput(form, "#device-tunnel-autostart").checked,
     };
   }
 
@@ -619,9 +684,13 @@ export class DeviceManagerImpl {
 
     const values = this.getFormValues();
 
-    // Client-side validation
+    // Client-side validation. SSH forwards are validated by their sub-editor,
+    // which renders errors inline on each offending row; a forward error blocks
+    // the save just like a device-field error.
     const errors = validateDevice(values);
-    if (errors.length > 0) {
+    const forwardsOk =
+      values.kind === "serial" ? true : (this.forwardsEditor?.validate() ?? true);
+    if (errors.length > 0 || !forwardsOk) {
       this.displayFieldErrors(errors);
       return;
     }
@@ -836,6 +905,8 @@ export function buildDeviceFromForm(
     port: values.port ?? 0,
     username: values.username ?? "",
     auth: values.auth ?? { method: "password" },
+    forwards: values.forwards ?? [],
+    tunnelAutoStart: values.tunnelAutoStart ?? false,
   };
 }
 
