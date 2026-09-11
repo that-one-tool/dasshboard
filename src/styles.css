@@ -57,7 +57,7 @@ body {
 
 .app-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
   flex: 0 0 auto;
   padding: 12px;
@@ -69,14 +69,13 @@ body {
   font-size: 1.25rem;
 }
 
-.version-banner {
-  /* `margin-left: auto` pushes the banner (and the settings button after it) to
-   * the right edge of the header, so it sits next to the settings button rather
-   * than beside the title. */
-  margin: 0 0 0 auto;
-  color: #9cdcfe;
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 0.85rem;
+/* The action buttons cluster at the right edge of the header (`margin-left:auto`
+ * pushes the whole group past the title). */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .app-content {
@@ -1046,19 +1045,34 @@ body.grid-dragging-row * {
  * Settings (Phase 5): header button + terminal-settings dialog
  * ========================================================================== */
 
-.settings-btn {
+/* Header action buttons (help / reload / trusted-hosts / settings). Square-ish
+ * icon buttons carrying an inline SVG glyph via `currentColor`, so the icon
+ * takes the button's text color and brightens on hover. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: 1px solid #3c3c3c;
   border-radius: 4px;
   color: #d4d4d4;
-  font-size: 18px;
-  line-height: 1;
-  padding: 4px 8px;
+  line-height: 0;
+  padding: 5px;
   cursor: pointer;
 }
 
-.settings-btn:hover {
+.icon-btn:hover {
   background-color: #3c3c3c;
+  color: #fff;
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid #0e639c;
+  outline-offset: 1px;
+}
+
+.icon-btn svg {
+  display: block;
 }
 
 /* The settings body isn't wrapped in a padded form like the device editor, so
@@ -1113,25 +1127,53 @@ body.grid-dragging-row * {
 }
 
 /* ============================================================================
- * Settings: Security section + trusted-hosts management dialog
+ * Trusted-hosts management dialog (opened from the header padlock button)
  * ============================================================================ */
-
-.settings-section {
-  padding: 0 16px;
-  margin: 4px 0 16px;
-}
-
-.settings-section-title {
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: #9d9d9d;
-  margin: 0 0 8px;
-}
 
 .known-hosts-content {
   max-width: 620px;
+}
+
+/* ============================================================================
+ * About dialog (opened from the header help button)
+ * ============================================================================ */
+
+.about-content {
+  max-width: 420px;
+  padding: 24px;
+  text-align: center;
+}
+
+.about-name {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.about-tagline {
+  margin: 6px 0 18px;
+  color: #9d9d9d;
+  font-size: 13px;
+}
+
+.about-version {
+  margin: 0;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 14px;
+  color: #9cdcfe;
+}
+
+.about-built {
+  margin: 8px 0 0;
+  color: #9d9d9d;
+  font-size: 12px;
+}
+
+/* The About dialog has no header bar, so its footer shouldn't carry the top
+ * border the shared `.form-actions` rule adds; center the Close button instead. */
+.about-content .form-actions {
+  border-top: none;
+  justify-content: center;
+  padding-top: 20px;
 }
 
 .known-hosts-lead {

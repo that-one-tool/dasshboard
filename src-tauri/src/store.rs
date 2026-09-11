@@ -42,8 +42,29 @@ impl DeviceStore {
     /// secret material — `devices.json` never holds secrets in the first
     /// place, per SPEC.md §4).
     pub fn load(dir: PathBuf) -> Self {
+        let devices = Self::read_from_disk(&dir);
+        DeviceStore {
+            dir,
+            devices: Mutex::new(devices),
+        }
+    }
+
+    /// Re-reads `devices.json` from disk, replacing the in-memory list. Lets a
+    /// second running app instance pick up devices another instance added,
+    /// edited, or removed (each instance caches the file in memory at startup,
+    /// so without this its view goes stale — see `reload_config`). Same
+    /// recovery semantics as [`load`](Self::load): a missing file yields an
+    /// empty list and a corrupt file is backed up and treated as empty.
+    pub fn reload(&self) {
+        let devices = Self::read_from_disk(&self.dir);
+        *self.lock_devices() = devices;
+    }
+
+    /// Reads and parses `dir/devices.json` into a device list, applying the
+    /// missing-file and corrupt-file recovery shared by `load` and `reload`.
+    fn read_from_disk(dir: &Path) -> Vec<Device> {
         let path = dir.join(DEVICES_FILE);
-        let devices = match fs::read_to_string(&path) {
+        match fs::read_to_string(&path) {
             Ok(contents) => match serde_json::from_str::<DevicesFile>(&contents) {
                 Ok(parsed) => parsed.devices,
                 Err(err) => {
@@ -62,10 +83,6 @@ impl DeviceStore {
                 Self::backup_corrupt(&path);
                 Vec::new()
             }
-        };
-        DeviceStore {
-            dir,
-            devices: Mutex::new(devices),
         }
     }
 
@@ -399,5 +416,64 @@ mod tests {
             value["devices"][0]["auth"],
             serde_json::json!({ "method": "password" })
         );
+    }
+
+    // -- reload: multi-instance sync (pick up another instance's writes) ----
+
+    #[test]
+    fn reload_picks_up_a_change_written_by_another_instance() {
+        let dir = tempdir().unwrap();
+        // This instance's store, holding one device in memory.
+        let store = DeviceStore::load(dir.path().to_path_buf());
+        store.upsert(sample_device("NAS")).unwrap();
+        assert_eq!(store.list().len(), 1);
+
+        // A *second* instance (same config dir) adds another device, rewriting
+        // devices.json on disk. Our in-memory store is now stale.
+        let other = DeviceStore::load(dir.path().to_path_buf());
+        other.upsert(sample_device("Router")).unwrap();
+        assert_eq!(store.list().len(), 1, "must stay stale until reloaded");
+
+        store.reload();
+
+        let names: Vec<String> = store.list().into_iter().map(|d| d.name).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"NAS".to_string()));
+        assert!(names.contains(&"Router".to_string()));
+    }
+
+    #[test]
+    fn reload_recovers_to_empty_when_the_file_disappears() {
+        let dir = tempdir().unwrap();
+        let store = DeviceStore::load(dir.path().to_path_buf());
+        store.upsert(sample_device("NAS")).unwrap();
+
+        fs::remove_file(dir.path().join(DEVICES_FILE)).unwrap();
+        store.reload();
+
+        assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn reload_backs_up_a_corrupt_file_and_empties_the_store() {
+        let dir = tempdir().unwrap();
+        let store = DeviceStore::load(dir.path().to_path_buf());
+        store.upsert(sample_device("NAS")).unwrap();
+
+        // Another process (or disk gremlin) corrupts the file under us.
+        fs::write(dir.path().join(DEVICES_FILE), "{ not json ").unwrap();
+        store.reload();
+
+        assert!(store.list().is_empty());
+        let backups = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("devices.json.corrupt-")
+            })
+            .count();
+        assert_eq!(backups, 1, "a corrupt file must be backed up on reload too");
     }
 }

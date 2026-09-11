@@ -34,15 +34,27 @@ export interface DeviceManagerOptions {
   onSuccess?: (message: string) => void;
 }
 
+/** Handle returned by `initDeviceManager` for driving it after construction. */
+export interface DeviceManagerHandle {
+  /** Re-fetches the device list from the backend and re-renders the sidebar.
+   * Used by the config-reload path (multi-instance sync). */
+  reload(): Promise<void>;
+}
+
 /**
  * Initializes the device manager UI: sidebar with device list and dialogs.
+ * Returns a handle whose `reload()` re-syncs the sidebar from the backend, or
+ * `null` when the sidebar container is absent (nothing to manage).
  */
-export function initDeviceManager(options: DeviceManagerOptions = {}): void {
+export function initDeviceManager(
+  options: DeviceManagerOptions = {},
+): DeviceManagerHandle | null {
   const deviceListEl = document.querySelector<HTMLElement>(".device-list");
-  if (!deviceListEl) return;
+  if (!deviceListEl) return null;
 
   const manager = new DeviceManagerImpl(deviceListEl, options);
   manager.init();
+  return { reload: () => manager.reload() };
 }
 
 /**
@@ -80,6 +92,16 @@ export class DeviceManagerImpl {
 
   async init(): Promise<void> {
     this.renderUI();
+    await this.loadDevices();
+  }
+
+  /**
+   * Re-fetches the device list from the backend and re-renders the sidebar
+   * (the config-reload / multi-instance-sync entry point). The static dialog
+   * markup is left intact — only the list is rebuilt — so an open edit dialog
+   * is undisturbed; the refreshed data is picked up the next time a dialog opens.
+   */
+  async reload(): Promise<void> {
     await this.loadDevices();
   }
 

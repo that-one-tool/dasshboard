@@ -12,11 +12,17 @@
     <div class="app-layout">
       <header class="app-header">
         <h1>DaSSHboard</h1>
-        <p id="version-banner" class="version-banner">
-          Contacting backend&hellip;
-        </p>
-        <button type="button" id="settings-btn" class="settings-btn"
-          title="Terminal settings" aria-label="Terminal settings">&#9881;</button>
+        <div class="header-actions">
+          <button type="button" id="reload-btn" class="icon-btn"
+            title="Reload devices, profiles &amp; settings from disk (picks up changes from another window)"
+            aria-label="Reload configuration from disk"></button>
+          <button type="button" id="trusted-hosts-btn" class="icon-btn"
+            title="Manage trusted hosts" aria-label="Manage trusted hosts"></button>
+          <button type="button" id="settings-btn" class="icon-btn"
+            title="Terminal settings" aria-label="Terminal settings"></button>
+          <button type="button" id="help-btn" class="icon-btn"
+            title="About DaSSHboard" aria-label="About DaSSHboard"></button>
+        </div>
       </header>
 
       <div class="app-content">

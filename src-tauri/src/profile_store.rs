@@ -58,8 +58,27 @@ impl ProfileStore {
     ///   `profiles.json.corrupt-<unix-seconds>` (best effort; a failure to
     ///   back it up is logged, not fatal) and the store starts empty.
     pub fn load(dir: PathBuf) -> Self {
+        let state = Self::read_from_disk(&dir);
+        ProfileStore {
+            dir,
+            state: Mutex::new(state),
+        }
+    }
+
+    /// Re-reads `profiles.json` from disk, replacing the in-memory profile list
+    /// and default id. Lets a second running app instance pick up profiles
+    /// another instance saved, renamed, or deleted (see `reload_config`). Same
+    /// recovery semantics as [`load`](Self::load).
+    pub fn reload(&self) {
+        let state = Self::read_from_disk(&self.dir);
+        *self.lock_state() = state;
+    }
+
+    /// Reads and parses `dir/profiles.json` into a [`ProfilesState`], applying
+    /// the missing-file and corrupt-file recovery shared by `load` and `reload`.
+    fn read_from_disk(dir: &Path) -> ProfilesState {
         let path = dir.join(PROFILES_FILE);
-        let state = match fs::read_to_string(&path) {
+        match fs::read_to_string(&path) {
             Ok(contents) => match serde_json::from_str::<ProfilesFile>(&contents) {
                 Ok(parsed) => ProfilesState {
                     default_profile_id: parsed.default_profile_id,
@@ -90,10 +109,6 @@ impl ProfileStore {
                     profiles: Vec::new(),
                 }
             }
-        };
-        ProfileStore {
-            dir,
-            state: Mutex::new(state),
         }
     }
 
@@ -686,5 +701,46 @@ mod tests {
         store.clear_device("dev-1").unwrap();
 
         assert!(!dir.path().join(PROFILES_FILE).exists());
+    }
+
+    // -- reload: multi-instance sync ---------------------------------------
+
+    #[test]
+    fn reload_picks_up_profiles_and_default_written_by_another_instance() {
+        let dir = tempdir().unwrap();
+        let store = ProfileStore::load(dir.path().to_path_buf());
+        store.upsert(sample_profile("Homelab")).unwrap();
+        assert_eq!(store.list().profiles.len(), 1);
+        assert_eq!(store.list().default_profile_id, None);
+
+        // A second instance adds a profile and marks it default.
+        let other = ProfileStore::load(dir.path().to_path_buf());
+        let added = other.upsert(sample_profile("Office")).unwrap();
+        other.set_default(Some(added.id.clone())).unwrap();
+
+        assert_eq!(store.list().profiles.len(), 1, "stale until reloaded");
+
+        store.reload();
+
+        let list = store.list();
+        assert_eq!(list.profiles.len(), 2);
+        assert_eq!(list.default_profile_id, Some(added.id));
+    }
+
+    #[test]
+    fn reload_recovers_to_empty_when_the_file_disappears() {
+        let dir = tempdir().unwrap();
+        let store = ProfileStore::load(dir.path().to_path_buf());
+        store.upsert(sample_profile("Homelab")).unwrap();
+        store
+            .set_default(Some(store.list().profiles[0].id.clone()))
+            .unwrap();
+
+        fs::remove_file(dir.path().join(PROFILES_FILE)).unwrap();
+        store.reload();
+
+        let list = store.list();
+        assert!(list.profiles.is_empty());
+        assert_eq!(list.default_profile_id, None);
     }
 }

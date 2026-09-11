@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod config_watch;
 mod device;
 mod error;
 mod known_hosts;
@@ -65,7 +66,7 @@ pub fn run() {
             // Host-key TOFU store + SSH session manager (SPEC.md §3/§6). The
             // manager owns the known-hosts store (behind an `Arc`) so its
             // session tasks can consult/persist trust decisions.
-            let known_hosts = Arc::new(KnownHostsStore::load(config_dir));
+            let known_hosts = Arc::new(KnownHostsStore::load(config_dir.clone()));
             let session_manager = Arc::new(SessionManager::with_defaults(known_hosts));
             // Tunnels (local port-forwarding) share the SSH manager's host-key
             // TOFU store, so a trust decision applies to shells and tunnels to
@@ -84,6 +85,12 @@ pub fn run() {
                 tunnel_manager,
                 serial_manager,
             });
+            // Watch the config dir so a change made by another running instance
+            // (multi-instance sync) is picked up automatically: it emits a
+            // debounced `config_changed` event that the frontend answers by
+            // reloading. Best-effort — a watcher failure just disables the
+            // automatic layer; the manual Reload button is unaffected.
+            config_watch::spawn(app.handle().clone(), config_dir);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -138,6 +145,7 @@ pub fn run() {
             commands::set_default_profile,
             commands::get_settings,
             commands::save_settings,
+            commands::reload_config,
             commands::export_devices,
             commands::import_devices,
             commands::export_profiles,

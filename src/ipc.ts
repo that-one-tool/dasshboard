@@ -123,6 +123,65 @@ export async function ping(): Promise<string> {
   return invoke<string>("ping");
 }
 
+/* ----------------------------------------------------------------------------
+ * Multi-instance config sync (reload)
+ *
+ * Each running app instance is a separate process that caches every config
+ * file (`devices.json`, `profiles.json`, `settings.json`, `known_hosts.json`)
+ * in memory at startup, so a change made by another instance is invisible until
+ * a reload. `reloadConfig` tells the backend to re-read those files; a Rust
+ * filesystem watcher also emits `config_changed` on any on-disk change so the
+ * frontend can reload automatically (see `onConfigChanged`).
+ * -------------------------------------------------------------------------- */
+
+/**
+ * When THIS window last wrote config, as an epoch-ms deadline. A local write
+ * lands on disk and bounces straight back through the file watcher as a
+ * `config_changed` event; without this the window would pointlessly reload its
+ * own change. Auto-reload consults `isLocalConfigWriteRecent()` to skip that
+ * echo; the manual Reload button ignores it and always reloads.
+ */
+let suppressAutoReloadUntil = 0;
+
+/** How long after a local config write to treat an incoming `config_changed`
+ * as our own echo. Comfortably covers the watcher's 300 ms debounce plus the
+ * OS delivering the event. */
+const LOCAL_WRITE_ECHO_MS = 900;
+
+/** Marks that this window just wrote a config file (called by every config-
+ * writing IPC wrapper below on success), arming the echo-suppression window. */
+export function markLocalConfigWrite(): void {
+  suppressAutoReloadUntil = Date.now() + LOCAL_WRITE_ECHO_MS;
+}
+
+/** Whether a `config_changed` event arriving now is most likely the echo of
+ * this window's own recent write, and so should not trigger an auto-reload. */
+export function isLocalConfigWriteRecent(): boolean {
+  return Date.now() < suppressAutoReloadUntil;
+}
+
+/**
+ * Re-reads every persisted config file into the backend's in-memory stores, so
+ * the subsequent list/get commands serve fresh data rather than the startup
+ * cache. Infallible on the backend, but wrapped like the others for a uniform
+ * error shape if the IPC layer itself rejects.
+ */
+export async function reloadConfig(): Promise<void> {
+  try {
+    await invoke<void>("reload_config");
+  } catch (err) {
+    throw normalizeError(err);
+  }
+}
+
+/**
+ * Subscribes to the backend's debounced `config_changed` event (another
+ * instance changed a config file on disk). Returns an unlisten function.
+ */
+export function onConfigChanged(handler: () => void): Promise<UnlistenFn> {
+  return listen("config_changed", () => handler());
+}
+
 /**
  * Lists all saved devices. Does not include secrets (they are stored in the keyring only).
  */
@@ -156,7 +215,9 @@ export async function saveDevice(
     payload.secret = secret;
   }
   try {
-    return await invoke<Device>("save_device", payload);
+    const saved = await invoke<Device>("save_device", payload);
+    markLocalConfigWrite();
+    return saved;
   } catch (err) {
     throw normalizeError(err);
   }
@@ -168,6 +229,7 @@ export async function saveDevice(
 export async function deleteDevice(deviceId: string): Promise<void> {
   try {
     await invoke<void>("delete_device", { deviceId } as Record<string, unknown>);
+    markLocalConfigWrite();
   } catch (err) {
     throw normalizeError(err);
   }
@@ -263,6 +325,9 @@ export async function respondHostKey(
 ): Promise<void> {
   try {
     await invoke<void>("respond_host_key", { promptId, accept });
+    // Accepting a host key writes known_hosts.json; suppress the resulting
+    // watcher echo. A reject changes nothing on disk, so nothing to suppress.
+    if (accept) markLocalConfigWrite();
   } catch (err) {
     throw normalizeError(err);
   }
@@ -296,6 +361,7 @@ export async function listKnownHosts(): Promise<KnownHostEntry[]> {
 export async function forgetHost(id: string): Promise<void> {
   try {
     await invoke<void>("forget_host", { id });
+    markLocalConfigWrite();
   } catch (err) {
     throw normalizeError(err);
   }
@@ -446,7 +512,9 @@ export async function listProfiles(): Promise<ProfileList> {
  */
 export async function saveProfile(profile: Profile): Promise<Profile> {
   try {
-    return await invoke<Profile>("save_profile", { profile });
+    const saved = await invoke<Profile>("save_profile", { profile });
+    markLocalConfigWrite();
+    return saved;
   } catch (err) {
     throw normalizeError(err);
   }
@@ -456,6 +524,7 @@ export async function saveProfile(profile: Profile): Promise<Profile> {
 export async function deleteProfile(profileId: string): Promise<void> {
   try {
     await invoke<void>("delete_profile", { profileId });
+    markLocalConfigWrite();
   } catch (err) {
     throw normalizeError(err);
   }
@@ -465,6 +534,7 @@ export async function deleteProfile(profileId: string): Promise<void> {
 export async function setDefaultProfile(profileId: string | null): Promise<void> {
   try {
     await invoke<void>("set_default_profile", { profileId });
+    markLocalConfigWrite();
   } catch (err) {
     throw normalizeError(err);
   }
@@ -504,7 +574,9 @@ export async function getSettings(): Promise<Settings> {
 /** Persists app settings (backend clamps font size / defaults empty family). */
 export async function saveSettings(settings: Settings): Promise<Settings> {
   try {
-    return await invoke<Settings>("save_settings", { settings });
+    const saved = await invoke<Settings>("save_settings", { settings });
+    markLocalConfigWrite();
+    return saved;
   } catch (err) {
     throw normalizeError(err);
   }
@@ -534,7 +606,9 @@ export async function exportDevices(path: string): Promise<number> {
  */
 export async function importDevices(path: string): Promise<number> {
   try {
-    return await invoke<number>("import_devices", { path });
+    const count = await invoke<number>("import_devices", { path });
+    markLocalConfigWrite();
+    return count;
   } catch (err) {
     throw normalizeError(err);
   }
@@ -560,7 +634,9 @@ export async function exportProfiles(path: string): Promise<number> {
  */
 export async function importProfiles(path: string): Promise<number> {
   try {
-    return await invoke<number>("import_profiles", { path });
+    const count = await invoke<number>("import_profiles", { path });
+    markLocalConfigWrite();
+    return count;
   } catch (err) {
     throw normalizeError(err);
   }

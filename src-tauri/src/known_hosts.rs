@@ -94,8 +94,29 @@ impl KnownHostsStore {
     /// re-prompted via TOFU). Neither the file nor these log lines ever
     /// contain secret material.
     pub fn load(dir: PathBuf) -> Self {
+        let hosts = Self::read_from_disk(&dir);
+        KnownHostsStore {
+            dir,
+            hosts: Mutex::new(hosts),
+        }
+    }
+
+    /// Re-reads `known_hosts.json` from disk, replacing the in-memory trust
+    /// map. Lets a second running app instance pick up host keys another
+    /// instance trusted or forgot, so its next connection's TOFU check consults
+    /// fresh data (see `reload_config`). Same recovery semantics as
+    /// [`load`](Self::load): a corrupt file is backed up and treated as empty
+    /// (the user is simply re-prompted via TOFU).
+    pub fn reload(&self) {
+        let hosts = Self::read_from_disk(&self.dir);
+        *self.lock_hosts() = hosts;
+    }
+
+    /// Reads and parses `dir/known_hosts.json` into the trust map, applying the
+    /// missing-file and corrupt-file recovery shared by `load` and `reload`.
+    fn read_from_disk(dir: &Path) -> HashMap<String, KnownHost> {
         let path = dir.join(KNOWN_HOSTS_FILE);
-        let hosts = match fs::read_to_string(&path) {
+        match fs::read_to_string(&path) {
             Ok(contents) => match serde_json::from_str::<KnownHostsFile>(&contents) {
                 Ok(parsed) => parsed.hosts,
                 Err(err) => {
@@ -114,10 +135,6 @@ impl KnownHostsStore {
                 Self::backup_corrupt(&path);
                 HashMap::new()
             }
-        };
-        KnownHostsStore {
-            dir,
-            hosts: Mutex::new(hosts),
         }
     }
 
@@ -384,5 +401,41 @@ mod tests {
         // Still usable afterwards.
         store.trust("h", 22, ed25519("SHA256:abc")).unwrap();
         assert!(dir.path().join(KNOWN_HOSTS_FILE).exists());
+    }
+
+    // -- reload: multi-instance sync ---------------------------------------
+
+    #[test]
+    fn reload_picks_up_trust_and_forget_from_another_instance() {
+        let dir = tempdir().unwrap();
+        let store = KnownHostsStore::load(dir.path().to_path_buf());
+        store.trust("h", 22, ed25519("SHA256:abc")).unwrap();
+        assert_eq!(store.verdict("h", 22, "SHA256:abc"), Verdict::Known);
+
+        // A second instance trusts a new host and forgets the first.
+        let other = KnownHostsStore::load(dir.path().to_path_buf());
+        other.trust("h2", 22, ed25519("SHA256:def")).unwrap();
+        other.forget("h:22").unwrap();
+
+        // Stale until reloaded: still knows the now-forgotten host, unaware of h2.
+        assert_eq!(store.verdict("h", 22, "SHA256:abc"), Verdict::Known);
+        assert_eq!(store.verdict("h2", 22, "SHA256:def"), Verdict::Unknown);
+
+        store.reload();
+
+        assert_eq!(store.verdict("h", 22, "SHA256:abc"), Verdict::Unknown);
+        assert_eq!(store.verdict("h2", 22, "SHA256:def"), Verdict::Known);
+    }
+
+    #[test]
+    fn reload_recovers_to_empty_when_the_file_disappears() {
+        let dir = tempdir().unwrap();
+        let store = KnownHostsStore::load(dir.path().to_path_buf());
+        store.trust("h", 22, ed25519("SHA256:abc")).unwrap();
+
+        fs::remove_file(dir.path().join(KNOWN_HOSTS_FILE)).unwrap();
+        store.reload();
+
+        assert_eq!(store.verdict("h", 22, "SHA256:abc"), Verdict::Unknown);
     }
 }

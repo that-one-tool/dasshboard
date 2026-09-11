@@ -149,6 +149,23 @@ fn save_settings_impl(state: &AppState, settings: Settings) -> Result<Settings, 
     state.settings_store.save(settings)
 }
 
+/// Re-reads every persisted config file (devices, profiles, settings, known
+/// hosts) from disk into the in-memory stores, so a second running app instance
+/// picks up changes another instance made. Each store caches its file at
+/// startup; without this a change in instance A stays invisible to instance B
+/// until B restarts. Secrets are unaffected — they are read live from the OS
+/// keyring, never cached. The known-hosts store is shared by the SSH session
+/// and tunnel managers, so reloading it once refreshes both.
+///
+/// Infallible: each store's `reload` recovers from a missing or corrupt file
+/// exactly like its startup `load`, so there is nothing to report back.
+fn reload_config_impl(state: &AppState) {
+    state.device_store.reload();
+    state.profile_store.reload();
+    state.settings_store.reload();
+    state.session_manager.known_hosts().reload();
+}
+
 /// Never includes secret material — `Device` has no secret field to begin
 /// with (SPEC.md §4/§8).
 #[tauri::command]
@@ -224,6 +241,15 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, AppError> {
 #[tauri::command]
 pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<Settings, AppError> {
     save_settings_impl(&state, settings)
+}
+
+/// Reloads every persisted config file from disk into memory (multi-instance
+/// sync — see [`reload_config_impl`]). Returns `()`; it cannot fail. The
+/// frontend invokes this before re-fetching its lists so the list commands
+/// serve the freshly-read data rather than the startup cache.
+#[tauri::command]
+pub fn reload_config(state: State<'_, AppState>) {
+    reload_config_impl(&state);
 }
 
 /* ============================================================================
@@ -1228,5 +1254,38 @@ mod tests {
         let after = list_profiles_impl(&state);
         assert!(after.profiles.is_empty());
         assert_eq!(after.default_profile_id, None);
+    }
+
+    #[test]
+    fn reload_config_refreshes_every_store_from_disk() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+
+        // This instance starts empty across all stores.
+        assert!(list_devices_impl(&state).is_empty());
+        assert!(list_profiles_impl(&state).profiles.is_empty());
+        assert_eq!(state.session_manager.known_hosts().list().len(), 0);
+
+        // A second instance (same config dir) writes to each config file.
+        let other = test_state(dir.path());
+        save_device_impl(&other, sample_device(), Some("pw".to_string())).unwrap();
+        save_profile_impl(&other, profile_referencing("dev-1")).unwrap();
+        other
+            .session_manager
+            .known_hosts()
+            .trust("h", 22, crate::known_hosts::KnownHost {
+                key_type: "ssh-ed25519".to_string(),
+                fingerprint: "SHA256:abc".to_string(),
+            })
+            .unwrap();
+
+        // Our in-memory view is stale until reloaded.
+        assert!(list_devices_impl(&state).is_empty(), "stale until reload");
+
+        reload_config_impl(&state);
+
+        assert_eq!(list_devices_impl(&state).len(), 1);
+        assert_eq!(list_profiles_impl(&state).profiles.len(), 1);
+        assert_eq!(state.session_manager.known_hosts().list().len(), 1);
     }
 }

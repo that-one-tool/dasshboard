@@ -1,8 +1,8 @@
 /**
  * Trusted-hosts management dialog. Lists every host key the app has recorded
  * (TOFU) and lets the user forget one — after which the next connect to that
- * host re-prompts for trust. Opened from the "Manage trusted hosts…" button in
- * the settings dialog.
+ * host re-prompts for trust. Opened from the padlock button in the header
+ * (its own action, alongside settings).
  *
  * Host/fingerprint strings are server-controlled, so every dynamic value is
  * injected via `textContent`, never `innerHTML` (same rule as the host-key

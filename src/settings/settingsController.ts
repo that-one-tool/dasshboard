@@ -9,7 +9,6 @@
 import type { Grid } from "../grid";
 import { getSettings, saveSettings, type Settings, type TerminalSettings } from "../ipc";
 import { DEFAULT_TERMINAL_SETTINGS } from "../terminal/terminalSettings";
-import { openKnownHostsDialog } from "./knownHostsDialog";
 
 export interface SettingsControllerOptions {
   grid: Grid;
@@ -43,6 +42,23 @@ export class SettingsController {
     document
       .querySelector<HTMLButtonElement>("#settings-btn")
       ?.addEventListener("click", () => this.openDialog());
+  }
+
+  /**
+   * Re-reads settings from disk and applies terminal appearance live, without
+   * writing anything back. Used by the config-reload path (multi-instance
+   * sync): another running instance may have changed the font/theme, so adopt
+   * whatever is now on disk. Deliberately does NOT persist — it only reflects
+   * disk truth — so it can never clobber another instance's just-saved value.
+   */
+  async reloadFromDisk(): Promise<void> {
+    try {
+      const fresh = await getSettings();
+      this.settings = fresh;
+      this.grid.applyTerminalSettings(fresh.terminal);
+    } catch (err) {
+      this.onError(errorMessage(err));
+    }
   }
 
   /** Current terminal appearance — read by panes when they create a terminal. */
@@ -110,12 +126,6 @@ export class SettingsController {
             <option value="light">Light</option>
           </select>
         </label>
-        <div class="settings-section">
-          <h3 class="settings-section-title">Security</h3>
-          <button type="button" class="btn btn-secondary" data-action="known-hosts">
-            Manage trusted hosts…
-          </button>
-        </div>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" data-action="close">Close</button>
         </div>
@@ -161,8 +171,6 @@ export class SettingsController {
       const action = target.dataset.action;
       if (action === "close" || target.classList.contains("dialog-overlay")) {
         close();
-      } else if (action === "known-hosts") {
-        openKnownHostsDialog({ onError: this.onError });
       }
     });
     root.addEventListener("keydown", (e) => {

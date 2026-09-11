@@ -1,6 +1,10 @@
 import "@xterm/xterm/css/xterm.css";
-import { ping, type AppError } from "./ipc";
-import { formatPingMessage } from "./version";
+import {
+  reloadConfig,
+  onConfigChanged,
+  isLocalConfigWriteRecent,
+  type AppError,
+} from "./ipc";
 import { initDeviceManager } from "./devices/deviceManager";
 import { Grid } from "./grid";
 import { ProfileManager } from "./profiles/profileManager";
@@ -8,19 +12,24 @@ import { SettingsController } from "./settings/settingsController";
 import { DEFAULT_TERMINAL_SETTINGS } from "./terminal/terminalSettings";
 import { initHostKeyDialog } from "./terminal/hostKeyDialog";
 import { initTunnelsPanel } from "./tunnels/tunnelsPanel";
+import { openAboutDialog } from "./ui/aboutDialog";
+import { openKnownHostsDialog } from "./settings/knownHostsDialog";
+import { helpIcon, reloadIcon, lockIcon, gearIcon } from "./ui/icons";
 
-/** Calls the `ping` command and renders the result (proves IPC round trip). */
-function initVersionBanner(): void {
-	const el = document.querySelector<HTMLElement>("#version-banner");
-	if (!el) return;
-
-	ping()
-		.then((version) => {
-			el.textContent = formatPingMessage(version);
-		})
-		.catch((error: unknown) => {
-			el.textContent = `Ping failed (${String(error)})`;
-		});
+/** Injects the SVG glyph into each header action button (kept in one place so
+ * the icons stay consistent with the app's Bootstrap-Icons set). A missing
+ * button is skipped — the markup is static, so this only no-ops in tests. */
+function initHeaderIcons(): void {
+	const icons: Array<[string, string]> = [
+		["#reload-btn", reloadIcon],
+		["#trusted-hosts-btn", lockIcon],
+		["#settings-btn", gearIcon],
+		["#help-btn", helpIcon],
+	];
+	for (const [selector, svg] of icons) {
+		const btn = document.querySelector<HTMLButtonElement>(selector);
+		if (btn) btn.innerHTML = svg;
+	}
 }
 
 const TOAST_DURATION_MS = 4000;
@@ -116,7 +125,20 @@ async function initApp(): Promise<void> {
 	// loads lazily the first time a glyph needs it).
 	void document.fonts?.load('16px "Symbols Nerd Font Mono"').catch(() => {});
 
-	initVersionBanner();
+	// Header action buttons: paint their icons, then wire the two that open a
+	// dialog directly (help/about and trusted-hosts). Reload and settings are
+	// wired further down, next to the state they act on.
+	initHeaderIcons();
+	document
+		.querySelector<HTMLButtonElement>("#help-btn")
+		?.addEventListener("click", () => openAboutDialog());
+	document
+		.querySelector<HTMLButtonElement>("#trusted-hosts-btn")
+		?.addEventListener("click", () =>
+			openKnownHostsDialog({
+				onError: (message) => showToast(`Error: ${message}`, "error"),
+			}),
+		);
 
 	// Host-key trust dialog reacts to `host_key_prompt` events from any source
 	// (a live connect or the device editor's Test connection button).
@@ -177,7 +199,7 @@ async function initApp(): Promise<void> {
 	// dropdown so a newly added/edited/deleted device shows up immediately; also
 	// re-sync profiles (a deleted device is nulled out of them backend-side) and
 	// the tunnels drawer (a device's forwards may have changed).
-	initDeviceManager({
+	const deviceManager = initDeviceManager({
 		onError: (error: AppError) => {
 			console.error("Device error:", error);
 			showToast(`Error: ${error.message}`, "error");
@@ -188,5 +210,46 @@ async function initApp(): Promise<void> {
 			void profileManager.reload();
 			void tunnelsPanel.refresh();
 		},
+	});
+
+	// Multi-instance config sync (the multi-window follow-up): each app instance
+	// caches the config files in memory at startup, so a change made by another
+	// instance (a new device, an edited profile, a font change) is invisible here
+	// until reloaded. `reloadAll` re-reads every store on the backend, then
+	// re-renders each config-derived surface. Live SSH sessions and the current
+	// grid layout are untouched — only the *available* devices / profiles /
+	// settings / trusted hosts are refreshed. Wired to a manual header button and
+	// to the backend file-watcher's `config_changed` event.
+	const reloadAll = async (announce: boolean): Promise<void> => {
+		try {
+			await reloadConfig();
+		} catch (error) {
+			showToast(`Reload failed: ${(error as AppError).message}`, "error");
+			return;
+		}
+		// Independent surfaces: one failing (e.g. a transient IPC error) must not
+		// skip the others, so settle all rather than short-circuiting.
+		await Promise.allSettled([
+			deviceManager?.reload() ?? Promise.resolve(),
+			grid.refreshDevices(),
+			profileManager.reload(),
+			settings.reloadFromDisk(),
+			tunnelsPanel.refresh(),
+		]);
+		if (announce) showToast("Configuration reloaded", "success");
+	};
+
+	// Manual Reload button in the header: always reloads, and confirms with a
+	// toast so the click has visible feedback even when nothing changed.
+	document
+		.querySelector<HTMLButtonElement>("#reload-btn")
+		?.addEventListener("click", () => void reloadAll(true));
+
+	// Automatic reload when another instance writes a config file. Skip the echo
+	// of our *own* just-written change (the watcher can't tell which instance
+	// wrote it): `isLocalConfigWriteRecent()` is armed by every local config write.
+	void onConfigChanged(() => {
+		if (isLocalConfigWriteRecent()) return;
+		void reloadAll(true);
 	});
 }

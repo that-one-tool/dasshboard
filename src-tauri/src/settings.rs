@@ -110,8 +110,28 @@ impl SettingsStore {
     /// defaults (created on first save); a corrupt file is backed up to
     /// `settings.json.corrupt-<unix-seconds>` and defaults are used.
     pub fn load(dir: PathBuf) -> Self {
+        let settings = Self::read_from_disk(&dir);
+        SettingsStore {
+            dir,
+            settings: Mutex::new(settings),
+        }
+    }
+
+    /// Re-reads `settings.json` from disk, replacing the in-memory settings.
+    /// Lets a second running app instance pick up terminal appearance another
+    /// instance changed (see `reload_config`). Same recovery semantics as
+    /// [`load`](Self::load): a missing file yields defaults and a corrupt file
+    /// is backed up and defaults are used.
+    pub fn reload(&self) {
+        let settings = Self::read_from_disk(&self.dir);
+        *self.lock() = settings;
+    }
+
+    /// Reads, parses, and sanitizes `dir/settings.json`, applying the
+    /// missing-file and corrupt-file recovery shared by `load` and `reload`.
+    fn read_from_disk(dir: &Path) -> Settings {
         let path = dir.join(SETTINGS_FILE);
-        let settings = match fs::read_to_string(&path) {
+        match fs::read_to_string(&path) {
             Ok(contents) => match serde_json::from_str::<Settings>(&contents) {
                 Ok(parsed) => parsed.sanitized(),
                 Err(err) => {
@@ -130,10 +150,6 @@ impl SettingsStore {
                 Self::backup_corrupt(&path);
                 Settings::default()
             }
-        };
-        SettingsStore {
-            dir,
-            settings: Mutex::new(settings),
         }
     }
 
@@ -329,5 +345,46 @@ mod tests {
         assert_eq!(value["terminal"]["fontSize"], DEFAULT_FONT_SIZE);
         assert_eq!(value["terminal"]["theme"], "dark");
         assert!(value.get("lastProfileId").is_some()); // present as null
+    }
+
+    // -- reload: multi-instance sync ---------------------------------------
+
+    #[test]
+    fn reload_picks_up_settings_written_by_another_instance() {
+        let dir = tempdir().unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        assert_eq!(store.get().terminal.font_size, DEFAULT_FONT_SIZE);
+
+        // A second instance changes the terminal appearance.
+        let other = SettingsStore::load(dir.path().to_path_buf());
+        let mut s = other.get();
+        s.terminal.font_size = 22;
+        s.terminal.theme = TerminalTheme::Light;
+        other.save(s).unwrap();
+
+        assert_eq!(
+            store.get().terminal.font_size,
+            DEFAULT_FONT_SIZE,
+            "stale until reloaded"
+        );
+
+        store.reload();
+
+        assert_eq!(store.get().terminal.font_size, 22);
+        assert_eq!(store.get().terminal.theme, TerminalTheme::Light);
+    }
+
+    #[test]
+    fn reload_recovers_to_defaults_when_the_file_disappears() {
+        let dir = tempdir().unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        let mut s = store.get();
+        s.terminal.font_size = 20;
+        store.save(s).unwrap();
+
+        fs::remove_file(dir.path().join(SETTINGS_FILE)).unwrap();
+        store.reload();
+
+        assert_eq!(store.get().terminal.font_size, DEFAULT_FONT_SIZE);
     }
 }

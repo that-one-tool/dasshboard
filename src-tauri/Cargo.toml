@@ -1,6 +1,6 @@
 [package]
 name = "dasshboard"
-version = "1.3.0"
+version = "1.4.0"
 description = "A Tauri App"
 authors = ["That one tool"]
 edition = "2021"
@@ -53,6 +53,12 @@ uuid = { version = "1.24.0", features = ["v4", "serde"] }
 # Typed error enums for AppError (used starting Phase 1).
 thiserror = "2.0.18"
 tauri-plugin-window-state = "=2.4.1"
+# Filesystem watcher on the app-config dir (multi-instance config sync — see
+# `config_watch.rs`). Uses the OS-native backend (ReadDirectoryChangesW on
+# Windows, inotify/fsevent elsewhere) via `recommended_watcher`; we drive our
+# own std mpsc channel, so no extra channel feature is needed. Pinned exactly
+# like the other crates.
+notify = "=8.2.0"
 
 [dev-dependencies]
 # Temp-dir fixtures for DeviceStore tests (missing/corrupt-file recovery,
