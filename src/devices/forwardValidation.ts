@@ -7,6 +7,7 @@
 
 import type { Forward } from "../ipc";
 import type { ValidationError } from "./validation";
+import { t } from "../i18n";
 
 /** Default local bind address when the field is left blank (matches the Rust default). */
 export const DEFAULT_LOCAL_ADDR = "127.0.0.1";
@@ -66,7 +67,7 @@ function pushIfInvalidPort(
   field: string,
 ): void {
   if (!isValidPort(port)) {
-    errors.push({ field, message: "Port must be a number between 1 and 65535" });
+    errors.push({ field, message: t("validation.portRange") });
   }
 }
 
@@ -79,7 +80,7 @@ function pushIfNotLoopback(
   if (!isLoopbackAddress(addr)) {
     errors.push({
       field,
-      message: "Local address must be a loopback address (e.g. 127.0.0.1)",
+      message: t("validation.loopback"),
     });
   }
 }
@@ -90,12 +91,12 @@ function forwardFieldErrors(
   prefix: string,
 ): ValidationError[] {
   const errors: ValidationError[] = [];
-  pushIfEmpty(errors, forward.name, `${prefix}-name`, "Name is required");
+  pushIfEmpty(errors, forward.name, `${prefix}-name`, t("validation.name"));
   pushIfEmpty(
     errors,
     forward.remoteHost,
     `${prefix}-remoteHost`,
-    "Remote host is required",
+    t("validation.remoteHost"),
   );
   pushIfInvalidPort(errors, forward.localPort, `${prefix}-localPort`);
   pushIfInvalidPort(errors, forward.remotePort, `${prefix}-remotePort`);

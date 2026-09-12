@@ -13,6 +13,7 @@
 import { forgetHost, listKnownHosts, type KnownHostEntry } from "../ipc";
 import { confirm } from "../ui/confirm";
 import { requireEl } from "../ui/dom";
+import { t } from "../i18n";
 
 export interface KnownHostsDialogOptions {
   /** Surface a load/forget failure to the user (wired to the toast in main.ts). */
@@ -32,14 +33,11 @@ export function openKnownHostsDialog(options: KnownHostsDialogOptions): void {
   root.innerHTML = `
     <div class="dialog-overlay"></div>
     <div class="dialog-content known-hosts-content">
-      <div class="dialog-header"><h2>Trusted hosts</h2></div>
-      <p class="known-hosts-lead">
-        Host keys you have trusted. Forget a host to be prompted again on the
-        next connection — do this if a server was rebuilt or you no longer trust it.
-      </p>
+      <div class="dialog-header"><h2>${t("knownHosts.title")}</h2></div>
+      <p class="known-hosts-lead">${t("knownHosts.lead")}</p>
       <ul class="known-hosts-list" aria-live="polite"></ul>
       <div class="form-actions">
-        <button type="button" class="btn btn-secondary" data-action="close">Close</button>
+        <button type="button" class="btn btn-secondary" data-action="close">${t("common.close")}</button>
       </div>
     </div>
   `;
@@ -58,9 +56,8 @@ export function openKnownHostsDialog(options: KnownHostsDialogOptions): void {
     }
     renderList(list, hosts, async (entry) => {
       const ok = await confirm(
-        `Forget the trusted host ${entry.id}? You will be asked to verify its ` +
-          `key again the next time you connect.`,
-        { title: "Forget host", confirmLabel: "Forget", danger: true },
+        t("knownHosts.forget.message", { id: entry.id }),
+        { title: t("knownHosts.forget.title"), confirmLabel: t("knownHosts.forget"), danger: true },
       );
       if (!ok) return;
       try {
@@ -113,7 +110,7 @@ function renderList(
   if (hosts.length === 0) {
     const empty = document.createElement("li");
     empty.className = "known-hosts-empty";
-    empty.textContent = "No trusted hosts yet.";
+    empty.textContent = t("knownHosts.empty");
     list.appendChild(empty);
     return;
   }
@@ -135,7 +132,7 @@ function renderList(
     const forget = document.createElement("button");
     forget.type = "button";
     forget.className = "btn btn-danger known-hosts-forget";
-    forget.textContent = "Forget";
+    forget.textContent = t("knownHosts.forget");
     forget.addEventListener("click", () => onForget(entry));
 
     row.append(info, forget);

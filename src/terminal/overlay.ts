@@ -6,6 +6,7 @@
  */
 
 import type { HostKeyPromptEvent, SessionStatus } from "../ipc";
+import { t } from "../i18n";
 
 export type OverlayVariant = "hidden" | "connecting" | "error";
 
@@ -35,7 +36,7 @@ export function overlayForStatus(
       return {
         visible: true,
         variant: "connecting",
-        title: "Connecting…",
+        title: t("pane.overlay.connecting"),
         detail: "",
         showSpinner: true,
         showRetry: false,
@@ -53,7 +54,7 @@ export function overlayForStatus(
       return {
         visible: true,
         variant: "error",
-        title: "Disconnected",
+        title: t("pane.overlay.disconnected"),
         detail: message ?? "",
         showSpinner: false,
         showRetry: true,
@@ -62,7 +63,7 @@ export function overlayForStatus(
       return {
         visible: true,
         variant: "error",
-        title: "Connection error",
+        title: t("pane.overlay.error"),
         detail: message ?? "",
         showSpinner: false,
         showRetry: true,
@@ -85,21 +86,14 @@ export interface HostKeyDialogText {
 export function hostKeyDialogText(event: HostKeyPromptEvent): HostKeyDialogText {
   if (event.changed) {
     return {
-      heading: "WARNING: host key changed",
+      heading: t("hostkey.changed.heading"),
       danger: true,
-      lead:
-        `The host key for ${event.host}:${event.port} is different from the ` +
-        `one previously trusted. This can mean the server was reinstalled — ` +
-        `or that someone is intercepting the connection. Only continue if you ` +
-        `know why the key changed.`,
+      lead: t("hostkey.changed.lead", { host: event.host, port: event.port }),
     };
   }
   return {
-    heading: "Unknown host key",
+    heading: t("hostkey.unknown.heading"),
     danger: false,
-    lead:
-      `The authenticity of ${event.host}:${event.port} can't be established ` +
-      `because this is the first connection. Verify the fingerprint below out ` +
-      `of band, then choose whether to trust it.`,
+    lead: t("hostkey.unknown.lead", { host: event.host, port: event.port }),
   };
 }

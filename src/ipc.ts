@@ -518,6 +518,9 @@ export interface Settings {
   /** Id of the last-used profile, reloaded on start when no default profile is
    * set; null until a profile has been loaded at least once. */
   lastProfileId: string | null;
+  /** UI language locale code (e.g. `"en"`, `"fr"`); `null` means "follow the
+   * operating system", resolved by the frontend at startup (see `i18n`). */
+  language: string | null;
 }
 
 /** Current app settings (SPEC §5). */

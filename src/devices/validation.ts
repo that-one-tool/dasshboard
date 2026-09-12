@@ -6,6 +6,7 @@
  */
 
 import type { Auth, DeviceKind, FlowControl, Forward, Parity } from "../ipc";
+import { t } from "../i18n";
 
 export interface ValidationError {
   field: string;
@@ -52,7 +53,7 @@ export function validateDevice(device: DeviceFormValues): ValidationError[] {
   const errors: ValidationError[] = [];
 
   if (!device.name || device.name.trim() === "") {
-    errors.push({ field: "name", message: "Name is required" });
+    errors.push({ field: "name", message: t("validation.name") });
   }
 
   if (device.kind === "serial") {
@@ -67,20 +68,20 @@ export function validateDevice(device: DeviceFormValues): ValidationError[] {
 /** SSH field rules: non-empty host/username, a valid port, key-auth keyPath. */
 function validateSsh(device: DeviceFormValues, errors: ValidationError[]): void {
   if (!device.host || device.host.trim() === "") {
-    errors.push({ field: "host", message: "Host is required" });
+    errors.push({ field: "host", message: t("validation.host") });
   }
 
   if (device.port === undefined || device.port === null) {
-    errors.push({ field: "port", message: "Port is required" });
+    errors.push({ field: "port", message: t("validation.port") });
   } else if (!Number.isInteger(device.port) || device.port < 1 || device.port > 65535) {
     errors.push({
       field: "port",
-      message: "Port must be a number between 1 and 65535",
+      message: t("validation.portRange"),
     });
   }
 
   if (!device.username || device.username.trim() === "") {
-    errors.push({ field: "username", message: "Username is required" });
+    errors.push({ field: "username", message: t("validation.username") });
   }
 
   if (device.auth && device.auth.method === "key") {
@@ -89,7 +90,7 @@ function validateSsh(device: DeviceFormValues, errors: ValidationError[]): void 
     if (!device.auth.keyPath || device.auth.keyPath.trim() === "") {
       errors.push({
         field: "keyPath",
-        message: "Key path is required for key-based authentication",
+        message: t("validation.keyPath"),
       });
     }
   }
@@ -101,15 +102,15 @@ function validateSerial(
   errors: ValidationError[],
 ): void {
   if (!device.portName || device.portName.trim() === "") {
-    errors.push({ field: "portName", message: "Port name is required" });
+    errors.push({ field: "portName", message: t("validation.portName") });
   }
 
   if (device.baudRate === undefined || device.baudRate === null) {
-    errors.push({ field: "baudRate", message: "Baud rate is required" });
+    errors.push({ field: "baudRate", message: t("validation.baudRate") });
   } else if (!Number.isInteger(device.baudRate) || device.baudRate < 1) {
     errors.push({
       field: "baudRate",
-      message: "Baud rate must be a positive number",
+      message: t("validation.baudRatePositive"),
     });
   }
 }

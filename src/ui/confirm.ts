@@ -12,6 +12,8 @@
  * cancel / overlay click / Escape.
  */
 
+import { t } from "../i18n";
+
 export interface ConfirmOptions {
   title?: string;
   confirmLabel?: string;
@@ -21,9 +23,9 @@ export interface ConfirmOptions {
 }
 
 export function confirm(message: string, options: ConfirmOptions = {}): Promise<boolean> {
-  const title = options.title ?? "Please confirm";
-  const confirmLabel = options.confirmLabel ?? "Continue";
-  const cancelLabel = options.cancelLabel ?? "Cancel";
+  const title = options.title ?? t("confirm.title");
+  const confirmLabel = options.confirmLabel ?? t("common.continue");
+  const cancelLabel = options.cancelLabel ?? t("common.cancel");
   const confirmClass = options.danger ? "btn-danger" : "btn-primary";
 
   return new Promise((resolve) => {
@@ -96,8 +98,8 @@ export function prompt(
         <div class="dialog-header"><h2 class="prompt-title"></h2></div>
         <input type="text" class="prompt-input" />
         <div class="form-actions">
-          <button type="button" class="btn btn-secondary" data-action="cancel">Cancel</button>
-          <button type="button" class="btn btn-primary" data-action="ok">OK</button>
+          <button type="button" class="btn btn-secondary" data-action="cancel">${t("common.cancel")}</button>
+          <button type="button" class="btn btn-primary" data-action="ok">${t("common.ok")}</button>
         </div>
       </div>
     `;

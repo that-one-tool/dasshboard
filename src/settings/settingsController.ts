@@ -9,6 +9,14 @@
 import type { Grid } from "../grid";
 import { getSettings, saveSettings, type Settings, type TerminalSettings } from "../ipc";
 import { DEFAULT_TERMINAL_SETTINGS } from "../terminal/terminalSettings";
+import {
+  SUPPORTED_LOCALES,
+  applyDomTranslations,
+  localeName,
+  resolveLocale,
+  setLocale,
+  t,
+} from "../i18n";
 
 export interface SettingsControllerOptions {
   grid: Grid;
@@ -19,6 +27,7 @@ const FALLBACK_SETTINGS: Settings = {
   version: 1,
   terminal: DEFAULT_TERMINAL_SETTINGS,
   lastProfileId: null,
+  language: null,
 };
 
 export class SettingsController {
@@ -39,6 +48,12 @@ export class SettingsController {
       this.settings = FALLBACK_SETTINGS;
       this.onError(errorMessage(err));
     }
+    // Resolve and apply the UI language before any other surface renders (this
+    // runs first in `initApp`): a stored language wins, else the OS locale, else
+    // English. `applyDomTranslations` translates the static `index.html` chrome;
+    // views built afterwards read the now-current locale directly.
+    setLocale(resolveLocale(this.settings.language));
+    applyDomTranslations(document);
     document
       .querySelector<HTMLButtonElement>("#settings-btn")
       ?.addEventListener("click", () => this.openDialog());
@@ -56,6 +71,10 @@ export class SettingsController {
       const fresh = await getSettings();
       this.settings = fresh;
       this.grid.applyTerminalSettings(fresh.terminal);
+      // Another instance may have changed the language; adopt it. `setLocale`
+      // is a no-op when unchanged, and otherwise notifies the locale listeners
+      // (wired in `main.ts`) to re-render every view.
+      setLocale(resolveLocale(fresh.language));
     } catch (err) {
       this.onError(errorMessage(err));
     }
@@ -89,6 +108,20 @@ export class SettingsController {
     await this.save();
   }
 
+  /**
+   * Apply a language choice from the settings picker: `""` clears the stored
+   * language back to "follow the OS", any other value stores that locale code.
+   * `setLocale` re-resolves and, if the effective locale changed, notifies the
+   * locale listeners (wired in `main.ts`) so every view re-renders live; the
+   * choice is then persisted.
+   */
+  private async applyLanguage(value: string): Promise<void> {
+    const language = value === "" ? null : value;
+    this.settings = { ...this.settings, language };
+    setLocale(resolveLocale(language));
+    await this.save();
+  }
+
   private async save(): Promise<void> {
     try {
       // The backend sanitizes (clamps font size, defaults empty family) and
@@ -102,7 +135,15 @@ export class SettingsController {
   /* ---------------------------------------------------------------------- */
 
   private openDialog(): void {
-    const t = this.settings.terminal;
+    const term = this.settings.terminal;
+    // The language <select>: a "System default" option (value "") that clears
+    // the stored language back to OS-follow, then one option per shipped locale.
+    const languageOptions = [
+      `<option value="">${t("settings.language.system")}</option>`,
+      ...SUPPORTED_LOCALES.map(
+        (loc) => `<option value="${loc}">${localeName(loc)}</option>`,
+      ),
+    ].join("");
     const root = document.createElement("div");
     root.className = "dialog settings-dialog";
     root.setAttribute("role", "dialog");
@@ -110,33 +151,45 @@ export class SettingsController {
     root.innerHTML = `
       <div class="dialog-overlay"></div>
       <div class="dialog-content settings-content">
-        <div class="dialog-header"><h2>Terminal settings</h2></div>
+        <div class="dialog-header"><h2>${t("settings.title")}</h2></div>
         <label class="form-field">
-          <span>Font size</span>
+          <span>${t("settings.language")}</span>
+          <select class="settings-language">${languageOptions}</select>
+        </label>
+        <label class="form-field">
+          <span>${t("settings.fontSize")}</span>
           <input type="number" class="settings-font-size" min="6" max="40" step="1" />
         </label>
         <label class="form-field">
-          <span>Font family</span>
+          <span>${t("settings.fontFamily")}</span>
           <input type="text" class="settings-font-family" />
         </label>
         <label class="form-field">
-          <span>Theme</span>
+          <span>${t("settings.theme")}</span>
           <select class="settings-theme">
-            <option value="dark">Dark</option>
-            <option value="light">Light</option>
+            <option value="dark">${t("settings.theme.dark")}</option>
+            <option value="light">${t("settings.theme.light")}</option>
           </select>
         </label>
         <div class="form-actions">
-          <button type="button" class="btn btn-secondary" data-action="close">Close</button>
+          <button type="button" class="btn btn-secondary" data-action="close">${t("common.close")}</button>
         </div>
       </div>
     `;
+    const language = root.querySelector<HTMLSelectElement>(".settings-language");
     const fontSize = root.querySelector<HTMLInputElement>(".settings-font-size");
     const fontFamily = root.querySelector<HTMLInputElement>(".settings-font-family");
     const theme = root.querySelector<HTMLSelectElement>(".settings-theme");
-    if (fontSize) fontSize.value = String(t.fontSize);
-    if (fontFamily) fontFamily.value = t.fontFamily;
-    if (theme) theme.value = t.theme;
+    // Reflect the *stored* language (null/unsupported ⇒ "System default"), not
+    // the resolved one, so the picker shows what the user chose.
+    if (language) language.value = this.settings.language ?? "";
+    if (fontSize) fontSize.value = String(term.fontSize);
+    if (fontFamily) fontFamily.value = term.fontFamily;
+    if (theme) theme.value = term.theme;
+
+    language?.addEventListener("change", () => {
+      void this.applyLanguage(language.value);
+    });
 
     // Live-apply on every change. A parsed number (including 0 / out-of-range)
     // is sent through; the backend clamps it (6..=40) and we reflect the clamped

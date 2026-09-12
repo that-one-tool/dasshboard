@@ -17,6 +17,7 @@ import { openAboutDialog } from "./ui/aboutDialog";
 import { openKnownHostsDialog } from "./settings/knownHostsDialog";
 import { showToast } from "./ui/toast";
 import { helpIcon, reloadIcon, lockIcon, gearIcon } from "./ui/icons";
+import { applyDomTranslations, onLocaleChange, t } from "./i18n";
 
 /** Injects the SVG glyph into each header action button (kept in one place so
  * the icons stay consistent with the app's Bootstrap-Icons set). A missing
@@ -56,7 +57,7 @@ async function initApp(): Promise<void> {
 		.querySelector<HTMLButtonElement>("#trusted-hosts-btn")
 		?.addEventListener("click", () =>
 			openKnownHostsDialog({
-				onError: (message) => showToast(`Error: ${message}`, "error"),
+				onError: (message) => showToast(t("error.prefix", { message }), "error"),
 			}),
 		);
 
@@ -76,26 +77,30 @@ async function initApp(): Promise<void> {
 	let onWorkspaceChange = (): void => {};
 	let currentTerminalSettings = () => DEFAULT_TERMINAL_SETTINGS;
 	const grid = new Grid(paneRoot, {
-		onError: (message) => showToast(`Error: ${message}`, "error"),
+		onError: (message) => showToast(t("error.prefix", { message }), "error"),
 		onChange: () => onWorkspaceChange(),
 		getTerminalSettings: () => currentTerminalSettings(),
 	});
-	await grid.init();
 
-	// Settings (Phase 5): terminal appearance applied live + last-used grid.
+	// Settings (Phase 5): terminal appearance + UI language. Initialized BEFORE
+	// the grid and the other views render, because `settings.init()` resolves and
+	// applies the UI locale (stored language → OS → English) and translates the
+	// static header; everything built afterwards renders in the right language.
 	const settings = new SettingsController({
 		grid,
-		onError: (message) => showToast(`Error: ${message}`, "error"),
+		onError: (message) => showToast(t("error.prefix", { message }), "error"),
 	});
 	await settings.init();
 	currentTerminalSettings = () => settings.terminalSettings();
+
+	await grid.init();
 
 	// Profiles (Phase 4): the sidebar list + toolbar Save/Save As with a
 	// dirty-state dot. `init()` loads the start profile — default if set, else
 	// the last-used profile, else nothing (1x1) — per SPEC §7.
 	const profileManager = new ProfileManager({
 		grid,
-		onError: (message) => showToast(`Error: ${message}`, "error"),
+		onError: (message) => showToast(t("error.prefix", { message }), "error"),
 		onSuccess: (message) => showToast(message, "success"),
 		// Remember the loaded profile so a restart without a default reloads it.
 		onProfileChange: (id) => void settings.persistLastProfileId(id),
@@ -111,14 +116,14 @@ async function initApp(): Promise<void> {
 	// SSH devices with forwards, with Start/Stop + live status. Independent of
 	// the terminal grid (a tunnel has no terminal).
 	const tunnelsPanel = initTunnelsPanel({
-		onError: (error: AppError) => showToast(`Error: ${error.message}`, "error"),
+		onError: (error: AppError) => showToast(t("error.prefix", { message: error.message }), "error"),
 		onSuccess: (message: string) => showToast(message, "success"),
 	});
 
 	// Files (SFTP) panel: a sidebar card listing SSH devices, each opening a
 	// standalone browser drawer for browse + up/download. Independent of the grid.
 	const sftpPanel = initSftpPanel({
-		onError: (error: AppError) => showToast(`Error: ${error.message}`, "error"),
+		onError: (error: AppError) => showToast(t("error.prefix", { message: error.message }), "error"),
 		onSuccess: (message: string) => showToast(message, "success"),
 	});
 
@@ -129,7 +134,7 @@ async function initApp(): Promise<void> {
 	const deviceManager = initDeviceManager({
 		onError: (error: AppError) => {
 			console.error("Device error:", error);
-			showToast(`Error: ${error.message}`, "error");
+			showToast(t("error.prefix", { message: error.message }), "error");
 		},
 		onSuccess: (message: string) => {
 			showToast(message, "success");
@@ -152,7 +157,7 @@ async function initApp(): Promise<void> {
 		try {
 			await reloadConfig();
 		} catch (error) {
-			showToast(`Reload failed: ${(error as AppError).message}`, "error");
+			showToast(t("error.reloadFailed", { message: (error as AppError).message }), "error");
 			return;
 		}
 		// Independent surfaces: one failing (e.g. a transient IPC error) must not
@@ -165,7 +170,7 @@ async function initApp(): Promise<void> {
 			tunnelsPanel.refresh(),
 			sftpPanel.refresh(),
 		]);
-		if (announce) showToast("Configuration reloaded", "success");
+		if (announce) showToast(t("error.reloaded"), "success");
 	};
 
 	// Manual Reload button in the header: always reloads, and confirms with a
@@ -180,5 +185,18 @@ async function initApp(): Promise<void> {
 	void onConfigChanged(() => {
 		if (isLocalConfigWriteRecent()) return;
 		void reloadAll(true);
+	});
+
+	// Live UI language change (from the Settings dialog, or adopted from another
+	// instance via `reloadFromDisk`): re-translate the static chrome and re-render
+	// every long-lived view in place. Live SSH sessions and the grid layout are
+	// untouched — only their labels change.
+	onLocaleChange(() => {
+		applyDomTranslations(document);
+		grid.retranslate();
+		profileManager.retranslate();
+		deviceManager?.retranslate();
+		tunnelsPanel.retranslate();
+		sftpPanel.retranslate();
 	});
 }

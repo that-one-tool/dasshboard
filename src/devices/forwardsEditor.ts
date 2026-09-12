@@ -11,6 +11,7 @@
 
 import type { Forward } from "../ipc";
 import { validateForwards } from "./forwardValidation";
+import { t } from "../i18n";
 
 const DEFAULT_LOCAL_ADDR = "127.0.0.1";
 
@@ -29,8 +30,8 @@ export class ForwardsEditor {
   constructor(private readonly container: HTMLElement) {
     this.container.innerHTML = `
       <div class="forwards-header">
-        <span class="forwards-title">Port forwarding</span>
-        <button type="button" class="btn btn-secondary forwards-add">Add forward</button>
+        <span class="forwards-title">${t("forwards.title")}</span>
+        <button type="button" class="btn btn-secondary forwards-add">${t("forwards.add")}</button>
       </div>
       <div class="forwards-rows"></div>
     `;
@@ -85,13 +86,13 @@ export class ForwardsEditor {
     row.className = "forward-row";
     row.dataset.forwardId = forward?.id ?? newForwardId();
     row.innerHTML = `
-      <input class="forward-name" type="text" placeholder="Name (e.g. Postgres)" autocomplete="off" />
+      <input class="forward-name" type="text" placeholder="${t("forwards.name.placeholder")}" autocomplete="off" />
       <input class="forward-local-addr" type="text" placeholder="127.0.0.1" autocomplete="off" />
-      <input class="forward-local-port" type="number" placeholder="Local port" min="1" max="65535" />
+      <input class="forward-local-port" type="number" placeholder="${t("forwards.localPort.placeholder")}" min="1" max="65535" />
       <span class="forward-arrow" aria-hidden="true">&rarr;</span>
-      <input class="forward-remote-host" type="text" placeholder="Remote host" autocomplete="off" />
-      <input class="forward-remote-port" type="number" placeholder="Remote port" min="1" max="65535" />
-      <button type="button" class="forward-remove" title="Remove forward" aria-label="Remove forward">&times;</button>
+      <input class="forward-remote-host" type="text" placeholder="${t("forwards.remoteHost.placeholder")}" autocomplete="off" />
+      <input class="forward-remote-port" type="number" placeholder="${t("forwards.remotePort.placeholder")}" min="1" max="65535" />
+      <button type="button" class="forward-remove" title="${t("forwards.remove")}" aria-label="${t("forwards.remove")}">&times;</button>
       <span class="error-text"></span>
     `;
     // Values are set programmatically (never interpolated into HTML) so

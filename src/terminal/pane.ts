@@ -39,6 +39,7 @@ import {
 import { isMultilinePaste, pasteConfirmMessage } from "./paste";
 import { confirm } from "../ui/confirm";
 import { requireEl } from "../ui/dom";
+import { t } from "../i18n";
 import { deviceEndpoint } from "../devices/deviceEndpoint";
 
 // Re-exported so callers already importing it from this module keep working;
@@ -98,6 +99,11 @@ export class TerminalPane {
   private reconnecting = false;
   private reconnectAttempts = 0;
   private reconnectTimer: number | null = null;
+
+  // The thunk that re-renders whatever overlay is currently shown. Set every
+  // time an overlay is displayed so `retranslate()` can rebuild it in the new
+  // language (the overlay's own text goes through `t()` inside the thunk).
+  private overlayRenderer: () => void = () => this.hideOverlay();
 
   constructor(root: HTMLElement, options: TerminalPaneOptions = {}) {
     this.root = root;
@@ -182,7 +188,7 @@ export class TerminalPane {
   private appendEmptyDeviceOption(select: HTMLSelectElement): void {
     const opt = document.createElement("option");
     opt.value = "";
-    opt.textContent = "No devices — add one in the sidebar";
+    opt.textContent = t("pane.noDevices");
     opt.disabled = true;
     opt.selected = true;
     select.appendChild(opt);
@@ -206,10 +212,10 @@ export class TerminalPane {
       <div class="pane">
         <div class="pane-header">
           <span class="pane-status-dot pane-status-idle" aria-hidden="true"></span>
-          <select class="pane-device-select" aria-label="Device to connect"></select>
-          <button type="button" class="btn btn-primary pane-connect">Connect</button>
+          <select class="pane-device-select" aria-label="${t("pane.deviceSelect.aria")}"></select>
+          <button type="button" class="btn btn-primary pane-connect">${t("pane.connect")}</button>
           <button type="button" class="btn btn-secondary pane-disconnect" hidden>
-            Disconnect
+            ${t("pane.disconnect")}
           </button>
         </div>
         <div class="pane-body">
@@ -220,10 +226,10 @@ export class TerminalPane {
               <div class="overlay-title"></div>
               <div class="overlay-detail"></div>
               <button type="button" class="btn btn-primary overlay-retry" hidden>
-                Retry
+                ${t("pane.retry")}
               </button>
               <button type="button" class="btn btn-secondary overlay-cancel" hidden>
-                Cancel
+                ${t("pane.cancel")}
               </button>
             </div>
           </div>
@@ -332,7 +338,7 @@ export class TerminalPane {
     if (fromReconnect) {
       this.reconnecting = false;
       this.reconnectAttempts = 0;
-      this.renderOverlay(overlayForStatus("error", "Device is no longer available"));
+      this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus("error", t("pane.overlay.deviceGone"))));
     }
     return null;
   }
@@ -461,9 +467,9 @@ export class TerminalPane {
    * (attempt N of M + Cancel) rather than a bare "Connecting…". */
   private applyConnectingStatus(status: SessionStatus, message?: string): void {
     if (this.reconnecting) {
-      this.renderReconnectOverlay();
+      this.setOverlayRenderer(() => this.renderReconnectOverlay());
     } else {
-      this.renderOverlay(overlayForStatus(status, message));
+      this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus(status, message)));
     }
   }
 
@@ -477,7 +483,7 @@ export class TerminalPane {
     this.cancelReconnectTimer();
     this.terminal?.focus();
     this.fitAddon?.fit();
-    this.renderOverlay(overlayForStatus(status, message));
+    this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus(status, message)));
   }
 
   /** disconnected | error: the session is over. Stop forwarding input and free
@@ -503,7 +509,7 @@ export class TerminalPane {
 
     this.reconnecting = false;
     this.reconnectAttempts = 0;
-    this.renderOverlay(overlayForStatus(status, message));
+    this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus(status, message)));
   }
 
   /** Whether this pane's assigned device opted into auto-reconnect (Phase 5). */
@@ -515,7 +521,7 @@ export class TerminalPane {
   private scheduleReconnect(): void {
     this.reconnecting = true;
     this.reconnectAttempts += 1;
-    this.renderReconnectOverlay();
+    this.setOverlayRenderer(() => this.renderReconnectOverlay());
     this.cancelReconnectTimer();
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
@@ -533,7 +539,7 @@ export class TerminalPane {
     // drop and does not silently re-enter auto-reconnect. A successful in-flight
     // connect clears this again (see the `connected` branch of applyStatus).
     this.userInitiated = true;
-    this.renderOverlay(overlayForStatus("disconnected", "Auto-reconnect cancelled"));
+    this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus("disconnected", t("pane.overlay.reconnectCancelled"))));
   }
 
   private cancelReconnectTimer(): void {
@@ -577,17 +583,49 @@ export class TerminalPane {
     overlay.classList.remove("dialog-hidden");
     overlay.classList.remove("overlay-error");
     spinner.hidden = false;
-    title.textContent = "Reconnecting…";
-    detail.textContent = `Attempt ${this.reconnectAttempts} of ${MAX_RECONNECT_ATTEMPTS}`;
+    title.textContent = t("pane.overlay.reconnecting");
+    detail.textContent = t("pane.overlay.attempt", { n: this.reconnectAttempts, max: MAX_RECONNECT_ATTEMPTS });
     retry.hidden = true;
     cancel.hidden = false;
   }
 
   /** Hide the overlay entirely (return the pane to its idle empty state). */
   private hideOverlay(): void {
+    this.overlayRenderer = () => this.hideOverlay();
     const overlay = this.root.querySelector<HTMLElement>(".pane-overlay");
     overlay?.classList.add("dialog-hidden");
     this.setStatusDot("idle");
+  }
+
+  /**
+   * Records the thunk that reproduces the currently-shown overlay and runs it.
+   * Because the thunk calls `t()` when invoked, `retranslate()` can re-render
+   * the same overlay in a newly-selected language.
+   */
+  private setOverlayRenderer(render: () => void): void {
+    this.overlayRenderer = render;
+    render();
+  }
+
+  /**
+   * Re-render this pane's chrome in the current locale (Phase: i18n). Called on
+   * a language change for every live pane: relabels the static buttons, rebuilds
+   * the device dropdown (incl. the "no devices" placeholder), and re-renders
+   * whatever overlay is currently displayed. The terminal itself is untouched.
+   */
+  retranslate(): void {
+    const connect = this.root.querySelector<HTMLButtonElement>(".pane-connect");
+    if (connect) connect.textContent = t("pane.connect");
+    const disconnect = this.root.querySelector<HTMLButtonElement>(".pane-disconnect");
+    if (disconnect) disconnect.textContent = t("pane.disconnect");
+    const retry = this.root.querySelector<HTMLButtonElement>(".overlay-retry");
+    if (retry) retry.textContent = t("pane.retry");
+    const cancel = this.root.querySelector<HTMLButtonElement>(".overlay-cancel");
+    if (cancel) cancel.textContent = t("pane.cancel");
+    const select = this.root.querySelector<HTMLSelectElement>(".pane-device-select");
+    select?.setAttribute("aria-label", t("pane.deviceSelect.aria"));
+    this.renderDeviceOptions();
+    this.overlayRenderer();
   }
 
   private renderOverlay(state: ReturnType<typeof overlayForStatus>): void {
@@ -692,8 +730,8 @@ export class TerminalPane {
     // Multi-line paste can run several commands at once — confirm first (Phase 5).
     if (isMultilinePaste(text)) {
       const ok = await confirm(pasteConfirmMessage(text), {
-        title: "Paste multiple lines?",
-        confirmLabel: "Paste",
+        title: t("pane.paste.title"),
+        confirmLabel: t("pane.paste.confirm"),
       });
       if (!ok) return;
     }

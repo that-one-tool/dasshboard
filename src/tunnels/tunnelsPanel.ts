@@ -23,6 +23,7 @@ import {
   type TunnelStatusEvent,
 } from "../ipc";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { t } from "../i18n";
 
 /** Per-device tunnel state the panel tracks between renders. */
 interface DeviceTunnelState {
@@ -47,14 +48,14 @@ export function tunnelableDevices(devices: Device[]): SshDevice[] {
 export function statusLabel(status: TunnelStatus | "stopped"): string {
   switch (status) {
     case "connecting":
-      return "Connecting…";
+      return t("tunnels.status.connecting");
     case "listening":
-      return "Listening";
+      return t("tunnels.status.listening");
     case "error":
-      return "Error";
+      return t("tunnels.status.error");
     case "disconnected":
     case "stopped":
-      return "Stopped";
+      return t("tunnels.status.stopped");
   }
 }
 
@@ -117,6 +118,12 @@ export class TunnelsPanel {
     this.setDevices(await this.safeListDevices());
   }
 
+  /** Rebuild the card shell + rows in the current locale (language change). */
+  retranslate(): void {
+    this.buildCard();
+    this.render();
+  }
+
   /** Stop listening — used by tests; the app keeps the panel for its lifetime. */
   dispose(): void {
     this.unlisten?.();
@@ -166,7 +173,7 @@ export class TunnelsPanel {
       if (event.status === "error") {
         this.options.onError?.({
           code: "TunnelBind",
-          message: event.message ?? "the tunnel stopped with an error",
+          message: event.message ?? t("tunnels.error.generic"),
         });
       }
     } else {
@@ -217,7 +224,7 @@ export class TunnelsPanel {
   private async copyEndpoint(text: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(text);
-      this.options.onSuccess?.("Copied to clipboard");
+      this.options.onSuccess?.(t("tunnels.copied"));
     } catch {
       // Clipboard blocked/unavailable — silent; the text is still on screen.
     }
@@ -231,7 +238,7 @@ export class TunnelsPanel {
     this.container.innerHTML = `
       <div class="tunnel-manager">
         <div class="device-list-header">
-          <h2>Tunnels</h2>
+          <h2>${t("tunnels.title")}</h2>
         </div>
         <div class="tunnel-list-items"></div>
       </div>
@@ -247,8 +254,7 @@ export class TunnelsPanel {
     if (devices.length === 0) {
       const empty = document.createElement("p");
       empty.className = "tunnels-empty";
-      empty.textContent =
-        "No device has port forwards. Add one in a device's editor to tunnel here.";
+      empty.textContent = t("tunnels.empty");
       this.body.appendChild(empty);
       return;
     }
@@ -280,7 +286,7 @@ export class TunnelsPanel {
     const action = document.createElement("button");
     action.type = "button";
     action.className = running ? "btn btn-danger btn-small" : "btn btn-primary btn-small";
-    action.textContent = running ? "Stop" : "Start";
+    action.textContent = running ? t("tunnels.stop") : t("tunnels.start");
     action.addEventListener("click", () => {
       void (running ? this.handleStop(device.id) : this.handleStart(device.id));
     });
@@ -324,8 +330,8 @@ export class TunnelsPanel {
       const copy = document.createElement("button");
       copy.type = "button";
       copy.className = "btn btn-secondary btn-small tunnel-copy";
-      copy.textContent = "Copy";
-      copy.title = "Copy the local address:port";
+      copy.textContent = t("tunnels.copy");
+      copy.title = t("tunnels.copy.title");
       copy.addEventListener("click", () => {
         // Copy just the local `addr:port` (before the arrow) — what a DB client needs.
         void this.copyEndpoint(row.text.split(" → ")[0] ?? row.text);
@@ -335,7 +341,7 @@ export class TunnelsPanel {
       if (row.bound === false) {
         const warn = document.createElement("span");
         warn.className = "tunnel-forward-warn";
-        warn.textContent = "port in use";
+        warn.textContent = t("tunnels.portInUse");
         li.appendChild(warn);
       }
       list.appendChild(li);

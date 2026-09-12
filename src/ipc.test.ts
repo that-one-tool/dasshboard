@@ -272,6 +272,7 @@ describe("IPC command wrapper argument shapes", () => {
 			version: 1,
 			terminal: { fontSize: 14, fontFamily: "monospace", theme: "dark" },
 			lastProfileId: null,
+			language: null,
 		};
 		invokeMock.mockResolvedValue(settings);
 		await expect(getSettings()).resolves.toEqual(settings);
@@ -283,6 +284,7 @@ describe("IPC command wrapper argument shapes", () => {
 			version: 1,
 			terminal: { fontSize: 14, fontFamily: "monospace", theme: "dark" },
 			lastProfileId: "p1",
+			language: null,
 		};
 		invokeMock.mockResolvedValue(settings);
 		await saveSettings(settings);

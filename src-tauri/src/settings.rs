@@ -68,6 +68,13 @@ pub struct Settings {
     /// simply ignored on start).
     #[serde(default)]
     pub last_profile_id: Option<String>,
+    /// UI language as a locale code (e.g. `"en"`, `"fr"`). `None` means "follow
+    /// the operating system", which the frontend resolves at startup. The
+    /// backend stores it verbatim and does not validate the code — the frontend
+    /// owns the list of shipped locales and falls back to English for any it
+    /// doesn't recognize.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -80,6 +87,7 @@ impl Default for Settings {
             version: CURRENT_VERSION,
             terminal: TerminalSettings::default(),
             last_profile_id: None,
+            language: None,
         }
     }
 }
@@ -194,6 +202,7 @@ mod tests {
         s.terminal.font_size = 18;
         s.terminal.theme = TerminalTheme::Light;
         s.last_profile_id = Some("profile-123".to_string());
+        s.language = Some("fr".to_string());
         store.save(s.clone()).unwrap();
 
         let reloaded = SettingsStore::load(dir.path().to_path_buf());
@@ -201,6 +210,7 @@ mod tests {
         assert_eq!(back.terminal.font_size, 18);
         assert_eq!(back.terminal.theme, TerminalTheme::Light);
         assert_eq!(back.last_profile_id, Some("profile-123".to_string()));
+        assert_eq!(back.language, Some("fr".to_string()));
     }
 
     #[test]
@@ -310,6 +320,22 @@ mod tests {
         assert_eq!(value["terminal"]["fontSize"], DEFAULT_FONT_SIZE);
         assert_eq!(value["terminal"]["theme"], "dark");
         assert!(value.get("lastProfileId").is_some()); // present as null
+        assert!(value.get("language").is_some()); // present as null
+        assert!(value["language"].is_null());
+    }
+
+    #[test]
+    fn deserializes_older_file_missing_language_field() {
+        // A settings.json written before `language` existed must still load,
+        // defaulting the language to None ("follow the OS").
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(SETTINGS_FILE),
+            r#"{ "version": 1, "terminal": { "fontSize": 14, "fontFamily": "Consolas", "theme": "dark" }, "lastProfileId": null }"#,
+        )
+        .unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        assert_eq!(store.get().language, None);
     }
 
     // -- reload: multi-instance sync ---------------------------------------

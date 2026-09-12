@@ -37,6 +37,7 @@ import {
   pickSshConfigOpenPath,
 } from "../ui/fileDialog";
 import { pencilIcon, trashIcon } from "../ui/icons";
+import { t, tp } from "../i18n";
 
 export interface DeviceManagerOptions {
   onError?: (error: AppError) => void;
@@ -48,6 +49,8 @@ export interface DeviceManagerHandle {
   /** Re-fetches the device list from the backend and re-renders the sidebar.
    * Used by the config-reload path (multi-instance sync). */
   reload(): Promise<void>;
+  /** Rebuild the sidebar + dialog markup in the current locale (language change). */
+  retranslate(): void;
 }
 
 /**
@@ -63,7 +66,7 @@ export function initDeviceManager(
 
   const manager = new DeviceManagerImpl(deviceListEl, options);
   manager.init();
-  return { reload: () => manager.reload() };
+  return { reload: () => manager.reload(), retranslate: () => manager.retranslate() };
 }
 
 export class DeviceManagerImpl {
@@ -96,6 +99,17 @@ export class DeviceManagerImpl {
    */
   async reload(): Promise<void> {
     await this.loadDevices();
+  }
+
+  /**
+   * Rebuild the sidebar + dialog markup in the current locale, then re-render
+   * the device list (language change). Any open edit dialog is reset — a
+   * language change is initiated from the settings dialog, with no device
+   * dialog open — so nothing in flight is lost.
+   */
+  retranslate(): void {
+    this.renderUI();
+    void this.loadDevices();
   }
 
   private renderUI(): void {
@@ -201,7 +215,7 @@ export class DeviceManagerImpl {
 
     if (deviceId === null) {
       // New device
-      title.textContent = "Add Device";
+      title.textContent = t("devices.dialog.addTitle");
       setSecretPlaceholder(this.container, false);
     } else {
       // Edit device
@@ -211,7 +225,7 @@ export class DeviceManagerImpl {
       if (device.kind === "ssh") {
         this.forwardsEditor?.setForwards(device.forwards);
       }
-      title.textContent = "Edit Device";
+      title.textContent = t("devices.dialog.editTitle");
       populateForm(this.container, device);
       setSecretPlaceholder(this.container, true);
     }
@@ -226,8 +240,8 @@ export class DeviceManagerImpl {
       const editingExisting = deviceId !== null;
       testBtn.disabled = !editingExisting;
       testBtn.title = editingExisting
-        ? "Tests the saved credentials for this device"
-        : "Save the device first, then test";
+        ? t("devices.test.enabledTitle")
+        : t("devices.test.disabledTitle");
     }
 
     dialog.classList.remove("dialog-hidden");
@@ -277,7 +291,7 @@ export class DeviceManagerImpl {
       const device = buildDeviceFromForm(values);
       await saveDevice(device, secretToSend);
 
-      this.options.onSuccess?.("Device saved");
+      this.options.onSuccess?.(t("devices.saved"));
       this.closeDialog();
       await this.loadDevices();
     } catch (err) {
@@ -295,16 +309,16 @@ export class DeviceManagerImpl {
     const btn = this.container.querySelector<HTMLButtonElement>(
       ".btn-test-connection",
     );
-    const original = btn?.textContent ?? "Test connection";
+    const original = btn?.textContent ?? t("devices.test");
     if (btn) {
       btn.disabled = true;
-      btn.textContent = "Testing…";
+      btn.textContent = t("devices.test.testing");
     }
     try {
       // A first-contact host key raises a `host_key_prompt`, handled by the
       // global host-key dialog; on accept the test proceeds.
       await testConnection(this.editingDeviceId);
-      this.options.onSuccess?.("Connection succeeded");
+      this.options.onSuccess?.(t("devices.test.success"));
     } catch (err) {
       const error = err as AppError;
       this.options.onError?.(error);
@@ -325,7 +339,7 @@ export class DeviceManagerImpl {
       const path = await pickJsonSavePath("dasshboard-devices.json");
       if (path === null) return; // user cancelled the picker
       const count = await exportDevices(path);
-      this.options.onSuccess?.(`Exported ${count} device(s)`);
+      this.options.onSuccess?.(tp("devices.exported", count));
     } catch (err) {
       this.options.onError?.(err as AppError);
     }
@@ -341,7 +355,7 @@ export class DeviceManagerImpl {
       const path = await pickJsonOpenPath();
       if (path === null) return; // user cancelled the picker
       const count = await importDevices(path);
-      this.options.onSuccess?.(`Imported ${count} device(s)`);
+      this.options.onSuccess?.(tp("devices.imported", count));
       await this.loadDevices();
     } catch (err) {
       this.options.onError?.(err as AppError);
@@ -363,8 +377,8 @@ export class DeviceManagerImpl {
       const { imported, skipped } = await importSshConfig(path);
       const message =
         skipped > 0
-          ? `Imported ${imported} device(s) from SSH config (${skipped} skipped)`
-          : `Imported ${imported} device(s) from SSH config`;
+          ? tp("devices.importedSshSkipped", imported, { skipped })
+          : tp("devices.importedSsh", imported);
       this.options.onSuccess?.(message);
       await this.loadDevices();
     } catch (err) {
@@ -387,8 +401,7 @@ export class DeviceManagerImpl {
     if (!listItems) return;
 
     if (this.devices.length === 0) {
-      listItems.innerHTML =
-        '<div class="empty-state">No devices yet.<br />Click <strong>+ Add</strong> above to create your first one.</div>';
+      listItems.innerHTML = `<div class="empty-state">${t("devices.empty")}</div>`;
       return;
     }
 
@@ -404,16 +417,16 @@ export class DeviceManagerImpl {
           <button
             class="btn btn-icon btn-edit"
             data-device-id="${escapeHtml(device.id)}"
-            title="Edit device"
-            aria-label="Edit device"
+            title="${t("devices.edit.aria")}"
+            aria-label="${t("devices.edit.aria")}"
           >
             ${pencilIcon}
           </button>
           <button
             class="btn btn-icon btn-danger btn-delete"
             data-device-id="${escapeHtml(device.id)}"
-            title="Delete device"
-            aria-label="Delete device"
+            title="${t("devices.delete.aria")}"
+            aria-label="${t("devices.delete.aria")}"
           >
             ${trashIcon}
           </button>
@@ -454,14 +467,14 @@ export class DeviceManagerImpl {
     // it via textContent, so no manual escaping (the old native `confirm()`
     // showed HTML entities literally).
     const confirmed = await confirm(
-      `Delete "${device.name}"? This cannot be undone.`,
-      { title: "Delete device?", confirmLabel: "Delete", danger: true },
+      t("devices.delete.message", { name: device.name }),
+      { title: t("devices.delete.title"), confirmLabel: t("common.delete"), danger: true },
     );
     if (!confirmed) return;
 
     try {
       await deleteDevice(deviceId);
-      this.options.onSuccess?.("Device deleted");
+      this.options.onSuccess?.(t("devices.deleted"));
       await this.loadDevices();
     } catch (err) {
       const error = err as AppError;

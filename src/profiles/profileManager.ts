@@ -20,6 +20,7 @@ import { isDirty, snapshotToProfileFields } from "./workspace";
 import { confirm, prompt } from "../ui/confirm";
 import { pickJsonSavePath, pickJsonOpenPath } from "../ui/fileDialog";
 import { pencilIcon, trashIcon, starIcon, starFillIcon } from "../ui/icons";
+import { t, tp } from "../i18n";
 
 export interface ProfileManagerOptions {
   grid: Grid;
@@ -116,6 +117,11 @@ export class ProfileManager {
     if (dot) dot.hidden = !dirty;
   }
 
+  /** Re-render the toolbar bar + list in the current locale (language change). */
+  retranslate(): void {
+    this.render();
+  }
+
   /* ---------------------------------------------------------------------- */
 
   private render(): void {
@@ -127,15 +133,15 @@ export class ProfileManager {
     const bar = this.barEl;
     if (!bar) return;
     bar.innerHTML = `
-      <span class="profile-current-label">Profile:</span>
+      <span class="profile-current-label">${t("profiles.bar.label")}</span>
       <span class="profile-current-name"></span>
-      <span class="profile-dirty-dot" title="Unsaved changes" hidden>&bull;</span>
+      <span class="profile-dirty-dot" title="${t("profiles.bar.dirty")}" hidden>&bull;</span>
       <span class="profile-bar-spacer"></span>
-      <button type="button" class="btn btn-small btn-secondary" data-action="save">Save</button>
-      <button type="button" class="btn btn-small btn-secondary" data-action="save-as">Save As…</button>
+      <button type="button" class="btn btn-small btn-secondary" data-action="save">${t("profiles.bar.save")}</button>
+      <button type="button" class="btn btn-small btn-secondary" data-action="save-as">${t("profiles.bar.saveAs")}</button>
     `;
     const name = bar.querySelector<HTMLElement>(".profile-current-name");
-    if (name) name.textContent = this.loaded ? this.loaded.name : "Unsaved workspace";
+    if (name) name.textContent = this.loaded ? this.loaded.name : t("profiles.bar.unsaved");
 
     bar
       .querySelector<HTMLButtonElement>('[data-action="save"]')
@@ -149,12 +155,12 @@ export class ProfileManager {
     const list = this.listEl;
     if (!list) return;
     list.innerHTML = `
-      <div class="sidebar-section-title">Profiles</div>
+      <div class="sidebar-section-title">${t("profiles.title")}</div>
       <div class="section-actions">
         <button type="button" class="btn btn-small profile-export-btn"
-          title="Export profiles to a JSON file">Export</button>
+          title="${t("profiles.export.title")}">${t("common.export")}</button>
         <button type="button" class="btn btn-small profile-import-btn"
-          title="Import profiles from a JSON file">Import</button>
+          title="${t("profiles.import.title")}">${t("common.import")}</button>
       </div>
     `;
     list
@@ -167,7 +173,7 @@ export class ProfileManager {
     if (this.profiles.length === 0) {
       const empty = document.createElement("p");
       empty.className = "sidebar-empty";
-      empty.textContent = "No saved profiles yet — Save As to create one.";
+      empty.textContent = t("profiles.empty");
       list.appendChild(empty);
       return;
     }
@@ -180,19 +186,19 @@ export class ProfileManager {
       if (isLoaded) item.classList.add("profile-item-loaded");
       item.innerHTML = `
         <button type="button" class="profile-name" data-action="load"
-          title="Load this profile">
+          title="${t("profiles.item.load")}">
           <span class="profile-item-name"></span>
         </button>
         <div class="profile-item-actions">
           <button type="button" class="btn btn-icon${isDefault ? " btn-star-active" : ""}"
             data-action="default"
-            title="${isDefault ? "Unset default" : "Set as default"}"
-            aria-label="${isDefault ? "Unset default" : "Set as default"}"
+            title="${isDefault ? t("profiles.item.unsetDefault") : t("profiles.item.setDefault")}"
+            aria-label="${isDefault ? t("profiles.item.unsetDefault") : t("profiles.item.setDefault")}"
             aria-pressed="${isDefault}">${isDefault ? starFillIcon : starIcon}</button>
           <button type="button" class="btn btn-icon" data-action="rename"
-            title="Rename profile" aria-label="Rename profile">${pencilIcon}</button>
+            title="${t("profiles.item.rename")}" aria-label="${t("profiles.item.rename")}">${pencilIcon}</button>
           <button type="button" class="btn btn-icon btn-danger" data-action="delete"
-            title="Delete profile" aria-label="Delete profile">${trashIcon}</button>
+            title="${t("profiles.item.delete")}" aria-label="${t("profiles.item.delete")}">${trashIcon}</button>
         </div>
       `;
       const nameEl = item.querySelector<HTMLElement>(".profile-item-name");
@@ -223,7 +229,7 @@ export class ProfileManager {
     this.render();
     this.refreshDirty();
     this.notifyProfileChange();
-    this.options.onSuccess(`Loaded profile "${profile.name}"`);
+    this.options.onSuccess(t("profiles.loaded", { name: profile.name }));
   }
 
   private async save(): Promise<void> {
@@ -235,7 +241,7 @@ export class ProfileManager {
         await this.performSaveAs();
         return;
       }
-      await this.persist({ ...this.loaded, ...snapshotToProfileFields(this.grid.snapshot()) }, "Saved");
+      await this.persist({ ...this.loaded, ...snapshotToProfileFields(this.grid.snapshot()) }, "profiles.savedProfile");
     } finally {
       this.busy = false;
     }
@@ -253,16 +259,16 @@ export class ProfileManager {
 
   /** Shared Save-As body; callers (`save`, `saveAs`) hold the `busy` guard. */
   private async performSaveAs(): Promise<void> {
-    const name = await prompt("Save workspace as", "Name for this profile");
+    const name = await prompt(t("profiles.saveAs.title"), t("profiles.saveAs.placeholder"));
     if (name === null) return;
     const trimmed = name.trim();
     if (!trimmed) {
-      this.options.onError("Profile name must not be empty");
+      this.options.onError(t("profiles.nameEmpty"));
       return;
     }
     await this.persist(
       { id: "", name: trimmed, ...snapshotToProfileFields(this.grid.snapshot()) },
-      "Saved",
+      "profiles.savedProfile",
     );
   }
 
@@ -270,21 +276,21 @@ export class ProfileManager {
     if (this.busy) return;
     this.busy = true;
     try {
-      const name = await prompt("Rename profile", "New name", profile.name);
+      const name = await prompt(t("profiles.rename.title"), t("profiles.rename.placeholder"), profile.name);
       if (name === null) return;
       const trimmed = name.trim();
       if (!trimmed) {
-        this.options.onError("Profile name must not be empty");
+        this.options.onError(t("profiles.nameEmpty"));
         return;
       }
       // Rename keeps the profile's stored layout; only the name changes.
-      await this.persist({ ...profile, name: trimmed }, "Renamed");
+      await this.persist({ ...profile, name: trimmed }, "profiles.renamedProfile");
     } finally {
       this.busy = false;
     }
   }
 
-  private async persist(profile: Profile, verb: string): Promise<void> {
+  private async persist(profile: Profile, successKey: "profiles.savedProfile" | "profiles.renamedProfile"): Promise<void> {
     try {
       const saved = await saveProfile(profile);
       // If we saved the currently-loaded profile (or just created one via Save
@@ -295,16 +301,16 @@ export class ProfileManager {
       }
       await this.reload();
       this.notifyProfileChange();
-      this.options.onSuccess(`${verb} profile "${saved.name}"`);
+      this.options.onSuccess(t(successKey, { name: saved.name }));
     } catch (err) {
       this.options.onError(errorMessage(err));
     }
   }
 
   private async remove(profile: Profile): Promise<void> {
-    const ok = await confirm(`Delete profile "${profile.name}"? This cannot be undone.`, {
-      title: "Delete profile?",
-      confirmLabel: "Delete",
+    const ok = await confirm(t("profiles.delete.message", { name: profile.name }), {
+      title: t("profiles.delete.title"),
+      confirmLabel: t("common.delete"),
       danger: true,
     });
     if (!ok) return;
@@ -315,7 +321,7 @@ export class ProfileManager {
       await this.reload();
       // The deleted profile must not linger as the "last-used" restore target.
       if (wasLoaded) this.notifyProfileChange();
-      this.options.onSuccess(`Deleted profile "${profile.name}"`);
+      this.options.onSuccess(t("profiles.deletedProfile", { name: profile.name }));
     } catch (err) {
       this.options.onError(errorMessage(err));
     }
@@ -339,7 +345,7 @@ export class ProfileManager {
       const path = await pickJsonSavePath("dasshboard-profiles.json");
       if (path === null) return; // user cancelled the picker
       const count = await exportProfiles(path);
-      this.options.onSuccess(`Exported ${count} profile(s)`);
+      this.options.onSuccess(tp("profiles.exported", count));
     } catch (err) {
       this.options.onError(errorMessage(err));
     }
@@ -354,7 +360,7 @@ export class ProfileManager {
       const path = await pickJsonOpenPath();
       if (path === null) return; // user cancelled the picker
       const count = await importProfiles(path);
-      this.options.onSuccess(`Imported ${count} profile(s)`);
+      this.options.onSuccess(tp("profiles.imported", count));
       await this.reload();
     } catch (err) {
       this.options.onError(errorMessage(err));

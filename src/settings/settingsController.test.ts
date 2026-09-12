@@ -33,6 +33,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     version: 1,
     terminal: { fontSize: 14, fontFamily: "Consolas", theme: "dark" },
     lastProfileId: null,
+    language: null,
     ...overrides,
   };
 }

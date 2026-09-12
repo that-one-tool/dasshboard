@@ -51,6 +51,7 @@ import {
 } from "../ui/icons";
 import { joinRemote, parentOf, formatSize, formatMtime } from "./sftpFormat";
 import { basename } from "@tauri-apps/api/path";
+import { t, tp } from "../i18n";
 
 export interface SftpPanelOptions {
   onError?: (error: AppError) => void;
@@ -115,6 +116,24 @@ export class SftpPanel {
     this.render();
   }
 
+  /**
+   * Rebuild the card + drawer in the current locale (language change). The
+   * drawer is rebuilt only while idle (closed): tearing down a live browse
+   * session would be surprising, and a language change is initiated from the
+   * settings dialog with the drawer closed. Its progress subscription is
+   * unlistened first so the rebuild doesn't leak a second listener.
+   */
+  retranslate(): void {
+    this.buildCard();
+    this.render();
+    if (!this.activeDeviceId) {
+      this.unlistenProgress?.();
+      this.unlistenProgress = null;
+      this.drawer?.remove();
+      this.buildDrawer();
+    }
+  }
+
   /** Stop listening for progress events — used by tests; the app keeps the panel
    * for its lifetime. */
   dispose(): void {
@@ -139,7 +158,7 @@ export class SftpPanel {
     this.container.innerHTML = `
       <div class="sftp-manager">
         <div class="device-list-header">
-          <h2>Files</h2>
+          <h2>${t("sftp.title")}</h2>
         </div>
         <div class="sftp-list-items"></div>
       </div>
@@ -155,7 +174,7 @@ export class SftpPanel {
     if (devices.length === 0) {
       const empty = document.createElement("p");
       empty.className = "sftp-empty";
-      empty.textContent = "No SSH device to browse. Add one under Devices.";
+      empty.textContent = t("sftp.empty");
       this.cardBody.appendChild(empty);
       return;
     }
@@ -170,7 +189,7 @@ export class SftpPanel {
       const browse = document.createElement("button");
       browse.type = "button";
       browse.className = "btn btn-primary btn-small";
-      browse.textContent = "Browse";
+      browse.textContent = t("sftp.browse");
       browse.addEventListener("click", () => void this.openFor(device.id));
 
       row.append(name, browse);
@@ -192,18 +211,18 @@ export class SftpPanel {
       <div class="dialog-overlay" data-action="close"></div>
       <div class="dialog-content sftp-content">
         <div class="dialog-header">
-          <h2 class="sftp-title">Files</h2>
-          <button type="button" class="dialog-close-btn" data-action="close" aria-label="Close">&times;</button>
+          <h2 class="sftp-title">${t("sftp.drawer.title")}</h2>
+          <button type="button" class="dialog-close-btn" data-action="close" aria-label="${t("common.close")}">&times;</button>
         </div>
         <div class="sftp-toolbar">
-          <code class="sftp-path" aria-label="Current directory"></code>
+          <code class="sftp-path" aria-label="${t("sftp.path.aria")}"></code>
           <div class="sftp-toolbar-actions">
-            <button type="button" class="btn btn-icon" data-action="back" title="Previous folder" aria-label="Previous folder">${arrowLeftIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="forward" title="Next folder" aria-label="Next folder">${arrowRightIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="up" title="Parent directory" aria-label="Parent directory">${arrowUpIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="refresh" title="Refresh" aria-label="Refresh">${reloadIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="upload" title="Upload a file here" aria-label="Upload a file here">${uploadIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="mkdir" title="Create a folder" aria-label="Create a folder">${folderPlusIcon}</button>
+            <button type="button" class="btn btn-icon" data-action="back" title="${t("sftp.nav.back")}" aria-label="${t("sftp.nav.back")}">${arrowLeftIcon}</button>
+            <button type="button" class="btn btn-icon" data-action="forward" title="${t("sftp.nav.forward")}" aria-label="${t("sftp.nav.forward")}">${arrowRightIcon}</button>
+            <button type="button" class="btn btn-icon" data-action="up" title="${t("sftp.nav.up")}" aria-label="${t("sftp.nav.up")}">${arrowUpIcon}</button>
+            <button type="button" class="btn btn-icon" data-action="refresh" title="${t("sftp.nav.refresh")}" aria-label="${t("sftp.nav.refresh")}">${reloadIcon}</button>
+            <button type="button" class="btn btn-icon" data-action="upload" title="${t("sftp.nav.upload")}" aria-label="${t("sftp.nav.upload")}">${uploadIcon}</button>
+            <button type="button" class="btn btn-icon" data-action="mkdir" title="${t("sftp.nav.mkdir")}" aria-label="${t("sftp.nav.mkdir")}">${folderPlusIcon}</button>
           </div>
         </div>
         <div class="sftp-entries" role="list"></div>
@@ -211,7 +230,7 @@ export class SftpPanel {
           <span class="sftp-progress-icon" aria-hidden="true"></span>
           <div class="sftp-progress-track"><div class="sftp-progress-fill"></div></div>
           <span class="sftp-progress-pct"></span>
-          <button type="button" class="btn btn-icon sftp-progress-cancel" data-action="cancel-transfer" title="Cancel transfer" aria-label="Cancel transfer">&times;</button>
+          <button type="button" class="btn btn-icon sftp-progress-cancel" data-action="cancel-transfer" title="${t("sftp.cancelTransfer")}" aria-label="${t("sftp.cancelTransfer")}">&times;</button>
         </div>
         <div class="sftp-status" aria-live="polite"></div>
       </div>
@@ -281,8 +300,8 @@ export class SftpPanel {
     this.history = [];
     this.historyIndex = -1;
     this.showDrawer(true);
-    if (this.titleEl) this.titleEl.textContent = `Files — ${device?.name ?? "device"}`;
-    this.setStatus("Connecting…");
+    if (this.titleEl) this.titleEl.textContent = t("sftp.drawer.titleFor", { name: device?.name ?? "device" });
+    this.setStatus(t("sftp.connecting"));
     this.setBusy(true);
     try {
       // A first-contact host key raises the global host-key dialog; on accept
@@ -329,9 +348,7 @@ export class SftpPanel {
       this.cwd = path;
       if (this.pathEl) this.pathEl.textContent = path;
       this.renderEntries(entries);
-      this.setStatus(
-        entries.length === 1 ? "1 item" : `${entries.length} items`,
-      );
+      this.setStatus(tp("sftp.count", entries.length));
     } catch (err) {
       this.options.onError?.(err as AppError);
     } finally {
@@ -390,13 +407,13 @@ export class SftpPanel {
     if (local === null) return; // cancelled
     const remote = joinRemote(this.cwd, entry.name);
     this.setBusy(true);
-    this.setStatus(`Downloading ${entry.name}…`);
+    this.setStatus(t("sftp.downloading", { name: entry.name }));
     this.startProgress("download");
     try {
       const bytes = await sftpDownload(this.activeDeviceId, remote, local);
       this.completeProgress();
-      this.setStatus(`${entry.name} downloaded (${formatSize(bytes)})`);
-      this.options.onSuccess?.(`Downloaded ${entry.name}`);
+      this.setStatus(t("sftp.downloaded", { name: entry.name, size: formatSize(bytes) }));
+      this.options.onSuccess?.(t("sftp.downloadedToast", { name: entry.name }));
     } catch (err) {
       this.handleTransferError(err as AppError);
     } finally {
@@ -411,12 +428,12 @@ export class SftpPanel {
     const name = await basename(local);
     const remote = joinRemote(this.cwd, name);
     this.setBusy(true);
-    this.setStatus(`Uploading ${name}…`);
+    this.setStatus(t("sftp.uploading", { name }));
     this.startProgress("upload");
     try {
       await sftpUpload(this.activeDeviceId, local, remote);
       this.completeProgress();
-      this.options.onSuccess?.(`Uploaded ${name}`);
+      this.options.onSuccess?.(t("sftp.uploadedToast", { name }));
       await this.loadDir(this.cwd); // reflect the new file
     } catch (err) {
       this.handleTransferError(err as AppError);
@@ -433,7 +450,7 @@ export class SftpPanel {
   private handleTransferError(error: AppError): void {
     this.hideProgress();
     if (error.code === "Cancelled") {
-      this.setStatus("Transfer cancelled");
+      this.setStatus(t("sftp.transferCancelled"));
     } else {
       this.setStatus("");
       this.options.onError?.(error);
@@ -442,7 +459,7 @@ export class SftpPanel {
 
   private async handleCancelTransfer(): Promise<void> {
     if (this.activeDeviceId === null) return;
-    this.setStatus("Cancelling…");
+    this.setStatus(t("sftp.cancelling"));
     try {
       await sftpCancelTransfer(this.activeDeviceId);
     } catch (err) {
@@ -452,7 +469,7 @@ export class SftpPanel {
 
   private async handleMkdir(): Promise<void> {
     if (this.activeDeviceId === null) return;
-    const name = await prompt("New folder", "Folder name");
+    const name = await prompt(t("sftp.mkdir.title"), t("sftp.mkdir.placeholder"));
     if (name === null || name.trim() === "") return;
     try {
       await sftpMkdir(this.activeDeviceId, joinRemote(this.cwd, name.trim()));
@@ -464,7 +481,7 @@ export class SftpPanel {
 
   private async handleRename(entry: SftpEntry): Promise<void> {
     if (this.activeDeviceId === null) return;
-    const next = await prompt("Rename", "New name", entry.name);
+    const next = await prompt(t("sftp.rename.title"), t("sftp.rename.placeholder"), entry.name);
     if (next === null || next.trim() === "" || next.trim() === entry.name) return;
     try {
       await sftpRename(
@@ -482,8 +499,10 @@ export class SftpPanel {
     if (this.activeDeviceId === null) return;
     const isDir = entry.kind === "dir";
     const confirmed = await confirm(
-      `Delete "${entry.name}"?${isDir ? " The folder must be empty." : ""} This cannot be undone.`,
-      { title: "Delete?", confirmLabel: "Delete", danger: true },
+      isDir
+        ? t("sftp.delete.messageDir", { name: entry.name })
+        : t("sftp.delete.message", { name: entry.name }),
+      { title: t("sftp.delete.title"), confirmLabel: t("common.delete"), danger: true },
     );
     if (!confirmed) return;
     try {
@@ -503,7 +522,7 @@ export class SftpPanel {
     if (entries.length === 0) {
       const empty = document.createElement("p");
       empty.className = "sftp-empty";
-      empty.textContent = "Empty directory.";
+      empty.textContent = t("sftp.emptyDir");
       this.listEl.appendChild(empty);
       return;
     }
@@ -527,7 +546,7 @@ export class SftpPanel {
     name.type = "button";
     name.className = "sftp-entry-name";
     name.textContent = entry.name;
-    name.title = isDir ? "Open folder" : "Download file";
+    name.title = isDir ? t("sftp.entry.openFolder") : t("sftp.entry.downloadFile");
     // A directory descends; a file/symlink downloads (double-click parity with
     // a desktop file manager, but a single click is enough here for reachability).
     name.addEventListener("click", () => {
@@ -546,14 +565,14 @@ export class SftpPanel {
     actions.className = "sftp-entry-actions";
     if (!isDir) {
       actions.appendChild(
-        this.iconButton(downloadIcon, "Download", () => void this.handleDownload(entry)),
+        this.iconButton(downloadIcon, t("sftp.entry.download"), () => void this.handleDownload(entry)),
       );
     }
     actions.appendChild(
-      this.iconButton(pencilIcon, "Rename", () => void this.handleRename(entry)),
+      this.iconButton(pencilIcon, t("sftp.entry.rename"), () => void this.handleRename(entry)),
     );
     actions.appendChild(
-      this.iconButton(trashIcon, "Delete", () => void this.handleDelete(entry), true),
+      this.iconButton(trashIcon, t("sftp.entry.delete"), () => void this.handleDelete(entry), true),
     );
 
     row.append(icon, name, meta, actions);
@@ -647,7 +666,7 @@ export class SftpPanel {
     this.setFill(100);
     this.progressEl.classList.add("active", "done");
     if (this.progressIconEl) this.progressIconEl.textContent = "✓";
-    if (this.progressPctEl) this.progressPctEl.textContent = "Done";
+    if (this.progressPctEl) this.progressPctEl.textContent = t("sftp.progress.done");
     this.progressHideTimer = setTimeout(() => this.hideProgress(), 2500);
   }
 

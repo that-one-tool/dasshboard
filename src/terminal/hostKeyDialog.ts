@@ -15,6 +15,7 @@ import {
 } from "../ipc";
 import { hostKeyDialogText } from "./overlay";
 import { requireEl } from "../ui/dom";
+import { t } from "../i18n";
 
 export function initHostKeyDialog(): () => void {
   const root = document.createElement("div");
@@ -30,16 +31,16 @@ export function initHostKeyDialog(): () => void {
       </div>
       <p class="hostkey-lead"></p>
       <dl class="hostkey-facts">
-        <div><dt>Host</dt><dd class="hostkey-host"></dd></div>
-        <div><dt>Key type</dt><dd class="hostkey-keytype"></dd></div>
-        <div><dt>Fingerprint</dt><dd class="hostkey-fingerprint"></dd></div>
+        <div><dt>${t("hostkey.host")}</dt><dd class="hostkey-host"></dd></div>
+        <div><dt>${t("hostkey.keyType")}</dt><dd class="hostkey-keytype"></dd></div>
+        <div><dt>${t("hostkey.fingerprint")}</dt><dd class="hostkey-fingerprint"></dd></div>
       </dl>
       <div class="form-actions">
         <button type="button" class="btn btn-danger" data-hostkey-action="trust">
-          Trust and continue
+          ${t("hostkey.trust")}
         </button>
         <button type="button" class="btn btn-secondary" data-hostkey-action="reject">
-          Reject
+          ${t("hostkey.reject")}
         </button>
       </div>
     </div>

@@ -14,13 +14,17 @@
         <h1>DaSSHboard</h1>
         <div class="header-actions">
           <button type="button" id="reload-btn" class="icon-btn"
+            data-i18n-title="header.reload.title" data-i18n-aria="header.reload.aria"
             title="Reload devices, profiles &amp; settings from disk (picks up changes from another window)"
             aria-label="Reload configuration from disk"></button>
           <button type="button" id="trusted-hosts-btn" class="icon-btn"
+            data-i18n-title="header.trustedHosts.title" data-i18n-aria="header.trustedHosts.aria"
             title="Manage trusted hosts" aria-label="Manage trusted hosts"></button>
           <button type="button" id="settings-btn" class="icon-btn"
-            title="Terminal settings" aria-label="Terminal settings"></button>
+            data-i18n-title="header.settings.title" data-i18n-aria="header.settings.aria"
+            title="Settings" aria-label="Settings"></button>
           <button type="button" id="help-btn" class="icon-btn"
+            data-i18n-title="header.help.title" data-i18n-aria="header.help.aria"
             title="About DaSSHboard" aria-label="About DaSSHboard"></button>
         </div>
       </header>
@@ -35,8 +39,9 @@
 
         <main class="main-content">
           <div id="profile-bar" class="profile-bar" role="toolbar"
-            aria-label="Current profile"></div>
-          <div id="pane-root" class="pane-root" aria-label="SSH terminal"></div>
+            data-i18n-aria="header.profileBar.aria" aria-label="Current profile"></div>
+          <div id="pane-root" class="pane-root"
+            data-i18n-aria="header.paneRoot.aria" aria-label="SSH terminal"></div>
         </main>
       </div>
     </div>

@@ -9,13 +9,19 @@
  * once, then queries the ids/classes below; a change here must keep those
  * selectors (`#device-form`, `#device-kind`, `#ssh-fields`, `#serial-fields`,
  * `#device-secret`, `.device-add-btn`, …) intact.
+ *
+ * User-facing copy is localized via `t()` at build time; the markup is rebuilt
+ * (and so re-translated) on a language change (see `deviceManager.renderUI`).
  */
+
+import { t } from "../i18n";
+
 export function deviceManagerMarkup(): string {
   return `
       <div class="device-manager">
         <div class="device-list-header">
-          <h2>Devices</h2>
-          <button class="btn btn-primary device-add-btn" title="Add device">
+          <h2>${t("devices.title")}</h2>
+          <button class="btn btn-primary device-add-btn" title="${t("devices.add.title")}">
             +
           </button>
         </div>
@@ -23,23 +29,23 @@ export function deviceManagerMarkup(): string {
           <button
             class="btn btn-small device-export-btn"
             data-action="export"
-            title="Export devices to a JSON file"
+            title="${t("devices.export.title")}"
           >
-            Export
+            ${t("common.export")}
           </button>
           <button
             class="btn btn-small device-import-btn"
             data-action="import"
-            title="Import devices from a JSON file"
+            title="${t("devices.import.title")}"
           >
-            Import
+            ${t("common.import")}
           </button>
           <button
             class="btn btn-small device-import-ssh-btn"
             data-action="import-ssh-config"
-            title="Import devices from an OpenSSH config (~/.ssh/config)"
+            title="${t("devices.importSsh.title")}"
           >
-            Import SSH config
+            ${t("devices.importSsh")}
           </button>
         </div>
         <div class="device-list-items"></div>
@@ -48,35 +54,35 @@ export function deviceManagerMarkup(): string {
         <div class="dialog-overlay" data-close-dialog></div>
         <div class="dialog-content">
           <div class="dialog-header">
-            <h2 id="device-dialog-title">Add Device</h2>
-            <button class="dialog-close-btn" data-close-dialog aria-label="Close">
+            <h2 id="device-dialog-title">${t("devices.dialog.addTitle")}</h2>
+            <button class="dialog-close-btn" data-close-dialog aria-label="${t("common.close")}">
               &times;
             </button>
           </div>
           <form id="device-form" class="device-form">
             <div class="form-group">
-              <label for="device-name">Name</label>
-              <input id="device-name" type="text" placeholder="My Server" />
+              <label for="device-name">${t("devices.field.name")}</label>
+              <input id="device-name" type="text" placeholder="${t("devices.field.name.placeholder")}" />
               <span class="error-text"></span>
             </div>
 
             <div class="form-group">
-              <label for="device-kind">Connection type</label>
+              <label for="device-kind">${t("devices.field.kind")}</label>
               <select id="device-kind">
-                <option value="ssh" selected>SSH</option>
-                <option value="serial">Serial (COM port)</option>
+                <option value="ssh" selected>${t("devices.kind.ssh")}</option>
+                <option value="serial">${t("devices.kind.serial")}</option>
               </select>
             </div>
 
             <div id="ssh-fields">
             <div class="form-group">
-              <label for="device-host">Host</label>
-              <input id="device-host" type="text" placeholder="192.168.1.10" />
+              <label for="device-host">${t("devices.field.host")}</label>
+              <input id="device-host" type="text" placeholder="${t("devices.field.host.placeholder")}" />
               <span class="error-text"></span>
             </div>
 
             <div class="form-group">
-              <label for="device-port">Port</label>
+              <label for="device-port">${t("devices.field.port")}</label>
               <input
                 id="device-port"
                 type="number"
@@ -88,18 +94,18 @@ export function deviceManagerMarkup(): string {
             </div>
 
             <div class="form-group">
-              <label for="device-username">Username</label>
+              <label for="device-username">${t("devices.field.username")}</label>
               <input
                 id="device-username"
                 type="text"
-                placeholder="admin"
+                placeholder="${t("devices.field.username.placeholder")}"
                 autocomplete="off"
               />
               <span class="error-text"></span>
             </div>
 
             <fieldset class="form-fieldset">
-              <legend>Authentication</legend>
+              <legend>${t("devices.auth.legend")}</legend>
               <div class="form-group">
                 <label>
                   <input
@@ -108,22 +114,22 @@ export function deviceManagerMarkup(): string {
                     value="password"
                     checked
                   />
-                  Password
+                  ${t("devices.auth.password")}
                 </label>
                 <label>
                   <input type="radio" name="auth-method" value="key" />
-                  Key
+                  ${t("devices.auth.key")}
                 </label>
               </div>
             </fieldset>
 
             <div id="auth-password" class="auth-method-section">
               <div class="form-group">
-                <label for="device-secret">Secret</label>
+                <label for="device-secret">${t("devices.field.secret")}</label>
                 <input
                   id="device-secret"
                   type="password"
-                  placeholder="unchanged"
+                  placeholder="${t("devices.field.secret.placeholder")}"
                 />
                 <span class="error-text"></span>
               </div>
@@ -131,12 +137,12 @@ export function deviceManagerMarkup(): string {
 
             <div id="auth-key" class="auth-method-section auth-method-hidden">
               <div class="form-group">
-                <label for="device-key-path">Key Path</label>
+                <label for="device-key-path">${t("devices.field.keyPath")}</label>
                 <input id="device-key-path" type="text" placeholder="" />
                 <span class="error-text"></span>
               </div>
               <div class="form-group">
-                <label for="device-passphrase">Passphrase (optional)</label>
+                <label for="device-passphrase">${t("devices.field.passphrase")}</label>
                 <input id="device-passphrase" type="password" placeholder="" />
                 <span class="error-text"></span>
               </div>
@@ -146,24 +152,24 @@ export function deviceManagerMarkup(): string {
             <div class="form-group form-group-checkbox">
               <label for="device-tunnel-autostart">
                 <input id="device-tunnel-autostart" type="checkbox" />
-                Start tunnel automatically on app launch
+                ${t("devices.tunnelAutostart")}
               </label>
             </div>
             </div>
 
             <div id="serial-fields" class="device-kind-hidden">
               <div class="form-group">
-                <label for="device-port-name">Port name</label>
+                <label for="device-port-name">${t("devices.field.portName")}</label>
                 <input
                   id="device-port-name"
                   type="text"
-                  placeholder="COM3 or /dev/ttyUSB0"
+                  placeholder="${t("devices.field.portName.placeholder")}"
                   autocomplete="off"
                 />
                 <span class="error-text"></span>
               </div>
               <div class="form-group">
-                <label for="device-baud-rate">Baud rate</label>
+                <label for="device-baud-rate">${t("devices.field.baudRate")}</label>
                 <select id="device-baud-rate">
                   <option value="300">300</option>
                   <option value="1200">1200</option>
@@ -184,9 +190,9 @@ export function deviceManagerMarkup(): string {
                 <span class="error-text"></span>
               </div>
               <fieldset class="form-fieldset">
-                <legend>Framing (advanced)</legend>
+                <legend>${t("devices.framing.legend")}</legend>
                 <div class="form-group">
-                  <label for="device-data-bits">Data bits</label>
+                  <label for="device-data-bits">${t("devices.field.dataBits")}</label>
                   <select id="device-data-bits">
                     <option value="8" selected>8</option>
                     <option value="7">7</option>
@@ -195,26 +201,26 @@ export function deviceManagerMarkup(): string {
                   </select>
                 </div>
                 <div class="form-group">
-                  <label for="device-parity">Parity</label>
+                  <label for="device-parity">${t("devices.field.parity")}</label>
                   <select id="device-parity">
-                    <option value="none" selected>None</option>
-                    <option value="odd">Odd</option>
-                    <option value="even">Even</option>
+                    <option value="none" selected>${t("devices.parity.none")}</option>
+                    <option value="odd">${t("devices.parity.odd")}</option>
+                    <option value="even">${t("devices.parity.even")}</option>
                   </select>
                 </div>
                 <div class="form-group">
-                  <label for="device-stop-bits">Stop bits</label>
+                  <label for="device-stop-bits">${t("devices.field.stopBits")}</label>
                   <select id="device-stop-bits">
                     <option value="1" selected>1</option>
                     <option value="2">2</option>
                   </select>
                 </div>
                 <div class="form-group">
-                  <label for="device-flow-control">Flow control</label>
+                  <label for="device-flow-control">${t("devices.field.flowControl")}</label>
                   <select id="device-flow-control">
-                    <option value="none" selected>None</option>
-                    <option value="software">Software (XON/XOFF)</option>
-                    <option value="hardware">Hardware (RTS/CTS)</option>
+                    <option value="none" selected>${t("devices.flow.none")}</option>
+                    <option value="software">${t("devices.flow.software")}</option>
+                    <option value="hardware">${t("devices.flow.hardware")}</option>
                   </select>
                 </div>
               </fieldset>
@@ -223,7 +229,7 @@ export function deviceManagerMarkup(): string {
             <div class="form-group form-group-checkbox">
               <label for="device-auto-reconnect">
                 <input id="device-auto-reconnect" type="checkbox" />
-                Auto-reconnect on unexpected disconnect
+                ${t("devices.autoReconnect")}
               </label>
             </div>
 
@@ -232,11 +238,11 @@ export function deviceManagerMarkup(): string {
                 type="button"
                 class="btn btn-secondary btn-test-connection"
               >
-                Test connection
+                ${t("devices.test")}
               </button>
-              <button type="submit" class="btn btn-primary">Save</button>
+              <button type="submit" class="btn btn-primary">${t("common.save")}</button>
               <button type="button" class="btn btn-secondary" data-close-dialog>
-                Cancel
+                ${t("common.cancel")}
               </button>
             </div>
           </form>

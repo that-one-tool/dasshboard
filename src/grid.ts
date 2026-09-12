@@ -23,6 +23,7 @@ import {
 import { shouldConfirmTeardown, type WorkspaceSnapshot } from "./profiles/workspace";
 import { confirm } from "./ui/confirm";
 import { requireEl } from "./ui/dom";
+import { t } from "./i18n";
 import type { Profile, TerminalSettings } from "./ipc";
 
 export interface GridOptions {
@@ -79,7 +80,7 @@ export class Grid {
   async init(): Promise<void> {
     this.root.classList.add("grid-root");
     this.root.innerHTML = `
-      <div class="grid-toolbar" role="toolbar" aria-label="Grid layout"></div>
+      <div class="grid-toolbar" role="toolbar" aria-label="${t("grid.toolbar.aria")}"></div>
       <div class="grid-container"></div>
     `;
     this.toolbar = requireEl<HTMLElement>(this.root, ".grid-toolbar");
@@ -100,6 +101,14 @@ export class Grid {
     await Promise.all(this.cells.map((c) => c.pane.refreshDevices()));
   }
 
+  /** Re-render the toolbar and every pane's chrome in the current locale
+   * (language change). Live terminals and layout are untouched. */
+  retranslate(): void {
+    this.toolbar?.setAttribute("aria-label", t("grid.toolbar.aria"));
+    this.renderToolbar();
+    for (const cell of this.cells) cell.pane.retranslate();
+  }
+
   /* -------------------------------------------------------------------------
    * Toolbar / presets
    * ---------------------------------------------------------------------- */
@@ -110,7 +119,7 @@ export class Grid {
     toolbar.innerHTML = "";
     const label = document.createElement("span");
     label.className = "grid-toolbar-label";
-    label.textContent = "Layout:";
+    label.textContent = t("grid.layout");
     toolbar.appendChild(label);
     for (const id of PRESET_IDS) {
       const btn = document.createElement("button");
@@ -185,8 +194,8 @@ export class Grid {
     ).length;
     if (liveCount === 0) return true;
     return confirm(shrinkConfirmMessage(liveCount), {
-      title: "Close sessions?",
-      confirmLabel: "Continue",
+      title: t("grid.closeSessions.title"),
+      confirmLabel: t("common.continue"),
       danger: true,
     });
   }
@@ -289,8 +298,8 @@ export class Grid {
       return true;
     }
     return confirm(shrinkConfirmMessage(this.liveSessionCount()), {
-      title: "Close sessions?",
-      confirmLabel: "Continue",
+      title: t("grid.closeSessions.title"),
+      confirmLabel: t("common.continue"),
       danger: true,
     });
   }

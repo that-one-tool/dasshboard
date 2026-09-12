@@ -8,6 +8,8 @@
  * sizes are fractions summing to ≈1) so Phase 4 can persist it verbatim.
  */
 
+import { tp } from "./i18n";
+
 /** Smallest fraction any single track may occupy (SPEC §7 splitter clamp). */
 export const MIN_TRACK_FRACTION = 0.15;
 
@@ -161,6 +163,5 @@ export function remapPanes(oldCount: number, newCount: number): PaneRemap {
 
 /** Confirmation copy shown before a shrink tears down live sessions (SPEC §7). */
 export function shrinkConfirmMessage(liveCount: number): string {
-  const noun = liveCount === 1 ? "session" : "sessions";
-  return `${liveCount} active ${noun} will be closed. Continue?`;
+  return tp("grid.shrink", liveCount);
 }
