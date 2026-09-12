@@ -120,7 +120,7 @@ export interface AppError {
 
 /** Calls the `ping` command, which returns the backend's app version string. */
 export async function ping(): Promise<string> {
-  return invoke<string>("ping");
+  return invokeChecked<string>("ping");
 }
 
 /* ----------------------------------------------------------------------------
@@ -160,6 +160,45 @@ export function isLocalConfigWriteRecent(): boolean {
   return Date.now() < suppressAutoReloadUntil;
 }
 
+/* ----------------------------------------------------------------------------
+ * invoke helpers
+ *
+ * Every command wrapper below funnels through one of these two helpers so the
+ * `try/catch → normalizeError` shape (and, for writes, the echo-suppression
+ * arm) lives in exactly one place instead of being copy-pasted per command.
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Invokes a backend command, normalizing any rejection to an {@link AppError}.
+ * Pass no `args` for a no-argument command — the second `invoke` parameter is
+ * then omitted so the wire call is a bare `invoke(cmd)`.
+ */
+async function invokeChecked<T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  try {
+    return await (args === undefined ? invoke<T>(cmd) : invoke<T>(cmd, args));
+  } catch (err) {
+    throw normalizeError(err);
+  }
+}
+
+/**
+ * Like {@link invokeChecked}, but for a command that writes a config file: on
+ * success it arms {@link markLocalConfigWrite} so the file-watcher echo of this
+ * window's own write doesn't trigger a redundant auto-reload. The mark runs
+ * only after the invoke resolves, so a failed write never suppresses a reload.
+ */
+async function invokeMutation<T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  const result = await invokeChecked<T>(cmd, args);
+  markLocalConfigWrite();
+  return result;
+}
+
 /**
  * Re-reads every persisted config file into the backend's in-memory stores, so
  * the subsequent list/get commands serve fresh data rather than the startup
@@ -167,11 +206,7 @@ export function isLocalConfigWriteRecent(): boolean {
  * error shape if the IPC layer itself rejects.
  */
 export async function reloadConfig(): Promise<void> {
-  try {
-    await invoke<void>("reload_config");
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  await invokeChecked<void>("reload_config");
 }
 
 /**
@@ -186,11 +221,7 @@ export function onConfigChanged(handler: () => void): Promise<UnlistenFn> {
  * Lists all saved devices. Does not include secrets (they are stored in the keyring only).
  */
 export async function listDevices(): Promise<Device[]> {
-  try {
-    return await invoke<Device[]>("list_devices");
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeChecked<Device[]>("list_devices");
 }
 
 /**
@@ -214,25 +245,14 @@ export async function saveDevice(
   if (secret !== undefined) {
     payload.secret = secret;
   }
-  try {
-    const saved = await invoke<Device>("save_device", payload);
-    markLocalConfigWrite();
-    return saved;
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeMutation<Device>("save_device", payload);
 }
 
 /**
  * Deletes a device and its associated keyring secret.
  */
 export async function deleteDevice(deviceId: string): Promise<void> {
-  try {
-    await invoke<void>("delete_device", { deviceId } as Record<string, unknown>);
-    markLocalConfigWrite();
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  await invokeMutation<void>("delete_device", { deviceId });
 }
 
 /* ============================================================================
@@ -277,11 +297,7 @@ export async function connect(
   rows: number,
   onData: Channel<ArrayBuffer>,
 ): Promise<string> {
-  try {
-    return await invoke<string>("connect", { deviceId, cols, rows, onData });
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeChecked<string>("connect", { deviceId, cols, rows, onData });
 }
 
 /** Sends keystrokes to a session (SPEC §5). */
@@ -289,11 +305,7 @@ export async function writeStdin(
   sessionId: string,
   data: string,
 ): Promise<void> {
-  try {
-    await invoke<void>("write_stdin", { sessionId, data });
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  await invokeChecked<void>("write_stdin", { sessionId, data });
 }
 
 /** Resizes a session's PTY (SPEC §5). */
@@ -302,20 +314,12 @@ export async function resizePty(
   cols: number,
   rows: number,
 ): Promise<void> {
-  try {
-    await invoke<void>("resize_pty", { sessionId, cols, rows });
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  await invokeChecked<void>("resize_pty", { sessionId, cols, rows });
 }
 
 /** Gracefully disconnects a session (SPEC §5). Idempotent. */
 export async function disconnect(sessionId: string): Promise<void> {
-  try {
-    await invoke<void>("disconnect", { sessionId });
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  await invokeChecked<void>("disconnect", { sessionId });
 }
 
 /** Resolves a pending host-key trust prompt (SPEC §5). */
@@ -323,14 +327,11 @@ export async function respondHostKey(
   promptId: string,
   accept: boolean,
 ): Promise<void> {
-  try {
-    await invoke<void>("respond_host_key", { promptId, accept });
-    // Accepting a host key writes known_hosts.json; suppress the resulting
-    // watcher echo. A reject changes nothing on disk, so nothing to suppress.
-    if (accept) markLocalConfigWrite();
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  await invokeChecked<void>("respond_host_key", { promptId, accept });
+  // Accepting a host key writes known_hosts.json; suppress the resulting
+  // watcher echo. A reject changes nothing on disk, so nothing to suppress
+  // (hence the conditional mark rather than `invokeMutation`).
+  if (accept) markLocalConfigWrite();
 }
 
 /**
@@ -346,11 +347,7 @@ export interface KnownHostEntry {
 
 /** Lists every trusted host key, sorted by `id` (`host:port`). */
 export async function listKnownHosts(): Promise<KnownHostEntry[]> {
-  try {
-    return await invoke<KnownHostEntry[]>("list_known_hosts");
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeChecked<KnownHostEntry[]>("list_known_hosts");
 }
 
 /**
@@ -359,21 +356,12 @@ export async function listKnownHosts(): Promise<KnownHostEntry[]> {
  * that host will TOFU-prompt again.
  */
 export async function forgetHost(id: string): Promise<void> {
-  try {
-    await invoke<void>("forget_host", { id });
-    markLocalConfigWrite();
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  await invokeMutation<void>("forget_host", { id });
 }
 
 /** Connect + authenticate + close, no shell (SPEC §5). */
 export async function testConnection(deviceId: string): Promise<void> {
-  try {
-    await invoke<void>("test_connection", { deviceId });
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  await invokeChecked<void>("test_connection", { deviceId });
 }
 
 /** Constructs a fresh per-session data `Channel<ArrayBuffer>`. */
@@ -438,29 +426,17 @@ export interface TunnelInfo {
  * state arrives via `onTunnelStatus`.
  */
 export async function startTunnel(deviceId: string): Promise<string> {
-  try {
-    return await invoke<string>("start_tunnel", { deviceId });
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeChecked<string>("start_tunnel", { deviceId });
 }
 
 /** Stops a tunnel by id, releasing its bound local listeners. Idempotent. */
 export async function stopTunnel(tunnelId: string): Promise<void> {
-  try {
-    await invoke<void>("stop_tunnel", { tunnelId });
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  await invokeChecked<void>("stop_tunnel", { tunnelId });
 }
 
 /** Lists the currently-live tunnels (SPEC tunnels §3). */
 export async function listTunnels(): Promise<TunnelInfo[]> {
-  try {
-    return await invoke<TunnelInfo[]>("list_tunnels");
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeChecked<TunnelInfo[]>("list_tunnels");
 }
 
 /** Subscribes to `tunnel_status` events. Returns an unlisten function. */
@@ -499,11 +475,7 @@ export interface ProfileList {
 
 /** Lists all saved profiles plus the current default id (SPEC §5). */
 export async function listProfiles(): Promise<ProfileList> {
-  try {
-    return await invoke<ProfileList>("list_profiles");
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeChecked<ProfileList>("list_profiles");
 }
 
 /**
@@ -511,33 +483,17 @@ export async function listProfiles(): Promise<ProfileList> {
  * `""` and the backend generates a UUIDv4, returning the stored profile.
  */
 export async function saveProfile(profile: Profile): Promise<Profile> {
-  try {
-    const saved = await invoke<Profile>("save_profile", { profile });
-    markLocalConfigWrite();
-    return saved;
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeMutation<Profile>("save_profile", { profile });
 }
 
 /** Deletes a profile; the backend clears the default if it pointed here (SPEC §5). */
 export async function deleteProfile(profileId: string): Promise<void> {
-  try {
-    await invoke<void>("delete_profile", { profileId });
-    markLocalConfigWrite();
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  await invokeMutation<void>("delete_profile", { profileId });
 }
 
 /** Sets (or clears, with `null`) the default profile loaded on start (SPEC §5). */
 export async function setDefaultProfile(profileId: string | null): Promise<void> {
-  try {
-    await invoke<void>("set_default_profile", { profileId });
-    markLocalConfigWrite();
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  await invokeMutation<void>("set_default_profile", { profileId });
 }
 
 /* ============================================================================
@@ -564,22 +520,12 @@ export interface Settings {
 
 /** Current app settings (SPEC §5). */
 export async function getSettings(): Promise<Settings> {
-  try {
-    return await invoke<Settings>("get_settings");
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeChecked<Settings>("get_settings");
 }
 
 /** Persists app settings (backend clamps font size / defaults empty family). */
 export async function saveSettings(settings: Settings): Promise<Settings> {
-  try {
-    const saved = await invoke<Settings>("save_settings", { settings });
-    markLocalConfigWrite();
-    return saved;
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeMutation<Settings>("save_settings", { settings });
 }
 
 /* ============================================================================
@@ -592,11 +538,7 @@ export async function saveSettings(settings: Settings): Promise<Settings> {
  * of devices written. `path` comes from the native save dialog (`fileDialog`).
  */
 export async function exportDevices(path: string): Promise<number> {
-  try {
-    return await invoke<number>("export_devices", { path });
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeChecked<number>("export_devices", { path });
 }
 
 /**
@@ -605,13 +547,7 @@ export async function exportDevices(path: string): Promise<number> {
  * native open dialog (`fileDialog`).
  */
 export async function importDevices(path: string): Promise<number> {
-  try {
-    const count = await invoke<number>("import_devices", { path });
-    markLocalConfigWrite();
-    return count;
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeMutation<number>("import_devices", { path });
 }
 
 /**
@@ -620,11 +556,7 @@ export async function importDevices(path: string): Promise<number> {
  * number of profiles written.
  */
 export async function exportProfiles(path: string): Promise<number> {
-  try {
-    return await invoke<number>("export_profiles", { path });
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeChecked<number>("export_profiles", { path });
 }
 
 /**
@@ -633,13 +565,7 @@ export async function exportProfiles(path: string): Promise<number> {
  * profiles imported.
  */
 export async function importProfiles(path: string): Promise<number> {
-  try {
-    const count = await invoke<number>("import_profiles", { path });
-    markLocalConfigWrite();
-    return count;
-  } catch (err) {
-    throw normalizeError(err);
-  }
+  return invokeMutation<number>("import_profiles", { path });
 }
 
 /* ============================================================================

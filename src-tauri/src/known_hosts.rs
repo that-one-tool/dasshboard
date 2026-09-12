@@ -12,14 +12,12 @@
 //! `DeviceStore`.
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
+use crate::atomic_file;
 use crate::error::AppError;
 
 const KNOWN_HOSTS_FILE: &str = "known_hosts.json";
@@ -113,43 +111,17 @@ impl KnownHostsStore {
     }
 
     /// Reads and parses `dir/known_hosts.json` into the trust map, applying the
-    /// missing-file and corrupt-file recovery shared by `load` and `reload`.
+    /// missing-file and corrupt-file recovery shared by `load` and `reload`
+    /// (see [`atomic_file::read_recovering`]). A corrupt trust store must not
+    /// brick connecting — the map simply starts empty and the user is
+    /// re-prompted via TOFU.
     fn read_from_disk(dir: &Path) -> HashMap<String, KnownHost> {
-        let path = dir.join(KNOWN_HOSTS_FILE);
-        match fs::read_to_string(&path) {
-            Ok(contents) => match serde_json::from_str::<KnownHostsFile>(&contents) {
-                Ok(parsed) => parsed.hosts,
-                Err(err) => {
-                    eprintln!(
-                        "[DaSSHboard] known_hosts.json is corrupt ({err}); backing it up and starting empty"
-                    );
-                    Self::backup_corrupt(&path);
-                    HashMap::new()
-                }
-            },
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
-            Err(err) => {
-                eprintln!(
-                    "[DaSSHboard] could not read known_hosts.json ({err}); backing it up and starting empty"
-                );
-                Self::backup_corrupt(&path);
-                HashMap::new()
-            }
-        }
-    }
-
-    fn backup_corrupt(path: &Path) {
-        if !path.exists() {
-            return;
-        }
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let backup_path = path.with_file_name(format!("known_hosts.json.corrupt-{timestamp}"));
-        if let Err(err) = fs::rename(path, &backup_path) {
-            eprintln!("[DaSSHboard] failed to back up corrupt known_hosts.json: {err}");
-        }
+        atomic_file::read_recovering::<KnownHostsFile, _>(
+            dir,
+            KNOWN_HOSTS_FILE,
+            |file| file.hosts,
+            HashMap::new,
+        )
     }
 
     /// Returns the [`Verdict`] for a presented host key without mutating the
@@ -213,33 +185,25 @@ impl KnownHostsStore {
     }
 
     fn lock_hosts(&self) -> std::sync::MutexGuard<'_, HashMap<String, KnownHost>> {
-        self.hosts
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        atomic_file::lock(&self.hosts)
     }
 
-    /// Atomic write: serialize to a temp file in the same directory, then
-    /// `rename` over the real file (atomic within one directory on both
-    /// Windows and POSIX). Takes a snapshot so no lock is held during I/O.
+    /// Atomically persists the trust map (see [`atomic_file::write_json`]).
+    /// Callers pass a snapshot cloned out under the lock, so no lock is held
+    /// during I/O.
     fn persist(&self, hosts: &HashMap<String, KnownHost>) -> Result<(), AppError> {
-        fs::create_dir_all(&self.dir)?;
         let file = KnownHostsFile {
             version: CURRENT_VERSION,
             hosts: hosts.clone(),
         };
-        let json = serde_json::to_string_pretty(&file)?;
-        let tmp_path = self
-            .dir
-            .join(format!("{KNOWN_HOSTS_FILE}.tmp-{}", Uuid::new_v4()));
-        fs::write(&tmp_path, json)?;
-        fs::rename(&tmp_path, self.dir.join(KNOWN_HOSTS_FILE))?;
-        Ok(())
+        atomic_file::write_json(&self.dir, KNOWN_HOSTS_FILE, &file)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::tempdir;
 
     fn ed25519(fp: &str) -> KnownHost {

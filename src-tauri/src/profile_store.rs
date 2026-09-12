@@ -8,14 +8,13 @@
 //! Takes a directory path injected by the caller (not a hardcoded app dir)
 //! so tests can point it at a temp dir (SPEC.md §10).
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::atomic_file;
 use crate::error::AppError;
 use crate::profile::Profile;
 
@@ -75,55 +74,21 @@ impl ProfileStore {
     }
 
     /// Reads and parses `dir/profiles.json` into a [`ProfilesState`], applying
-    /// the missing-file and corrupt-file recovery shared by `load` and `reload`.
+    /// the missing-file and corrupt-file recovery shared by `load` and `reload`
+    /// (see [`atomic_file::read_recovering`]).
     fn read_from_disk(dir: &Path) -> ProfilesState {
-        let path = dir.join(PROFILES_FILE);
-        match fs::read_to_string(&path) {
-            Ok(contents) => match serde_json::from_str::<ProfilesFile>(&contents) {
-                Ok(parsed) => ProfilesState {
-                    default_profile_id: parsed.default_profile_id,
-                    profiles: parsed.profiles,
-                },
-                Err(err) => {
-                    eprintln!(
-                        "[DaSSHboard] profiles.json is corrupt ({err}); backing it up and starting with an empty profile list"
-                    );
-                    Self::backup_corrupt(&path);
-                    ProfilesState {
-                        default_profile_id: None,
-                        profiles: Vec::new(),
-                    }
-                }
+        atomic_file::read_recovering::<ProfilesFile, _>(
+            dir,
+            PROFILES_FILE,
+            |file| ProfilesState {
+                default_profile_id: file.default_profile_id,
+                profiles: file.profiles,
             },
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => ProfilesState {
+            || ProfilesState {
                 default_profile_id: None,
                 profiles: Vec::new(),
             },
-            Err(err) => {
-                eprintln!(
-                    "[DaSSHboard] could not read profiles.json ({err}); backing it up and starting with an empty profile list"
-                );
-                Self::backup_corrupt(&path);
-                ProfilesState {
-                    default_profile_id: None,
-                    profiles: Vec::new(),
-                }
-            }
-        }
-    }
-
-    fn backup_corrupt(path: &Path) {
-        if !path.exists() {
-            return;
-        }
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let backup_path = path.with_file_name(format!("profiles.json.corrupt-{timestamp}"));
-        if let Err(err) = fs::rename(path, &backup_path) {
-            eprintln!("[DaSSHboard] failed to back up corrupt profiles.json: {err}");
-        }
+        )
     }
 
     /// All profiles plus the current default id (SPEC.md §5 `list_profiles`).
@@ -246,28 +211,18 @@ impl ProfileStore {
     }
 
     fn lock_state(&self) -> std::sync::MutexGuard<'_, ProfilesState> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        atomic_file::lock(&self.state)
     }
 
-    /// Atomic write: serialize to a temp file in the same directory, then
-    /// `rename` over the real file (atomic within one directory on both
-    /// Windows and POSIX filesystems).
+    /// Atomically persists the whole profile state (see
+    /// [`atomic_file::write_json`]).
     fn persist(&self, state: &ProfilesState) -> Result<(), AppError> {
-        fs::create_dir_all(&self.dir)?;
         let file = ProfilesFile {
             version: CURRENT_VERSION,
             default_profile_id: state.default_profile_id.clone(),
             profiles: state.profiles.clone(),
         };
-        let json = serde_json::to_string_pretty(&file)?;
-        let tmp_path = self
-            .dir
-            .join(format!("{PROFILES_FILE}.tmp-{}", Uuid::new_v4()));
-        fs::write(&tmp_path, json)?;
-        fs::rename(&tmp_path, self.dir.join(PROFILES_FILE))?;
-        Ok(())
+        atomic_file::write_json(&self.dir, PROFILES_FILE, &file)
     }
 }
 
@@ -275,6 +230,7 @@ impl ProfileStore {
 mod tests {
     use super::*;
     use crate::profile::{Grid, Pane};
+    use std::fs;
     use tempfile::tempdir;
 
     fn sample_profile(name: &str) -> Profile {

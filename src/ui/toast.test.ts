@@ -7,14 +7,10 @@
  * the fix — dedup of an exact repeat (which just restarts its dismiss timer
  * instead of adding a node), the concurrent-toast cap, container reuse, and
  * auto-dismiss.
- *
- * `main.ts` also wires up `initApp()` via `window.addEventListener("DOMContentLoaded", ...)`,
- * but that event is never dispatched by simply importing the module in a test
- * environment, so importing it here only exercises `showToast`.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { showToast } from "./main";
+import { showToast } from "./toast";
 
 function toasts(): HTMLElement[] {
   return Array.from(document.querySelectorAll<HTMLElement>(".toast"));

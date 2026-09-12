@@ -22,13 +22,8 @@ import {
 } from "./gridModel";
 import { shouldConfirmTeardown, type WorkspaceSnapshot } from "./profiles/workspace";
 import { confirm } from "./ui/confirm";
+import { requireEl } from "./ui/dom";
 import type { Profile, TerminalSettings } from "./ipc";
-
-function requireEl<E extends Element>(root: ParentNode, selector: string): E {
-  const el = root.querySelector<E>(selector);
-  if (!el) throw new Error(`Expected element not found: ${selector}`);
-  return el;
-}
 
 export interface GridOptions {
   onError?: (message: string) => void;

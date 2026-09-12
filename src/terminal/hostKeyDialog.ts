@@ -14,13 +14,7 @@ import {
   type HostKeyPromptEvent,
 } from "../ipc";
 import { hostKeyDialogText } from "./overlay";
-
-/** Looks up a required element, throwing loudly on a markup/code drift. */
-function requireEl<E extends Element>(root: ParentNode, selector: string): E {
-  const el = root.querySelector<E>(selector);
-  if (!el) throw new Error(`Expected element not found: ${selector}`);
-  return el;
-}
+import { requireEl } from "../ui/dom";
 
 export function initHostKeyDialog(): () => void {
   const root = document.createElement("div");

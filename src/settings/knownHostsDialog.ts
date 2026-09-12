@@ -12,17 +12,11 @@
 
 import { forgetHost, listKnownHosts, type KnownHostEntry } from "../ipc";
 import { confirm } from "../ui/confirm";
+import { requireEl } from "../ui/dom";
 
 export interface KnownHostsDialogOptions {
   /** Surface a load/forget failure to the user (wired to the toast in main.ts). */
   onError: (message: string) => void;
-}
-
-/** Looks up a required element, throwing loudly on markup/code drift. */
-function requireEl<E extends Element>(root: ParentNode, selector: string): E {
-  const el = root.querySelector<E>(selector);
-  if (!el) throw new Error(`Expected element not found: ${selector}`);
-  return el;
 }
 
 /**

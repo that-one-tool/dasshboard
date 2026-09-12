@@ -132,10 +132,7 @@ mod tests {
 
     #[test]
     fn matches_a_watched_file_write() {
-        let e = event(
-            EventKind::Modify(ModifyKind::Any),
-            "/cfg/devices.json",
-        );
+        let e = event(EventKind::Modify(ModifyKind::Any), "/cfg/devices.json");
         assert!(is_config_change(&e));
     }
 
@@ -176,10 +173,7 @@ mod tests {
     #[test]
     fn ignores_pure_access_events_even_on_a_watched_file() {
         // A read of devices.json must not be mistaken for a change.
-        let e = event(
-            EventKind::Access(AccessKind::Read),
-            "/cfg/devices.json",
-        );
+        let e = event(EventKind::Access(AccessKind::Read), "/cfg/devices.json");
         assert!(!is_config_change(&e));
     }
 

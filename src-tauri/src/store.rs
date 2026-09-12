@@ -4,14 +4,13 @@
 //! Takes a directory path injected by the caller (not a hardcoded app
 //! dir) so tests can point it at a temp dir (SPEC.md §10).
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::atomic_file;
 use crate::device::Device;
 use crate::error::AppError;
 
@@ -61,43 +60,15 @@ impl DeviceStore {
     }
 
     /// Reads and parses `dir/devices.json` into a device list, applying the
-    /// missing-file and corrupt-file recovery shared by `load` and `reload`.
+    /// missing-file and corrupt-file recovery shared by `load` and `reload`
+    /// (see [`atomic_file::read_recovering`]).
     fn read_from_disk(dir: &Path) -> Vec<Device> {
-        let path = dir.join(DEVICES_FILE);
-        match fs::read_to_string(&path) {
-            Ok(contents) => match serde_json::from_str::<DevicesFile>(&contents) {
-                Ok(parsed) => parsed.devices,
-                Err(err) => {
-                    eprintln!(
-                        "[DaSSHboard] devices.json is corrupt ({err}); backing it up and starting with an empty device list"
-                    );
-                    Self::backup_corrupt(&path);
-                    Vec::new()
-                }
-            },
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(err) => {
-                eprintln!(
-                    "[DaSSHboard] could not read devices.json ({err}); backing it up and starting with an empty device list"
-                );
-                Self::backup_corrupt(&path);
-                Vec::new()
-            }
-        }
-    }
-
-    fn backup_corrupt(path: &Path) {
-        if !path.exists() {
-            return;
-        }
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let backup_path = path.with_file_name(format!("devices.json.corrupt-{timestamp}"));
-        if let Err(err) = fs::rename(path, &backup_path) {
-            eprintln!("[DaSSHboard] failed to back up corrupt devices.json: {err}");
-        }
+        atomic_file::read_recovering::<DevicesFile, _>(
+            dir,
+            DEVICES_FILE,
+            |file| file.devices,
+            Vec::new,
+        )
     }
 
     /// All devices, never including secret material (there is none in this
@@ -149,28 +120,16 @@ impl DeviceStore {
     }
 
     fn lock_devices(&self) -> std::sync::MutexGuard<'_, Vec<Device>> {
-        self.devices
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        atomic_file::lock(&self.devices)
     }
 
-    /// Atomic write: serialize to a temp file in the same directory, then
-    /// `rename` over the real file. `rename` within one directory is atomic
-    /// on both Windows and POSIX filesystems, so readers only ever see the
-    /// fully-old or fully-new content, never a partial write.
+    /// Atomically persists the device list (see [`atomic_file::write_json`]).
     fn persist(&self, devices: &[Device]) -> Result<(), AppError> {
-        fs::create_dir_all(&self.dir)?;
         let file = DevicesFile {
             version: CURRENT_VERSION,
             devices: devices.to_vec(),
         };
-        let json = serde_json::to_string_pretty(&file)?;
-        let tmp_path = self
-            .dir
-            .join(format!("{DEVICES_FILE}.tmp-{}", Uuid::new_v4()));
-        fs::write(&tmp_path, json)?;
-        fs::rename(&tmp_path, self.dir.join(DEVICES_FILE))?;
-        Ok(())
+        atomic_file::write_json(&self.dir, DEVICES_FILE, &file)
     }
 }
 
@@ -178,6 +137,7 @@ impl DeviceStore {
 mod tests {
     use super::*;
     use crate::device::{Auth, Connection};
+    use std::fs;
     use tempfile::tempdir;
 
     fn sample_device(name: &str) -> Device {

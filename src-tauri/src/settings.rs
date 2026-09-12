@@ -4,14 +4,12 @@
 //! set. Holds no secrets. Loads/saves with atomic writes and recovers from a
 //! missing or corrupt file, like the device/profile stores.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
+use crate::atomic_file;
 use crate::error::AppError;
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -128,43 +126,16 @@ impl SettingsStore {
     }
 
     /// Reads, parses, and sanitizes `dir/settings.json`, applying the
-    /// missing-file and corrupt-file recovery shared by `load` and `reload`.
+    /// missing-file and corrupt-file recovery shared by `load` and `reload`
+    /// (see [`atomic_file::read_recovering`]). The `map` sanitizes loaded
+    /// settings so a hand-edited or stale file can't persist a bad value.
     fn read_from_disk(dir: &Path) -> Settings {
-        let path = dir.join(SETTINGS_FILE);
-        match fs::read_to_string(&path) {
-            Ok(contents) => match serde_json::from_str::<Settings>(&contents) {
-                Ok(parsed) => parsed.sanitized(),
-                Err(err) => {
-                    eprintln!(
-                        "[DaSSHboard] settings.json is corrupt ({err}); backing it up and using defaults"
-                    );
-                    Self::backup_corrupt(&path);
-                    Settings::default()
-                }
-            },
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Settings::default(),
-            Err(err) => {
-                eprintln!(
-                    "[DaSSHboard] could not read settings.json ({err}); backing it up and using defaults"
-                );
-                Self::backup_corrupt(&path);
-                Settings::default()
-            }
-        }
-    }
-
-    fn backup_corrupt(path: &Path) {
-        if !path.exists() {
-            return;
-        }
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let backup_path = path.with_file_name(format!("settings.json.corrupt-{timestamp}"));
-        if let Err(err) = fs::rename(path, &backup_path) {
-            eprintln!("[DaSSHboard] failed to back up corrupt settings.json: {err}");
-        }
+        atomic_file::read_recovering::<Settings, _>(
+            dir,
+            SETTINGS_FILE,
+            Settings::sanitized,
+            Settings::default,
+        )
     }
 
     /// The current settings (SPEC.md §5 `get_settings`).
@@ -187,27 +158,21 @@ impl SettingsStore {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Settings> {
-        self.settings
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        atomic_file::lock(&self.settings)
     }
 
-    /// Atomic write: serialize to a temp file in the same directory, then rename.
+    /// Atomically persists the settings (see [`atomic_file::write_json`]).
+    /// `Settings` carries its own `version` field, so it is written directly
+    /// rather than inside a separate on-disk envelope.
     fn persist(&self, settings: &Settings) -> Result<(), AppError> {
-        fs::create_dir_all(&self.dir)?;
-        let json = serde_json::to_string_pretty(settings)?;
-        let tmp_path = self
-            .dir
-            .join(format!("{SETTINGS_FILE}.tmp-{}", Uuid::new_v4()));
-        fs::write(&tmp_path, json)?;
-        fs::rename(&tmp_path, self.dir.join(SETTINGS_FILE))?;
-        Ok(())
+        atomic_file::write_json(&self.dir, SETTINGS_FILE, settings)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]

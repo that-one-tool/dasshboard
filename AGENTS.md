@@ -11,17 +11,25 @@ See `README.md` for features, prerequisites, and data-file layout.
 - `src/` — frontend (TypeScript, no framework):
   - `grid.ts` / `gridModel.ts` — multi-pane grid layout
   - `terminal/` — pane, overlay, reconnect, paste, host-key dialog, terminal settings
-  - `devices/` — device CRUD, validation, save payloads, the port-forward editor
+  - `devices/` — device CRUD, validation, save payloads, the port-forward
+    editor; the dialog is split into `deviceManager` (controller: events +
+    backend calls + list), `deviceDialogTemplate` (markup), and `deviceForm`
+    (form DOM read/populate/toggle helpers)
   - `tunnels/` — the Tunnels sidebar card (start/stop/status for local forwards)
   - `profiles/` — workspace/profile persistence
   - `settings/` — app settings controller
-  - `ui/` — confirm dialogs, file dialog, icons
+  - `ui/` — confirm dialogs, file dialog, icons, toast notifications (`toast.ts`),
+    shared DOM helpers (`dom.ts`)
   - `ipc.ts` — typed `invoke` wrappers; every payload type here must mirror the
     matching Rust `serde` struct (camelCase on the wire)
 - `src-tauri/src/` — backend (Rust):
   - `commands.rs` — `#[tauri::command]` handlers, registered in `lib.rs`
   - `device.rs`, `profile.rs`, `settings.rs` — domain models
   - `store.rs`, `profile_store.rs` — JSON persistence in the Tauri app-config dir
+  - `atomic_file.rs` — shared JSON-store plumbing (atomic write-then-rename,
+    corrupt-file backup, missing/corrupt read-recovery, poison-recovering lock)
+    that every store (`store`, `profile_store`, `settings`, `known_hosts`)
+    delegates to; each store keeps only its own wrapper type + domain logic
   - `known_hosts.rs` — host-key TOFU store
   - `secret.rs` — OS keychain access; secrets never touch the JSON stores
   - `session.rs` — SSH shell sessions via `russh`

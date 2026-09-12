@@ -9,7 +9,7 @@
  * and `Channel` are mocked.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const { invokeMock, listenMock, ChannelMock } = vi.hoisted(() => {
 	class ChannelMock {
@@ -53,6 +53,7 @@ import {
 	onSessionStatus,
 	onHostKeyPrompt,
 	newDataChannel,
+	isLocalConfigWriteRecent,
 	type Device,
 	type Settings,
 } from "./ipc";
@@ -352,5 +353,61 @@ describe("event subscriptions and data channel", () => {
 		expect(a).toBeInstanceOf(ChannelMock);
 		expect(b).toBeInstanceOf(ChannelMock);
 		expect(a).not.toBe(b);
+	});
+});
+
+/**
+ * The `invokeChecked` / `invokeMutation` split (see ipc.ts): only a *successful
+ * write* command arms the local-write echo suppression that stops this window
+ * from auto-reloading its own change. A read command, and a write that failed,
+ * must leave it un-armed. Uses fake timers so the 900 ms echo window is
+ * controlled deterministically (and so a prior test's arm can't bleed in).
+ */
+describe("config-write echo suppression (invokeMutation vs invokeChecked)", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	const profile = {
+		id: "p1",
+		name: "Home",
+		grid: { rows: 1, cols: 1, rowSizes: [1], colSizes: [1] },
+		panes: [{ deviceId: null }],
+	};
+
+	it("a successful mutation arms isLocalConfigWriteRecent()", async () => {
+		vi.setSystemTime(1_000_000);
+		invokeMock.mockResolvedValue(profile);
+		await saveProfile(profile);
+		expect(isLocalConfigWriteRecent()).toBe(true);
+	});
+
+	it("a read wrapper does NOT arm echo suppression", async () => {
+		// Advance well past any prior write's 900 ms echo window first.
+		vi.setSystemTime(2_000_000);
+		invokeMock.mockResolvedValue({ defaultProfileId: null, profiles: [] });
+		await listProfiles();
+		expect(isLocalConfigWriteRecent()).toBe(false);
+	});
+
+	it("a failed mutation does NOT arm echo suppression", async () => {
+		vi.setSystemTime(3_000_000);
+		invokeMock.mockRejectedValue({ code: "Io", message: "disk gone" });
+		await expect(deleteProfile("p1")).rejects.toBeDefined();
+		expect(isLocalConfigWriteRecent()).toBe(false);
+	});
+
+	it("respondHostKey arms only when the host key is accepted", async () => {
+		vi.setSystemTime(4_000_000);
+		invokeMock.mockResolvedValue(undefined);
+		await respondHostKey("pr1", false);
+		expect(isLocalConfigWriteRecent()).toBe(false);
+
+		vi.setSystemTime(5_000_000);
+		await respondHostKey("pr1", true);
+		expect(isLocalConfigWriteRecent()).toBe(true);
 	});
 });

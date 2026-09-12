@@ -38,13 +38,8 @@ import {
 } from "./reconnect";
 import { isMultilinePaste, pasteConfirmMessage } from "./paste";
 import { confirm } from "../ui/confirm";
+import { requireEl } from "../ui/dom";
 import { deviceEndpoint } from "../devices/deviceEndpoint";
-
-function requireEl<E extends Element>(root: ParentNode, selector: string): E {
-  const el = root.querySelector<E>(selector);
-  if (!el) throw new Error(`Expected element not found: ${selector}`);
-  return el;
-}
 
 // Re-exported so callers already importing it from this module keep working;
 // the implementation lives in the device domain (`../devices/deviceEndpoint`).
@@ -556,14 +551,28 @@ export class TerminalPane {
     await this.startSession();
   }
 
+  /** The six overlay nodes both overlay-rendering paths manipulate. */
+  private overlayEls(): {
+    overlay: HTMLElement;
+    spinner: HTMLElement;
+    title: HTMLElement;
+    detail: HTMLElement;
+    retry: HTMLButtonElement;
+    cancel: HTMLButtonElement;
+  } {
+    return {
+      overlay: requireEl<HTMLElement>(this.root, ".pane-overlay"),
+      spinner: requireEl<HTMLElement>(this.root, ".overlay-spinner"),
+      title: requireEl<HTMLElement>(this.root, ".overlay-title"),
+      detail: requireEl<HTMLElement>(this.root, ".overlay-detail"),
+      retry: requireEl<HTMLButtonElement>(this.root, ".overlay-retry"),
+      cancel: requireEl<HTMLButtonElement>(this.root, ".overlay-cancel"),
+    };
+  }
+
   private renderReconnectOverlay(): void {
     this.setStatusDot("connecting");
-    const overlay = requireEl<HTMLElement>(this.root, ".pane-overlay");
-    const spinner = requireEl<HTMLElement>(this.root, ".overlay-spinner");
-    const title = requireEl<HTMLElement>(this.root, ".overlay-title");
-    const detail = requireEl<HTMLElement>(this.root, ".overlay-detail");
-    const retry = requireEl<HTMLButtonElement>(this.root, ".overlay-retry");
-    const cancel = requireEl<HTMLButtonElement>(this.root, ".overlay-cancel");
+    const { overlay, spinner, title, detail, retry, cancel } = this.overlayEls();
 
     overlay.classList.remove("dialog-hidden");
     overlay.classList.remove("overlay-error");
@@ -582,12 +591,7 @@ export class TerminalPane {
   }
 
   private renderOverlay(state: ReturnType<typeof overlayForStatus>): void {
-    const overlay = requireEl<HTMLElement>(this.root, ".pane-overlay");
-    const spinner = requireEl<HTMLElement>(this.root, ".overlay-spinner");
-    const title = requireEl<HTMLElement>(this.root, ".overlay-title");
-    const detail = requireEl<HTMLElement>(this.root, ".overlay-detail");
-    const retry = requireEl<HTMLButtonElement>(this.root, ".overlay-retry");
-    const cancel = requireEl<HTMLButtonElement>(this.root, ".overlay-cancel");
+    const { overlay, spinner, title, detail, retry, cancel } = this.overlayEls();
 
     overlay.classList.toggle("dialog-hidden", !state.visible);
     overlay.classList.toggle("overlay-error", state.variant === "error");

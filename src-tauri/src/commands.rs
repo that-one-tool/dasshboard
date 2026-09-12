@@ -1273,10 +1273,14 @@ mod tests {
         other
             .session_manager
             .known_hosts()
-            .trust("h", 22, crate::known_hosts::KnownHost {
-                key_type: "ssh-ed25519".to_string(),
-                fingerprint: "SHA256:abc".to_string(),
-            })
+            .trust(
+                "h",
+                22,
+                crate::known_hosts::KnownHost {
+                    key_type: "ssh-ed25519".to_string(),
+                    fingerprint: "SHA256:abc".to_string(),
+                },
+            )
             .unwrap();
 
         // Our in-memory view is stale until reloaded.
