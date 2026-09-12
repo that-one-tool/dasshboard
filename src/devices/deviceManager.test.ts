@@ -15,11 +15,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Device } from "../ipc";
 
-const { invokeMock, saveMock, openMock } = vi.hoisted(() => ({
-  invokeMock: vi.fn(),
-  saveMock: vi.fn(),
-  openMock: vi.fn(),
-}));
+const { invokeMock, saveMock, openMock, homeDirMock, joinMock } = vi.hoisted(
+  () => ({
+    invokeMock: vi.fn(),
+    saveMock: vi.fn(),
+    openMock: vi.fn(),
+    homeDirMock: vi.fn(),
+    joinMock: vi.fn(),
+  }),
+);
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -28,6 +32,11 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   save: (...args: unknown[]) => saveMock(...args),
   open: (...args: unknown[]) => openMock(...args),
+}));
+
+vi.mock("@tauri-apps/api/path", () => ({
+  homeDir: (...args: unknown[]) => homeDirMock(...args),
+  join: (...args: unknown[]) => joinMock(...args),
 }));
 
 // Imported after the mock is registered so the module graph uses it.
@@ -387,6 +396,64 @@ describe("device import/export", () => {
     await flush();
 
     expect(callsTo("import_devices").length).toBe(0);
+    expect(callsTo("list_devices").length).toBe(1); // only the initial load
+  });
+});
+
+/**
+ * SSH-config import wiring: the "Import SSH config" button opens a file picker
+ * seeded at `~/.ssh/config` (built from `homeDir()` + `join()`), then calls the
+ * `import_ssh_config` command and reloads the list. A cancelled picker is a
+ * silent no-op.
+ */
+describe("SSH config import", () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    openMock.mockReset();
+    homeDirMock.mockReset();
+    joinMock.mockReset();
+    homeDirMock.mockResolvedValue("/home/j");
+    joinMock.mockResolvedValue("/home/j/.ssh/config");
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_devices") return [deviceA, deviceB];
+      if (cmd === "import_ssh_config") return { imported: 3, skipped: 1 };
+      return undefined;
+    });
+  });
+
+  function callsTo(command: string): unknown[][] {
+    return invokeMock.mock.calls.filter((c) => c[0] === command);
+  }
+
+  it("opens the picker seeded at ~/.ssh/config then imports and reloads", async () => {
+    openMock.mockResolvedValue("/home/j/.ssh/config");
+    const container = await setup();
+    expect(callsTo("list_devices").length).toBe(1); // initial load
+
+    q<HTMLButtonElement>(container, ".device-import-ssh-btn").click();
+    await flush();
+
+    expect(joinMock).toHaveBeenCalledWith("/home/j", ".ssh", "config");
+    expect(openMock).toHaveBeenCalledWith({
+      multiple: false,
+      defaultPath: "/home/j/.ssh/config",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("import_ssh_config", {
+      path: "/home/j/.ssh/config",
+    });
+    expect(callsTo("list_devices").length).toBe(2); // reloaded after import
+  });
+
+  it("a cancelled picker does not call import_ssh_config or reload", async () => {
+    openMock.mockResolvedValue(null);
+    const container = await setup();
+
+    q<HTMLButtonElement>(container, ".device-import-ssh-btn").click();
+    await flush();
+
+    expect(callsTo("import_ssh_config").length).toBe(0);
     expect(callsTo("list_devices").length).toBe(1); // only the initial load
   });
 });

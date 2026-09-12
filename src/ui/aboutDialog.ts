@@ -12,7 +12,8 @@ import { ping } from "../ipc";
 import { formatPingMessage } from "../version";
 
 /** A short, accurate description of what the app is (not marketing copy). */
-const TAGLINE = "Multi-pane SSH & serial terminal dashboard";
+const TAGLINE =
+  "Multi-pane SSH & serial terminal dashboard with SFTP file transfer";
 
 /** Open the About dialog. Returns immediately; the version fills in when the
  * `ping` round trip resolves. */

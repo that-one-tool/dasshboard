@@ -13,6 +13,7 @@ import {
   testConnection,
   exportDevices,
   importDevices,
+  importSshConfig,
 } from "../ipc";
 import { validateDevice } from "./validation";
 import { ForwardsEditor } from "./forwardsEditor";
@@ -30,7 +31,11 @@ import {
   updateKindDisplay,
 } from "./deviceForm";
 import { confirm } from "../ui/confirm";
-import { pickJsonSavePath, pickJsonOpenPath } from "../ui/fileDialog";
+import {
+  pickJsonSavePath,
+  pickJsonOpenPath,
+  pickSshConfigOpenPath,
+} from "../ui/fileDialog";
 import { pencilIcon, trashIcon } from "../ui/icons";
 
 export interface DeviceManagerOptions {
@@ -118,6 +123,9 @@ export class DeviceManagerImpl {
     this.container
       .querySelector(".device-import-btn")
       ?.addEventListener("click", () => void this.handleImport());
+    this.container
+      .querySelector(".device-import-ssh-btn")
+      ?.addEventListener("click", () => void this.handleImportSshConfig());
 
     // Dialog close buttons
     this.container.querySelectorAll("[data-close-dialog]").forEach((btn) => {
@@ -334,6 +342,30 @@ export class DeviceManagerImpl {
       if (path === null) return; // user cancelled the picker
       const count = await importDevices(path);
       this.options.onSuccess?.(`Imported ${count} device(s)`);
+      await this.loadDevices();
+    } catch (err) {
+      this.options.onError?.(err as AppError);
+    }
+  }
+
+  /**
+   * Imports devices from an OpenSSH client config (`~/.ssh/config` by default),
+   * upserting each concrete host. Reports how many were added and, when any
+   * were skipped (wildcard/`Match`-only blocks, entries missing a username, or
+   * duplicates of existing devices), how many. Routes success through
+   * `onSuccess` so the pane dropdowns / profiles / tunnels refresh, then reloads
+   * the sidebar. Cancel is a no-op.
+   */
+  private async handleImportSshConfig(): Promise<void> {
+    try {
+      const path = await pickSshConfigOpenPath();
+      if (path === null) return; // user cancelled the picker
+      const { imported, skipped } = await importSshConfig(path);
+      const message =
+        skipped > 0
+          ? `Imported ${imported} device(s) from SSH config (${skipped} skipped)`
+          : `Imported ${imported} device(s) from SSH config`;
+      this.options.onSuccess?.(message);
       await this.loadDevices();
     } catch (err) {
       this.options.onError?.(err as AppError);

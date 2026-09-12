@@ -10,6 +10,7 @@ use crate::secret::SecretStore;
 use crate::serial::SerialSessionManager;
 use crate::session::SessionManager;
 use crate::settings::SettingsStore;
+use crate::sftp::SftpManager;
 use crate::store::DeviceStore;
 use crate::tunnel::TunnelManager;
 
@@ -32,6 +33,10 @@ pub struct AppState {
     /// host-key TOFU store; behind an `Arc` because `spawn_tunnel` moves an owned
     /// handle into each tunnel task.
     pub tunnel_manager: Arc<TunnelManager>,
+    /// Owns the live SFTP connections (the Files drawer). Shares the SSH
+    /// manager's host-key TOFU store like the tunnel manager, so a trust
+    /// decision applies to shells, tunnels and SFTP to the same host alike.
+    pub sftp_manager: Arc<SftpManager>,
     /// Owns the live serial/COM sessions — the serial analogue of
     /// `session_manager`. A session id belongs to exactly one of the two
     /// managers; the command layer routes write/resize/disconnect by ownership.

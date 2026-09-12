@@ -1,7 +1,7 @@
 [package]
 name = "dasshboard"
-version = "1.4.1"
-description = "A Tauri App"
+version = "1.5.0"
+description = "Multi-pane SSH & serial terminal dashboard with SFTP file transfer"
 authors = ["That one tool"]
 edition = "2021"
 
@@ -25,7 +25,7 @@ tauri-plugin-opener = "=2.5.4"
 # against tauri =2.11.5. The frontend obtains a path via this plugin's save/open
 # dialog, then the backend transfer commands read/write that exact path.
 tauri-plugin-dialog = "=2.7.2"
-serde = { version = "=1.0.228", features = ["derive"] }
+serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.150"
 # SSH client + key loading (used starting Phase 2 — SessionManager, russh client, PTY/shell).
 russh = "0.62.2"
@@ -59,6 +59,12 @@ tauri-plugin-window-state = "=2.4.1"
 # own std mpsc channel, so no extra channel feature is needed. Pinned exactly
 # like the other crates.
 notify = "=8.2.0"
+# SFTP client (file browse + transfer) layered over a russh session channel
+# (`SftpManager` in `sftp.rs`): we hand it `Channel::into_stream()` and it speaks
+# the SFTP subsystem protocol. Decoupled from the russh version (it only needs an
+# `AsyncRead + AsyncWrite`). Pinned exactly like the other crates; 3.0.0 requires
+# serde >= 1.0.229 (why the serde pin above was bumped one patch).
+russh-sftp = "=3.0.0"
 
 [dev-dependencies]
 # Temp-dir fixtures for DeviceStore tests (missing/corrupt-file recovery,

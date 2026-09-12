@@ -21,6 +21,11 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
     `/dev/ttyUSB0` on Linux) by port name + baud rate, with optional framing
     params (data bits, parity, stop bits, flow control; defaults to 8-N-1, no
     flow control). Serial devices have no host/auth and store **no** secret.
+  - **Import from `~/.ssh/config`** — pull your existing OpenSSH hosts straight
+    into the address book (`Host`/`HostName`/`Port`/`User`/`IdentityFile`; a host
+    with an identity file becomes key auth, others password auth). Best-effort:
+    wildcard/`Match`-only blocks and duplicates are skipped, so a re-import never
+    creates duplicates and never fails on a messy entry.
 - **Live multi-pane grid** — 1×1 up to 3×2 preset layouts, draggable splitters,
   click-to-focus panes, each an independent SSH shell or serial terminal.
 - **SSH tunnels (local port forwarding)** — give an SSH device one or more
@@ -30,6 +35,12 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   Start/stop per device from the **Tunnels** sidebar card with live status, copy
   the local endpoint with a click, and optionally auto-start a device's tunnel on
   app launch. Forwards bind loopback only.
+- **SFTP file browser** — a standalone **Files** drawer per SSH device: browse
+  remote directories, download files to a local path and upload local files, plus
+  make/rename/delete entries. Reuses the SSH connect + host-key path, so a
+  first-contact key prompts exactly like a shell; the connection closes when the
+  drawer does. Whole-file transfers (not streamed), so best for config files,
+  logs and archives rather than very large files.
 - **Layout profiles** — save a workspace (grid + device assignments), set a
   default, and have it restore and auto-connect every pane on launch.
 - **Host-key TOFU** — trust-on-first-use prompts with a prominent warning when a
@@ -127,9 +138,12 @@ no secret**, so nothing is ever written to the keychain for them.
 
 - `src/` — frontend (TypeScript): `grid.ts`/`gridModel.ts` (multi-pane grid),
   `terminal/` (pane, overlay, reconnect, settings), `devices/` (CRUD + the
-  port-forward editor), `tunnels/` (the Tunnels sidebar card), `profiles/`,
-  `settings/`, `ipc.ts` (typed command wrappers).
+  port-forward editor), `tunnels/` (the Tunnels sidebar card), `sftp/` (the Files
+  card + browser drawer), `profiles/`, `settings/`, `ipc.ts` (typed command
+  wrappers).
 - `src-tauri/src/` — backend (Rust): stores (`store`, `profile_store`,
   `settings`, `known_hosts`), `session` (SSH shells via `russh`), `tunnel` (local
-  port forwarding, reusing `session`'s connect/host-key path), `serial`
-  (serial/COM via `tokio-serial`), `commands`, `secret` (keyring).
+  port forwarding, reusing `session`'s connect/host-key path), `sftp` (SFTP
+  browse/transfer over `russh-sftp`, reusing the same connect path), `ssh_config`
+  (import devices from `~/.ssh/config`), `serial` (serial/COM via `tokio-serial`),
+  `commands`, `secret` (keyring).

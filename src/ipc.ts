@@ -107,7 +107,8 @@ export type ErrorCode =
   | "SshConnect"
   | "SshChannel"
   | "HostKeyRejected"
-  | "TunnelBind";
+  | "TunnelBind"
+  | "Sftp";
 
 export interface AppError {
   code: ErrorCode;
@@ -566,6 +567,132 @@ export async function exportProfiles(path: string): Promise<number> {
  */
 export async function importProfiles(path: string): Promise<number> {
   return invokeMutation<number>("import_profiles", { path });
+}
+
+/** Result of an SSH-config import: how many devices were added vs. skipped
+ * (a wildcard/`Match`-only block, an entry that produced no valid device, or a
+ * duplicate of one already saved). */
+export interface SshImportSummary {
+  imported: number;
+  skipped: number;
+}
+
+/**
+ * Imports SSH devices from an OpenSSH client config (typically `~/.ssh/config`)
+ * at `path`. Best-effort, upsert into the device store: each concrete `Host`
+ * block becomes an SSH device; hosts that don't validate or duplicate an
+ * existing device are skipped, not fatal. `path` comes from the native open
+ * dialog (`pickSshConfigOpenPath`). Returns the imported/skipped counts.
+ */
+export async function importSshConfig(
+  path: string,
+): Promise<SshImportSummary> {
+  return invokeMutation<SshImportSummary>("import_ssh_config", { path });
+}
+
+/* ============================================================================
+ * SFTP commands (the Files drawer) — file browse + up/download over SFTP.
+ * These operate on a live SSH connection, not on config files, so they use
+ * `invokeChecked` (no multi-instance config-echo suppression).
+ * ============================================================================ */
+
+/** One remote directory entry from `sftpList`. */
+export interface SftpEntry {
+  name: string;
+  kind: "dir" | "file" | "symlink";
+  size: number;
+  /** Unix seconds; absent when the server omits it. */
+  modified?: number;
+}
+
+/**
+ * Opens an SFTP connection to a device (reusing the shell connect + host-key
+ * path). Returns the starting directory (the server's home). A first-contact
+ * host key raises the same `host_key_prompt` a shell connect does.
+ */
+export async function sftpConnect(deviceId: string): Promise<string> {
+  return invokeChecked<string>("sftp_connect", { deviceId });
+}
+
+/** Closes a device's SFTP connection (idempotent). */
+export async function sftpDisconnect(deviceId: string): Promise<void> {
+  await invokeChecked<void>("sftp_disconnect", { deviceId });
+}
+
+/** Device ids with a live SFTP connection, so a re-mounted drawer can restore. */
+export async function sftpConnectedDevices(): Promise<string[]> {
+  return invokeChecked<string[]>("sftp_connected_devices");
+}
+
+/** Lists a remote directory (directories first, then files, each sorted). */
+export async function sftpList(
+  deviceId: string,
+  path: string,
+): Promise<SftpEntry[]> {
+  return invokeChecked<SftpEntry[]>("sftp_list", { deviceId, path });
+}
+
+/** Resolves a remote path to its canonical absolute form (`realpath`). */
+export async function sftpRealpath(
+  deviceId: string,
+  path: string,
+): Promise<string> {
+  return invokeChecked<string>("sftp_realpath", { deviceId, path });
+}
+
+/**
+ * Downloads a remote file to a local path (from the native save dialog).
+ * Returns the byte count written.
+ */
+export async function sftpDownload(
+  deviceId: string,
+  remotePath: string,
+  localPath: string,
+): Promise<number> {
+  return invokeChecked<number>("sftp_download", {
+    deviceId,
+    remotePath,
+    localPath,
+  });
+}
+
+/**
+ * Uploads a local file (from the native open dialog) to a remote path. Returns
+ * the byte count uploaded.
+ */
+export async function sftpUpload(
+  deviceId: string,
+  localPath: string,
+  remotePath: string,
+): Promise<number> {
+  return invokeChecked<number>("sftp_upload", {
+    deviceId,
+    localPath,
+    remotePath,
+  });
+}
+
+/** Creates a remote directory. */
+export async function sftpMkdir(deviceId: string, path: string): Promise<void> {
+  await invokeChecked<void>("sftp_mkdir", { deviceId, path });
+}
+
+/** Renames/moves a remote entry. */
+export async function sftpRename(
+  deviceId: string,
+  from: string,
+  to: string,
+): Promise<void> {
+  await invokeChecked<void>("sftp_rename", { deviceId, from, to });
+}
+
+/** Removes a remote entry — a directory (must be empty) when `isDir`, else a file. */
+export async function sftpRemove(
+  deviceId: string,
+  path: string,
+  isDir: boolean,
+): Promise<void> {
+  await invokeChecked<void>("sftp_remove", { deviceId, path, isDir });
 }
 
 /* ============================================================================

@@ -41,6 +41,11 @@ pub enum AppError {
     /// in use, or binding it was refused (SPEC tunnels §5).
     #[error("{0}")]
     TunnelBind(String),
+    /// An SFTP operation failed — the subsystem could not be opened, or a
+    /// browse/transfer request was refused by the server (no such file,
+    /// permission denied, …). Never carries secret material.
+    #[error("{0}")]
+    Sftp(String),
 }
 
 impl AppError {
@@ -55,6 +60,7 @@ impl AppError {
             AppError::SshChannel(_) => "SshChannel",
             AppError::HostKeyRejected(_) => "HostKeyRejected",
             AppError::TunnelBind(_) => "TunnelBind",
+            AppError::Sftp(_) => "Sftp",
         }
     }
 }
@@ -122,6 +128,7 @@ mod tests {
             (AppError::SshChannel("x".into()), "SshChannel"),
             (AppError::HostKeyRejected("x".into()), "HostKeyRejected"),
             (AppError::TunnelBind("x".into()), "TunnelBind"),
+            (AppError::Sftp("x".into()), "Sftp"),
         ];
         for (err, expected_code) in cases {
             assert_eq!(err.code(), expected_code);

@@ -187,6 +187,9 @@ mod tests {
         let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
         let session_manager = Arc::new(SessionManager::with_defaults(known_hosts));
         let tunnel_manager = Arc::new(TunnelManager::with_defaults(session_manager.known_hosts()));
+        let sftp_manager = Arc::new(crate::sftp::SftpManager::with_defaults(
+            session_manager.known_hosts(),
+        ));
         AppState {
             device_store: DeviceStore::load(dir.to_path_buf()),
             profile_store: ProfileStore::load(dir.to_path_buf()),
@@ -194,6 +197,7 @@ mod tests {
             secret_store: Arc::new(InMemorySecretStore::new()),
             session_manager,
             tunnel_manager,
+            sftp_manager,
             serial_manager: Arc::new(SerialSessionManager::new()),
         }
     }

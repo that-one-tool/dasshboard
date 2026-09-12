@@ -12,6 +12,7 @@ import { SettingsController } from "./settings/settingsController";
 import { DEFAULT_TERMINAL_SETTINGS } from "./terminal/terminalSettings";
 import { initHostKeyDialog } from "./terminal/hostKeyDialog";
 import { initTunnelsPanel } from "./tunnels/tunnelsPanel";
+import { initSftpPanel } from "./sftp/sftpPanel";
 import { openAboutDialog } from "./ui/aboutDialog";
 import { openKnownHostsDialog } from "./settings/knownHostsDialog";
 import { showToast } from "./ui/toast";
@@ -114,6 +115,13 @@ async function initApp(): Promise<void> {
 		onSuccess: (message: string) => showToast(message, "success"),
 	});
 
+	// Files (SFTP) panel: a sidebar card listing SSH devices, each opening a
+	// standalone browser drawer for browse + up/download. Independent of the grid.
+	const sftpPanel = initSftpPanel({
+		onError: (error: AppError) => showToast(`Error: ${error.message}`, "error"),
+		onSuccess: (message: string) => showToast(message, "success"),
+	});
+
 	// Device manager: on any successful change, refresh every pane's device
 	// dropdown so a newly added/edited/deleted device shows up immediately; also
 	// re-sync profiles (a deleted device is nulled out of them backend-side) and
@@ -128,6 +136,7 @@ async function initApp(): Promise<void> {
 			void grid.refreshDevices();
 			void profileManager.reload();
 			void tunnelsPanel.refresh();
+			void sftpPanel.refresh();
 		},
 	});
 
@@ -154,6 +163,7 @@ async function initApp(): Promise<void> {
 			profileManager.reload(),
 			settings.reloadFromDisk(),
 			tunnelsPanel.refresh(),
+			sftpPanel.refresh(),
 		]);
 		if (announce) showToast("Configuration reloaded", "success");
 	};

@@ -34,6 +34,13 @@ export function deviceManagerMarkup(): string {
           >
             Import
           </button>
+          <button
+            class="btn btn-small device-import-ssh-btn"
+            data-action="import-ssh-config"
+            title="Import devices from an OpenSSH config (~/.ssh/config)"
+          >
+            Import SSH config
+          </button>
         </div>
         <div class="device-list-items"></div>
       </div>

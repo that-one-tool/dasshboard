@@ -26,6 +26,7 @@ use crate::session::{
     AuthCredentials, ConnectParams, HostKeyPromptPayload, SessionSink, SessionStatus,
 };
 use crate::settings::Settings;
+use crate::sftp::{SftpEntry, SftpParams, SftpSink};
 use crate::state::AppState;
 use crate::tunnel::{ForwardStatus, TunnelInfo, TunnelParams, TunnelSink, TunnelStatus};
 
@@ -518,6 +519,7 @@ pub async fn disconnect(state: State<'_, AppState>, session_id: String) -> Resul
 pub fn respond_host_key(state: State<'_, AppState>, prompt_id: String, accept: bool) {
     state.session_manager.respond_host_key(&prompt_id, accept);
     state.tunnel_manager.respond_host_key(&prompt_id, accept);
+    state.sftp_manager.respond_host_key(&prompt_id, accept);
 }
 
 /// List every trusted host key for the management UI. Fingerprints are public
@@ -707,6 +709,191 @@ pub fn list_tunnels(state: State<'_, AppState>) -> Result<Vec<TunnelInfo>, AppEr
 }
 
 /* ============================================================================
+ * SFTP commands (the Files drawer) — file browse + up/download over SFTP.
+ * The heavy lifting lives in `sftp.rs`; these commands resolve the device +
+ * credentials, adapt the host-key prompt to a Tauri event, and bridge remote
+ * reads/writes to the local filesystem.
+ * ============================================================================ */
+
+/// Production [`SftpSink`]: forwards an SFTP handshake's host-key trust prompt
+/// onto the shared `host_key_prompt` event, so the same dialog a shell/tunnel
+/// raises handles it. Carries no secret material.
+struct TauriSftpSink {
+    app: AppHandle,
+}
+
+impl SftpSink for TauriSftpSink {
+    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
+        let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
+    }
+}
+
+/// The SSH endpoint (host, port, username) of a device, or an error for a serial
+/// device (which has no SFTP). Used by every SFTP command that needs to connect.
+fn ssh_endpoint_of(device: &Device) -> Result<(&str, u16, &str), AppError> {
+    match &device.connection {
+        Connection::Ssh {
+            host,
+            port,
+            username,
+            ..
+        } => Ok((host, *port, username)),
+        Connection::Serial { .. } => Err(AppError::Validation(
+            "serial devices do not support SFTP".to_string(),
+        )),
+    }
+}
+
+/// Open an SFTP connection to a device and return the starting directory (the
+/// server's default/home). Shares the host-key path, so a first-contact connect
+/// can raise a `host_key_prompt` like a live shell. Reconnecting replaces any
+/// existing connection for the device.
+#[tauri::command]
+pub async fn sftp_connect(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<String, AppError> {
+    let device = find_device(&state, &device_id)?;
+    let (host, port, username) = ssh_endpoint_of(&device)?;
+    let host = host.to_string();
+    let username = username.to_string();
+
+    let creds = resolve_credentials(&state, &device).await?;
+    let sink: Arc<dyn SftpSink> = Arc::new(TauriSftpSink { app });
+    state
+        .sftp_manager
+        .connect(
+            SftpParams {
+                device_id,
+                host,
+                port,
+                username,
+                creds,
+            },
+            sink,
+        )
+        .await
+}
+
+/// Close a device's SFTP connection. Idempotent (unknown device ⇒ no-op).
+#[tauri::command]
+pub async fn sftp_disconnect(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<(), AppError> {
+    state.sftp_manager.disconnect(&device_id).await;
+    Ok(())
+}
+
+/// The device ids that currently have a live SFTP connection, so a re-mounted
+/// drawer can restore its state.
+#[tauri::command]
+pub fn sftp_connected_devices(state: State<'_, AppState>) -> Result<Vec<String>, AppError> {
+    Ok(state.sftp_manager.connected_devices())
+}
+
+/// List one remote directory (directories first, then files, each sorted).
+#[tauri::command]
+pub async fn sftp_list(
+    state: State<'_, AppState>,
+    device_id: String,
+    path: String,
+) -> Result<Vec<SftpEntry>, AppError> {
+    state.sftp_manager.list(&device_id, &path).await
+}
+
+/// Resolve a remote path to its canonical absolute form (server-side
+/// `realpath`). The browser uses it to navigate "up" — `<cwd>/..` — correctly
+/// even through symlinks, rather than trimming the string itself.
+#[tauri::command]
+pub async fn sftp_realpath(
+    state: State<'_, AppState>,
+    device_id: String,
+    path: String,
+) -> Result<String, AppError> {
+    state.sftp_manager.canonicalize(&device_id, &path).await
+}
+
+/// Download a remote file to a local path chosen via the native save dialog.
+/// Reads the whole file over SFTP, then writes it locally on a blocking task
+/// (the local write is a synchronous syscall). Returns the byte count written.
+#[tauri::command]
+pub async fn sftp_download(
+    state: State<'_, AppState>,
+    device_id: String,
+    remote_path: String,
+    local_path: String,
+) -> Result<u64, AppError> {
+    let bytes = state
+        .sftp_manager
+        .read_file(&device_id, &remote_path)
+        .await?;
+    let len = bytes.len() as u64;
+    tokio::task::spawn_blocking(move || std::fs::write(&local_path, &bytes))
+        .await
+        .map_err(|e| AppError::Io(format!("download write task failed: {e}")))??;
+    Ok(len)
+}
+
+/// Upload a local file (chosen via the native open dialog) to a remote path.
+/// Reads the local file on a blocking task, then writes it over SFTP. Returns
+/// the byte count uploaded.
+#[tauri::command]
+pub async fn sftp_upload(
+    state: State<'_, AppState>,
+    device_id: String,
+    local_path: String,
+    remote_path: String,
+) -> Result<u64, AppError> {
+    let bytes = tokio::task::spawn_blocking(move || std::fs::read(&local_path))
+        .await
+        .map_err(|e| AppError::Io(format!("upload read task failed: {e}")))??;
+    let len = bytes.len() as u64;
+    state
+        .sftp_manager
+        .write_file(&device_id, &remote_path, &bytes)
+        .await?;
+    Ok(len)
+}
+
+/// Create a remote directory.
+#[tauri::command]
+pub async fn sftp_mkdir(
+    state: State<'_, AppState>,
+    device_id: String,
+    path: String,
+) -> Result<(), AppError> {
+    state.sftp_manager.mkdir(&device_id, &path).await
+}
+
+/// Rename/move a remote entry.
+#[tauri::command]
+pub async fn sftp_rename(
+    state: State<'_, AppState>,
+    device_id: String,
+    from: String,
+    to: String,
+) -> Result<(), AppError> {
+    state.sftp_manager.rename(&device_id, &from, &to).await
+}
+
+/// Remove a remote entry — a directory (must be empty) when `isDir`, else a file.
+#[tauri::command]
+pub async fn sftp_remove(
+    state: State<'_, AppState>,
+    device_id: String,
+    path: String,
+    is_dir: bool,
+) -> Result<(), AppError> {
+    if is_dir {
+        state.sftp_manager.remove_dir(&device_id, &path).await
+    } else {
+        state.sftp_manager.remove_file(&device_id, &path).await
+    }
+}
+
+/* ============================================================================
  * Diagnostics
  * ============================================================================ */
 
@@ -748,6 +935,18 @@ pub fn import_profiles(state: State<'_, AppState>, path: String) -> Result<u32, 
     crate::transfer::import_profiles_impl(&state, Path::new(&path))
 }
 
+/// Import SSH devices from an OpenSSH client config at `path` (typically
+/// `~/.ssh/config`). Best-effort: each concrete `Host` block becomes an SSH
+/// device; hosts that don't validate or duplicate an existing one are skipped,
+/// never fatal. Returns the imported/skipped counts (see `ssh_config.rs`).
+#[tauri::command]
+pub fn import_ssh_config(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<crate::ssh_config::SshImportSummary, AppError> {
+    crate::ssh_config::import_ssh_config_impl(&state, Path::new(&path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -759,6 +958,7 @@ mod tests {
     use crate::serial::SerialSessionManager;
     use crate::session::SessionManager;
     use crate::settings::SettingsStore;
+    use crate::sftp::SftpManager;
     use crate::store::DeviceStore;
     use crate::tunnel::TunnelManager;
     use tempfile::tempdir;
@@ -767,6 +967,7 @@ mod tests {
         let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
         let session_manager = Arc::new(SessionManager::with_defaults(known_hosts));
         let tunnel_manager = Arc::new(TunnelManager::with_defaults(session_manager.known_hosts()));
+        let sftp_manager = Arc::new(SftpManager::with_defaults(session_manager.known_hosts()));
         AppState {
             device_store: DeviceStore::load(dir.to_path_buf()),
             profile_store: ProfileStore::load(dir.to_path_buf()),
@@ -774,6 +975,7 @@ mod tests {
             secret_store: Arc::new(InMemorySecretStore::new()),
             session_manager,
             tunnel_manager,
+            sftp_manager,
             serial_manager: Arc::new(SerialSessionManager::new()),
         }
     }
@@ -787,6 +989,7 @@ mod tests {
         let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
         let session_manager = Arc::new(SessionManager::with_defaults(known_hosts));
         let tunnel_manager = Arc::new(TunnelManager::with_defaults(session_manager.known_hosts()));
+        let sftp_manager = Arc::new(SftpManager::with_defaults(session_manager.known_hosts()));
         AppState {
             device_store: DeviceStore::load(dir.to_path_buf()),
             profile_store: ProfileStore::load(dir.to_path_buf()),
@@ -794,6 +997,7 @@ mod tests {
             secret_store,
             session_manager,
             tunnel_manager,
+            sftp_manager,
             serial_manager: Arc::new(SerialSessionManager::new()),
         }
     }
