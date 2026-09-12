@@ -172,6 +172,7 @@ pub fn run() {
             commands::sftp_connected_devices,
             commands::sftp_download,
             commands::sftp_upload,
+            commands::sftp_cancel_transfer,
             commands::sftp_mkdir,
             commands::sftp_rename,
             commands::sftp_remove,

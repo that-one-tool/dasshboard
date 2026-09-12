@@ -1,6 +1,6 @@
 [package]
 name = "dasshboard"
-version = "1.5.0"
+version = "1.5.1"
 description = "Multi-pane SSH & serial terminal dashboard with SFTP file transfer"
 authors = ["That one tool"]
 edition = "2021"

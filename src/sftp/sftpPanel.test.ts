@@ -6,13 +6,14 @@
  * clicking a file downloads, and closing disconnects.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { Device, SftpEntry } from "../ipc";
+import type { Device, SftpEntry, SftpProgressEvent } from "../ipc";
 
 const h = vi.hoisted(() => ({
   devices: [] as Device[],
   listResult: [] as SftpEntry[],
   saveResult: null as string | null,
   openResult: null as string | null,
+  progressHandler: null as ((e: SftpProgressEvent) => void) | null,
 }));
 
 vi.mock("../ipc", () => ({
@@ -26,6 +27,11 @@ vi.mock("../ipc", () => ({
   sftpMkdir: vi.fn(async () => {}),
   sftpRename: vi.fn(async () => {}),
   sftpRemove: vi.fn(async () => {}),
+  sftpCancelTransfer: vi.fn(async () => {}),
+  onSftpProgress: vi.fn(async (handler: (e: SftpProgressEvent) => void) => {
+    h.progressHandler = handler;
+    return () => {};
+  }),
 }));
 
 vi.mock("../ui/fileDialog", () => ({
@@ -43,7 +49,14 @@ vi.mock("@tauri-apps/api/path", () => ({
 }));
 
 import { SftpPanel, browsableDevices } from "./sftpPanel";
-import { sftpConnect, sftpList, sftpDisconnect, sftpDownload } from "../ipc";
+import {
+  sftpConnect,
+  sftpList,
+  sftpDisconnect,
+  sftpDownload,
+  sftpCancelTransfer,
+} from "../ipc";
+import type { AppError } from "../ipc";
 
 function sshDevice(id: string, name: string): Device {
   return {
@@ -258,6 +271,102 @@ describe("SftpPanel", () => {
     backSvg?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await flush();
     expect(sftpList).toHaveBeenLastCalledWith("a", "/home/j");
+  });
+
+  it("a progress event updates the bar width and percentage", async () => {
+    await setup();
+    q<HTMLButtonElement>(".sftp-device-row .btn").click();
+    await flush(); // connected, activeDeviceId = "a"
+
+    h.progressHandler?.({
+      deviceId: "a",
+      direction: "download",
+      transferred: 50,
+      total: 100,
+    });
+
+    const row = q(".sftp-progress");
+    expect(row.classList.contains("active")).toBe(true);
+    expect(q<HTMLElement>(".sftp-progress-fill").style.width).toBe("50%");
+    expect(q(".sftp-progress-pct").textContent).toBe("50%");
+  });
+
+  it("ignores progress events for a different device", async () => {
+    await setup();
+    q<HTMLButtonElement>(".sftp-device-row .btn").click();
+    await flush();
+
+    h.progressHandler?.({
+      deviceId: "other",
+      direction: "download",
+      transferred: 50,
+      total: 100,
+    });
+    expect(q(".sftp-progress").classList.contains("active")).toBe(false);
+  });
+
+  it("a completed download collapses to a checkmark, then auto-hides", async () => {
+    vi.useFakeTimers();
+    try {
+      h.saveResult = "C:/local/readme.txt";
+      await setup();
+      q<HTMLButtonElement>(".sftp-device-row .btn").click();
+      await flush();
+      document
+        .querySelector<HTMLButtonElement>(".sftp-entry.is-file .sftp-entry-name")
+        ?.click();
+      await flush(); // download resolves → completeProgress
+
+      const row = q(".sftp-progress");
+      expect(row.classList.contains("done")).toBe(true);
+      expect(q(".sftp-progress-pct").textContent).toBe("Done");
+
+      vi.advanceTimersByTime(2600);
+      expect(row.classList.contains("active")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clicking cancel during a transfer requests cancellation", async () => {
+    await setup();
+    q<HTMLButtonElement>(".sftp-device-row .btn").click();
+    await flush();
+    // A progress event makes the row (and its cancel button) active.
+    h.progressHandler?.({
+      deviceId: "a",
+      direction: "upload",
+      transferred: 10,
+      total: 100,
+    });
+
+    q<HTMLButtonElement>(".sftp-progress-cancel").click();
+    await flush();
+    expect(sftpCancelTransfer).toHaveBeenCalledWith("a");
+  });
+
+  it("a cancelled download is reported quietly (status, no error toast)", async () => {
+    vi.mocked(sftpDownload).mockRejectedValueOnce({
+      code: "Cancelled",
+      message: "transfer cancelled",
+    } satisfies AppError);
+    const onError = vi.fn();
+    h.saveResult = "C:/local/readme.txt";
+
+    document.body.innerHTML = `<div class="sftp-list"></div>`;
+    const panel = new SftpPanel({ onError });
+    await panel.init();
+    await flush();
+    q<HTMLButtonElement>(".sftp-device-row .btn").click();
+    await flush();
+    document
+      .querySelector<HTMLButtonElement>(".sftp-entry.is-file .sftp-entry-name")
+      ?.click();
+    await flush();
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(q(".sftp-status").textContent).toBe("Transfer cancelled");
+    expect(q(".sftp-progress").classList.contains("active")).toBe(false);
   });
 
   it("closing the drawer disconnects", async () => {

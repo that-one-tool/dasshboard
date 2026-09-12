@@ -24,11 +24,15 @@ import {
   sftpRemove,
   sftpRename,
   sftpUpload,
+  sftpCancelTransfer,
+  onSftpProgress,
   type AppError,
   type Device,
   type SftpEntry,
+  type SftpProgressEvent,
   type SshDevice,
 } from "../ipc";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   pickDownloadSavePath,
   pickUploadOpenPath,
@@ -69,6 +73,15 @@ export class SftpPanel {
   private pathEl: HTMLElement | null = null;
   private listEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
+  private progressEl: HTMLElement | null = null;
+  private progressIconEl: HTMLElement | null = null;
+  private progressFillEl: HTMLElement | null = null;
+  private progressPctEl: HTMLElement | null = null;
+
+  /** `sftp_progress` event subscription (live while the drawer exists). */
+  private unlistenProgress: UnlistenFn | null = null;
+  /** Timer that hides the completed-progress row after a short delay. */
+  private progressHideTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** The device whose connection the drawer is currently showing. */
   private activeDeviceId: string | null = null;
@@ -100,6 +113,14 @@ export class SftpPanel {
   async refresh(): Promise<void> {
     this.devices = await this.safeListDevices();
     this.render();
+  }
+
+  /** Stop listening for progress events — used by tests; the app keeps the panel
+   * for its lifetime. */
+  dispose(): void {
+    this.unlistenProgress?.();
+    this.unlistenProgress = null;
+    this.clearHideTimer();
   }
 
   private async safeListDevices(): Promise<Device[]> {
@@ -186,6 +207,12 @@ export class SftpPanel {
           </div>
         </div>
         <div class="sftp-entries" role="list"></div>
+        <div class="sftp-progress" role="status" aria-live="polite">
+          <span class="sftp-progress-icon" aria-hidden="true"></span>
+          <div class="sftp-progress-track"><div class="sftp-progress-fill"></div></div>
+          <span class="sftp-progress-pct"></span>
+          <button type="button" class="btn btn-icon sftp-progress-cancel" data-action="cancel-transfer" title="Cancel transfer" aria-label="Cancel transfer">&times;</button>
+        </div>
         <div class="sftp-status" aria-live="polite"></div>
       </div>
     `;
@@ -196,6 +223,15 @@ export class SftpPanel {
     this.pathEl = drawer.querySelector(".sftp-path");
     this.listEl = drawer.querySelector(".sftp-entries");
     this.statusEl = drawer.querySelector(".sftp-status");
+    this.progressEl = drawer.querySelector(".sftp-progress");
+    this.progressIconEl = drawer.querySelector(".sftp-progress-icon");
+    this.progressFillEl = drawer.querySelector(".sftp-progress-fill");
+    this.progressPctEl = drawer.querySelector(".sftp-progress-pct");
+
+    // Live transfer progress (throttled events from the backend).
+    void onSftpProgress((e) => this.onProgress(e)).then((un) => {
+      this.unlistenProgress = un;
+    });
 
     drawer.addEventListener("click", (e) => {
       const target = e.target;
@@ -226,6 +262,9 @@ export class SftpPanel {
           break;
         case "mkdir":
           if (!this.busy) void this.handleMkdir();
+          break;
+        case "cancel-transfer":
+          void this.handleCancelTransfer();
           break;
       }
     });
@@ -262,6 +301,7 @@ export class SftpPanel {
   /** Hide the drawer and disconnect the active connection (idempotent). */
   private async close(): Promise<void> {
     this.showDrawer(false);
+    this.hideProgress();
     const deviceId = this.activeDeviceId;
     this.activeDeviceId = null;
     if (this.listEl) this.listEl.replaceChildren();
@@ -351,13 +391,14 @@ export class SftpPanel {
     const remote = joinRemote(this.cwd, entry.name);
     this.setBusy(true);
     this.setStatus(`Downloading ${entry.name}…`);
+    this.startProgress("download");
     try {
       const bytes = await sftpDownload(this.activeDeviceId, remote, local);
+      this.completeProgress();
       this.setStatus(`${entry.name} downloaded (${formatSize(bytes)})`);
       this.options.onSuccess?.(`Downloaded ${entry.name}`);
     } catch (err) {
-      this.setStatus("");
-      this.options.onError?.(err as AppError);
+      this.handleTransferError(err as AppError);
     } finally {
       this.setBusy(false);
     }
@@ -371,14 +412,41 @@ export class SftpPanel {
     const remote = joinRemote(this.cwd, name);
     this.setBusy(true);
     this.setStatus(`Uploading ${name}…`);
+    this.startProgress("upload");
     try {
       await sftpUpload(this.activeDeviceId, local, remote);
+      this.completeProgress();
       this.options.onSuccess?.(`Uploaded ${name}`);
       await this.loadDir(this.cwd); // reflect the new file
     } catch (err) {
-      this.setStatus("");
-      this.options.onError?.(err as AppError);
+      this.handleTransferError(err as AppError);
       this.setBusy(false);
+    }
+  }
+
+  /**
+   * Shared error handling for a transfer: a user cancellation
+   * (`code === "Cancelled"`) is quiet — just a status line, no error toast —
+   * while a real failure surfaces through `onError`. Either way the progress
+   * bar is hidden.
+   */
+  private handleTransferError(error: AppError): void {
+    this.hideProgress();
+    if (error.code === "Cancelled") {
+      this.setStatus("Transfer cancelled");
+    } else {
+      this.setStatus("");
+      this.options.onError?.(error);
+    }
+  }
+
+  private async handleCancelTransfer(): Promise<void> {
+    if (this.activeDeviceId === null) return;
+    this.setStatus("Cancelling…");
+    try {
+      await sftpCancelTransfer(this.activeDeviceId);
+    } catch (err) {
+      this.options.onError?.(err as AppError);
     }
   }
 
@@ -541,6 +609,69 @@ export class SftpPanel {
     const forward = this.drawer?.querySelector<HTMLButtonElement>('[data-action="forward"]');
     if (back) back.disabled = this.historyIndex <= 0;
     if (forward) forward.disabled = this.historyIndex >= this.history.length - 1;
+  }
+
+  /* ----- transfer progress ----------------------------------------------- */
+
+  /** Show the progress row at 0 % for a starting transfer. */
+  private startProgress(direction: "download" | "upload"): void {
+    if (!this.progressEl) return;
+    this.clearHideTimer();
+    this.progressEl.classList.remove("done");
+    this.progressEl.classList.add("active");
+    this.setProgressIcon(direction);
+    this.setFill(0);
+    if (this.progressPctEl) this.progressPctEl.textContent = "0%";
+  }
+
+  /** Update the bar from a throttled `sftp_progress` event for the active device. */
+  private onProgress(e: SftpProgressEvent): void {
+    if (e.deviceId !== this.activeDeviceId || !this.progressEl) return;
+    this.clearHideTimer();
+    this.progressEl.classList.remove("done");
+    this.progressEl.classList.add("active");
+    this.setProgressIcon(e.direction);
+    const pct =
+      e.total > 0 ? Math.min(100, Math.round((e.transferred / e.total) * 100)) : 0;
+    this.setFill(pct);
+    if (this.progressPctEl) {
+      this.progressPctEl.textContent =
+        e.total > 0 ? `${pct}%` : formatSize(e.transferred);
+    }
+  }
+
+  /** Collapse the bar to a checkmark on completion, then auto-hide after ~2.5 s. */
+  private completeProgress(): void {
+    if (!this.progressEl) return;
+    this.clearHideTimer();
+    this.setFill(100);
+    this.progressEl.classList.add("active", "done");
+    if (this.progressIconEl) this.progressIconEl.textContent = "✓";
+    if (this.progressPctEl) this.progressPctEl.textContent = "Done";
+    this.progressHideTimer = setTimeout(() => this.hideProgress(), 2500);
+  }
+
+  private hideProgress(): void {
+    this.clearHideTimer();
+    this.progressEl?.classList.remove("active", "done");
+  }
+
+  private clearHideTimer(): void {
+    if (this.progressHideTimer !== null) {
+      clearTimeout(this.progressHideTimer);
+      this.progressHideTimer = null;
+    }
+  }
+
+  private setFill(pct: number): void {
+    if (this.progressFillEl) this.progressFillEl.style.width = `${pct}%`;
+  }
+
+  private setProgressIcon(direction: "download" | "upload"): void {
+    if (this.progressIconEl) {
+      this.progressIconEl.innerHTML =
+        direction === "upload" ? uploadIcon : downloadIcon;
+    }
   }
 }
 

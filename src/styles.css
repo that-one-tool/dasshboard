@@ -1623,3 +1623,88 @@ body.grid-dragging-row * {
   font-size: 0.8rem;
   min-height: 1.2em;
 }
+
+/* Transfer progress row: hidden until a transfer starts (`.active`), collapsing
+ * to a green checkmark on completion (`.done`) before auto-hiding. */
+.sftp-progress {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 8px 16px;
+  border-top: 1px solid #3c3c3c;
+}
+
+.sftp-progress.active {
+  display: flex;
+}
+
+.sftp-progress-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  color: #9cdcfe;
+}
+
+.sftp-progress-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.sftp-progress-track {
+  flex: 1 1 auto;
+  height: 6px;
+  background-color: #3c3c3c;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.sftp-progress-fill {
+  height: 100%;
+  width: 0;
+  background-color: #007acc;
+  transition: width 120ms linear;
+}
+
+.sftp-progress-pct {
+  flex: 0 0 auto;
+  min-width: 40px;
+  text-align: right;
+  color: #858585;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Completed: green check, no bar. */
+.sftp-progress.done .sftp-progress-icon {
+  color: #7fd8a0;
+  font-size: 1rem;
+}
+
+.sftp-progress.done .sftp-progress-track {
+  display: none;
+}
+
+.sftp-progress.done .sftp-progress-pct {
+  color: #7fd8a0;
+}
+
+/* Cancel button: only meaningful mid-transfer, so hidden once done. */
+.sftp-progress-cancel {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: #858585;
+}
+
+.sftp-progress-cancel:hover {
+  color: #f48771;
+}
+
+.sftp-progress.done .sftp-progress-cancel {
+  display: none;
+}

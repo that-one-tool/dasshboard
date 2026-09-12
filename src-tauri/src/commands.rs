@@ -715,6 +715,52 @@ pub fn list_tunnels(state: State<'_, AppState>) -> Result<Vec<TunnelInfo>, AppEr
  * reads/writes to the local filesystem.
  * ============================================================================ */
 
+/// Event name for streamed SFTP transfer progress (see `sftp_progress_emitter`).
+const SFTP_PROGRESS_EVENT: &str = "sftp_progress";
+
+/// Wire payload of the `sftp_progress` event, `camelCase`. Non-secret — just the
+/// device, direction, and byte counts driving the panel's progress bar.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SftpProgressPayload {
+    device_id: String,
+    /// `"download"` or `"upload"`.
+    direction: &'static str,
+    transferred: u64,
+    /// Total bytes (0 when unknown); `transferred == total` marks completion.
+    total: u64,
+}
+
+/// Build a throttled progress callback for a transfer: it emits `sftp_progress`
+/// at most every ~50 ms, but always emits the final (`transferred == total`)
+/// tick so the bar reliably reaches 100 %. Keeps `SftpManager` Tauri-free — the
+/// manager just calls this closure with running byte counts.
+fn sftp_progress_emitter(
+    app: AppHandle,
+    device_id: String,
+    direction: &'static str,
+) -> impl Fn(u64, u64) + Send + Sync {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let start = std::time::Instant::now();
+    let last_ms = AtomicU64::new(0);
+    move |transferred, total| {
+        let now_ms = start.elapsed().as_millis() as u64;
+        let is_final = total > 0 && transferred >= total;
+        if is_final || now_ms.saturating_sub(last_ms.load(Ordering::Relaxed)) >= 50 {
+            last_ms.store(now_ms, Ordering::Relaxed);
+            let _ = app.emit(
+                SFTP_PROGRESS_EVENT,
+                SftpProgressPayload {
+                    device_id: device_id.clone(),
+                    direction,
+                    transferred,
+                    total,
+                },
+            );
+        }
+    }
+}
+
 /// Production [`SftpSink`]: forwards an SFTP handshake's host-key trust prompt
 /// onto the shared `host_key_prompt` event, so the same dialog a shell/tunnel
 /// raises handles it. Carries no secret material.
@@ -816,18 +862,21 @@ pub async fn sftp_realpath(
 }
 
 /// Download a remote file to a local path chosen via the native save dialog.
-/// Reads the whole file over SFTP, then writes it locally on a blocking task
-/// (the local write is a synchronous syscall). Returns the byte count written.
+/// Streams the file over SFTP (emitting throttled `sftp_progress` events), then
+/// writes it locally on a blocking task (the local write is a synchronous
+/// syscall). Returns the byte count written.
 #[tauri::command]
 pub async fn sftp_download(
+    app: AppHandle,
     state: State<'_, AppState>,
     device_id: String,
     remote_path: String,
     local_path: String,
 ) -> Result<u64, AppError> {
+    let progress = sftp_progress_emitter(app, device_id.clone(), "download");
     let bytes = state
         .sftp_manager
-        .read_file(&device_id, &remote_path)
+        .read_file(&device_id, &remote_path, &progress)
         .await?;
     let len = bytes.len() as u64;
     tokio::task::spawn_blocking(move || std::fs::write(&local_path, &bytes))
@@ -837,10 +886,11 @@ pub async fn sftp_download(
 }
 
 /// Upload a local file (chosen via the native open dialog) to a remote path.
-/// Reads the local file on a blocking task, then writes it over SFTP. Returns
-/// the byte count uploaded.
+/// Reads the local file on a blocking task, then streams it over SFTP (emitting
+/// throttled `sftp_progress` events). Returns the byte count uploaded.
 #[tauri::command]
 pub async fn sftp_upload(
+    app: AppHandle,
     state: State<'_, AppState>,
     device_id: String,
     local_path: String,
@@ -850,11 +900,22 @@ pub async fn sftp_upload(
         .await
         .map_err(|e| AppError::Io(format!("upload read task failed: {e}")))??;
     let len = bytes.len() as u64;
+    let progress = sftp_progress_emitter(app, device_id.clone(), "upload");
     state
         .sftp_manager
-        .write_file(&device_id, &remote_path, &bytes)
+        .write_file(&device_id, &remote_path, &bytes, &progress)
         .await?;
     Ok(len)
+}
+
+/// Request cancellation of the in-flight transfer for a device (if any). The
+/// streaming download/upload loop sees the flag on its next chunk and unwinds
+/// with `AppError::Cancelled`; a cancelled upload's partial remote file is
+/// removed. Idempotent — no active transfer is a no-op.
+#[tauri::command]
+pub fn sftp_cancel_transfer(state: State<'_, AppState>, device_id: String) -> Result<(), AppError> {
+    state.sftp_manager.cancel_transfer(&device_id);
+    Ok(())
 }
 
 /// Create a remote directory.

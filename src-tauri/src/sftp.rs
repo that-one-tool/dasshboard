@@ -26,12 +26,19 @@
 //! large files are not streamed in v1.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use russh::client;
 use russh_sftp::client::SftpSession;
 use serde::Serialize;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// Chunk size for streaming SFTP transfers (32 KiB). Only the network read/write
+/// is chunked, so progress reflects the slow part; larger chunks reduce SFTP
+/// round trips without materially coarsening the progress bar.
+const TRANSFER_CHUNK: usize = 32 * 1024;
 
 use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
@@ -103,6 +110,11 @@ struct SftpConn {
 /// by the `respond_host_key` command, which fans a reply out to every manager.
 pub struct SftpManager {
     conns: Mutex<HashMap<String, Arc<SftpConn>>>,
+    /// Cancel flags for in-flight transfers, keyed by device id. A transfer
+    /// registers a fresh flag on start and removes it on end; `cancel_transfer`
+    /// flips it, and the streaming loops check it each chunk. One transfer per
+    /// device at a time (the UI disables the toolbar during a transfer).
+    transfers: Mutex<HashMap<String, Arc<AtomicBool>>>,
     prompts: Arc<PromptRegistry>,
     known_hosts: Arc<KnownHostsStore>,
     connect_timeout: Duration,
@@ -120,6 +132,7 @@ impl SftpManager {
     ) -> Self {
         Self {
             conns: Mutex::new(HashMap::new()),
+            transfers: Mutex::new(HashMap::new()),
             prompts: Arc::new(PromptRegistry::default()),
             known_hosts,
             connect_timeout,
@@ -176,6 +189,43 @@ impl SftpManager {
     /// layer knows which manager owned it).
     pub fn respond_host_key(&self, prompt_id: &str, accept: bool) -> bool {
         self.prompts.respond(prompt_id, accept)
+    }
+
+    /// Register a fresh cancel flag for a starting transfer on `device_id`,
+    /// returning it for the streaming loop to poll. Replaces any stale flag.
+    fn begin_transfer(&self, device_id: &str) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.transfers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(device_id.to_string(), Arc::clone(&flag));
+        flag
+    }
+
+    /// Remove a finished transfer's cancel flag (so a late cancel is a no-op).
+    fn end_transfer(&self, device_id: &str) {
+        self.transfers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(device_id);
+    }
+
+    /// Request cancellation of the in-flight transfer for `device_id` (if any):
+    /// the streaming loop sees the flag on its next chunk and unwinds with
+    /// `AppError::Cancelled`. Returns whether a transfer was actually in flight.
+    pub fn cancel_transfer(&self, device_id: &str) -> bool {
+        match self
+            .transfers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(device_id)
+        {
+            Some(flag) => {
+                flag.store(true, Ordering::Relaxed);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Open (or replace) the SFTP connection for a device: establish + auth
@@ -293,29 +343,113 @@ impl SftpManager {
             .map_err(|e| sftp_err(&format!("could not resolve {path}"), e))
     }
 
-    /// Read a whole remote file into memory (the download source; the command
-    /// writes the bytes to the user-chosen local path).
-    pub async fn read_file(&self, device_id: &str, path: &str) -> Result<Vec<u8>, AppError> {
+    /// Download a remote file into memory, streaming it over SFTP in chunks so
+    /// `on_progress(transferred, total)` can drive a progress bar. Only the
+    /// *network* read is chunked (the slow part); the caller writes the returned
+    /// buffer to local disk in one go. `total` is the remote size from `stat`
+    /// (0 if the server omits it). The command throttles the callback.
+    pub async fn read_file(
+        &self,
+        device_id: &str,
+        path: &str,
+        on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<Vec<u8>, AppError> {
         let conn = self.conn_of(device_id)?;
-        conn.session
-            .read(path.to_string())
+        let ctx = || format!("could not download {path}");
+
+        // Register a cancel flag; the guard removes it on every exit path.
+        let cancel = self.begin_transfer(device_id);
+        let _guard = TransferGuard {
+            manager: self,
+            device_id: device_id.to_string(),
+        };
+
+        let total = conn
+            .session
+            .metadata(path.to_string())
             .await
-            .map_err(|e| sftp_err(&format!("could not download {path}"), e))
+            .map_err(|e| sftp_err(&ctx(), e))?
+            .size
+            .unwrap_or(0);
+
+        let mut file = conn
+            .session
+            .open(path.to_string())
+            .await
+            .map_err(|e| sftp_err(&ctx(), e))?;
+
+        let mut buf = Vec::with_capacity(total as usize);
+        let mut chunk = vec![0u8; TRANSFER_CHUNK];
+        let mut transferred: u64 = 0;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = file.close().await;
+                return Err(cancelled());
+            }
+            let n = file
+                .read(&mut chunk)
+                .await
+                .map_err(|e| sftp_err(&ctx(), e))?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            transferred += n as u64;
+            on_progress(transferred, total.max(transferred));
+        }
+        // Best-effort close; the buffer is already fully read. (The local file is
+        // only written by the caller after this returns Ok, so a cancel leaves no
+        // partial local file.)
+        let _ = file.close().await;
+        Ok(buf)
     }
 
-    /// Write bytes to a remote file (create/truncate), the upload sink; the
-    /// command supplies the bytes read from the user-chosen local file.
+    /// Upload bytes to a remote file (create/truncate), streaming the *network*
+    /// write in chunks so `on_progress(transferred, total)` can drive a progress
+    /// bar. The caller has already read the local file into `data`. The command
+    /// throttles the callback.
     pub async fn write_file(
         &self,
         device_id: &str,
         path: &str,
         data: &[u8],
+        on_progress: &(dyn Fn(u64, u64) + Send + Sync),
     ) -> Result<(), AppError> {
         let conn = self.conn_of(device_id)?;
-        conn.session
-            .write(path.to_string(), data)
+        let ctx = || format!("could not upload to {path}");
+
+        // Register a cancel flag; the guard removes it on every exit path.
+        let cancel = self.begin_transfer(device_id);
+        let _guard = TransferGuard {
+            manager: self,
+            device_id: device_id.to_string(),
+        };
+
+        let mut file = conn
+            .session
+            .create(path.to_string())
             .await
-            .map_err(|e| sftp_err(&format!("could not upload to {path}"), e))
+            .map_err(|e| sftp_err(&ctx(), e))?;
+
+        let total = data.len() as u64;
+        let mut transferred: u64 = 0;
+        for piece in data.chunks(TRANSFER_CHUNK) {
+            if cancel.load(Ordering::Relaxed) {
+                // Best-effort: close the handle and remove the partial remote file
+                // so a cancelled upload doesn't leave a truncated file behind.
+                let _ = file.close().await;
+                let _ = conn.session.remove_file(path.to_string()).await;
+                return Err(cancelled());
+            }
+            file.write_all(piece)
+                .await
+                .map_err(|e| sftp_err(&ctx(), e))?;
+            transferred += piece.len() as u64;
+            on_progress(transferred, total);
+        }
+        // `close` flushes and releases the handle; a write error here is fatal.
+        file.close().await.map_err(|e| sftp_err(&ctx(), e))?;
+        Ok(())
     }
 
     /// Create a remote directory.
@@ -378,4 +512,22 @@ impl SftpManager {
 /// Taken as `impl Display` so the exact error type never has to be named here.
 fn sftp_err(context: &str, err: impl std::fmt::Display) -> AppError {
     AppError::Sftp(format!("{context}: {err}"))
+}
+
+/// The error a streaming transfer unwinds with when the user cancels it.
+fn cancelled() -> AppError {
+    AppError::Cancelled("transfer cancelled".to_string())
+}
+
+/// Removes a transfer's cancel flag on drop, so it is cleared no matter how the
+/// streaming loop exits (completion, error, or an early cancel return).
+struct TransferGuard<'a> {
+    manager: &'a SftpManager,
+    device_id: String,
+}
+
+impl Drop for TransferGuard<'_> {
+    fn drop(&mut self) {
+        self.manager.end_transfer(&self.device_id);
+    }
 }

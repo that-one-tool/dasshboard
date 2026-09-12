@@ -108,7 +108,8 @@ export type ErrorCode =
   | "SshChannel"
   | "HostKeyRejected"
   | "TunnelBind"
-  | "Sftp";
+  | "Sftp"
+  | "Cancelled";
 
 export interface AppError {
   code: ErrorCode;
@@ -693,6 +694,34 @@ export async function sftpRemove(
   isDir: boolean,
 ): Promise<void> {
   await invokeChecked<void>("sftp_remove", { deviceId, path, isDir });
+}
+
+/**
+ * Requests cancellation of the in-flight transfer for a device (if any). The
+ * streaming download/upload rejects with an `AppError` whose code is
+ * `"Cancelled"`. Idempotent — no active transfer is a no-op.
+ */
+export async function sftpCancelTransfer(deviceId: string): Promise<void> {
+  await invokeChecked<void>("sftp_cancel_transfer", { deviceId });
+}
+
+/** Streamed transfer progress from the `sftp_progress` event. */
+export interface SftpProgressEvent {
+  deviceId: string;
+  direction: "download" | "upload";
+  transferred: number;
+  /** Total bytes (0 when unknown); `transferred === total` marks completion. */
+  total: number;
+}
+
+/**
+ * Subscribes to `sftp_progress` events emitted (throttled) during an SFTP
+ * upload/download. Returns an unlisten function.
+ */
+export async function onSftpProgress(
+  handler: (event: SftpProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SftpProgressEvent>("sftp_progress", (e) => handler(e.payload));
 }
 
 /* ============================================================================

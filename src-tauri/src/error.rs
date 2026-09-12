@@ -46,6 +46,11 @@ pub enum AppError {
     /// permission denied, …). Never carries secret material.
     #[error("{0}")]
     Sftp(String),
+    /// A long-running operation (currently an SFTP transfer) was cancelled by
+    /// the user. Distinct from a failure so the frontend can treat it quietly
+    /// (a status line, not an error toast).
+    #[error("{0}")]
+    Cancelled(String),
 }
 
 impl AppError {
@@ -61,6 +66,7 @@ impl AppError {
             AppError::HostKeyRejected(_) => "HostKeyRejected",
             AppError::TunnelBind(_) => "TunnelBind",
             AppError::Sftp(_) => "Sftp",
+            AppError::Cancelled(_) => "Cancelled",
         }
     }
 }
@@ -129,6 +135,7 @@ mod tests {
             (AppError::HostKeyRejected("x".into()), "HostKeyRejected"),
             (AppError::TunnelBind("x".into()), "TunnelBind"),
             (AppError::Sftp("x".into()), "Sftp"),
+            (AppError::Cancelled("x".into()), "Cancelled"),
         ];
         for (err, expected_code) in cases {
             assert_eq!(err.code(), expected_code);
