@@ -41,6 +41,12 @@ interface DeviceCommon {
   name: string;
   /** Phase 5: reconnect automatically on an unexpected drop (default false). */
   autoReconnect: boolean;
+  /**
+   * Free-form labels for organizing/filtering the device list (both kinds).
+   * The backend always emits `tags` (empty as `[]`), so every device the
+   * frontend sees carries the field — mirrors `forwards`/`autoReconnect`.
+   */
+  tags: string[];
 }
 
 /**
@@ -70,6 +76,12 @@ export interface SshDevice extends DeviceCommon {
   forwards: Forward[];
   /** Start this device's tunnel automatically on app launch (binds all forwards). */
   tunnelAutoStart: boolean;
+  /**
+   * Optional jump host (`ProxyJump`): the id of another saved SSH device to
+   * connect through first, or `null` for a direct connection. The backend
+   * always emits the field (as `null` when absent), so it is always present.
+   */
+  proxyJump: string | null;
 }
 
 /**

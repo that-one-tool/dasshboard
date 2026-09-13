@@ -52,7 +52,9 @@ const deviceA: Device = {
   auth: { method: "password" },
   forwards: [],
   tunnelAutoStart: false,
+  proxyJump: null,
   autoReconnect: false,
+  tags: [],
 };
 
 const deviceB: Device = {
@@ -65,7 +67,9 @@ const deviceB: Device = {
   auth: { method: "key", keyPath: "C:/keys/id_ed25519" },
   forwards: [],
   tunnelAutoStart: false,
+  proxyJump: null,
   autoReconnect: true,
+  tags: [],
 };
 
 const serialDevice: Device = {
@@ -79,6 +83,7 @@ const serialDevice: Device = {
   stopBits: 1,
   flowControl: "none",
   autoReconnect: false,
+  tags: [],
 };
 
 function q<T extends Element>(root: ParentNode, selector: string): T {
@@ -263,7 +268,9 @@ describe("device delete confirmation (Phase 6)", () => {
     auth: { method: "password" },
     forwards: [],
     tunnelAutoStart: false,
+    proxyJump: null,
     autoReconnect: false,
+    tags: [],
   };
 
   beforeEach(() => {
@@ -500,5 +507,150 @@ describe("device save failure (F10)", () => {
     expect(q<HTMLElement>(el, "#device-dialog").classList.contains("dialog-hidden")).toBe(
       false,
     );
+  });
+});
+
+/**
+ * Feature #2: the ProxyJump dropdown lists the other SSH devices as jump-host
+ * candidates (never the device being edited, never a serial device), and the
+ * selection round-trips through save.
+ */
+describe("ProxyJump editor", () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(
+      async (cmd: string, payload?: Record<string, unknown>) => {
+        if (cmd === "list_devices") return [deviceA, deviceB, serialDevice];
+        if (cmd === "save_device") return (payload?.device ?? {}) as Device;
+        return undefined;
+      },
+    );
+  });
+
+  function jumpOptionValues(container: HTMLElement): string[] {
+    return Array.from(
+      container.querySelectorAll<HTMLOptionElement>("#device-proxy-jump option"),
+    ).map((o) => o.value);
+  }
+
+  it("offers other SSH devices as jump hosts, excluding self and serial devices", async () => {
+    const container = await setup();
+
+    // Editing deviceA: options are "None" + deviceB (SSH), never deviceA
+    // (self) or the serial device.
+    q<HTMLButtonElement>(
+      container,
+      `.btn-edit[data-device-id="${deviceA.id}"]`,
+    ).click();
+    const values = jumpOptionValues(container);
+    expect(values).toEqual(["", deviceB.id]);
+    expect(values).not.toContain(deviceA.id);
+    expect(values).not.toContain(serialDevice.id);
+  });
+
+  it("selects the saved jump host when editing and sends it back on save", async () => {
+    // deviceA jumps through deviceB.
+    const jumped: Device = { ...deviceA, proxyJump: deviceB.id };
+    invokeMock.mockImplementation(
+      async (cmd: string, payload?: Record<string, unknown>) => {
+        if (cmd === "list_devices") return [jumped, deviceB];
+        if (cmd === "save_device") return (payload?.device ?? {}) as Device;
+        return undefined;
+      },
+    );
+    const container = await setup();
+    q<HTMLButtonElement>(
+      container,
+      `.btn-edit[data-device-id="${jumped.id}"]`,
+    ).click();
+
+    // The dropdown reflects the saved jump host.
+    expect(q<HTMLSelectElement>(container, "#device-proxy-jump").value).toBe(
+      deviceB.id,
+    );
+
+    q<HTMLFormElement>(container, "#device-form").dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+    await flush();
+
+    const call = invokeMock.mock.calls.find((c) => c[0] === "save_device");
+    const saved = (call?.[1] as { device: Device }).device;
+    expect(saved.kind === "ssh" && saved.proxyJump).toBe(deviceB.id);
+  });
+});
+
+/**
+ * Feature #3: the sidebar search box filters the list, and devices are grouped
+ * under their first tag (untagged last). Tag chips render on each row.
+ */
+describe("device search + tag grouping", () => {
+  const tagged = (id: string, name: string, host: string, tags: string[]): Device => ({
+    id,
+    name,
+    kind: "ssh",
+    host,
+    port: 22,
+    username: "u",
+    auth: { method: "password" },
+    forwards: [],
+    tunnelAutoStart: false,
+    proxyJump: null,
+    autoReconnect: false,
+    tags,
+  });
+
+  const web = tagged("id-web", "Web One", "10.0.0.1", ["web"]);
+  const db = tagged("id-db", "Database", "10.0.0.2", ["db"]);
+  const plain = tagged("id-plain", "Router", "10.0.0.3", []);
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_devices") return [web, db, plain];
+      return undefined;
+    });
+  });
+
+  it("renders tag group headers (untagged last) and per-device chips", async () => {
+    const container = await setup();
+    const headers = Array.from(
+      container.querySelectorAll<HTMLElement>(".device-group-header"),
+    ).map((h) => h.textContent?.trim());
+    expect(headers).toEqual(["db", "web", "Untagged"]);
+    // Chips reflect a device's tags.
+    const chips = Array.from(
+      container.querySelectorAll<HTMLElement>(".device-tag"),
+    ).map((c) => c.textContent);
+    expect(chips).toContain("web");
+    expect(chips).toContain("db");
+  });
+
+  it("filters the list live as the search box changes", async () => {
+    const container = await setup();
+    const search = q<HTMLInputElement>(container, ".device-search");
+
+    search.value = "database";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    let names = Array.from(
+      container.querySelectorAll<HTMLElement>(".device-name"),
+    ).map((n) => n.textContent);
+    expect(names).toEqual(["Database"]);
+
+    // A tag query matches by tag.
+    search.value = "web";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    names = Array.from(
+      container.querySelectorAll<HTMLElement>(".device-name"),
+    ).map((n) => n.textContent);
+    expect(names).toEqual(["Web One"]);
+
+    // A non-matching query shows the empty "no matches" state.
+    search.value = "zzz";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(container.querySelector(".empty-state")).not.toBeNull();
+    expect(container.querySelectorAll(".device-item").length).toBe(0);
   });
 });

@@ -48,6 +48,15 @@ export function deviceManagerMarkup(): string {
             ${t("devices.importSsh")}
           </button>
         </div>
+        <div class="device-search-wrap">
+          <input
+            type="search"
+            class="device-search"
+            placeholder="${t("devices.search.placeholder")}"
+            aria-label="${t("devices.search.aria")}"
+            autocomplete="off"
+          />
+        </div>
         <div class="device-list-items"></div>
       </div>
       <div id="device-dialog" class="dialog dialog-hidden" aria-hidden="true">
@@ -63,6 +72,17 @@ export function deviceManagerMarkup(): string {
             <div class="form-group">
               <label for="device-name">${t("devices.field.name")}</label>
               <input id="device-name" type="text" placeholder="${t("devices.field.name.placeholder")}" />
+              <span class="error-text"></span>
+            </div>
+
+            <div class="form-group">
+              <label for="device-tags">${t("devices.field.tags")}</label>
+              <input
+                id="device-tags"
+                type="text"
+                placeholder="${t("devices.field.tags.placeholder")}"
+                autocomplete="off"
+              />
               <span class="error-text"></span>
             </div>
 
@@ -146,6 +166,13 @@ export function deviceManagerMarkup(): string {
                 <input id="device-passphrase" type="password" placeholder="" />
                 <span class="error-text"></span>
               </div>
+            </div>
+
+            <div class="form-group">
+              <label for="device-proxy-jump">${t("devices.field.proxyJump")}</label>
+              <select id="device-proxy-jump">
+                <option value="">${t("devices.proxyJump.none")}</option>
+              </select>
             </div>
 
             <div id="device-forwards" class="forwards-section"></div>

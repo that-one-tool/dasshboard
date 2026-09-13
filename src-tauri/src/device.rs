@@ -38,6 +38,14 @@ pub struct Device {
     /// existed loadable (they read back as `false`).
     #[serde(default)]
     pub auto_reconnect: bool,
+    /// Free-form labels for organizing and filtering the device list (both
+    /// kinds). Stored verbatim; the frontend normalizes (trim/dedupe) before
+    /// saving. `#[serde(default)]` keeps a devices.json written before tags
+    /// existed loadable (a missing `tags` reads back as `[]`), and the field is
+    /// always emitted so the frontend can rely on it — the same pattern as
+    /// `auto_reconnect` / `forwards`.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// The connection kind and its parameters. Internally tagged by `kind`
@@ -69,6 +77,15 @@ pub enum Connection {
         /// records loadable (reads back as `false`).
         #[serde(default)]
         tunnel_auto_start: bool,
+        /// Optional jump host (`ProxyJump` / `ssh -J`): the **id of another saved
+        /// SSH device** to first connect through, then open a direct-tcpip
+        /// channel to this device's `host:port` over it. `None` ⇒ a direct
+        /// connection. Single-hop only — the jump device's own `proxy_jump` is
+        /// not chained. `#[serde(default)]` keeps a devices.json written before
+        /// this field existed loadable (reads back as `None`); the field is
+        /// always emitted (as `null` when absent) so the frontend can rely on it.
+        #[serde(default)]
+        proxy_jump: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Serial {
@@ -165,6 +182,8 @@ struct ConnectionRaw {
     forwards: Vec<Forward>,
     #[serde(default)]
     tunnel_auto_start: bool,
+    #[serde(default)]
+    proxy_jump: Option<String>,
     port_name: Option<String>,
     baud_rate: Option<u32>,
     #[serde(default = "default_data_bits")]
@@ -189,6 +208,7 @@ impl ConnectionRaw {
             auth: self.auth.ok_or("auth")?,
             forwards: self.forwards,
             tunnel_auto_start: self.tunnel_auto_start,
+            proxy_jump: self.proxy_jump,
         })
     }
 
@@ -267,6 +287,32 @@ impl Device {
         matches!(self.connection, Connection::Serial { .. })
     }
 
+    /// The id of this device's jump host (`ProxyJump`), if any. `None` for a
+    /// serial device or an SSH device with a direct connection.
+    pub fn proxy_jump_id(&self) -> Option<&str> {
+        match &self.connection {
+            Connection::Ssh {
+                proxy_jump: Some(id),
+                ..
+            } => Some(id.as_str()),
+            _ => None,
+        }
+    }
+
+    /// If this device jumps through `jump_id`, drop that reference (back to a
+    /// direct connection) and return `true`; otherwise leave it and return
+    /// `false`. Used by the device store to sweep dangling `proxyJump`s when the
+    /// referenced jump-host device is deleted.
+    pub fn clear_proxy_jump_to(&mut self, jump_id: &str) -> bool {
+        if let Connection::Ssh { proxy_jump, .. } = &mut self.connection {
+            if proxy_jump.as_deref() == Some(jump_id) {
+                *proxy_jump = None;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Validation rules (SPEC.md §4). Common: non-empty `name`. SSH: non-empty
     /// host/username, port in 1..=65535, and `key` auth requires a non-empty
     /// `keyPath`. Serial: non-empty `portName`, `baudRate` > 0. `port` is
@@ -281,7 +327,8 @@ impl Device {
                 auth,
                 forwards,
                 tunnel_auto_start: _,
-            } => validate_ssh(host, *port, username, auth, forwards),
+                proxy_jump,
+            } => validate_ssh(host, *port, username, auth, forwards, proxy_jump, &self.id),
             Connection::Serial {
                 port_name,
                 baud_rate,
@@ -300,6 +347,8 @@ fn validate_ssh(
     username: &str,
     auth: &Auth,
     forwards: &[Forward],
+    proxy_jump: &Option<String>,
+    id: &str,
 ) -> Result<(), AppError> {
     require_non_empty(host, "host must not be empty")?;
     require_non_empty(username, "username must not be empty")?;
@@ -310,6 +359,17 @@ fn validate_ssh(
     }
     if let Auth::Key { key_path } = auth {
         require_non_empty(key_path, "keyPath must not be empty for key auth")?;
+    }
+    // A device may not be its own jump host (the connect path only does a single
+    // hop, so this never loops — but it is still nonsensical). A new device has
+    // an empty id and its own not-yet-minted id can't be selected, so the check
+    // only bites when editing an existing device.
+    if let Some(jump) = proxy_jump {
+        if !id.is_empty() && jump == id {
+            return Err(AppError::Validation(
+                "a device cannot use itself as its jump host".to_string(),
+            ));
+        }
     }
     validate_forwards(forwards)
 }
@@ -386,8 +446,10 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                proxy_jump: None,
             },
             auto_reconnect: false,
+            tags: Vec::new(),
         }
     }
 
@@ -402,6 +464,7 @@ mod tests {
                 },
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                proxy_jump: None,
             },
             ..valid_password_device()
         }
@@ -431,6 +494,7 @@ mod tests {
                 flow_control: FlowControl::None,
             },
             auto_reconnect: false,
+            tags: Vec::new(),
         }
     }
 
@@ -450,7 +514,9 @@ mod tests {
                 "auth": { "method": "password" },
                 "forwards": [],
                 "tunnelAutoStart": false,
+                "proxyJump": null,
                 "autoReconnect": false,
+                "tags": [],
             })
         );
     }
@@ -472,6 +538,7 @@ mod tests {
                 "stopBits": 1,
                 "flowControl": "none",
                 "autoReconnect": false,
+                "tags": [],
             })
         );
     }
@@ -495,6 +562,86 @@ mod tests {
     }
 
     #[test]
+    fn tags_round_trip_and_default_to_empty_when_absent() {
+        // Present tags survive a round trip and are always emitted on the wire.
+        let device = Device {
+            tags: vec!["prod".to_string(), "web".to_string()],
+            ..valid_password_device()
+        };
+        let value = serde_json::to_value(&device).unwrap();
+        assert_eq!(value["tags"], serde_json::json!(["prod", "web"]));
+        let back: Device = serde_json::from_value(value).unwrap();
+        assert_eq!(back.tags, vec!["prod".to_string(), "web".to_string()]);
+
+        // A devices.json written before tags existed still loads (→ empty).
+        let legacy = r#"{ "id": "x", "name": "n", "host": "h", "port": 22, "username": "u", "auth": { "method": "password" } }"#;
+        let parsed: Device = serde_json::from_str(legacy).unwrap();
+        assert!(parsed.tags.is_empty());
+    }
+
+    #[test]
+    fn proxy_jump_round_trips_and_defaults_to_none() {
+        // Present jump id survives a round trip and is always emitted on the wire.
+        let device = Device {
+            connection: Connection::Ssh {
+                host: "10.0.0.5".to_string(),
+                port: 22,
+                username: "admin".to_string(),
+                auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
+                proxy_jump: Some("bastion-id".to_string()),
+            },
+            ..valid_password_device()
+        };
+        let value = serde_json::to_value(&device).unwrap();
+        assert_eq!(value["proxyJump"], serde_json::json!("bastion-id"));
+        let back: Device = serde_json::from_value(value).unwrap();
+        assert_eq!(back.proxy_jump_id(), Some("bastion-id"));
+
+        // A legacy record (no proxyJump) loads as a direct connection.
+        let legacy = r#"{ "id": "x", "name": "n", "host": "h", "port": 22, "username": "u", "auth": { "method": "password" } }"#;
+        let parsed: Device = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.proxy_jump_id(), None);
+    }
+
+    #[test]
+    fn rejects_a_device_that_jumps_through_itself() {
+        let device = Device {
+            id: "self-id".to_string(),
+            connection: Connection::Ssh {
+                host: "10.0.0.5".to_string(),
+                port: 22,
+                username: "admin".to_string(),
+                auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
+                proxy_jump: Some("self-id".to_string()),
+            },
+            ..valid_password_device()
+        };
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+
+        // Jumping through a *different* device is fine.
+        let ok = Device {
+            connection: Connection::Ssh {
+                host: "10.0.0.5".to_string(),
+                port: 22,
+                username: "admin".to_string(),
+                auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
+                proxy_jump: Some("other-id".to_string()),
+            },
+            ..valid_password_device()
+        };
+        assert!(ok.validate().is_ok());
+    }
+
+    #[test]
     fn legacy_record_without_kind_loads_as_ssh() {
         // A pre-serial devices.json record carries no `kind`; it must still load
         // as an SSH device unchanged (kind defaults to "ssh").
@@ -509,6 +656,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                proxy_jump: None,
             }
         );
         assert!(parsed.auto_reconnect);
@@ -591,6 +739,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                proxy_jump: None,
             },
             ..valid_password_device()
         };
@@ -610,6 +759,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                proxy_jump: None,
             },
             ..valid_password_device()
         };
@@ -629,6 +779,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                proxy_jump: None,
             },
             ..valid_password_device()
         };
@@ -648,6 +799,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                proxy_jump: None,
             },
             ..valid_password_device()
         };
@@ -666,6 +818,7 @@ mod tests {
                 },
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                proxy_jump: None,
             },
             ..valid_password_device()
         };
@@ -723,6 +876,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards,
                 tunnel_auto_start: false,
+                proxy_jump: None,
             },
             ..valid_password_device()
         }

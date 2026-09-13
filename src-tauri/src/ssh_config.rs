@@ -227,8 +227,10 @@ fn to_device(host: ParsedHost, default_user: Option<&str>, home: Option<&str>) -
             auth,
             forwards: Vec::new(),
             tunnel_auto_start: false,
+            proxy_jump: None,
         },
         auto_reconnect: false,
+        tags: Vec::new(),
     }
 }
 

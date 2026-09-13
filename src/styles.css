@@ -95,7 +95,7 @@ body {
 .sidebar {
 	display: flex;
 	flex-direction: column;
-	width: 280px;
+	width: 320px;
 	gap: 8px;
 	overflow-y: auto;
 	flex: 0 0 auto;
@@ -203,6 +203,58 @@ body {
 	flex: 0 0 auto;
 }
 
+/* Sidebar search box (feature #3). */
+.device-search-wrap {
+	padding: 0 4px 8px;
+}
+
+.device-search {
+	width: 100%;
+	box-sizing: border-box;
+	padding: 6px 8px;
+	font-size: 0.85rem;
+	background-color: #3c3c3c;
+	color: #ddd;
+	border: 1px solid #555;
+	border-radius: 4px;
+}
+
+.device-search:focus {
+	outline: none;
+	border-color: #007acc;
+}
+
+/* Tag group header in the grouped device list. */
+.device-group-header {
+	padding: 6px 4px 2px;
+	font-size: 0.7rem;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: #858585;
+}
+
+.device-group + .device-group {
+	margin-top: 4px;
+}
+
+/* Per-device tag chips shown under the endpoint. */
+.device-tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin-top: 4px;
+}
+
+.device-tag {
+	font-size: 0.7rem;
+	padding: 1px 6px;
+	border-radius: 8px;
+	background-color: #37373d;
+	color: #cccccc;
+	border: 1px solid #4a4a52;
+}
+
 .empty-state {
 	padding: 16px 8px;
 	text-align: center;
@@ -263,6 +315,24 @@ body {
 	background-color: #007acc;
 	border-color: #007acc;
 	color: #fff;
+}
+
+/* Broadcast toggle: pushed to the far right of the toolbar. Its active state
+ * uses a warm accent (distinct from the blue preset-active) since broadcasting
+ * keystrokes to every pane at once is a mode the user should notice is on. */
+.grid-broadcast-btn {
+	margin-left: auto;
+}
+
+.grid-broadcast-btn.grid-broadcast-active {
+	background-color: #c86a1a;
+	border-color: #c86a1a;
+	color: #fff;
+}
+
+/* While broadcasting, ring every pane so it's obvious input goes everywhere. */
+.grid-broadcasting .pane {
+	box-shadow: 0 0 0 1px #c86a1a inset;
 }
 
 .grid-container {

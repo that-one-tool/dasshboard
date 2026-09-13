@@ -114,7 +114,9 @@ describe("saveDevice tri-state secret payload", () => {
 		auth: { method: "password" },
 		forwards: [],
 		tunnelAutoStart: false,
+		proxyJump: null,
 		autoReconnect: false,
+		tags: [],
 	};
 
 	it("omits the `secret` key entirely when secret is undefined (leave untouched)", async () => {

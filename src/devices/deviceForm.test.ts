@@ -81,6 +81,34 @@ describe("readFormValues", () => {
     });
   });
 
+  it("parses the tags input (trim/dedupe) into the values", () => {
+    q<HTMLInputElement>("#device-name").value = "NAS";
+    q<HTMLInputElement>("#device-host").value = "10.0.0.1";
+    q<HTMLInputElement>("#device-port").value = "22";
+    q<HTMLInputElement>("#device-username").value = "root";
+    q<HTMLInputElement>("#device-tags").value = "prod, Prod , web";
+
+    expect(readFormValues(root, "dev-1", []).tags).toEqual(["prod", "web"]);
+  });
+
+  it("reads proxyJump as null when 'None' is selected, and the selected id otherwise", () => {
+    q<HTMLInputElement>("#device-name").value = "NAS";
+    q<HTMLInputElement>("#device-host").value = "10.0.0.1";
+    q<HTMLInputElement>("#device-port").value = "22";
+    q<HTMLInputElement>("#device-username").value = "root";
+
+    // Default ("None") ⇒ null.
+    expect(readFormValues(root, "dev-1", []).proxyJump).toBeNull();
+
+    // With a jump option present and selected ⇒ that id.
+    const select = q<HTMLSelectElement>("#device-proxy-jump");
+    const opt = document.createElement("option");
+    opt.value = "bastion-id";
+    select.appendChild(opt);
+    select.value = "bastion-id";
+    expect(readFormValues(root, "dev-1", []).proxyJump).toBe("bastion-id");
+  });
+
   it("uses an empty id/secret when the form is absent", () => {
     const empty = document.createElement("div");
     expect(readFormValues(empty, "ignored", [])).toEqual({ id: "", secret: "" });
@@ -99,7 +127,9 @@ describe("populateForm", () => {
       auth: { method: "key", keyPath: "C:/k" },
       forwards: [],
       tunnelAutoStart: true,
+      proxyJump: null,
       autoReconnect: true,
+      tags: ["web", "prod"],
     };
 
     populateForm(root, device);
@@ -112,6 +142,7 @@ describe("populateForm", () => {
     ).toBe(true);
     expect(q<HTMLInputElement>("#device-tunnel-autostart").checked).toBe(true);
     expect(q<HTMLInputElement>("#device-auto-reconnect").checked).toBe(true);
+    expect(q<HTMLInputElement>("#device-tags").value).toBe("web, prod");
     expect(
       q("#serial-fields").classList.contains("device-kind-hidden"),
     ).toBe(true);
@@ -129,6 +160,7 @@ describe("populateForm", () => {
       stopBits: 1,
       flowControl: "none",
       autoReconnect: false,
+      tags: [],
     };
 
     populateForm(root, device);

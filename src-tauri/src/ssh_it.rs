@@ -31,7 +31,7 @@ use crate::device::Forward;
 use crate::error::AppError;
 use crate::known_hosts::{KnownHost, KnownHostsStore};
 use crate::session::{
-    AuthCredentials, ConnectParams, HostKeyPromptPayload, SessionManager, SessionSink,
+    AuthCredentials, ConnectParams, HostKeyPromptPayload, JumpHop, SessionManager, SessionSink,
     SessionStatus,
 };
 use crate::tunnel::{ForwardStatus, TunnelManager, TunnelParams, TunnelSink, TunnelStatus};
@@ -64,6 +64,11 @@ fn server_fingerprint() -> String {
 #[derive(Clone)]
 struct TestServer {
     password: String,
+    /// When true, a `direct-tcpip` channel is bridged to a real TCP connection
+    /// to the requested target (a working jump host for the ProxyJump test);
+    /// when false, the channel is left to the echo `data` handler (the tunnel
+    /// test's simple "remote service").
+    bridge_direct_tcpip: bool,
 }
 
 impl server::Server for TestServer {
@@ -71,12 +76,14 @@ impl server::Server for TestServer {
     fn new_client(&mut self, _peer: Option<std::net::SocketAddr>) -> TestServerHandler {
         TestServerHandler {
             password: self.password.clone(),
+            bridge_direct_tcpip: self.bridge_direct_tcpip,
         }
     }
 }
 
 struct TestServerHandler {
     password: String,
+    bridge_direct_tcpip: bool,
 }
 
 impl server::Handler for TestServerHandler {
@@ -107,15 +114,33 @@ impl server::Handler for TestServerHandler {
     /// carries traffic end to end (the "remote service" is a simple echo).
     async fn channel_open_direct_tcpip(
         &mut self,
-        _channel: Channel<Msg>,
-        _host_to_connect: &str,
-        _port_to_connect: u32,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
         _originator_address: &str,
         _originator_port: u32,
         reply: server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
         reply.accept().await;
+        if self.bridge_direct_tcpip {
+            // Jump-host mode: actually connect to the requested target and pump
+            // bytes both ways, so the client can complete a full SSH handshake
+            // with the *target* server over this channel (that is what makes us
+            // a real ProxyJump hop rather than an echo).
+            let host = host_to_connect.to_string();
+            let port = port_to_connect as u16;
+            tokio::spawn(async move {
+                if let Ok(mut tcp) = TcpStream::connect((host.as_str(), port)).await {
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut tcp).await;
+                }
+            });
+        } else {
+            // Echo mode: drop the channel; the shared `data` handler echoes the
+            // bytes back (the tunnel integration test's "remote service").
+            drop(channel);
+        }
         Ok(())
     }
 
@@ -149,9 +174,14 @@ impl server::Handler for TestServerHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        // Echo the bytes straight back so the client-side PTY echo test can read
-        // what it wrote (a real shell would do this via the tty).
-        session.data(channel, data.to_vec())?;
+        // A jump host must NOT echo: its direct-tcpip bytes are forwarded to the
+        // real target by the bridge task (via the held channel's stream), and
+        // echoing them back here would loop the target's SSH handshake into the
+        // client's stream and corrupt it. Only the plain (target) server echoes,
+        // standing in for a shell's tty.
+        if !self.bridge_direct_tcpip {
+            session.data(channel, data.to_vec())?;
+        }
         Ok(())
     }
 }
@@ -159,6 +189,16 @@ impl server::Handler for TestServerHandler {
 /// Bind an ephemeral local port and run the test server on it forever (until
 /// the test process exits). Returns the chosen port.
 async fn spawn_test_server(password: &str) -> u16 {
+    spawn_configured_server(password, false).await
+}
+
+/// Like [`spawn_test_server`], but the server bridges `direct-tcpip` channels to
+/// a real TCP connection — a working jump host for the ProxyJump test.
+async fn spawn_jump_server(password: &str) -> u16 {
+    spawn_configured_server(password, true).await
+}
+
+async fn spawn_configured_server(password: &str, bridge_direct_tcpip: bool) -> u16 {
     let host_key = PrivateKey::from_openssh(TEST_HOST_KEY).expect("valid test host key");
     let config = Arc::new(server::Config {
         keys: vec![host_key],
@@ -176,7 +216,10 @@ async fn spawn_test_server(password: &str) -> u16 {
 
     let password = password.to_string();
     tokio::spawn(async move {
-        let mut server = TestServer { password };
+        let mut server = TestServer {
+            password,
+            bridge_direct_tcpip,
+        };
         // `run_on_socket` owns the accept loop and drives each session.
         let _ = server.run_on_socket(config, &listener).await;
     });
@@ -282,6 +325,7 @@ fn spawn_pw_session(
             creds: password_creds(),
             cols: 80,
             rows: 24,
+            jump: None,
         },
         sink,
     );
@@ -483,6 +527,125 @@ async fn echo_through_pty_and_clean_disconnect() {
         manager.session_count(),
         0,
         "session entry must be cleaned up"
+    );
+}
+
+/// ProxyJump: connect to a target through a jump host and prove the PTY works
+/// end-to-end over the jumped connection. The jump server bridges its
+/// `direct-tcpip` channel to the target server's real port, so the client runs a
+/// full SSH handshake with the *target* over the channel — exactly the
+/// production path. Both hosts share the test host key, so both ports must be
+/// pre-trusted (known-hosts is keyed by host:port).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connects_to_target_through_a_jump_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let target_port = spawn_test_server(TEST_PASSWORD).await;
+    let jump_port = spawn_jump_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), target_port);
+    seed_trusted(dir.path(), jump_port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+
+    let (sink, mut chans) = new_sink();
+    manager.spawn_session(
+        "s1".to_string(),
+        ConnectParams {
+            host: "127.0.0.1".to_string(),
+            port: target_port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            cols: 80,
+            rows: 24,
+            jump: Some(JumpHop {
+                host: "127.0.0.1".to_string(),
+                port: jump_port,
+                username: TEST_USER.to_string(),
+                creds: password_creds(),
+            }),
+        },
+        sink,
+    );
+
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(
+        status,
+        SessionStatus::Connected,
+        "expected a connected session through the jump host, message={message:?}"
+    );
+
+    manager.write_stdin("s1", b"hello\n".to_vec()).await;
+
+    let mut seen = Vec::new();
+    for _ in 0..50 {
+        match recv_timeout(&mut chans.data_rx, Duration::from_secs(5)).await {
+            Some(chunk) => {
+                seen.extend_from_slice(&chunk);
+                if seen.windows(5).any(|w| w == b"hello") {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+    assert!(
+        seen.windows(5).any(|w| w == b"hello"),
+        "expected the target PTY to echo 'hello' through the jump host, saw {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+
+    manager.disconnect("s1").await;
+    let (final_status, _) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(final_status, SessionStatus::Disconnected);
+    for _ in 0..50 {
+        if manager.session_count() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        manager.session_count(),
+        0,
+        "session entry must be cleaned up"
+    );
+}
+
+/// A jump-host auth failure must be attributed to the jump host, not the target
+/// — otherwise the user checks the wrong device's stored credentials. The jump
+/// creds are wrong; the target creds are correct, so only hop 1 fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jump_host_auth_failure_is_attributed_to_the_jump_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let target_port = spawn_test_server(TEST_PASSWORD).await;
+    let jump_port = spawn_jump_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), target_port);
+    seed_trusted(dir.path(), jump_port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+
+    let (sink, mut chans) = new_sink();
+    manager.spawn_session(
+        "s1".to_string(),
+        ConnectParams {
+            host: "127.0.0.1".to_string(),
+            port: target_port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(), // target creds are correct
+            cols: 80,
+            rows: 24,
+            jump: Some(JumpHop {
+                host: "127.0.0.1".to_string(),
+                port: jump_port,
+                username: TEST_USER.to_string(),
+                creds: AuthCredentials::Password("wrong-jump-password".to_string()),
+            }),
+        },
+        sink,
+    );
+
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Error);
+    let message = message.unwrap_or_default();
+    assert!(
+        message.contains("jump host"),
+        "error should name the jump host, got: {message}"
     );
 }
 

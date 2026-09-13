@@ -12,7 +12,9 @@ const sshDevice: Device = {
   auth: { method: "password" },
   forwards: [],
   tunnelAutoStart: false,
+  proxyJump: null,
   autoReconnect: false,
+  tags: [],
 };
 
 const serialDevice: Device = {
@@ -26,6 +28,7 @@ const serialDevice: Device = {
   stopBits: 1,
   flowControl: "none",
   autoReconnect: false,
+  tags: [],
 };
 
 describe("deviceEndpoint", () => {

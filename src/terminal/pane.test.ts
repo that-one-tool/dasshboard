@@ -29,7 +29,9 @@ const h = vi.hoisted(() => {
     auth: { method: "password" as const },
     forwards: [],
     tunnelAutoStart: false,
+    proxyJump: null,
     autoReconnect: false,
+    tags: [],
   };
   return {
     device,
@@ -53,7 +55,7 @@ vi.mock("../ipc", () => ({
 
 // Imported after the mock is registered so the module graph uses it.
 import { TerminalPane, deviceEndpoint, deviceOptionLabel } from "./pane";
-import { connect, disconnect, listDevices } from "../ipc";
+import { connect, disconnect, listDevices, writeStdin } from "../ipc";
 import type { Device } from "../ipc";
 
 const readText = vi.fn(async () => "PASTED");
@@ -80,7 +82,9 @@ describe("device dropdown label + tooltip", () => {
     auth: { method: "password" },
     forwards: [],
     tunnelAutoStart: false,
+    proxyJump: null,
     autoReconnect: false,
+    tags: [],
   };
 
   const serial: Device = {
@@ -94,6 +98,7 @@ describe("device dropdown label + tooltip", () => {
     stopBits: 1,
     flowControl: "none",
     autoReconnect: false,
+    tags: [],
   };
 
   it("shows host:port for an SSH device", () => {
@@ -471,6 +476,81 @@ describe("TerminalPane wide-character support", () => {
     await flush();
 
     expect(terminalOf(pane)?.unicode.activeVersion).toBe("11");
+  });
+});
+
+describe("TerminalPane broadcast input", () => {
+  const start = (pane: TerminalPane) =>
+    (pane as unknown as { startSession(): Promise<void> }).startSession();
+
+  beforeEach(() => {
+    h.statusHandler = null;
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    vi.mocked(writeStdin).mockClear();
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  it("sendInput writes to the PTY only once connected", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    pane.assignDevice(h.device.id);
+
+    // Not connected yet: sendInput is a no-op and the pane reports not-connected.
+    expect(pane.isConnected()).toBe(false);
+    pane.sendInput("nope");
+    expect(vi.mocked(writeStdin)).not.toHaveBeenCalled();
+
+    await start(pane);
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+
+    expect(pane.isConnected()).toBe(true);
+    pane.sendInput("ls\r");
+    expect(vi.mocked(writeStdin)).toHaveBeenCalledWith(h.sessionId, "ls\r");
+  });
+
+  it("fires onInput for locally-typed input while connected", async () => {
+    const onInput = vi.fn();
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { onInput });
+    await pane.init();
+    pane.assignDevice(h.device.id);
+    await start(pane);
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+
+    // Drive the terminal's onData as a real keystroke would.
+    const terminal = (
+      pane as unknown as { terminal: { input(data: string): void } | null }
+    ).terminal;
+    terminal?.input("a");
+    await flush();
+
+    expect(onInput).toHaveBeenCalledWith("a");
+  });
+
+  it("sendInput does NOT re-fire onInput (no broadcast echo loop)", async () => {
+    // The core safety guarantee: a broadcast injected via sendInput writes to
+    // the PTY but must not re-enter onInput, or two panes broadcasting to each
+    // other would loop forever.
+    const onInput = vi.fn();
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { onInput });
+    await pane.init();
+    pane.assignDevice(h.device.id);
+    await start(pane);
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+
+    pane.sendInput("broadcast-payload");
+    await flush();
+
+    expect(vi.mocked(writeStdin)).toHaveBeenCalledWith(
+      h.sessionId,
+      "broadcast-payload",
+    );
+    expect(onInput).not.toHaveBeenCalled();
   });
 });
 

@@ -23,7 +23,7 @@ use crate::profile::Profile;
 use crate::profile_store::ProfileList;
 use crate::serial::SerialParams;
 use crate::session::{
-    AuthCredentials, ConnectParams, HostKeyPromptPayload, SessionSink, SessionStatus,
+    AuthCredentials, ConnectParams, HostKeyPromptPayload, JumpHop, SessionSink, SessionStatus,
 };
 use crate::settings::Settings;
 use crate::sftp::{SftpEntry, SftpParams, SftpSink};
@@ -112,17 +112,21 @@ fn delete_device_impl(state: &AppState, device_id: &str) -> Result<(), AppError>
     // profile pane that referenced it, so a saved layout never points at a device
     // that no longer exists. Only rewrites profiles.json if a pane referenced it.
     let profile_res = state.profile_store.clear_device(device_id);
+    // Also null this device out of any OTHER device's `proxyJump` (ProxyJump),
+    // so no saved device is left jumping through a host that no longer exists.
+    let device_ref_res = state.device_store.clear_proxy_jump(device_id);
     // B4: `secret_res?` below returns first on a double failure, which would
-    // otherwise silently discard `profile_res`'s error. Log it so a double
-    // cleanup failure isn't invisible (matches the non-fatal `eprintln!`
-    // pattern used elsewhere in the stores).
-    if let (Err(secret_err), Err(profile_err)) = (&secret_res, &profile_res) {
+    // otherwise silently discard the other errors. Log any that won't be
+    // returned so a multi-failure cleanup isn't invisible (matches the non-fatal
+    // `eprintln!` pattern used elsewhere in the stores).
+    if secret_res.is_err() || profile_res.is_err() || device_ref_res.is_err() {
         eprintln!(
-            "[DaSSHboard] delete_device({device_id}): keyring cleanup failed ({secret_err}) AND profile cleanup failed ({profile_err}); only the keyring error is returned to the caller"
+            "[DaSSHboard] delete_device({device_id}) cleanup: keyring={secret_res:?}, profiles={profile_res:?}, proxyJump refs={device_ref_res:?} (only the first error is returned to the caller)"
         );
     }
     secret_res?;
     profile_res?;
+    device_ref_res?;
     Ok(())
 }
 
@@ -365,6 +369,42 @@ async fn resolve_credentials(
     credentials_from(auth, stored)
 }
 
+/// Resolve a device's optional jump host (`ProxyJump`) into the connection
+/// parameters the session task needs. `Ok(None)` for a device with no jump
+/// configured. Errors (surfaced as a connect failure) when the referenced jump
+/// device is missing or is a serial device, which cannot be a jump host. The
+/// jump device's own keyring secret is read here, the same way the target's is.
+async fn resolve_jump_hop(state: &AppState, device: &Device) -> Result<Option<JumpHop>, AppError> {
+    let Some(jump_id) = device.proxy_jump_id() else {
+        return Ok(None);
+    };
+    let jump_device = find_device(state, jump_id).map_err(|_| {
+        AppError::NotFound(format!(
+            "this device's jump host (device {jump_id}) no longer exists"
+        ))
+    })?;
+    match &jump_device.connection {
+        Connection::Ssh {
+            host,
+            port,
+            username,
+            ..
+        } => {
+            let creds = resolve_credentials(state, &jump_device).await?;
+            Ok(Some(JumpHop {
+                host: host.clone(),
+                port: *port,
+                username: username.clone(),
+                creds,
+            }))
+        }
+        Connection::Serial { .. } => Err(AppError::Validation(
+            "the configured jump host is a serial device and cannot be used as a jump host"
+                .to_string(),
+        )),
+    }
+}
+
 /// The SSH `Auth` of a device, or an error for a serial device (which has no
 /// credentials). `connect`/`test_connection` only call this on the SSH branch,
 /// so the error is a defensive guard, never hit in the normal flow.
@@ -405,6 +445,10 @@ pub async fn connect(
             ..
         } => {
             let creds = resolve_credentials(&state, &device).await?;
+            // Resolve the optional jump host (ProxyJump) up front, so a
+            // misconfigured jump surfaces as a connect error rather than a
+            // half-open session.
+            let jump = resolve_jump_hop(&state, &device).await?;
             state.session_manager.spawn_session(
                 session_id.clone(),
                 ConnectParams {
@@ -414,6 +458,7 @@ pub async fn connect(
                     creds,
                     cols,
                     rows,
+                    jump,
                 },
                 sink,
             );
@@ -667,6 +712,15 @@ pub async fn start_tunnel(
     device_id: String,
 ) -> Result<String, AppError> {
     let device = find_device(&state, &device_id)?;
+    // ProxyJump is wired for shell sessions only (v1). Rather than silently
+    // ignore the jump and bind a forward straight to the target — which in a
+    // bastion setup is unreachable, or worse reaches an unrelated host on the
+    // local network — refuse with a clear message.
+    if device.proxy_jump_id().is_some() {
+        return Err(AppError::Validation(
+            "port forwarding through a jump host (ProxyJump) is not supported yet; open a shell session to this device instead".to_string(),
+        ));
+    }
     let (host, port, username, forwards) = tunnel_target_of(&device)?;
     let host = host.to_string();
     let username = username.to_string();
@@ -801,6 +855,13 @@ pub async fn sftp_connect(
     device_id: String,
 ) -> Result<String, AppError> {
     let device = find_device(&state, &device_id)?;
+    // ProxyJump is wired for shell sessions only (v1) — see the same guard in
+    // `start_tunnel`. Refuse rather than silently connect straight to the target.
+    if device.proxy_jump_id().is_some() {
+        return Err(AppError::Validation(
+            "the SFTP file browser through a jump host (ProxyJump) is not supported yet; open a shell session to this device instead".to_string(),
+        ));
+    }
     let (host, port, username) = ssh_endpoint_of(&device)?;
     let host = host.to_string();
     let username = username.to_string();
@@ -1074,8 +1135,10 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                proxy_jump: None,
             },
             auto_reconnect: false,
+            tags: Vec::new(),
         }
     }
 
@@ -1092,6 +1155,7 @@ mod tests {
                 flow_control: crate::device::FlowControl::None,
             },
             auto_reconnect: false,
+            tags: Vec::new(),
         }
     }
 

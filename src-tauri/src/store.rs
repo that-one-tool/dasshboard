@@ -119,6 +119,27 @@ impl DeviceStore {
         Ok(())
     }
 
+    /// Null out any device's `proxyJump` that points at `jump_id` (a device
+    /// being deleted), so no device is left referencing a jump host that no
+    /// longer exists. Only writes `devices.json` if something actually changed.
+    /// Mirrors `ProfileStore::clear_device`, called from the same delete cleanup.
+    pub fn clear_proxy_jump(&self, jump_id: &str) -> Result<(), AppError> {
+        let mut guard = self.lock_devices();
+        let mut candidate = guard.clone();
+        let mut changed = false;
+        for device in candidate.iter_mut() {
+            if device.clear_proxy_jump_to(jump_id) {
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
+        self.persist(&candidate)?;
+        *guard = candidate;
+        Ok(())
+    }
+
     fn lock_devices(&self) -> std::sync::MutexGuard<'_, Vec<Device>> {
         atomic_file::lock(&self.devices)
     }
@@ -151,9 +172,40 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                proxy_jump: None,
             },
             auto_reconnect: false,
+            tags: Vec::new(),
         }
+    }
+
+    #[test]
+    fn clear_proxy_jump_nulls_dangling_references_and_persists() {
+        let dir = tempdir().unwrap();
+        let store = DeviceStore::load(dir.path().to_path_buf());
+        // A jump host and a device that jumps through it.
+        let jump = store.upsert(sample_device("bastion")).unwrap();
+        let mut client = sample_device("db");
+        if let Connection::Ssh { proxy_jump, .. } = &mut client.connection {
+            *proxy_jump = Some(jump.id.clone());
+        }
+        let client = store.upsert(client).unwrap();
+
+        // Deleting the jump host sweeps the dangling reference.
+        store.delete(&jump.id).unwrap();
+        store.clear_proxy_jump(&jump.id).unwrap();
+
+        let reloaded = DeviceStore::load(dir.path().to_path_buf());
+        let db = reloaded
+            .list()
+            .into_iter()
+            .find(|d| d.id == client.id)
+            .expect("db device still present");
+        assert_eq!(
+            db.proxy_jump_id(),
+            None,
+            "dangling proxyJump must be cleared"
+        );
     }
 
     #[test]

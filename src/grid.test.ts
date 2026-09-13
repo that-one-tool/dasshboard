@@ -52,6 +52,9 @@ interface GridInternals {
   cells: Array<{ wrapper: HTMLElement; pane: TerminalPane }>;
   model: { rows: number; cols: number };
   setPreset(id: string): Promise<void>;
+  broadcast: boolean;
+  toggleBroadcast(): void;
+  onPaneInput(source: TerminalPane, data: string): void;
 }
 
 function internals(grid: Grid): GridInternals {
@@ -127,6 +130,74 @@ describe("Grid pane teardown", () => {
     await flush();
 
     expect(internals(grid).cells.length).toBe(domCellCount());
+  });
+});
+
+describe("Grid broadcast mode", () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  it("fans locally-typed input to the other panes only, and only when on", async () => {
+    const grid = makeGrid();
+    await grid.init();
+    await internals(grid).setPreset("1x2"); // two panes
+    await flush();
+
+    const gi = internals(grid);
+    expect(gi.cells.length).toBe(2);
+    const paneA = gi.cells[0]!.pane;
+    const paneB = gi.cells[1]!.pane;
+
+    // Stub each pane's PTY-write and its connected-state so we can assert the
+    // fan-out without a live session. Both start "connected".
+    const sendA = vi.fn();
+    const sendB = vi.fn();
+    paneA.sendInput = sendA;
+    paneB.sendInput = sendB;
+    paneA.isConnected = () => true;
+    paneB.isConnected = () => true;
+
+    // Broadcast OFF: a keystroke in pane A goes nowhere else.
+    gi.onPaneInput(paneA, "x");
+    expect(sendA).not.toHaveBeenCalled();
+    expect(sendB).not.toHaveBeenCalled();
+
+    // Broadcast ON: pane A's input reaches pane B, but not pane A itself
+    // (the source already wrote it to its own PTY in its onData handler).
+    gi.toggleBroadcast();
+    expect(gi.broadcast).toBe(true);
+    gi.onPaneInput(paneA, "ls\r");
+    expect(sendB).toHaveBeenCalledWith("ls\r");
+    expect(sendA).not.toHaveBeenCalled();
+
+    // A DISCONNECTED pane is skipped even while broadcasting.
+    sendB.mockClear();
+    paneB.isConnected = () => false;
+    gi.onPaneInput(paneA, "z");
+    expect(sendB).not.toHaveBeenCalled();
+    paneB.isConnected = () => true;
+
+    // Toggling off stops the fan-out again.
+    gi.toggleBroadcast();
+    sendB.mockClear();
+    gi.onPaneInput(paneA, "y");
+    expect(sendB).not.toHaveBeenCalled();
+  });
+
+  it("keeps the broadcast state across a language re-render (retranslate)", async () => {
+    const grid = makeGrid();
+    await grid.init();
+    const gi = internals(grid);
+    gi.toggleBroadcast();
+    expect(gi.broadcast).toBe(true);
+
+    grid.retranslate();
+
+    // The rebuilt toolbar button reflects the still-on state.
+    const btn = document.querySelector<HTMLButtonElement>(".grid-broadcast-btn");
+    expect(btn?.classList.contains("grid-broadcast-active")).toBe(true);
+    expect(btn?.getAttribute("aria-pressed")).toBe("true");
   });
 });
 

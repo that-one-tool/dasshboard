@@ -66,6 +66,14 @@ export interface TerminalPaneOptions {
    * values; live changes go through `applyTerminalSettings` (Phase 5).
    */
   getTerminalSettings?: () => TerminalSettings;
+  /**
+   * Fired with each chunk of *locally-typed* input (a keystroke or a paste)
+   * once this pane is connected. The grid uses it to fan the input out to the
+   * other connected panes when broadcast mode is on. Only real user input
+   * triggers it — bytes injected via `sendInput` (the fan-out itself) go
+   * straight to the PTY and never re-enter here, so there is no echo loop.
+   */
+  onInput?: (data: string) => void;
 }
 
 export class TerminalPane {
@@ -381,6 +389,8 @@ export class TerminalPane {
     terminal.onData((data) => {
       if (this.connected && this.sessionId) {
         void writeStdin(this.sessionId, data);
+        // Let the grid mirror this input into other panes (broadcast mode).
+        this.options.onInput?.(data);
       }
     });
     // Copy on select (SPEC §7).
@@ -651,6 +661,26 @@ export class TerminalPane {
    */
   hasLiveSession(): boolean {
     return this.sessionId !== null;
+  }
+
+  /**
+   * True when this pane has a live, shell-ready session (connected, not merely
+   * connecting). The grid uses it to decide which panes broadcast input reaches.
+   */
+  isConnected(): boolean {
+    return this.connected && this.sessionId !== null;
+  }
+
+  /**
+   * Write input to this pane's live session — the receiving end of the grid's
+   * broadcast fan-out. Self-guards on `connected`/`sessionId`, so it is a no-op
+   * for an idle, connecting, or errored pane. Deliberately does NOT go through
+   * `terminal.onData`, so a broadcast never re-triggers `onInput` (no loop).
+   */
+  sendInput(data: string): void {
+    if (this.connected && this.sessionId) {
+      void writeStdin(this.sessionId, data);
+    }
   }
 
   /**

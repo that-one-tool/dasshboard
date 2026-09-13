@@ -213,8 +213,10 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                proxy_jump: None,
             },
             auto_reconnect: false,
+            tags: Vec::new(),
         }
     }
 
@@ -231,6 +233,7 @@ mod tests {
                 flow_control: FlowControl::None,
             },
             auto_reconnect: false,
+            tags: Vec::new(),
         }
     }
 

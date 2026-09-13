@@ -60,6 +60,10 @@ export class Grid {
   // While a profile load is applying, per-pane changes are suppressed so the
   // dirty dot doesn't flicker; `applyProfile` emits a single change at the end.
   private loading = false;
+  // Broadcast mode: when on, input typed into any connected pane is mirrored to
+  // every *other* connected pane, so one command runs across all of them. A
+  // pure view state (not part of the saved workspace), toggled from the toolbar.
+  private broadcast = false;
 
   private toolbar: HTMLElement | null = null;
   private container: HTMLElement | null = null;
@@ -130,7 +134,22 @@ export class Grid {
       btn.addEventListener("click", () => void this.setPreset(id));
       toolbar.appendChild(btn);
     }
+    this.appendBroadcastButton(toolbar);
     this.updateToolbarActive();
+  }
+
+  /** The broadcast-mode toggle, pushed to the right of the preset buttons. */
+  private appendBroadcastButton(toolbar: HTMLElement): void {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-small grid-broadcast-btn";
+    btn.textContent = t("grid.broadcast");
+    btn.title = t("grid.broadcast.aria");
+    btn.setAttribute("aria-label", t("grid.broadcast.aria"));
+    btn.setAttribute("aria-pressed", String(this.broadcast));
+    btn.addEventListener("click", () => this.toggleBroadcast());
+    toolbar.appendChild(btn);
+    this.updateBroadcastUI();
   }
 
   private updateToolbarActive(): void {
@@ -141,6 +160,47 @@ export class Grid {
       ".grid-preset-btn",
     )) {
       btn.classList.toggle("grid-preset-active", btn.dataset.preset === active);
+    }
+  }
+
+  /* -------------------------------------------------------------------------
+   * Broadcast mode
+   * ---------------------------------------------------------------------- */
+
+  /** Flip broadcast mode on/off and refresh its toolbar + grid indicator. */
+  private toggleBroadcast(): void {
+    this.broadcast = !this.broadcast;
+    this.updateBroadcastUI();
+  }
+
+  /** Reflect the current broadcast state in the toggle button and the grid
+   * container's indicator class (a highlight on the panes while it is on). */
+  private updateBroadcastUI(): void {
+    const btn = this.toolbar?.querySelector<HTMLButtonElement>(
+      ".grid-broadcast-btn",
+    );
+    if (btn) {
+      btn.classList.toggle("grid-broadcast-active", this.broadcast);
+      btn.setAttribute("aria-pressed", String(this.broadcast));
+    }
+    this.container?.classList.toggle("grid-broadcasting", this.broadcast);
+  }
+
+  /**
+   * Fan one pane's locally-typed input out to the other connected panes when
+   * broadcast mode is on. The source pane already wrote the input to its own
+   * PTY (in its `onData` handler), so it is excluded here; disconnected panes
+   * are skipped by `sendInput`'s own guard.
+   */
+  private onPaneInput(source: TerminalPane, data: string): void {
+    if (!this.broadcast) return;
+    for (const cell of this.cells) {
+      // Skip the source (it already wrote its own input) and any pane that
+      // isn't connected — `sendInput` self-guards too, but checking here keeps
+      // the intent explicit and testable.
+      if (cell.pane !== source && cell.pane.isConnected()) {
+        cell.pane.sendInput(data);
+      }
     }
   }
 
@@ -312,6 +372,13 @@ export class Grid {
     this.loading = true;
     try {
       this.teardownAllCells();
+      // A profile load swaps every pane to (potentially) different hosts, so
+      // silently keeping broadcast on would fan the next keystroke out to hosts
+      // the user didn't choose to broadcast to. Reset it off.
+      if (this.broadcast) {
+        this.broadcast = false;
+        this.updateBroadcastUI();
+      }
       this.model = {
         rows: profile.grid.rows,
         cols: profile.grid.cols,
@@ -377,6 +444,9 @@ export class Grid {
       onError: this.options.onError,
       onChange: () => this.emitChange(),
       getTerminalSettings: this.options.getTerminalSettings,
+      // Referencing `pane` here is safe: the callback only ever runs after this
+      // `const` has been initialised (once a live terminal emits input).
+      onInput: (data) => this.onPaneInput(pane, data),
     });
     // Clicking a cell focuses it (ring + keyboard focus into the terminal),
     // unless the click landed on a header control (device select / buttons),

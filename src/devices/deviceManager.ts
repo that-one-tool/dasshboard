@@ -16,6 +16,7 @@ import {
   importSshConfig,
 } from "../ipc";
 import { validateDevice } from "./validation";
+import { filterDevices, groupDevicesByFirstTag, type DeviceGroup } from "./deviceFilter";
 import { ForwardsEditor } from "./forwardsEditor";
 import { decideSecretToSend } from "./savePayload";
 import { deviceEndpoint } from "./deviceEndpoint";
@@ -74,6 +75,8 @@ export class DeviceManagerImpl {
   private options: DeviceManagerOptions;
   private devices: Device[] = [];
   private editingDeviceId: string | null = null;
+  /** Current sidebar search query; filters the rendered list (feature #3). */
+  private searchQuery = "";
   /**
    * The "Port forwarding" sub-editor for the SSH device dialog. Populated on
    * open (from the device being edited, or empty for a new device) and read
@@ -115,6 +118,11 @@ export class DeviceManagerImpl {
   private renderUI(): void {
     this.container.innerHTML = deviceManagerMarkup();
 
+    // Restore the search box across a language re-render (renderUI rebuilds the
+    // markup, blanking the input); the initial render leaves it empty.
+    const search = this.container.querySelector<HTMLInputElement>(".device-search");
+    if (search) search.value = this.searchQuery;
+
     const forwardsContainer =
       this.container.querySelector<HTMLElement>("#device-forwards");
     if (forwardsContainer) {
@@ -140,6 +148,14 @@ export class DeviceManagerImpl {
     this.container
       .querySelector(".device-import-ssh-btn")
       ?.addEventListener("click", () => void this.handleImportSshConfig());
+
+    // Live search over the device list (name / endpoint / tags).
+    this.container
+      .querySelector<HTMLInputElement>(".device-search")
+      ?.addEventListener("input", (e) => {
+        this.searchQuery = (e.target as HTMLInputElement).value;
+        this.renderDeviceList();
+      });
 
     // Dialog close buttons
     this.container.querySelectorAll("[data-close-dialog]").forEach((btn) => {
@@ -213,6 +229,11 @@ export class DeviceManagerImpl {
     // device opened.
     this.forwardsEditor?.setForwards([]);
 
+    // Rebuild the jump-host dropdown from the current device list every open (it
+    // may have changed). Must run before `populateForm` so the edit path can
+    // select the saved jump host.
+    this.populateProxyJumpOptions(deviceId);
+
     if (deviceId === null) {
       // New device
       title.textContent = t("devices.dialog.addTitle");
@@ -249,6 +270,33 @@ export class DeviceManagerImpl {
     // Move keyboard focus into the dialog so it doesn't linger on the trigger
     // button behind the overlay.
     this.container.querySelector<HTMLInputElement>("#device-name")?.focus();
+  }
+
+  /**
+   * (Re)fill the ProxyJump `<select>` with the other SSH devices as candidate
+   * jump hosts. A device can't jump through itself (the one being edited is
+   * excluded) and serial devices can't be jump hosts (excluded). The leading
+   * "None" option (a direct connection) is always present.
+   */
+  private populateProxyJumpOptions(editingId: string | null): void {
+    const select =
+      this.container.querySelector<HTMLSelectElement>("#device-proxy-jump");
+    if (!select) return;
+    select.innerHTML = "";
+
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = t("devices.proxyJump.none");
+    select.appendChild(none);
+
+    for (const device of this.devices) {
+      if (device.kind !== "ssh") continue;
+      if (device.id === editingId) continue;
+      const opt = document.createElement("option");
+      opt.value = device.id;
+      opt.textContent = `${device.name} (${deviceEndpoint(device)})`;
+      select.appendChild(opt);
+    }
   }
 
   private closeDialog(): void {
@@ -405,13 +453,49 @@ export class DeviceManagerImpl {
       return;
     }
 
-    listItems.innerHTML = this.devices
-      .map(
-        (device) => `
+    // Filter by the search query, then group by first tag. A device with no
+    // tags falls into the untagged group; when nothing is tagged the result is
+    // one untagged group and we render a flat list (no headers).
+    const filtered = filterDevices(this.devices, this.searchQuery);
+    if (filtered.length === 0) {
+      listItems.innerHTML = `<div class="empty-state">${t("devices.noMatches")}</div>`;
+      return;
+    }
+
+    const groups = groupDevicesByFirstTag(filtered);
+    const flat = groups.length === 1 && groups[0]?.tag === null;
+    listItems.innerHTML = flat
+      ? groups[0]!.devices.map((d) => this.deviceItemHtml(d)).join("")
+      : groups.map((g) => this.deviceGroupHtml(g)).join("");
+
+    this.attachDeviceListeners();
+  }
+
+  /** A tag section: a header (the tag, or "Untagged") over its device rows. */
+  private deviceGroupHtml(group: DeviceGroup): string {
+    const label = group.tag === null ? t("devices.group.untagged") : group.tag;
+    return `
+      <div class="device-group">
+        <div class="device-group-header">${escapeHtml(label)}</div>
+        ${group.devices.map((d) => this.deviceItemHtml(d)).join("")}
+      </div>
+    `;
+  }
+
+  /** One device row: name, endpoint, tag chips, and edit/delete actions. */
+  private deviceItemHtml(device: Device): string {
+    const chips =
+      device.tags.length > 0
+        ? `<div class="device-tags">${device.tags
+            .map((tag) => `<span class="device-tag">${escapeHtml(tag)}</span>`)
+            .join("")}</div>`
+        : "";
+    return `
       <div class="device-item">
         <div class="device-info">
           <div class="device-name">${escapeHtml(device.name)}</div>
           <div class="device-host">${escapeHtml(deviceEndpoint(device))}</div>
+          ${chips}
         </div>
         <div class="device-actions">
           <button
@@ -432,11 +516,7 @@ export class DeviceManagerImpl {
           </button>
         </div>
       </div>
-    `,
-      )
-      .join("");
-
-    this.attachDeviceListeners();
+    `;
   }
 
   private attachDeviceListeners(): void {

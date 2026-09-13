@@ -69,7 +69,9 @@ function sshDevice(id: string, name: string): Device {
     auth: { method: "password" },
     forwards: [],
     tunnelAutoStart: false,
+    proxyJump: null,
     autoReconnect: false,
+    tags: [],
   } as Device;
 }
 

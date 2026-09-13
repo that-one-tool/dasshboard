@@ -35,10 +35,14 @@ export interface DeviceFormValues {
   stopBits?: number;
   flowControl?: FlowControl;
   autoReconnect?: boolean;
+  // Free-form organizing labels (both kinds), normalized on save.
+  tags?: string[];
   // SSH forwards, edited by the forwarding sub-editor.
   forwards?: Forward[];
   // Start this device's tunnel automatically on app launch (SSH only).
   tunnelAutoStart?: boolean;
+  // Optional jump host id (ProxyJump, SSH only); null/undefined ⇒ direct.
+  proxyJump?: string | null;
 }
 
 /**
