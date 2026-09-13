@@ -14,7 +14,6 @@ on:
     push:
         branches:
             - main
-    workflow_dispatch: {}
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,10 +23,53 @@ env:
     CN_APPLICATION: "that-one-tool/dasshboard"
 
 jobs:
+    # Run the full check gate before anything else: TypeScript typecheck, the
+    # Vitest suite, cargo fmt --check, cargo test, and clippy (-D warnings).
+    # Everything downstream needs this job, so any failure blocks the release.
+    # No `if` guard here on purpose: the gate runs on every push to main, even
+    # chore:/docs: commits, so those still get tested.
+    check:
+        runs-on: ubuntu-22.04
+        steps:
+            - uses: actions/checkout@v5
+
+            - uses: actions/setup-node@v5
+              with:
+                  node-version: "24"
+
+            - name: install Rust stable
+              uses: actions-rust-lang/setup-rust-toolchain@v1
+              with:
+                  toolchain: stable
+                  components: rustfmt, clippy
+                  cache: true
+
+            # Same Tauri Linux prerequisites the build job installs — cargo test
+            # and clippy compile the app, which links against WebKitGTK et al.
+            # (see the build job for why the dl.google.com apt source is removed).
+            - name: install Linux dependencies
+              run: |
+                  sudo grep -rlZ 'dl\.google\.com' /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -0 -r rm -f
+                  sudo apt-get update
+                  sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+            - name: install npm dependencies
+              run: npm ci
+
+            - name: run full check gate
+              run: npm run check
+
     # CrabNebula/Tauri read the release version from src-tauri/tauri.conf.json
     # (Cargo.toml as its own fallback) — never from package.json. Fail fast if
     # the three drift apart instead of silently releasing the wrong version.
+    #
+    # This is where the release chain begins, so the skip guard lives here: for a
+    # CI-only / docs-only push (head commit message starting with "chore:" or
+    # "docs:") this job — and thus every downstream release job — is skipped, so
+    # no release is cut. The `check` gate above still runs on those commits.
     check-versions:
+        needs: check
+        if: ${{ !startsWith(github.event.head_commit.message, 'chore:') && !startsWith(github.event.head_commit.message, 'docs:') }}
         runs-on: ubuntu-22.04
         steps:
             - uses: actions/checkout@v5
