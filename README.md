@@ -49,6 +49,9 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   up to 5 attempts) after an unexpected drop, with a cancel control.
 - **Terminal settings** — font size/family and dark/light theme, applied live to
   every terminal and persisted.
+- **Localized UI** — the interface ships in **English, French, Spanish, German,
+  Portuguese, Simplified Chinese and Japanese**. Pick a language in Settings or
+  let the app follow your OS locale; the choice applies live without a restart.
 - **Quality-of-life** — copy-on-select, `Ctrl+Shift+V` / right-click paste with a
   multi-line paste confirmation, full UTF-8 output with correct wide-character
   (CJK/emoji) width via the Unicode 11 table, per-pane `host:port` tooltips,

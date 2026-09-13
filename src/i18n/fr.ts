@@ -139,7 +139,7 @@ export const fr: Messages = {
 	"devices.imported.other": "{count} appareils importés",
 	"devices.importedSsh.one": "{count} appareil importé depuis la config SSH",
 	"devices.importedSsh.other": "{count} appareils importés depuis la config SSH",
-	"devices.importedSshSkipped.one": "{count} appareil importé depuis la config SSH ({skipped} ignorés)",
+	"devices.importedSshSkipped.one": "{count} appareil importé depuis la config SSH ({skipped} ignoré(s))",
 	"devices.importedSshSkipped.other": "{count} appareils importés depuis la config SSH ({skipped} ignorés)",
 
 	/* -- device validation -------------------------------------------------- */

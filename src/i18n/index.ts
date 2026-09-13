@@ -19,9 +19,14 @@
 
 import { en, type MessageKey, type Messages } from "./en";
 import { fr } from "./fr";
+import { es } from "./es";
+import { de } from "./de";
+import { pt } from "./pt";
+import { zh } from "./zh";
+import { ja } from "./ja";
 
 /** The locales the app ships translations for. English is the guaranteed fallback. */
-export const SUPPORTED_LOCALES = ["en", "fr"] as const;
+export const SUPPORTED_LOCALES = ["en", "fr", "es", "de", "pt", "zh", "ja"] as const;
 
 export type Locale = (typeof SUPPORTED_LOCALES)[number];
 
@@ -29,9 +34,14 @@ export type Locale = (typeof SUPPORTED_LOCALES)[number];
 export const LOCALE_NAMES: Record<Locale, string> = {
   en: "English",
   fr: "Français",
+  es: "Español",
+  de: "Deutsch",
+  pt: "Português",
+  zh: "简体中文",
+  ja: "日本語",
 };
 
-const TABLES: Record<Locale, Messages> = { en, fr };
+const TABLES: Record<Locale, Messages> = { en, fr, es, de, pt, zh, ja };
 
 /** English is the default so an un-configured app (and every test) reads `en`. */
 let currentLocale: Locale = "en";
@@ -137,13 +147,16 @@ function interpolate(text: string, params?: Record<string, string | number>): st
 }
 
 /**
- * Plural category for a count. English: `one` iff n === 1. French: `one` for
- * 0 and 1 (French treats 0 as singular), `other` otherwise. Covers the small,
- * countable set of messages the app uses (items, devices, profiles, lines…).
+ * Plural category for a count. French: `one` for 0 and 1 (French treats 0 as
+ * singular), `other` otherwise. Chinese and Japanese have no plural distinction,
+ * so everything is `other`. English, Spanish, German and Portuguese: `one` iff
+ * n === 1. Covers the small, countable set of messages the app uses (items,
+ * devices, profiles, lines…).
  */
 function pluralCategory(locale: Locale, count: number): "one" | "other" {
   const n = Math.abs(count);
   if (locale === "fr") return n < 2 ? "one" : "other";
+  if (locale === "zh" || locale === "ja") return "other";
   return n === 1 ? "one" : "other";
 }
 

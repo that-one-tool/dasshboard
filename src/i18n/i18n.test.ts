@@ -12,6 +12,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { en } from "./en";
 import { fr } from "./fr";
+import { es } from "./es";
+import { de } from "./de";
+import { pt } from "./pt";
+import { zh } from "./zh";
+import { ja } from "./ja";
 import {
   SUPPORTED_LOCALES,
   applyDomTranslations,
@@ -30,15 +35,19 @@ afterEach(() => {
 });
 
 describe("translation tables", () => {
-  it("French defines every English key (no missing translations)", () => {
-    const missing = Object.keys(en).filter((k) => !(k in fr));
-    expect(missing).toEqual([]);
-  });
+  const tables = { fr, es, de, pt, zh, ja } as const;
 
-  it("French adds no keys English lacks (no stale keys)", () => {
-    const extra = Object.keys(fr).filter((k) => !(k in en));
-    expect(extra).toEqual([]);
-  });
+  for (const [name, table] of Object.entries(tables)) {
+    it(`${name} defines every English key (no missing translations)`, () => {
+      const missing = Object.keys(en).filter((k) => !(k in table));
+      expect(missing).toEqual([]);
+    });
+
+    it(`${name} adds no keys English lacks (no stale keys)`, () => {
+      const extra = Object.keys(table).filter((k) => !(k in en));
+      expect(extra).toEqual([]);
+    });
+  }
 });
 
 describe("t", () => {
@@ -75,6 +84,15 @@ describe("tp (plural)", () => {
     expect(tp("sftp.count", 2)).toBe("2 éléments");
   });
 
+  it("always uses the other form for Chinese and Japanese (no plural)", () => {
+    setLocale("zh");
+    expect(tp("sftp.count", 1)).toBe("1 项");
+    expect(tp("sftp.count", 3)).toBe("3 项");
+    setLocale("ja");
+    expect(tp("sftp.count", 1)).toBe("1 件");
+    expect(tp("sftp.count", 3)).toBe("3 件");
+  });
+
   it("merges extra params alongside the count", () => {
     expect(tp("devices.importedSshSkipped", 2, { skipped: 3 })).toBe(
       "Imported 2 devices from SSH config (3 skipped)",
@@ -91,12 +109,20 @@ describe("resolveLocale", () => {
     expect(resolveLocale(null, ["fr-CA", "en"])).toBe("fr");
   });
 
+  it("resolves each shipped OS locale from its primary subtag", () => {
+    expect(resolveLocale(null, ["de-DE"])).toBe("de");
+    expect(resolveLocale(null, ["es-ES"])).toBe("es");
+    expect(resolveLocale(null, ["pt-BR"])).toBe("pt");
+    expect(resolveLocale(null, ["zh-Hans-CN"])).toBe("zh");
+    expect(resolveLocale(null, ["ja-JP"])).toBe("ja");
+  });
+
   it("falls back to English for an unsupported OS locale", () => {
-    expect(resolveLocale(null, ["de-DE", "es"])).toBe("en");
+    expect(resolveLocale(null, ["ko-KR", "ru"])).toBe("en");
   });
 
   it("ignores an unsupported stored value and uses the OS", () => {
-    expect(resolveLocale("de", ["fr"])).toBe("fr");
+    expect(resolveLocale("ko", ["fr"])).toBe("fr");
   });
 
   it("returns English when nothing matches and no OS info", () => {
@@ -107,7 +133,7 @@ describe("resolveLocale", () => {
 describe("isSupportedLocale", () => {
   it("accepts shipped locales and rejects others", () => {
     for (const loc of SUPPORTED_LOCALES) expect(isSupportedLocale(loc)).toBe(true);
-    expect(isSupportedLocale("de")).toBe(false);
+    expect(isSupportedLocale("ko")).toBe(false);
     expect(isSupportedLocale(null)).toBe(false);
   });
 });
@@ -127,7 +153,7 @@ describe("setLocale + onLocaleChange", () => {
   });
 
   it("coerces an unsupported locale to English", () => {
-    setLocale("de" as never);
+    setLocale("ko" as never);
     expect(getLocale()).toBe("en");
   });
 });
