@@ -4,24 +4,37 @@
 mod atomic_file;
 mod commands;
 mod config_watch;
-mod device;
-mod error;
-mod known_hosts;
 mod profile;
 mod profile_store;
 mod secret;
 mod serial;
-mod session;
 mod settings;
-mod sftp;
 mod ssh_config;
 mod state;
 mod store;
 mod transfer;
-mod tunnel;
 
-#[cfg(test)]
-mod ssh_it;
+// These modules are `pub` (not private `mod`) solely so the in-process
+// integration tests in `tests/` — a separate crate — can reach the types they
+// drive (`SessionManager`, `SftpManager`, `TunnelManager`, their param structs,
+// etc.). `#[doc(hidden)]` keeps them out of the public docs; this lib is
+// consumed only by the app's own binary, never as an external dependency.
+#[doc(hidden)]
+pub mod device;
+#[doc(hidden)]
+pub mod error;
+#[doc(hidden)]
+pub mod known_hosts;
+#[doc(hidden)]
+pub mod session;
+#[doc(hidden)]
+pub mod sftp;
+#[doc(hidden)]
+pub mod tunnel;
+
+// The in-process SSH/SFTP integration tests live in `tests/` (a separate
+// crate), driving the library through its public API — see `tests/ssh_it.rs`
+// and `tests/sftp_it.rs`.
 
 use std::sync::Arc;
 

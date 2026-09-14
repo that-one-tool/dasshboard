@@ -136,15 +136,19 @@ impl SessionSink for HandshakeSink {
 }
 
 /// The connection-shaped parameters for a tunnel, constructed by the
-/// `start_tunnel` command in `commands.rs` (hence `pub(crate)`).
-pub(crate) struct TunnelParams {
-    pub(crate) device_id: String,
-    pub(crate) host: String,
-    pub(crate) port: u16,
-    pub(crate) username: String,
-    pub(crate) creds: AuthCredentials,
+/// `start_tunnel` command in `commands.rs`.
+///
+/// `pub` + `#[doc(hidden)]` only so the `tests/` integration tests (a separate
+/// crate) can build one — see the note on `session::ConnectParams`.
+#[doc(hidden)]
+pub struct TunnelParams {
+    pub device_id: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub creds: AuthCredentials,
     /// The forwards to bind. Non-empty (the command rejects a device with none).
-    pub(crate) forwards: Vec<Forward>,
+    pub forwards: Vec<Forward>,
 }
 
 /// Control messages sent to a tunnel task via its mpsc handle. Currently just a

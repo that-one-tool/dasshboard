@@ -68,12 +68,16 @@ pub struct SftpEntry {
 /// The connection-shaped parameters for an SFTP connect, built by the
 /// `sftp_connect` command from a device + its resolved credentials. Mirrors
 /// `TunnelParams` (minus the forwards).
-pub(crate) struct SftpParams {
-    pub(crate) device_id: String,
-    pub(crate) host: String,
-    pub(crate) port: u16,
-    pub(crate) username: String,
-    pub(crate) creds: AuthCredentials,
+///
+/// `pub` + `#[doc(hidden)]` only so the `tests/` integration tests (a separate
+/// crate) can build one — see the note on `session::ConnectParams`.
+#[doc(hidden)]
+pub struct SftpParams {
+    pub device_id: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub creds: AuthCredentials,
 }
 
 /// Sink for the one thing the SFTP handshake surfaces to the frontend: a

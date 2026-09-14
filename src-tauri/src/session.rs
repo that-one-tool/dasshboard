@@ -161,17 +161,22 @@ pub trait SessionSink: Send + Sync {
 /// The connection-shaped parameters for a session (as opposed to bookkeeping
 /// like `session_id`/`sink`), bundled so `spawn_session`/`run_session` don't
 /// need six-plus positional parameters of their own (B8). Constructed by the
-/// `connect` command in `commands.rs`, hence `pub(crate)`.
-pub(crate) struct ConnectParams {
-    pub(crate) host: String,
-    pub(crate) port: u16,
-    pub(crate) username: String,
-    pub(crate) creds: AuthCredentials,
-    pub(crate) cols: u32,
-    pub(crate) rows: u32,
+/// `connect` command in `commands.rs`.
+///
+/// `pub` (not `pub(crate)`) only so the in-process integration tests in
+/// `tests/` — a separate crate — can build one; `#[doc(hidden)]` keeps it out
+/// of the public docs, as this lib is consumed only by the app's own binary.
+#[doc(hidden)]
+pub struct ConnectParams {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub creds: AuthCredentials,
+    pub cols: u32,
+    pub rows: u32,
     /// Optional jump host (`ProxyJump`): connect to this first, then reach
     /// `host:port` through a direct-tcpip channel over it. `None` ⇒ direct.
-    pub(crate) jump: Option<JumpHop>,
+    pub jump: Option<JumpHop>,
 }
 
 /// The resolved connection parameters for a single jump hop (`ProxyJump`),
@@ -179,11 +184,15 @@ pub(crate) struct ConnectParams {
 /// secret. Deliberately has no `Debug` impl, so the secret inside `creds` can't
 /// be `{:?}`-printed (the secret would still be redacted by `AuthCredentials`'s
 /// own `Debug` were one ever derived here).
-pub(crate) struct JumpHop {
-    pub(crate) host: String,
-    pub(crate) port: u16,
-    pub(crate) username: String,
-    pub(crate) creds: AuthCredentials,
+///
+/// `pub` + `#[doc(hidden)]` for the same integration-test reason as
+/// [`ConnectParams`].
+#[doc(hidden)]
+pub struct JumpHop {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub creds: AuthCredentials,
 }
 
 /// Control messages sent to a session task via its mpsc handle.

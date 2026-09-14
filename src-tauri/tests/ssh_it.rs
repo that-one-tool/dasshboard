@@ -15,8 +15,8 @@
 //! The known-hosts *matching* logic is unit-tested separately in
 //! `known_hosts.rs`; here we test the end-to-end handshake behaviour.
 //!
-//! The whole module is gated behind `#[cfg(test)]` at its declaration in
-//! `lib.rs`.
+//! This is a Cargo integration test (`tests/`), so it drives `dasshboard_lib`
+//! through its public API rather than reaching into private internals.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,14 +27,16 @@ use russh::{Channel, ChannelId};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
-use crate::device::Forward;
-use crate::error::AppError;
-use crate::known_hosts::{KnownHost, KnownHostsStore};
-use crate::session::{
+use dasshboard_lib::device::Forward;
+use dasshboard_lib::error::AppError;
+use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
+use dasshboard_lib::session::{
     AuthCredentials, ConnectParams, HostKeyPromptPayload, JumpHop, SessionManager, SessionSink,
     SessionStatus,
 };
-use crate::tunnel::{ForwardStatus, TunnelManager, TunnelParams, TunnelSink, TunnelStatus};
+use dasshboard_lib::tunnel::{
+    ForwardStatus, TunnelManager, TunnelParams, TunnelSink, TunnelStatus,
+};
 
 /// Throwaway ed25519 host key for the in-process test server. Generated once
 /// with `ssh-keygen -t ed25519 -N ""`; it exists only to give the test server
