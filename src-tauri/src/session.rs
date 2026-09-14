@@ -637,7 +637,12 @@ where
             // RSA agent keys need an explicit signature-hash negotiation; other
             // key types (ed25519, ecdsa, sk-*) ignore it.
             let hash = if public.algorithm().is_rsa() {
-                handle.best_supported_rsa_hash().await.ok().flatten().flatten()
+                handle
+                    .best_supported_rsa_hash()
+                    .await
+                    .ok()
+                    .flatten()
+                    .flatten()
             } else {
                 None
             };

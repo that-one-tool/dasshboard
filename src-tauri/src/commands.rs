@@ -1146,8 +1146,8 @@ pub fn ssh_agent_available() -> bool {
 /// empty list means the agent is running but holds no keys. Never exposes key
 /// material.
 #[tauri::command]
-pub async fn list_agent_identities(
-) -> Result<Vec<crate::agent_ident::AgentIdentityInfo>, AppError> {
+pub async fn list_agent_identities() -> Result<Vec<crate::agent_ident::AgentIdentityInfo>, AppError>
+{
     crate::agent_ident::list_agent_identities().await
 }
 

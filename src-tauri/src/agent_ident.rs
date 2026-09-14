@@ -89,7 +89,10 @@ impl AgentIdentityInfo {
                 // is still flagged as a security key.
                 Ok(Self {
                     algorithm: certificate.algorithm().as_str().to_string(),
-                    fingerprint: certificate.public_key().fingerprint(HashAlg::Sha256).to_string(),
+                    fingerprint: certificate
+                        .public_key()
+                        .fingerprint(HashAlg::Sha256)
+                        .to_string(),
                     is_security_key: is_sk(&certificate.public_key().algorithm()),
                     comment: comment.clone(),
                     is_certificate: true,
@@ -236,7 +239,10 @@ async fn connect_agent() -> Result<AgentAuth, AppError> {
     Err(AppError::SshChannel(if errors.is_empty() {
         "no SSH agent reachable: no agent named pipe found".to_string()
     } else {
-        format!("no SSH agent reachable via named pipe ({})", errors.join("; "))
+        format!(
+            "no SSH agent reachable via named pipe ({})",
+            errors.join("; ")
+        )
     }))
 }
 
