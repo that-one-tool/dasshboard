@@ -1196,6 +1196,20 @@ body.grid-dragging-row * {
 	margin: 0;
 }
 
+/* Muted helper text under a form control (e.g. the agent-forwarding hint). */
+.form-hint {
+	display: block;
+	margin-top: 4px;
+	font-size: 12px;
+	line-height: 1.4;
+	color: #858585;
+}
+
+/* A hint that flags a problem (e.g. no local SSH agent detected). */
+.form-hint-warn {
+	color: #e5c07b;
+}
+
 /* ============================================================================
  * Trusted-hosts management dialog (opened from the header padlock button)
  * ============================================================================ */

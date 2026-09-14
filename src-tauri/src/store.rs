@@ -172,6 +172,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: None,
             },
             auto_reconnect: false,

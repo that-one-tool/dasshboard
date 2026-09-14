@@ -14,6 +14,8 @@ import {
   exportDevices,
   importDevices,
   importSshConfig,
+  exportSshConfig,
+  sshAgentAvailable,
 } from "../ipc";
 import { validateDevice } from "./validation";
 import { filterDevices, groupDevicesByFirstTag, type DeviceGroup } from "./deviceFilter";
@@ -36,6 +38,7 @@ import {
   pickJsonSavePath,
   pickJsonOpenPath,
   pickSshConfigOpenPath,
+  pickSshConfigSavePath,
 } from "../ui/fileDialog";
 import { pencilIcon, trashIcon } from "../ui/icons";
 import { t, tp } from "../i18n";
@@ -148,6 +151,9 @@ export class DeviceManagerImpl {
     this.container
       .querySelector(".device-import-ssh-btn")
       ?.addEventListener("click", () => void this.handleImportSshConfig());
+    this.container
+      .querySelector(".device-export-ssh-btn")
+      ?.addEventListener("click", () => void this.handleExportSshConfig());
 
     // Live search over the device list (name / endpoint / tags).
     this.container
@@ -270,6 +276,24 @@ export class DeviceManagerImpl {
     // Move keyboard focus into the dialog so it doesn't linger on the trigger
     // button behind the overlay.
     this.container.querySelector<HTMLInputElement>("#device-name")?.focus();
+
+    // Show the "no agent detected" hint under the forward-agent toggle if the
+    // backend can't reach a local SSH agent. Best-effort and async — a failure
+    // just leaves the hint hidden (the toggle stays usable either way).
+    void this.refreshAgentAvailabilityHint();
+  }
+
+  /** Toggle the agent-forwarding "unavailable" hint from the backend probe. */
+  private async refreshAgentAvailabilityHint(): Promise<void> {
+    const hint = this.container.querySelector<HTMLElement>(
+      ".device-agent-unavailable",
+    );
+    if (!hint) return;
+    try {
+      hint.hidden = await sshAgentAvailable();
+    } catch {
+      hint.hidden = true;
+    }
   }
 
   /**
@@ -429,6 +453,27 @@ export class DeviceManagerImpl {
           : tp("devices.importedSsh", imported);
       this.options.onSuccess?.(message);
       await this.loadDevices();
+    } catch (err) {
+      this.options.onError?.(err as AppError);
+    }
+  }
+
+  /**
+   * Exports every SSH device to a user-chosen OpenSSH client config file (the
+   * reverse of Import SSH config). Reports how many were written and, when any
+   * non-SSH devices were skipped, how many. A cancelled save dialog is a silent
+   * no-op.
+   */
+  private async handleExportSshConfig(): Promise<void> {
+    try {
+      const path = await pickSshConfigSavePath();
+      if (path === null) return; // user cancelled the picker
+      const { exported, skipped } = await exportSshConfig(path);
+      const message =
+        skipped > 0
+          ? tp("devices.exportedSshSkipped", exported, { skipped })
+          : tp("devices.exportedSsh", exported);
+      this.options.onSuccess?.(message);
     } catch (err) {
       this.options.onError?.(err as AppError);
     }

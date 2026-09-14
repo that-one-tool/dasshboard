@@ -162,6 +162,15 @@ export const fr: Messages = {
 	"devices.importedSsh.other": "{count} appareils importés depuis la config SSH",
 	"devices.importedSshSkipped.one": "{count} appareil importé depuis la config SSH ({skipped} ignoré(s))",
 	"devices.importedSshSkipped.other": "{count} appareils importés depuis la config SSH ({skipped} ignorés)",
+	"devices.exportSsh": "Exporter la config SSH",
+	"devices.exportSsh.title": "Exporter les appareils SSH vers un fichier de config OpenSSH",
+	"devices.exportedSsh.one": "{count} appareil exporté vers la config SSH",
+	"devices.exportedSsh.other": "{count} appareils exportés vers la config SSH",
+	"devices.exportedSshSkipped.one": "{count} appareil exporté vers la config SSH ({skipped} non-SSH ignorés)",
+	"devices.exportedSshSkipped.other": "{count} appareils exportés vers la config SSH ({skipped} non-SSH ignorés)",
+	"devices.forwardAgent": "Transférer l'agent SSH",
+	"devices.forwardAgent.hint": "Permet aux programmes de l'hôte distant d'utiliser vos clés SSH locales (git, sauts ssh supplémentaires) ; aucune clé n'est copiée sur le serveur.",
+	"devices.forwardAgent.unavailable": "Aucun agent SSH local détecté — démarrez votre agent SSH pour utiliser le transfert.",
 
 	/* -- device validation -------------------------------------------------- */
 	"validation.name": "Le nom est requis",

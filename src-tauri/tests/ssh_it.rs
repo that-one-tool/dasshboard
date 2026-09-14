@@ -71,6 +71,11 @@ struct TestServer {
     /// when false, the channel is left to the echo `data` handler (the tunnel
     /// test's simple "remote service").
     bridge_direct_tcpip: bool,
+    /// When set, the server opens an `auth-agent@openssh.com` channel back to the
+    /// client on shell request and reports (via this sender) whether the client
+    /// accepted it — used by the agent-forwarding tests to observe the client's
+    /// accept/reject gate. `None` for every other test.
+    agent_probe: Option<mpsc::UnboundedSender<bool>>,
 }
 
 impl server::Server for TestServer {
@@ -79,6 +84,7 @@ impl server::Server for TestServer {
         TestServerHandler {
             password: self.password.clone(),
             bridge_direct_tcpip: self.bridge_direct_tcpip,
+            agent_probe: self.agent_probe.clone(),
         }
     }
 }
@@ -86,6 +92,7 @@ impl server::Server for TestServer {
 struct TestServerHandler {
     password: String,
     bridge_direct_tcpip: bool,
+    agent_probe: Option<mpsc::UnboundedSender<bool>>,
 }
 
 impl server::Handler for TestServerHandler {
@@ -167,6 +174,28 @@ impl server::Handler for TestServerHandler {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
+        // For the agent-forwarding tests: open an agent channel back to the
+        // client. If the client accepts it, `channel_open_confirmation` fires and
+        // reports `true`; a rejecting client produces no confirmation, which the
+        // test observes as a timeout (⇒ rejected).
+        if self.agent_probe.is_some() {
+            session.channel_open_agent()?;
+        }
+        Ok(())
+    }
+
+    async fn channel_open_confirmation(
+        &mut self,
+        _id: ChannelId,
+        _max_packet_size: u32,
+        _window_size: u32,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        // The only channel the server itself opens is the agent-forward probe, so
+        // a confirmation here means the client accepted agent forwarding.
+        if let Some(tx) = &self.agent_probe {
+            let _ = tx.send(true);
+        }
         Ok(())
     }
 
@@ -201,6 +230,24 @@ async fn spawn_jump_server(password: &str) -> u16 {
 }
 
 async fn spawn_configured_server(password: &str, bridge_direct_tcpip: bool) -> u16 {
+    spawn_full_server(password, bridge_direct_tcpip, None).await
+}
+
+/// Spawn a server that opens an agent-forward channel to the client on shell
+/// request and reports (via the returned receiver) `true` when the client
+/// accepts it. A rejecting client sends no confirmation, so the receiver stays
+/// empty — the agent-forwarding tests distinguish accept from reject on that.
+async fn spawn_agent_probe_server(password: &str) -> (u16, mpsc::UnboundedReceiver<bool>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let port = spawn_full_server(password, false, Some(tx)).await;
+    (port, rx)
+}
+
+async fn spawn_full_server(
+    password: &str,
+    bridge_direct_tcpip: bool,
+    agent_probe: Option<mpsc::UnboundedSender<bool>>,
+) -> u16 {
     let host_key = PrivateKey::from_openssh(TEST_HOST_KEY).expect("valid test host key");
     let config = Arc::new(server::Config {
         keys: vec![host_key],
@@ -221,6 +268,7 @@ async fn spawn_configured_server(password: &str, bridge_direct_tcpip: bool) -> u
         let mut server = TestServer {
             password,
             bridge_direct_tcpip,
+            agent_probe,
         };
         // `run_on_socket` owns the accept loop and drives each session.
         let _ = server.run_on_socket(config, &listener).await;
@@ -318,6 +366,18 @@ fn spawn_pw_session(
     port: u16,
     sink: Arc<dyn SessionSink>,
 ) {
+    spawn_pw_session_with_agent(manager, id, port, sink, false);
+}
+
+/// Like [`spawn_pw_session`], but lets the test set `forward_agent` so the
+/// agent-forwarding accept/reject gate can be exercised end to end.
+fn spawn_pw_session_with_agent(
+    manager: &Arc<SessionManager>,
+    id: &str,
+    port: u16,
+    sink: Arc<dyn SessionSink>,
+    forward_agent: bool,
+) {
     manager.spawn_session(
         id.to_string(),
         ConnectParams {
@@ -329,6 +389,7 @@ fn spawn_pw_session(
             rows: 24,
             jump: None,
             keepalive: KeepaliveConfig::disabled(),
+            forward_agent,
         },
         sink,
     );
@@ -533,6 +594,61 @@ async fn echo_through_pty_and_clean_disconnect() {
     );
 }
 
+/// Agent forwarding ON: the client must accept the server's
+/// `auth-agent@openssh.com` channel. The probe server opens one on shell request
+/// and reports acceptance; we assert it arrives. (The client then tries to reach
+/// a local agent and may find none — that's fine; the accept happens first and is
+/// what the gate controls.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_forwarding_enabled_accepts_agent_channel() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, mut agent_rx) = spawn_agent_probe_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session_with_agent(&manager, "s1", port, sink, true);
+
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+
+    let accepted = recv_timeout(&mut agent_rx, Duration::from_secs(5)).await;
+    assert_eq!(
+        accepted,
+        Some(true),
+        "with forwarding on, the client must accept the agent channel"
+    );
+
+    manager.disconnect("s1").await;
+}
+
+/// Agent forwarding OFF (the default): the client must REJECT the server's
+/// agent-forward channel — russh's default handler would otherwise accept it, so
+/// this locks in our override. A rejecting client sends no confirmation, so the
+/// probe receiver stays empty within the timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_forwarding_disabled_rejects_agent_channel() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, mut agent_rx) = spawn_agent_probe_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session_with_agent(&manager, "s1", port, sink, false);
+
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+
+    // No acceptance confirmation must arrive — the client rejected the channel.
+    let accepted = recv_timeout(&mut agent_rx, Duration::from_secs(2)).await;
+    assert_eq!(
+        accepted, None,
+        "with forwarding off, the client must reject the agent channel"
+    );
+
+    manager.disconnect("s1").await;
+}
+
 /// ProxyJump: connect to a target through a jump host and prove the PTY works
 /// end-to-end over the jumped connection. The jump server bridges its
 /// `direct-tcpip` channel to the target server's real port, so the client runs a
@@ -565,6 +681,7 @@ async fn connects_to_target_through_a_jump_host() {
                 creds: password_creds(),
             }),
             keepalive: KeepaliveConfig::disabled(),
+            forward_agent: false,
         },
         sink,
     );
@@ -641,6 +758,7 @@ async fn jump_host_auth_failure_is_attributed_to_the_jump_host() {
                 creds: AuthCredentials::Password("wrong-jump-password".to_string()),
             }),
             keepalive: KeepaliveConfig::disabled(),
+            forward_agent: false,
         },
         sink,
     );

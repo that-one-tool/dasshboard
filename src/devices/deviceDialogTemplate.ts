@@ -47,6 +47,13 @@ export function deviceManagerMarkup(): string {
           >
             ${t("devices.importSsh")}
           </button>
+          <button
+            class="btn btn-small device-export-ssh-btn"
+            data-action="export-ssh-config"
+            title="${t("devices.exportSsh.title")}"
+          >
+            ${t("devices.exportSsh")}
+          </button>
         </div>
         <div class="device-search-wrap">
           <input
@@ -182,6 +189,16 @@ export function deviceManagerMarkup(): string {
                 <input id="device-tunnel-autostart" type="checkbox" />
                 ${t("devices.tunnelAutostart")}
               </label>
+            </div>
+            <div class="form-group form-group-checkbox">
+              <label for="device-forward-agent">
+                <input id="device-forward-agent" type="checkbox" />
+                ${t("devices.forwardAgent")}
+              </label>
+              <span class="form-hint">${t("devices.forwardAgent.hint")}</span>
+              <span class="form-hint form-hint-warn device-agent-unavailable" hidden>
+                ${t("devices.forwardAgent.unavailable")}
+              </span>
             </div>
             </div>
 

@@ -53,6 +53,7 @@ const deviceA: Device = {
   forwards: [],
   tunnelAutoStart: false,
   proxyJump: null,
+  forwardAgent: false,
   autoReconnect: false,
   tags: [],
 };
@@ -68,6 +69,7 @@ const deviceB: Device = {
   forwards: [],
   tunnelAutoStart: false,
   proxyJump: null,
+  forwardAgent: false,
   autoReconnect: true,
   tags: [],
 };
@@ -269,6 +271,7 @@ describe("device delete confirmation (Phase 6)", () => {
     forwards: [],
     tunnelAutoStart: false,
     proxyJump: null,
+    forwardAgent: false,
     autoReconnect: false,
     tags: [],
   };
@@ -598,6 +601,7 @@ describe("device search + tag grouping", () => {
     forwards: [],
     tunnelAutoStart: false,
     proxyJump: null,
+    forwardAgent: false,
     autoReconnect: false,
     tags,
   });

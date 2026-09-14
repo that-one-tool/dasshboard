@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent;
 mod atomic_file;
 mod commands;
 mod config_watch;
@@ -186,6 +187,8 @@ pub fn run() {
             commands::export_profiles,
             commands::import_profiles,
             commands::import_ssh_config,
+            commands::export_ssh_config,
+            commands::ssh_agent_available,
             commands::sftp_connect,
             commands::sftp_disconnect,
             commands::sftp_list,

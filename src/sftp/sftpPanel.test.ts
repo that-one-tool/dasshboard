@@ -70,6 +70,7 @@ function sshDevice(id: string, name: string): Device {
     forwards: [],
     tunnelAutoStart: false,
     proxyJump: null,
+    forwardAgent: false,
     autoReconnect: false,
     tags: [],
   } as Device;

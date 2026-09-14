@@ -277,6 +277,8 @@ impl TunnelManager {
             params.port,
             self.prompt_timeout,
             params.keepalive,
+            // Tunnels never forward the SSH agent.
+            false,
         );
         let manager = Arc::clone(self);
         let connect_timeout = self.connect_timeout;

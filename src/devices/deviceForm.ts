@@ -147,6 +147,9 @@ function populateSshFields(
 
 	const autoStart = root.querySelector<HTMLInputElement>("#device-tunnel-autostart");
 	if (autoStart) autoStart.checked = device.tunnelAutoStart ?? false;
+
+	const forwardAgent = root.querySelector<HTMLInputElement>("#device-forward-agent");
+	if (forwardAgent) forwardAgent.checked = device.forwardAgent ?? false;
 }
 
 /** Fill the serial-only inputs (port + framing) from a device. */
@@ -248,6 +251,7 @@ function readSshValues(form: ParentNode, forwards: Forward[]): DeviceFormValues 
 		forwards,
 		tunnelAutoStart: requireEl<HTMLInputElement>(form, "#device-tunnel-autostart").checked,
 		proxyJump: proxyJumpValue === "" ? null : proxyJumpValue,
+		forwardAgent: requireEl<HTMLInputElement>(form, "#device-forward-agent").checked,
 	};
 }
 
@@ -306,5 +310,6 @@ export function buildDeviceFromForm(values: DeviceFormValues & { id: string }): 
 		forwards: values.forwards ?? [],
 		tunnelAutoStart: values.tunnelAutoStart ?? false,
 		proxyJump: values.proxyJump ?? null,
+		forwardAgent: values.forwardAgent ?? false,
 	};
 }

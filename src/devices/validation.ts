@@ -46,6 +46,8 @@ export interface DeviceFormValues {
   tunnelAutoStart?: boolean;
   // Optional jump host id (ProxyJump, SSH only); null/undefined ⇒ direct.
   proxyJump?: string | null;
+  // Forward the local SSH agent (`ssh -A`, SSH only).
+  forwardAgent?: boolean;
 }
 
 /**

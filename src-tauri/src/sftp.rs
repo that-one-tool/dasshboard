@@ -253,6 +253,8 @@ impl SftpManager {
             params.port,
             self.prompt_timeout,
             params.keepalive,
+            // The SFTP file browser never forwards the SSH agent.
+            false,
         );
 
         let handle = establish_with_deadline(

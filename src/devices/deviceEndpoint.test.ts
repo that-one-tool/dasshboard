@@ -13,6 +13,7 @@ const sshDevice: Device = {
   forwards: [],
   tunnelAutoStart: false,
   proxyJump: null,
+  forwardAgent: false,
   autoReconnect: false,
   tags: [],
 };

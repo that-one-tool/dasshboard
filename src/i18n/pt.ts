@@ -162,6 +162,15 @@ export const pt: Messages = {
 	"devices.importedSsh.other": "{count} dispositivos importados da config SSH",
 	"devices.importedSshSkipped.one": "{count} dispositivo importado da config SSH ({skipped} ignorado(s))",
 	"devices.importedSshSkipped.other": "{count} dispositivos importados da config SSH ({skipped} ignorados)",
+	"devices.exportSsh": "Exportar config SSH",
+	"devices.exportSsh.title": "Exportar dispositivos SSH para um arquivo de config do OpenSSH",
+	"devices.exportedSsh.one": "{count} dispositivo exportado para a config SSH",
+	"devices.exportedSsh.other": "{count} dispositivos exportados para a config SSH",
+	"devices.exportedSshSkipped.one": "{count} dispositivo exportado para a config SSH ({skipped} não SSH ignorados)",
+	"devices.exportedSshSkipped.other": "{count} dispositivos exportados para a config SSH ({skipped} não SSH ignorados)",
+	"devices.forwardAgent": "Encaminhar agente SSH",
+	"devices.forwardAgent.hint": "Permite que programas no host remoto usem suas chaves SSH locais (git, saltos ssh adicionais); nenhuma chave é copiada para o servidor.",
+	"devices.forwardAgent.unavailable": "Nenhum agente SSH local detectado — inicie o seu agente SSH para usar o encaminhamento.",
 
 	/* -- device validation -------------------------------------------------- */
 	"validation.name": "O nome é obrigatório",

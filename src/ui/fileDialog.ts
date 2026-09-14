@@ -49,6 +49,24 @@ export async function pickSshConfigOpenPath(): Promise<string | null> {
 }
 
 /**
+ * Opens a native "save file" dialog for an OpenSSH client-config export, seeded
+ * at `~/.ssh/dasshboard-config` so the user doesn't clobber their real config by
+ * default. No extension filter — an `ssh` config file has none. Returns the
+ * chosen path, or `null` if the user cancels (or the home directory can't be
+ * resolved to seed the path, in which case the dialog still opens at the
+ * platform default).
+ */
+export async function pickSshConfigSavePath(): Promise<string | null> {
+  let defaultPath: string | undefined;
+  try {
+    defaultPath = await join(await homeDir(), ".ssh", "dasshboard-config");
+  } catch {
+    defaultPath = undefined;
+  }
+  return save({ defaultPath });
+}
+
+/**
  * Opens a native "save file" dialog for an SFTP download, seeded with the remote
  * file's base name (no extension filter — a downloaded file may have any type).
  * Returns the chosen local path, or `null` if the user cancels.

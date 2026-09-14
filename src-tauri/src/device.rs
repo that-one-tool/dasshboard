@@ -86,6 +86,15 @@ pub enum Connection {
         /// always emitted (as `null` when absent) so the frontend can rely on it.
         #[serde(default)]
         proxy_jump: Option<String>,
+        /// Forward the local SSH agent (`ssh -A`): when set, the app accepts the
+        /// server's `auth-agent@openssh.com` channels and relays them to this
+        /// machine's SSH agent, so programs on the remote host can use your local
+        /// keys (e.g. `git push`, a further `ssh` hop) without copying any key to
+        /// the server. Off by default; `#[serde(default)]` keeps a devices.json
+        /// written before this field existed loadable (reads back as `false`), and
+        /// the field is always emitted — the same pattern as `tunnel_auto_start`.
+        #[serde(default)]
+        forward_agent: bool,
     },
     #[serde(rename_all = "camelCase")]
     Serial {
@@ -198,6 +207,8 @@ struct ConnectionRaw {
     tunnel_auto_start: bool,
     #[serde(default)]
     proxy_jump: Option<String>,
+    #[serde(default)]
+    forward_agent: bool,
     port_name: Option<String>,
     baud_rate: Option<u32>,
     #[serde(default = "default_data_bits")]
@@ -227,6 +238,7 @@ impl ConnectionRaw {
             forwards: self.forwards,
             tunnel_auto_start: self.tunnel_auto_start,
             proxy_jump: self.proxy_jump,
+            forward_agent: self.forward_agent,
         })
     }
 
@@ -324,6 +336,18 @@ impl Device {
         matches!(self.connection, Connection::Ssh { .. })
     }
 
+    /// Whether this device forwards the local SSH agent (`ssh -A`). Always
+    /// `false` for a non-SSH device.
+    pub fn forward_agent_enabled(&self) -> bool {
+        matches!(
+            &self.connection,
+            Connection::Ssh {
+                forward_agent: true,
+                ..
+            }
+        )
+    }
+
     /// The id of this device's jump host (`ProxyJump`), if any. `None` for a
     /// serial device or an SSH device with a direct connection.
     pub fn proxy_jump_id(&self) -> Option<&str> {
@@ -365,6 +389,7 @@ impl Device {
                 forwards,
                 tunnel_auto_start: _,
                 proxy_jump,
+                forward_agent: _,
             } => validate_ssh(host, *port, username, auth, forwards, proxy_jump, &self.id),
             Connection::Serial {
                 port_name,
@@ -392,6 +417,13 @@ fn validate_ssh(
 ) -> Result<(), AppError> {
     require_non_empty(host, "host must not be empty")?;
     require_non_empty(username, "username must not be empty")?;
+    // Reject control characters (newlines especially) in the free-text fields.
+    // These can enter via JSON import / a hand-edited devices.json (which bypass
+    // the UI's single-line inputs), and a newline in one of these would let a
+    // crafted device inject extra directives into an exported `ssh` config
+    // (`export_ssh_config`) — a config file the system `ssh` then executes.
+    reject_control_chars(host, "host")?;
+    reject_control_chars(username, "username")?;
     if port == 0 {
         return Err(AppError::Validation(
             "port must be between 1 and 65535".to_string(),
@@ -399,6 +431,7 @@ fn validate_ssh(
     }
     if let Auth::Key { key_path } = auth {
         require_non_empty(key_path, "keyPath must not be empty for key auth")?;
+        reject_control_chars(key_path, "keyPath")?;
     }
     // A device may not be its own jump host (the connect path only does a single
     // hop, so this never loops — but it is still nonsensical). A new device has
@@ -471,6 +504,20 @@ fn require_non_empty(value: &str, message: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Reject a value containing an ASCII control character (newline, carriage
+/// return, tab, NUL, escape, …). Used for SSH free-text fields that are later
+/// written verbatim into an OpenSSH client config on export: a newline there
+/// would terminate the config line and let the remainder inject a new directive
+/// (e.g. `ProxyCommand`). `field` names the offending field in the error.
+fn reject_control_chars(value: &str, field: &str) -> Result<(), AppError> {
+    if value.chars().any(|c| c.is_control()) {
+        return Err(AppError::Validation(format!(
+            "{field} must not contain control characters"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +533,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: None,
             },
             auto_reconnect: false,
@@ -504,6 +552,7 @@ mod tests {
                 },
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -603,6 +652,7 @@ mod tests {
                 "forwards": [],
                 "tunnelAutoStart": false,
                 "proxyJump": null,
+                "forwardAgent": false,
                 "autoReconnect": false,
                 "tags": [],
             })
@@ -678,6 +728,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: Some("bastion-id".to_string()),
             },
             ..valid_password_device()
@@ -694,6 +745,33 @@ mod tests {
     }
 
     #[test]
+    fn forward_agent_round_trips_and_defaults_to_false() {
+        // Present + true survives a round trip and is always emitted on the wire.
+        let device = Device {
+            connection: Connection::Ssh {
+                host: "10.0.0.5".to_string(),
+                port: 22,
+                username: "admin".to_string(),
+                auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
+                proxy_jump: None,
+                forward_agent: true,
+            },
+            ..valid_password_device()
+        };
+        let value = serde_json::to_value(&device).unwrap();
+        assert_eq!(value["forwardAgent"], serde_json::json!(true));
+        let back: Device = serde_json::from_value(value).unwrap();
+        assert!(back.forward_agent_enabled());
+
+        // A legacy record (no forwardAgent) loads with forwarding off.
+        let legacy = r#"{ "id": "x", "name": "n", "host": "h", "port": 22, "username": "u", "auth": { "method": "password" } }"#;
+        let parsed: Device = serde_json::from_str(legacy).unwrap();
+        assert!(!parsed.forward_agent_enabled());
+    }
+
+    #[test]
     fn rejects_a_device_that_jumps_through_itself() {
         let device = Device {
             id: "self-id".to_string(),
@@ -704,6 +782,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: Some("self-id".to_string()),
             },
             ..valid_password_device()
@@ -722,6 +801,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: Some("other-id".to_string()),
             },
             ..valid_password_device()
@@ -744,6 +824,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: None,
             }
         );
@@ -818,6 +899,56 @@ mod tests {
     }
 
     #[test]
+    fn rejects_control_characters_in_ssh_text_fields() {
+        // A newline in host/username/keyPath (reachable via JSON import, which
+        // only runs `validate()`) is rejected, so it can never be written into an
+        // exported `ssh` config as an injected directive.
+        for connection in [
+            Connection::Ssh {
+                host: "example.com\n    ProxyCommand calc".to_string(),
+                port: 22,
+                username: "admin".to_string(),
+                auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
+                proxy_jump: None,
+                forward_agent: false,
+            },
+            Connection::Ssh {
+                host: "h".to_string(),
+                port: 22,
+                username: "root\nProxyCommand x".to_string(),
+                auth: Auth::Password,
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
+                proxy_jump: None,
+                forward_agent: false,
+            },
+            Connection::Ssh {
+                host: "h".to_string(),
+                port: 22,
+                username: "admin".to_string(),
+                auth: Auth::Key {
+                    key_path: "/k\nForwardAgent yes".to_string(),
+                },
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
+                proxy_jump: None,
+                forward_agent: false,
+            },
+        ] {
+            let device = Device {
+                connection,
+                ..valid_password_device()
+            };
+            assert!(
+                matches!(device.validate().unwrap_err(), AppError::Validation(_)),
+                "a control character must fail validation"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_empty_host() {
         let device = Device {
             connection: Connection::Ssh {
@@ -827,6 +958,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -847,6 +979,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -867,6 +1000,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -887,6 +1021,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -906,6 +1041,7 @@ mod tests {
                 },
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -964,6 +1100,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards,
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: None,
             },
             ..valid_password_device()

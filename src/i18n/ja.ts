@@ -162,6 +162,15 @@ export const ja: Messages = {
 	"devices.importedSsh.other": "SSH 設定から {count} 件のデバイスをインポートしました",
 	"devices.importedSshSkipped.one": "SSH 設定から {count} 件のデバイスをインポートしました（{skipped} 件スキップ）",
 	"devices.importedSshSkipped.other": "SSH 設定から {count} 件のデバイスをインポートしました（{skipped} 件スキップ）",
+	"devices.exportSsh": "SSH 設定をエクスポート",
+	"devices.exportSsh.title": "SSH デバイスを OpenSSH 設定ファイルにエクスポート",
+	"devices.exportedSsh.one": "{count} 件のデバイスを SSH 設定にエクスポートしました",
+	"devices.exportedSsh.other": "{count} 件のデバイスを SSH 設定にエクスポートしました",
+	"devices.exportedSshSkipped.one": "{count} 件のデバイスを SSH 設定にエクスポートしました（SSH 以外 {skipped} 件スキップ）",
+	"devices.exportedSshSkipped.other": "{count} 件のデバイスを SSH 設定にエクスポートしました（SSH 以外 {skipped} 件スキップ）",
+	"devices.forwardAgent": "SSH エージェントを転送",
+	"devices.forwardAgent.hint": "リモートホスト上のプログラムがローカルの SSH 鍵を使用できるようにします（git、さらなる ssh ホップ）。鍵はサーバーにコピーされません。",
+	"devices.forwardAgent.unavailable": "ローカルの SSH エージェントが見つかりません — 転送を使うには SSH エージェントを起動してください。",
 
 	/* -- device validation -------------------------------------------------- */
 	"validation.name": "名前は必須です",

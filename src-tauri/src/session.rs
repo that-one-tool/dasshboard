@@ -39,7 +39,7 @@ use russh::{ChannelMsg, Pty};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -114,6 +114,13 @@ const LOCALE_ENV: &[(&str, &str)] = &[("LANG", "C.UTF-8"), ("LC_CTYPE", "C.UTF-8
 /// realistically happens; the bound just keeps the channel from being
 /// unbounded (a standing review concern).
 const CONTROL_CHANNEL_CAPACITY: usize = 256;
+/// Max forwarded SSH-agent channels served concurrently per session. Agent
+/// channels are short-lived (one signing exchange), so a handful is plenty; the
+/// cap stops a malicious/compromised target — which agent forwarding inherently
+/// trusts — from opening unbounded channels and exhausting tasks / agent
+/// connections / file descriptors. Beyond the cap, further agent channels are
+/// rejected until an in-flight one finishes.
+const MAX_AGENT_CHANNELS: usize = 8;
 
 /// Lifecycle status mirrored to the frontend `session_status` event
 /// (SPEC.md §5). Serializes to the exact lowercase strings in the spec.
@@ -214,6 +221,10 @@ pub struct ConnectParams {
     /// SSH keepalive resolved from user settings, applied to this connection
     /// (and, for a jumped connection, to the jump hop too).
     pub keepalive: KeepaliveConfig,
+    /// Forward the local SSH agent (`ssh -A`) to the target: accept the server's
+    /// agent-forwarding channels and relay them to this machine's agent. Applies
+    /// to the target only, never the jump hop.
+    pub forward_agent: bool,
 }
 
 /// The resolved connection parameters for a single jump hop (`ProxyJump`),
@@ -324,6 +335,14 @@ pub(crate) struct SshHandler {
     /// Keepalive applied to this connection's `client::Config` (read in
     /// `establish_over_stream` before the handler is moved into `connect_stream`).
     keepalive: KeepaliveConfig,
+    /// Accept the server's `auth-agent@openssh.com` forwarding channels and relay
+    /// them to the local SSH agent (`ssh -A`). Only the target handler sets this;
+    /// the jump-host handler never forwards the agent.
+    forward_agent: bool,
+    /// Caps concurrently-served forwarded agent channels for this session (see
+    /// `MAX_AGENT_CHANNELS`). Shared per handler; a permit is held for the life
+    /// of each proxy task.
+    agent_channel_limit: Arc<Semaphore>,
 }
 
 impl SshHandler {
@@ -331,6 +350,9 @@ impl SshHandler {
     /// tunnels, by `tunnel.rs` (which shares the same known-hosts store + prompt
     /// registry so host-key trust decisions are consistent across shells and
     /// tunnels).
+    // A plain field-by-field constructor for `SshHandler`; the parameter count
+    // simply mirrors the struct's fields, so the arg-count lint doesn't apply.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         sink: Arc<dyn SessionSink>,
         known_hosts: Arc<KnownHostsStore>,
@@ -339,6 +361,7 @@ impl SshHandler {
         port: u16,
         prompt_timeout: Duration,
         keepalive: KeepaliveConfig,
+        forward_agent: bool,
     ) -> Self {
         SshHandler {
             sink,
@@ -348,6 +371,8 @@ impl SshHandler {
             port,
             prompt_timeout,
             keepalive,
+            forward_agent,
+            agent_channel_limit: Arc::new(Semaphore::new(MAX_AGENT_CHANNELS)),
         }
     }
 
@@ -434,6 +459,46 @@ impl client::Handler for SshHandler {
         // Ok(false) makes russh abort the handshake with `Error::UnknownKey`,
         // which `establish` maps to `HostKeyRejected`.
         Ok(accepted)
+    }
+
+    /// The server opened an `auth-agent@openssh.com` channel (a program on the
+    /// remote wants to use our keys). When agent forwarding is enabled for this
+    /// session, accept it and relay it verbatim to the local SSH agent on a
+    /// detached task; otherwise reject it. russh only opens these at all when we
+    /// requested forwarding on the session channel (see `run_shell`), so the
+    /// `else` is a defensive guard.
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        // Acquire a per-session permit first: with forwarding off there are no
+        // permits to give (capacity is only meaningful when we forward), and even
+        // with it on the cap bounds concurrent agent channels. `try_acquire`
+        // never blocks the handler's event loop. The permit is moved into the
+        // proxy task and released when it ends.
+        let permit = if self.forward_agent {
+            self.agent_channel_limit.clone().try_acquire_owned().ok()
+        } else {
+            None
+        };
+        match permit {
+            Some(permit) => {
+                reply.accept().await;
+                let stream = channel.into_stream();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    crate::agent::proxy_agent_channel(stream).await;
+                });
+            }
+            None => {
+                reply
+                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -713,6 +778,7 @@ async fn run_shell(
     mut control_rx: mpsc::Receiver<SessionControl>,
     cols: u32,
     rows: u32,
+    forward_agent: bool,
 ) -> Result<(), AppError> {
     let mut channel = handle
         .channel_open_session()
@@ -723,6 +789,14 @@ async fn run_shell(
         .request_pty(false, TERM, cols, rows, 0, 0, PTY_MODES)
         .await
         .map_err(|e| AppError::SshChannel(format!("PTY request failed: {e}")))?;
+
+    // Best-effort agent-forwarding request (`auth-agent-req@openssh.com`). Sent
+    // with `want_reply = false` so a server that refuses forwarding silently
+    // ignores it rather than failing the session; the handler then relays any
+    // agent channels the server opens back to the local agent.
+    if forward_agent {
+        let _ = channel.agent_forward(false).await;
+    }
 
     // Best-effort locale hint (see `LOCALE_ENV`). `want_reply = false` so a
     // server that rejects the vars via `AcceptEnv` doesn't fail the session.
@@ -842,7 +916,15 @@ async fn run_session(
     // `_jump_keepalive` (the jump host's handle, for a jumped connection) must
     // outlive the shell: dropping it would tear down the direct-tcpip channel
     // this session rides on. Bound here, it lives until `run_shell` returns.
-    run_shell(handle, sink, control_rx, params.cols, params.rows).await
+    run_shell(
+        handle,
+        sink,
+        control_rx,
+        params.cols,
+        params.rows,
+        params.forward_agent,
+    )
+    .await
 }
 
 /// Owns all live sessions and the host-key machinery. Lives in Tauri managed
@@ -936,6 +1018,7 @@ impl SessionManager {
         port: u16,
         sink: Arc<dyn SessionSink>,
         keepalive: KeepaliveConfig,
+        forward_agent: bool,
     ) -> SshHandler {
         SshHandler {
             sink,
@@ -945,6 +1028,8 @@ impl SessionManager {
             port,
             prompt_timeout: self.prompt_timeout,
             keepalive,
+            forward_agent,
+            agent_channel_limit: Arc::new(Semaphore::new(MAX_AGENT_CHANNELS)),
         }
     }
 
@@ -971,15 +1056,18 @@ impl SessionManager {
             params.port,
             Arc::clone(&sink),
             params.keepalive,
+            params.forward_agent,
         );
         // A jumped connection needs a second handler for the jump host's own
-        // host-key TOFU prompt (keyed by the jump host's address).
+        // host-key TOFU prompt (keyed by the jump host's address). The jump host
+        // never forwards the agent — only the target session does.
         let jump_handler = params.jump.as_ref().map(|jump| {
             self.build_handler(
                 jump.host.clone(),
                 jump.port,
                 Arc::clone(&sink),
                 params.keepalive,
+                false,
             )
         });
         let manager = Arc::clone(self);
@@ -1070,7 +1158,8 @@ impl SessionManager {
         creds: AuthCredentials,
         sink: Arc<dyn SessionSink>,
     ) -> Result<(), AppError> {
-        let handler = self.build_handler(host.clone(), port, sink, KeepaliveConfig::disabled());
+        let handler =
+            self.build_handler(host.clone(), port, sink, KeepaliveConfig::disabled(), false);
         let handle = establish_with_deadline(
             &host,
             port,

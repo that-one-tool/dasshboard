@@ -115,6 +115,7 @@ describe("saveDevice tri-state secret payload", () => {
 		forwards: [],
 		tunnelAutoStart: false,
 		proxyJump: null,
+		forwardAgent: false,
 		autoReconnect: false,
 		tags: [],
 	};

@@ -162,6 +162,15 @@ export const zh: Messages = {
 	"devices.importedSsh.other": "已从 SSH 配置导入 {count} 个设备",
 	"devices.importedSshSkipped.one": "已从 SSH 配置导入 {count} 个设备（跳过 {skipped} 个）",
 	"devices.importedSshSkipped.other": "已从 SSH 配置导入 {count} 个设备（跳过 {skipped} 个）",
+	"devices.exportSsh": "导出 SSH 配置",
+	"devices.exportSsh.title": "将 SSH 设备导出为 OpenSSH 配置文件",
+	"devices.exportedSsh.one": "已将 {count} 个设备导出到 SSH 配置",
+	"devices.exportedSsh.other": "已将 {count} 个设备导出到 SSH 配置",
+	"devices.exportedSshSkipped.one": "已将 {count} 个设备导出到 SSH 配置（跳过 {skipped} 个非 SSH 设备）",
+	"devices.exportedSshSkipped.other": "已将 {count} 个设备导出到 SSH 配置（跳过 {skipped} 个非 SSH 设备）",
+	"devices.forwardAgent": "转发 SSH 代理",
+	"devices.forwardAgent.hint": "允许远程主机上的程序使用你本地的 SSH 密钥（git、进一步的 ssh 跳转）；不会向服务器复制任何密钥。",
+	"devices.forwardAgent.unavailable": "未检测到本地 SSH 代理 — 请启动 SSH 代理以使用转发。",
 
 	/* -- device validation -------------------------------------------------- */
 	"validation.name": "名称为必填项",

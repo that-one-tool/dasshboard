@@ -162,6 +162,15 @@ export const de: Messages = {
 	"devices.importedSsh.other": "{count} Geräte aus SSH-Konfiguration importiert",
 	"devices.importedSshSkipped.one": "{count} Gerät aus SSH-Konfiguration importiert ({skipped} übersprungen)",
 	"devices.importedSshSkipped.other": "{count} Geräte aus SSH-Konfiguration importiert ({skipped} übersprungen)",
+	"devices.exportSsh": "SSH-Konfiguration exportieren",
+	"devices.exportSsh.title": "SSH-Geräte in eine OpenSSH-Konfigurationsdatei exportieren",
+	"devices.exportedSsh.one": "{count} Gerät in die SSH-Konfiguration exportiert",
+	"devices.exportedSsh.other": "{count} Geräte in die SSH-Konfiguration exportiert",
+	"devices.exportedSshSkipped.one": "{count} Gerät in die SSH-Konfiguration exportiert ({skipped} Nicht-SSH übersprungen)",
+	"devices.exportedSshSkipped.other": "{count} Geräte in die SSH-Konfiguration exportiert ({skipped} Nicht-SSH übersprungen)",
+	"devices.forwardAgent": "SSH-Agent weiterleiten",
+	"devices.forwardAgent.hint": "Erlaubt Programmen auf dem entfernten Host, Ihre lokalen SSH-Schlüssel zu nutzen (git, weitere ssh-Sprünge); kein Schlüssel wird auf den Server kopiert.",
+	"devices.forwardAgent.unavailable": "Kein lokaler SSH-Agent erkannt – starten Sie Ihren SSH-Agent, um die Weiterleitung zu nutzen.",
 
 	/* -- device validation -------------------------------------------------- */
 	"validation.name": "Name ist erforderlich",

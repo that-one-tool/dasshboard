@@ -26,11 +26,14 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
       startup directory (blank = home). No host/auth and **no** secret.
     - **Tags & search** — tag devices and filter the address book by name, host or
       tag to find a device fast in a long list.
-    - **Import from `~/.ssh/config`** — pull your existing OpenSSH hosts straight
+    - **Import / export `~/.ssh/config`** — pull your existing OpenSSH hosts straight
       into the address book (`Host`/`HostName`/`Port`/`User`/`IdentityFile`; a host
-      with an identity file becomes key auth, others password auth). Best-effort:
-      wildcard/`Match`-only blocks and duplicates are skipped, so a re-import never
-      creates duplicates and never fails on a messy entry.
+      with an identity file becomes key auth, others password auth), and write your
+      saved SSH devices back out as an OpenSSH config file (`ProxyJump` and
+      `ForwardAgent` included). Best-effort: on import, wildcard/`Match`-only blocks
+      and duplicates are skipped, so a re-import never creates duplicates and never
+      fails on a messy entry; on export, non-SSH devices are skipped and no secret
+      is ever written (a password lives only in the keychain).
     - **Export / import devices & profiles** — back up or migrate your address book
       and layout profiles to another machine via JSON files (secrets stay in the OS
       keychain and are never exported).
@@ -38,6 +41,12 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   point a device at another saved SSH device as its jump host and shell sessions
   connect through the bastion first. (Wired for shell sessions; tunnels and SFTP
   through a jump host are not supported yet.)
+- **SSH agent forwarding (`ssh -A`)** — opt in per SSH device to let programs on
+  the remote host use your local SSH keys (e.g. `git push`, a further `ssh` hop)
+  without ever copying a key to the server. The app relays the remote's agent
+  requests to your local agent (Unix `$SSH_AUTH_SOCK`; on Windows the OpenSSH
+  agent named pipe or `$SSH_AUTH_SOCK`) — no key material passes through the app,
+  and forwarding simply no-ops if no local agent is running.
 - **Live multi-pane grid** — 1×1 up to 3×2 preset layouts, draggable splitters,
   click-to-focus panes, each an independent SSH shell, serial terminal or local
   shell.
@@ -163,7 +172,8 @@ devices have no secret**, so nothing is ever written to the keychain for them.
 - `src-tauri/src/` — backend (Rust): stores (`store`, `profile_store`,
   `settings`, `known_hosts`), `session` (SSH shells via `russh`), `tunnel` (local
   port forwarding, reusing `session`'s connect/host-key path), `sftp` (SFTP
-  browse/transfer over `russh-sftp`, reusing the same connect path), `ssh_config`
-  (import devices from `~/.ssh/config`), `serial` (serial/COM via `tokio-serial`),
-  `local_shell` (local PTY shells via `portable-pty`), `commands`, `secret`
-  (keyring).
+  browse/transfer over `russh-sftp`, reusing the same connect path), `agent`
+  (SSH agent forwarding — relays the remote's agent channels to the local agent),
+  `ssh_config` (import/export devices ↔ `~/.ssh/config`), `serial` (serial/COM via
+  `tokio-serial`), `local_shell` (local PTY shells via `portable-pty`), `commands`,
+  `secret` (keyring).

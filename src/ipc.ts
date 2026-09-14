@@ -83,6 +83,13 @@ export interface SshDevice extends DeviceCommon {
    * always emits the field (as `null` when absent), so it is always present.
    */
   proxyJump: string | null;
+  /**
+   * Forward the local SSH agent (`ssh -A`): let programs on the remote host use
+   * this machine's SSH keys (e.g. `git push`, a further `ssh` hop) without
+   * copying any key to the server. Off by default; the backend always emits the
+   * field, so it is always present.
+   */
+  forwardAgent: boolean;
 }
 
 /**
@@ -631,6 +638,31 @@ export async function importSshConfig(
   path: string,
 ): Promise<SshImportSummary> {
   return invokeMutation<SshImportSummary>("import_ssh_config", { path });
+}
+
+/** Result of an SSH-config export: how many SSH devices were written vs. how
+ * many non-SSH devices (serial / local shell) were skipped. */
+export interface SshExportSummary {
+  exported: number;
+  skipped: number;
+}
+
+/**
+ * Exports every SSH device to an OpenSSH client config at `path` (the reverse of
+ * `importSshConfig`). Non-SSH devices are skipped. Never writes secret material.
+ * `path` comes from the native save dialog (`pickSshConfigSavePath`). Returns
+ * the exported/skipped counts. Not a config-store write, so no echo suppression.
+ */
+export async function exportSshConfig(
+  path: string,
+): Promise<SshExportSummary> {
+  return invokeChecked<SshExportSummary>("export_ssh_config", { path });
+}
+
+/** Whether a local SSH agent looks reachable, for the device editor's
+ * agent-forwarding hint. Best-effort — the toggle stays usable regardless. */
+export async function sshAgentAvailable(): Promise<boolean> {
+  return invokeChecked<boolean>("ssh_agent_available");
 }
 
 /* ============================================================================

@@ -462,6 +462,7 @@ pub async fn connect(
                     rows,
                     jump,
                     keepalive: keepalive_config(&state),
+                    forward_agent: device.forward_agent_enabled(),
                 },
                 sink,
             );
@@ -1110,6 +1111,28 @@ pub fn import_ssh_config(
     crate::ssh_config::import_ssh_config_impl(&state, Path::new(&path))
 }
 
+/// Export every SSH device to an OpenSSH client config at `path` (the reverse of
+/// `import_ssh_config`). Non-SSH devices (serial / local shell) are skipped.
+/// Returns the exported/skipped counts. Never writes secret material — a
+/// password lives only in the keyring, so an exported host with password auth
+/// simply carries no credential line.
+#[tauri::command]
+pub fn export_ssh_config(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<crate::ssh_config::SshExportSummary, AppError> {
+    crate::ssh_config::export_ssh_config_impl(&state, Path::new(&path))
+}
+
+/// Whether a local SSH agent looks reachable, for the device editor's
+/// agent-forwarding hint. Best-effort: the toggle stays usable either way, since
+/// forwarding simply no-ops per channel if the agent is unavailable at connect
+/// time.
+#[tauri::command]
+pub fn ssh_agent_available() -> bool {
+    crate::agent::agent_available()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1178,6 +1201,7 @@ mod tests {
                 auth: Auth::Password,
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
+                forward_agent: false,
                 proxy_jump: None,
             },
             auto_reconnect: false,

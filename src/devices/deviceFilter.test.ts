@@ -19,6 +19,7 @@ function ssh(name: string, host: string, tags: string[] = []): Device {
     forwards: [],
     tunnelAutoStart: false,
     proxyJump: null,
+    forwardAgent: false,
     autoReconnect: false,
     tags,
   };

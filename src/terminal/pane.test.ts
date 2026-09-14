@@ -30,6 +30,7 @@ const h = vi.hoisted(() => {
     forwards: [],
     tunnelAutoStart: false,
     proxyJump: null,
+    forwardAgent: false,
     autoReconnect: false,
     tags: [],
   };
@@ -83,6 +84,7 @@ describe("device dropdown label + tooltip", () => {
     forwards: [],
     tunnelAutoStart: false,
     proxyJump: null,
+    forwardAgent: false,
     autoReconnect: false,
     tags: [],
   };

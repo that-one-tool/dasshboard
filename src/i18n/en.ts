@@ -168,6 +168,15 @@ export const en = {
 	"devices.importedSsh.other": "Imported {count} devices from SSH config",
 	"devices.importedSshSkipped.one": "Imported {count} device from SSH config ({skipped} skipped)",
 	"devices.importedSshSkipped.other": "Imported {count} devices from SSH config ({skipped} skipped)",
+	"devices.exportSsh": "Export SSH config",
+	"devices.exportSsh.title": "Export SSH devices to an OpenSSH config file",
+	"devices.exportedSsh.one": "Exported {count} device to SSH config",
+	"devices.exportedSsh.other": "Exported {count} devices to SSH config",
+	"devices.exportedSshSkipped.one": "Exported {count} device to SSH config ({skipped} non-SSH skipped)",
+	"devices.exportedSshSkipped.other": "Exported {count} devices to SSH config ({skipped} non-SSH skipped)",
+	"devices.forwardAgent": "Forward SSH agent",
+	"devices.forwardAgent.hint": "Lets programs on the remote host use your local SSH keys (git, further ssh hops); no key is copied to the server.",
+	"devices.forwardAgent.unavailable": "No local SSH agent detected — start your SSH agent to use forwarding.",
 
 	/* -- device validation (devices/validation.ts, forwardValidation.ts) ---- */
 	"validation.name": "Name is required",

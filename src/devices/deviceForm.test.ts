@@ -109,6 +109,19 @@ describe("readFormValues", () => {
     expect(readFormValues(root, "dev-1", []).proxyJump).toBe("bastion-id");
   });
 
+  it("reads forwardAgent from the checkbox", () => {
+    q<HTMLInputElement>("#device-name").value = "NAS";
+    q<HTMLInputElement>("#device-host").value = "10.0.0.1";
+    q<HTMLInputElement>("#device-port").value = "22";
+    q<HTMLInputElement>("#device-username").value = "root";
+
+    // Default (unchecked) ⇒ false.
+    expect(readFormValues(root, "dev-1", []).forwardAgent).toBe(false);
+
+    q<HTMLInputElement>("#device-forward-agent").checked = true;
+    expect(readFormValues(root, "dev-1", []).forwardAgent).toBe(true);
+  });
+
   it("uses an empty id/secret when the form is absent", () => {
     const empty = document.createElement("div");
     expect(readFormValues(empty, "ignored", [])).toEqual({ id: "", secret: "" });
@@ -128,6 +141,7 @@ describe("populateForm", () => {
       forwards: [],
       tunnelAutoStart: true,
       proxyJump: null,
+      forwardAgent: true,
       autoReconnect: true,
       tags: ["web", "prod"],
     };
@@ -141,6 +155,7 @@ describe("populateForm", () => {
       q<HTMLInputElement>('input[name="auth-method"][value="key"]').checked,
     ).toBe(true);
     expect(q<HTMLInputElement>("#device-tunnel-autostart").checked).toBe(true);
+    expect(q<HTMLInputElement>("#device-forward-agent").checked).toBe(true);
     expect(q<HTMLInputElement>("#device-auto-reconnect").checked).toBe(true);
     expect(q<HTMLInputElement>("#device-tags").value).toBe("web, prod");
     expect(
