@@ -148,6 +148,10 @@ export function deviceManagerMarkup(): string {
                   <input type="radio" name="auth-method" value="key" />
                   ${t("devices.auth.key")}
                 </label>
+                <label>
+                  <input type="radio" name="auth-method" value="agent" />
+                  ${t("devices.auth.agent")}
+                </label>
               </div>
             </fieldset>
 
@@ -172,6 +176,24 @@ export function deviceManagerMarkup(): string {
               <div class="form-group">
                 <label for="device-passphrase">${t("devices.field.passphrase")}</label>
                 <input id="device-passphrase" type="password" placeholder="" />
+                <span class="error-text"></span>
+              </div>
+            </div>
+
+            <div id="auth-agent" class="auth-method-section auth-method-hidden">
+              <div class="form-group">
+                <label for="device-agent-identity">${t("devices.field.agentIdentity")}</label>
+                <div class="agent-identity-row">
+                  <select id="device-agent-identity"></select>
+                  <button
+                    type="button"
+                    id="device-agent-refresh"
+                    class="btn btn-small"
+                  >
+                    ${t("devices.agent.refresh")}
+                  </button>
+                </div>
+                <span id="device-agent-status" class="form-hint"></span>
                 <span class="error-text"></span>
               </div>
             </div>

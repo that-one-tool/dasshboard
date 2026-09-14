@@ -14,7 +14,7 @@ import type { GridModel } from "./gridModel";
  * Device types (SPEC section 4)
  * ============================================================================ */
 
-export type AuthMethod = "password" | "key";
+export type AuthMethod = "password" | "key" | "agent";
 
 export interface AuthPassword {
   method: "password";
@@ -25,7 +25,26 @@ export interface AuthKey {
   keyPath: string;
 }
 
-export type Auth = AuthPassword | AuthKey;
+/** Authenticate via the local SSH agent (which may be backed by a hardware
+ * token). `fingerprint` is the SHA256 fingerprint (`SHA256:…`) of the chosen
+ * agent identity; no secret is stored for this method. */
+export interface AuthAgent {
+  method: "agent";
+  fingerprint: string;
+}
+
+export type Auth = AuthPassword | AuthKey | AuthAgent;
+
+/** One public key held by the local SSH agent, as returned by
+ * {@link listAgentIdentities}. Public data only — never key material. */
+export interface AgentIdentityInfo {
+  algorithm: string;
+  fingerprint: string;
+  isSecurityKey: boolean;
+  isCertificate: boolean;
+  comment: string;
+  openssh: string;
+}
 
 /** Connection kind discriminator (mirrors the Rust `kind` tag; the local shell
  * kind is `"localShell"`, the camelCase of the Rust `LocalShell` variant). */
@@ -663,6 +682,13 @@ export async function exportSshConfig(
  * agent-forwarding hint. Best-effort — the toggle stays usable regardless. */
 export async function sshAgentAvailable(): Promise<boolean> {
   return invokeChecked<boolean>("ssh_agent_available");
+}
+
+/** List the identities held by the local SSH agent, for the device editor's
+ * agent-auth picker. Rejects if no agent is reachable; resolves to `[]` when the
+ * agent is running but holds no keys. */
+export async function listAgentIdentities(): Promise<AgentIdentityInfo[]> {
+  return invokeChecked<AgentIdentityInfo[]>("list_agent_identities");
 }
 
 /* ============================================================================

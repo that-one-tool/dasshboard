@@ -10,7 +10,7 @@
  */
 
 import { t } from "../i18n";
-import type { Auth, Device, DeviceKind, FlowControl, Forward, Parity } from "../ipc";
+import type { AgentIdentityInfo, Auth, Device, DeviceKind, FlowControl, Forward, Parity } from "../ipc";
 import { requireEl } from "../ui/dom";
 import { parseTags } from "./deviceFilter";
 import type { DeviceFormValues } from "./validation";
@@ -31,20 +31,48 @@ export function updateKindDisplay(root: ParentNode): void {
 		?.classList.toggle("device-kind-hidden", kind !== "localShell");
 }
 
-/** Show the password or key auth section, per the checked auth-method radio. */
+/** Show the auth section (password / key / agent) matching the checked radio,
+ * hiding the others. */
 export function updateAuthMethodDisplay(root: ParentNode): void {
 	const method = requireEl<HTMLInputElement>(root, 'input[name="auth-method"]:checked').value;
-
-	const passwordSection = root.querySelector("#auth-password");
-	const keySection = root.querySelector("#auth-key");
-
-	if (method === "password") {
-		passwordSection?.classList.remove("auth-method-hidden");
-		keySection?.classList.add("auth-method-hidden");
-	} else {
-		passwordSection?.classList.add("auth-method-hidden");
-		keySection?.classList.remove("auth-method-hidden");
+	const sections: Record<string, string> = {
+		password: "#auth-password",
+		key: "#auth-key",
+		agent: "#auth-agent",
+	};
+	for (const [sectionMethod, selector] of Object.entries(sections)) {
+		root.querySelector(selector)?.classList.toggle("auth-method-hidden", sectionMethod !== method);
 	}
+}
+
+/** Populate the agent-identity `<select>` from a live agent listing, preserving
+ * the currently-selected fingerprint (e.g. a saved device's). A previously
+ * selected fingerprint the agent no longer lists is kept as a marked option so
+ * the saved value is not silently lost. */
+export function populateAgentIdentities(
+	root: ParentNode,
+	identities: AgentIdentityInfo[],
+	selectedFingerprint?: string,
+): void {
+	const select = root.querySelector<HTMLSelectElement>("#device-agent-identity");
+	if (!select) return;
+	const previous = selectedFingerprint ?? select.value;
+	select.innerHTML = "";
+	for (const id of identities) {
+		const option = document.createElement("option");
+		option.value = id.fingerprint;
+		const label = [id.comment || id.algorithm, id.fingerprint].filter(Boolean).join(" — ");
+		option.textContent = id.isSecurityKey ? `🔑 ${label}` : label;
+		select.appendChild(option);
+	}
+	if (previous && !Array.from(select.options).some((o) => o.value === previous)) {
+		// Keep the saved fingerprint selectable even if the agent no longer holds it.
+		const option = document.createElement("option");
+		option.value = previous;
+		option.textContent = `${previous} ${t("devices.agent.notPresent")}`;
+		select.appendChild(option);
+	}
+	if (previous) select.value = previous;
 }
 
 /** Blanks both secret inputs so no password/passphrase lingers in the DOM. */
@@ -132,11 +160,16 @@ function populateSshFields(
 
 	if (device.auth.method === "password") {
 		requireEl<HTMLInputElement>(root, 'input[name="auth-method"][value="password"]').checked = true;
-	} else {
+	} else if (device.auth.method === "key") {
 		requireEl<HTMLInputElement>(root, 'input[name="auth-method"][value="key"]').checked = true;
 		// `device.auth` is already narrowed to the `key` variant here, so
 		// `keyPath` is directly accessible — no cast needed.
 		setInputValue("#device-key-path", device.auth.keyPath);
+	} else {
+		requireEl<HTMLInputElement>(root, 'input[name="auth-method"][value="agent"]').checked = true;
+		// Seed the picker with the saved fingerprint so it round-trips even before
+		// a live agent refresh (which the controller triggers on demand).
+		populateAgentIdentities(root, [], device.auth.fingerprint);
 	}
 
 	// The jump-host <select>'s options are populated by the controller from the
@@ -231,13 +264,17 @@ function readLocalShellValues(form: ParentNode): DeviceFormValues {
 /** Read the SSH-only inputs into a form-values fragment. */
 function readSshValues(form: ParentNode, forwards: Forward[]): DeviceFormValues {
 	const authMethod = requireEl<HTMLInputElement>(form, 'input[name="auth-method"]:checked').value;
-	const auth: Auth =
-		authMethod === "password"
-			? { method: "password" }
-			: {
-					method: "key",
-					keyPath: requireEl<HTMLInputElement>(form, "#device-key-path").value,
-				};
+	let auth: Auth;
+	if (authMethod === "key") {
+		auth = { method: "key", keyPath: requireEl<HTMLInputElement>(form, "#device-key-path").value };
+	} else if (authMethod === "agent") {
+		auth = {
+			method: "agent",
+			fingerprint: requireEl<HTMLSelectElement>(form, "#device-agent-identity").value,
+		};
+	} else {
+		auth = { method: "password" };
+	}
 
 	// Empty jump-host selection ("None") maps to null (a direct connection).
 	const proxyJumpValue = requireEl<HTMLSelectElement>(form, "#device-proxy-jump").value;

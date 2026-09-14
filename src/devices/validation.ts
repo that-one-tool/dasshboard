@@ -106,6 +106,17 @@ function validateSsh(device: DeviceFormValues, errors: ValidationError[]): void 
       });
     }
   }
+  if (device.auth && device.auth.method === "agent") {
+    // Agent auth needs a selected identity (its SHA256 fingerprint). The field
+    // name matches the picker's `#device-agent-identity` so the error renders
+    // inline beneath it.
+    if (!device.auth.fingerprint || device.auth.fingerprint.trim() === "") {
+      errors.push({
+        field: "agentIdentity",
+        message: t("validation.agentIdentity"),
+      });
+    }
+  }
 }
 
 /** Serial field rules: non-empty portName and a positive integer baudRate. */

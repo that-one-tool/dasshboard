@@ -12,10 +12,12 @@ import { deviceManagerMarkup } from "./deviceDialogTemplate";
 import {
   buildDeviceFromForm,
   clearSecretFields,
+  populateAgentIdentities,
   populateForm,
   readFormValues,
   selectedKind,
   setSecretPlaceholder,
+  updateAuthMethodDisplay,
   updateKindDisplay,
 } from "./deviceForm";
 
@@ -65,6 +67,29 @@ describe("readFormValues", () => {
       method: "key",
       keyPath: "C:/keys/id_ed25519",
     });
+  });
+
+  it("reads the selected fingerprint when agent auth is chosen", () => {
+    q<HTMLInputElement>('input[name="auth-method"][value="agent"]').checked = true;
+    // A live refresh would fill these; simulate a selection.
+    populateAgentIdentities(
+      root,
+      [
+        {
+          algorithm: "ssh-ed25519",
+          fingerprint: "SHA256:aaa",
+          isSecurityKey: false,
+          isCertificate: false,
+          comment: "yubikey",
+          openssh: "ssh-ed25519 AAAA yubikey",
+        },
+      ],
+      "SHA256:aaa",
+    );
+
+    const values = readFormValues(root, "", []);
+
+    expect(values.auth).toEqual({ method: "agent", fingerprint: "SHA256:aaa" });
   });
 
   it("reads serial inputs when the kind is serial", () => {
@@ -163,6 +188,35 @@ describe("populateForm", () => {
     ).toBe(true);
   });
 
+  it("selects agent auth and seeds the picker with the saved fingerprint", () => {
+    const device: Device = {
+      id: "dev-agent",
+      name: "Token",
+      kind: "ssh",
+      host: "h",
+      port: 22,
+      username: "u",
+      auth: { method: "agent", fingerprint: "SHA256:zzz" },
+      forwards: [],
+      tunnelAutoStart: false,
+      proxyJump: null,
+      forwardAgent: false,
+      autoReconnect: false,
+      tags: [],
+    };
+
+    populateForm(root, device);
+
+    expect(
+      q<HTMLInputElement>('input[name="auth-method"][value="agent"]').checked,
+    ).toBe(true);
+    const select = q<HTMLSelectElement>("#device-agent-identity");
+    expect(select.value).toBe("SHA256:zzz");
+    // The agent section is shown, password/key hidden.
+    expect(q("#auth-agent").classList.contains("auth-method-hidden")).toBe(false);
+    expect(q("#auth-password").classList.contains("auth-method-hidden")).toBe(true);
+  });
+
   it("adds a custom baud option for a non-preset rate", () => {
     const device: Device = {
       id: "dev-2",
@@ -214,6 +268,38 @@ describe("field-group and secret helpers", () => {
     expect(
       q("#local-shell-fields").classList.contains("device-kind-hidden"),
     ).toBe(false);
+  });
+
+  it("updateAuthMethodDisplay shows only the checked method's section", () => {
+    q<HTMLInputElement>('input[name="auth-method"][value="agent"]').checked = true;
+    updateAuthMethodDisplay(root);
+    expect(q("#auth-agent").classList.contains("auth-method-hidden")).toBe(false);
+    expect(q("#auth-key").classList.contains("auth-method-hidden")).toBe(true);
+    expect(q("#auth-password").classList.contains("auth-method-hidden")).toBe(true);
+  });
+
+  it("populateAgentIdentities keeps a saved fingerprint the agent no longer lists", () => {
+    populateAgentIdentities(
+      root,
+      [
+        {
+          algorithm: "ssh-ed25519",
+          fingerprint: "SHA256:live",
+          isSecurityKey: true,
+          isCertificate: false,
+          comment: "",
+          openssh: "ssh-ed25519 AAAA",
+        },
+      ],
+      "SHA256:gone",
+    );
+    const select = q<HTMLSelectElement>("#device-agent-identity");
+    // Both the live key and the (marked) saved-but-absent fingerprint are options,
+    // and the saved one stays selected so saving doesn't silently change it.
+    const values = Array.from(select.options).map((o) => o.value);
+    expect(values).toContain("SHA256:live");
+    expect(values).toContain("SHA256:gone");
+    expect(select.value).toBe("SHA256:gone");
   });
 
   it("setSecretPlaceholder(true) marks the fields 'unchanged'; clearSecretFields blanks them", () => {

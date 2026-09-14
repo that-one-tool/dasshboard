@@ -166,6 +166,14 @@ pub enum AuthCredentials {
         path: String,
         passphrase: Option<String>,
     },
+    /// Authenticate via the local SSH agent, using the identity whose SHA256
+    /// fingerprint matches `fingerprint`. The agent (which may be backed by a
+    /// hardware token) holds the private key and performs the signing; no key
+    /// material ever enters this process. The fingerprint is a public identifier,
+    /// not a secret.
+    Agent {
+        fingerprint: String,
+    },
 }
 
 /// Hand-rolled `Debug` that redacts the password/passphrase. The derived impl
@@ -181,6 +189,12 @@ impl std::fmt::Debug for AuthCredentials {
                 .debug_struct("Key")
                 .field("path", path)
                 .field("passphrase", &"<redacted>")
+                .finish(),
+            // `fingerprint` is a public identifier (no secret), so it is safe to
+            // print — but keep the shape consistent with the redacting variants.
+            AuthCredentials::Agent { fingerprint } => f
+                .debug_struct("Agent")
+                .field("fingerprint", fingerprint)
                 .finish(),
         }
     }
@@ -603,6 +617,34 @@ where
                 .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
                 .await
                 .map_err(|e| AppError::SshAuth(format!("publickey authentication error: {e}")))?
+        }
+        AuthCredentials::Agent { fingerprint } => {
+            // Connect to the local agent, find the user-selected identity by its
+            // (public) fingerprint, and delegate signing to the agent. The agent
+            // — possibly a hardware token — owns the key; we only relay the
+            // challenge/response, so no key material passes through this process.
+            // A hostile/spoofed agent cannot succeed here: it would have to
+            // produce a signature the server accepts without the private key.
+            let mut agent = crate::agent_ident::connect_agent_for_auth().await?;
+            let public = crate::agent_ident::find_public_key(&agent.identities, fingerprint)
+                .ok_or_else(|| {
+                    AppError::SshAuth(
+                        "the SSH agent does not hold the selected identity — is the token \
+                         plugged in and unlocked?"
+                            .to_string(),
+                    )
+                })?;
+            // RSA agent keys need an explicit signature-hash negotiation; other
+            // key types (ed25519, ecdsa, sk-*) ignore it.
+            let hash = if public.algorithm().is_rsa() {
+                handle.best_supported_rsa_hash().await.ok().flatten().flatten()
+            } else {
+                None
+            };
+            handle
+                .authenticate_publickey_with(username, public, hash, &mut agent.client)
+                .await
+                .map_err(|e| AppError::SshAuth(format!("agent authentication error: {e}")))?
         }
     };
 

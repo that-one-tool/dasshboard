@@ -349,6 +349,14 @@ fn credentials_from(auth: &Auth, stored: Option<String>) -> Result<AuthCredentia
                 passphrase: stored,
             })
         }
+        Auth::Agent { fingerprint } => {
+            // Agent auth stores no keyring secret — the agent holds the key — so
+            // `stored` is ignored. Only the (public) fingerprint identifies which
+            // agent identity to use.
+            Ok(AuthCredentials::Agent {
+                fingerprint: fingerprint.clone(),
+            })
+        }
     }
 }
 
@@ -1133,6 +1141,16 @@ pub fn ssh_agent_available() -> bool {
     crate::agent::agent_available()
 }
 
+/// List the public keys held by the local SSH agent (spike prototype for
+/// hardware-token auth). Returns algorithm + SHA256 fingerprint per key; an
+/// empty list means the agent is running but holds no keys. Never exposes key
+/// material.
+#[tauri::command]
+pub async fn list_agent_identities(
+) -> Result<Vec<crate::agent_ident::AgentIdentityInfo>, AppError> {
+    crate::agent_ident::list_agent_identities().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1571,6 +1589,26 @@ mod tests {
                 assert_eq!(passphrase, Some("phrase".to_string()));
             }
             other => panic!("expected key credentials, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_credentials_agent_carries_fingerprint_and_ignores_secret() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        let mut device = sample_device();
+        set_ssh_auth(
+            &mut device,
+            Auth::Agent {
+                fingerprint: "SHA256:abc".to_string(),
+            },
+        );
+        // Even if a stale secret were somehow stored, agent auth ignores it.
+        let saved = save_device_impl(&state, device, Some("ignored".to_string())).unwrap();
+
+        match resolve_credentials(&state, &saved).await.unwrap() {
+            AuthCredentials::Agent { fingerprint } => assert_eq!(fingerprint, "SHA256:abc"),
+            other => panic!("expected agent credentials, got {other:?}"),
         }
     }
 

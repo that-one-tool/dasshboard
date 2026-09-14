@@ -294,17 +294,26 @@ pub enum Auth {
     Key {
         key_path: String,
     },
+    /// Authenticate through the local SSH agent using the identity whose SHA256
+    /// fingerprint is `fingerprint` (e.g. `SHA256:…`). The agent — which may be
+    /// a hardware token — holds the private key; no secret is stored in the
+    /// keyring for this method.
+    #[serde(rename_all = "camelCase")]
+    Agent {
+        fingerprint: String,
+    },
 }
 
 impl Auth {
-    /// The wire-level `method` discriminant (`"password"` / `"key"`). Used by
-    /// `save_device` to detect an auth-method change so a now-meaningless
+    /// The wire-level `method` discriminant (`"password"` / `"key"` / `"agent"`).
+    /// Used by `save_device` to detect an auth-method change so a now-meaningless
     /// secret (a password kept as if it were a key passphrase, or vice versa)
     /// is not left stranded in the keyring (SPEC.md §4/§5).
     pub fn method_name(&self) -> &'static str {
         match self {
             Auth::Password => "password",
             Auth::Key { .. } => "key",
+            Auth::Agent { .. } => "agent",
         }
     }
 }
@@ -433,6 +442,10 @@ fn validate_ssh(
         require_non_empty(key_path, "keyPath must not be empty for key auth")?;
         reject_control_chars(key_path, "keyPath")?;
     }
+    if let Auth::Agent { fingerprint } = auth {
+        require_non_empty(fingerprint, "fingerprint must not be empty for agent auth")?;
+        reject_control_chars(fingerprint, "fingerprint")?;
+    }
     // A device may not be its own jump host (the connect path only does a single
     // hop, so this never loops — but it is still nonsensical). A new device has
     // an empty id and its own not-yet-minted id can't be selected, so the check
@@ -557,6 +570,49 @@ mod tests {
             },
             ..valid_password_device()
         }
+    }
+
+    fn valid_agent_device() -> Device {
+        Device {
+            connection: Connection::Ssh {
+                host: "192.168.1.10".to_string(),
+                port: 22,
+                username: "admin".to_string(),
+                auth: Auth::Agent {
+                    fingerprint: "SHA256:abc123".to_string(),
+                },
+                forwards: Vec::new(),
+                tunnel_auto_start: false,
+                forward_agent: false,
+                proxy_jump: None,
+            },
+            ..valid_password_device()
+        }
+    }
+
+    #[test]
+    fn agent_auth_wire_format_round_trips_and_validates() {
+        let device = valid_agent_device();
+        let value = serde_json::to_value(&device).expect("serialize");
+        assert_eq!(
+            value["auth"],
+            serde_json::json!({ "method": "agent", "fingerprint": "SHA256:abc123" })
+        );
+        let back: Device = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(device, back);
+        assert!(device.validate().is_ok());
+        assert_eq!(device.secret_method(), "agent");
+    }
+
+    #[test]
+    fn agent_auth_requires_a_fingerprint() {
+        let mut device = valid_agent_device();
+        if let Connection::Ssh { auth, .. } = &mut device.connection {
+            *auth = Auth::Agent {
+                fingerprint: String::new(),
+            };
+        }
+        assert!(matches!(device.validate(), Err(AppError::Validation(_))));
     }
 
     fn sample_forward(name: &str, local_port: u16) -> Forward {

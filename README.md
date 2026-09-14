@@ -15,8 +15,11 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
 ## Features
 
 - **Device address book** — add/edit/delete devices of three kinds:
-    - **SSH** — host, port, username, password **or** key-file auth with optional
-      passphrase. Secrets are stored in the OS keychain, never in a config file.
+    - **SSH** — host, port, username, and one of three auth methods: password,
+      key-file (with optional passphrase), or **SSH agent** (authenticate with a
+      key held by your local agent — including a hardware token). Password/key
+      secrets are stored in the OS keychain, never in a config file; agent auth
+      stores no secret at all (the agent holds the key).
     - **Serial / COM port** — a local serial device (e.g. `COM3` on Windows,
       `/dev/ttyUSB0` on Linux) by port name + baud rate, with optional framing
       params (data bits, parity, stop bits, flow control; defaults to 8-N-1, no
@@ -41,6 +44,17 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   point a device at another saved SSH device as its jump host and shell sessions
   connect through the bastion first. (Wired for shell sessions; tunnels and SFTP
   through a jump host are not supported yet.)
+- **SSH agent authentication (hardware tokens)** — authenticate a device with a
+  key held by your local SSH agent instead of a key file. In the device editor,
+  pick **SSH agent**, hit **Refresh** to list the agent's identities (algorithm +
+  SHA256 fingerprint), and select one; the device stores only that fingerprint.
+  All signing happens in the agent, so a hardware-backed key (FIDO2/`sk-*`,
+  PIV/PKCS#11) works wherever your agent supports it — no key material ever
+  enters the app. Agents are reached over their named pipe on Windows (the
+  OpenSSH agent, a user-set `$SSH_AUTH_SOCK`, or a running Pageant) and
+  `$SSH_AUTH_SOCK` on Unix. The security guarantee is that auth is fail-safe: a
+  fake or foreign agent cannot forge a signature the server accepts, so it can
+  never log you in — see the security notes.
 - **SSH agent forwarding (`ssh -A`)** — opt in per SSH device to let programs on
   the remote host use your local SSH keys (e.g. `git push`, a further `ssh` hop)
   without ever copying a key to the server. The app relays the remote's agent
@@ -160,6 +174,12 @@ devices have no secret**, so nothing is ever written to the keychain for them.
   a device — the backend never sends secret material back to the frontend.
 - Host keys are trusted on first use; a **changed** key raises a loud warning and
   requires an explicit accept before connecting.
+- SSH agent auth never handles key material: the agent signs, the app only relays
+  the challenge/response, and a device stores just the chosen key's fingerprint.
+  This is fail-safe against a hostile or spoofed local agent — it cannot produce a
+  signature the server accepts without the private key, so it can never log you in
+  as you; the worst a local pipe-squatter could do is cause a failed attempt or
+  show a misleading label in the identity picker.
 - The Tauri Content-Security-Policy is kept strict; no remote content is loaded.
 
 ## Project layout
@@ -174,6 +194,7 @@ devices have no secret**, so nothing is ever written to the keychain for them.
   port forwarding, reusing `session`'s connect/host-key path), `sftp` (SFTP
   browse/transfer over `russh-sftp`, reusing the same connect path), `agent`
   (SSH agent forwarding — relays the remote's agent channels to the local agent),
+  `agent_ident` (agent identity enumeration + agent-backed auth),
   `ssh_config` (import/export devices ↔ `~/.ssh/config`), `serial` (serial/COM via
   `tokio-serial`), `local_shell` (local PTY shells via `portable-pty`), `commands`,
   `secret` (keyring).

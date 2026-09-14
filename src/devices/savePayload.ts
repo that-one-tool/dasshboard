@@ -11,7 +11,7 @@
  * (distinguished from leaving the field alone).
  */
 
-import type { DeviceKind } from "../ipc";
+import type { AuthMethod, DeviceKind } from "../ipc";
 
 /**
  * Decides whether to include a secret in a save payload.
@@ -20,19 +20,30 @@ import type { DeviceKind } from "../ipc";
  * - Serial or local-shell device: always `undefined` — these kinds have no
  *   secret (SPEC §4), so nothing is ever written to the keyring for them,
  *   regardless of the field.
+ * - SSH device using **agent** auth: always `undefined` — the agent holds the
+ *   key, so no secret is stored. This matters because switching the auth-method
+ *   radio only *hides* the password field (its value lingers); without this a
+ *   password typed before switching to agent would be written to the keyring.
  * - Empty secret field: return `undefined` (don't set a secret / leave keyring alone)
  * - Non-empty secret: return the secret value
  *
  * @param secretValue - the current value of the secret input field
  * @param kind - the device kind being saved (defaults to `"ssh"`)
+ * @param authMethod - the selected SSH auth method (agent stores no secret)
  * @returns the secret to include in the payload, or `undefined` to omit the field
  */
 export function decideSecretToSend(
   secretValue: string,
   kind: DeviceKind = "ssh",
+  authMethod?: AuthMethod,
 ): string | undefined {
   // Only SSH devices store a secret — never send one for the other kinds.
   if (kind !== "ssh") {
+    return undefined;
+  }
+
+  // Agent auth stores no secret (the agent holds the key).
+  if (authMethod === "agent") {
     return undefined;
   }
 

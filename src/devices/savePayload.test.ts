@@ -12,6 +12,17 @@ describe("decideSecretToSend", () => {
     expect(result).toBe("my-password");
   });
 
+  it("never sends a secret for agent auth, even if the password field lingers", () => {
+    // The auth-method radio only hides the password field, so a value typed
+    // before switching to agent must not be written to the keyring.
+    expect(decideSecretToSend("leftover-password", "ssh", "agent")).toBeUndefined();
+  });
+
+  it("still sends a secret for password/key auth", () => {
+    expect(decideSecretToSend("pw", "ssh", "password")).toBe("pw");
+    expect(decideSecretToSend("phrase", "ssh", "key")).toBe("phrase");
+  });
+
   describe("special characters and edge cases", () => {
     it("preserves whitespace in secret", () => {
       const result = decideSecretToSend("pass word with spaces");

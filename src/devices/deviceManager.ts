@@ -16,6 +16,7 @@ import {
   importSshConfig,
   exportSshConfig,
   sshAgentAvailable,
+  listAgentIdentities,
 } from "../ipc";
 import { validateDevice } from "./validation";
 import { filterDevices, groupDevicesByFirstTag, type DeviceGroup } from "./deviceFilter";
@@ -27,6 +28,7 @@ import {
   buildDeviceFromForm,
   clearSecretFields,
   displayFieldErrors,
+  populateAgentIdentities,
   populateForm,
   readFormValues,
   setSecretPlaceholder,
@@ -186,6 +188,11 @@ export class DeviceManagerImpl {
         updateAuthMethodDisplay(this.container),
       );
     });
+
+    // Agent-identity picker: refresh the list from the live SSH agent.
+    this.container
+      .querySelector("#device-agent-refresh")
+      ?.addEventListener("click", () => void this.handleAgentRefresh());
 
     // Form submission
     const form = this.container.querySelector<HTMLFormElement>("#device-form");
@@ -356,9 +363,10 @@ export class DeviceManagerImpl {
 
     try {
       const kind = values.kind ?? "ssh";
-      // A serial save never carries a secret (SPEC §4); `decideSecretToSend`
-      // enforces that regardless of the (hidden) secret field's contents.
-      const secretToSend = decideSecretToSend(values.secret ?? "", kind);
+      // Serial/local-shell saves and agent-auth SSH devices never carry a secret
+      // (SPEC §4); `decideSecretToSend` enforces that regardless of the (hidden)
+      // secret field's contents.
+      const secretToSend = decideSecretToSend(values.secret ?? "", kind, values.auth?.method);
 
       const device = buildDeviceFromForm(values);
       await saveDevice(device, secretToSend);
@@ -399,6 +407,37 @@ export class DeviceManagerImpl {
         btn.disabled = false;
         btn.textContent = original;
       }
+    }
+  }
+
+  /**
+   * Refresh the agent-identity picker from the live SSH agent. Preserves any
+   * currently-selected fingerprint (e.g. the saved device's), and reports a
+   * short inline status (count, "none", or the agent error) beneath the picker.
+   */
+  private async handleAgentRefresh(): Promise<void> {
+    const btn = this.container.querySelector<HTMLButtonElement>("#device-agent-refresh");
+    const status = this.container.querySelector<HTMLElement>("#device-agent-status");
+    const selected =
+      this.container.querySelector<HTMLSelectElement>("#device-agent-identity")?.value || undefined;
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = t("devices.agent.loading");
+    try {
+      // Certificates can't be used by the agent-auth path (only bare public
+      // keys), so don't offer them as selectable identities.
+      const identities = (await listAgentIdentities()).filter((id) => !id.isCertificate);
+      populateAgentIdentities(this.container, identities, selected);
+      if (status) {
+        status.textContent =
+          identities.length === 0
+            ? t("devices.agent.empty")
+            : tp("devices.agent.count", identities.length);
+      }
+    } catch (err) {
+      // No agent reachable: keep the saved fingerprint selectable and show why.
+      if (status) status.textContent = (err as AppError).message ?? t("devices.agent.error");
+    } finally {
+      if (btn) btn.disabled = false;
     }
   }
 

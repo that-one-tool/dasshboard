@@ -31,6 +31,29 @@ describe("validateDevice", () => {
     expect(errors).toHaveLength(0);
   });
 
+  it("accepts an agent device with a fingerprint", () => {
+    const device: DeviceFormValues = {
+      name: "Token",
+      host: "192.168.1.1",
+      port: 22,
+      username: "user",
+      auth: { method: "agent", fingerprint: "SHA256:abc" },
+    };
+    expect(validateDevice(device)).toHaveLength(0);
+  });
+
+  it("rejects agent auth with no selected identity", () => {
+    const device: DeviceFormValues = {
+      name: "Token",
+      host: "192.168.1.1",
+      port: 22,
+      username: "user",
+      auth: { method: "agent", fingerprint: "" },
+    };
+    const errors = validateDevice(device);
+    expect(errors.some((e) => e.field === "agentIdentity")).toBe(true);
+  });
+
   it("rejects empty name", () => {
     const device: DeviceFormValues = {
       name: "",

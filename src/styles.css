@@ -875,6 +875,22 @@ body.grid-dragging-row * {
 	display: none;
 }
 
+/* Agent-identity picker: the <select> grows, the Refresh button hugs its label. */
+.agent-identity-row {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.agent-identity-row select {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.agent-identity-row .btn {
+	flex: 0 0 auto;
+}
+
 /* Toggles the SSH-only vs serial-only field groups in the device editor. */
 .device-kind-hidden {
 	display: none;

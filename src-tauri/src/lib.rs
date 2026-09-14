@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
+mod agent_ident;
 mod atomic_file;
 mod commands;
 mod config_watch;
@@ -189,6 +190,7 @@ pub fn run() {
             commands::import_ssh_config,
             commands::export_ssh_config,
             commands::ssh_agent_available,
+            commands::list_agent_identities,
             commands::sftp_connect,
             commands::sftp_disconnect,
             commands::sftp_list,

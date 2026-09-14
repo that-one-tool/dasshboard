@@ -21,7 +21,7 @@ use crate::error::AppError;
 /// The default Windows OpenSSH agent named pipe, used when `SSH_AUTH_SOCK` is
 /// unset (the common case — Windows OpenSSH doesn't export it).
 #[cfg(windows)]
-const WINDOWS_AGENT_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
+pub(crate) const WINDOWS_AGENT_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
 
 /// A connected byte stream to the local SSH agent. Boxed so the per-platform
 /// transport (Unix domain socket vs Windows named pipe) doesn't leak into the
