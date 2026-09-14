@@ -40,7 +40,7 @@ use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{timeout, MissedTickBehavior};
+use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -55,8 +55,42 @@ pub const DEFAULT_PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
 /// `DEFAULT_PROMPT_TIMEOUT` already cover (B3). Together they form the
 /// overall `establish` deadline — see `SessionManager::overall_establish_timeout`.
 pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
-/// Keepalive cadence — SPEC.md §6.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+/// SSH keepalive configuration for a connection, resolved from user settings
+/// (`KeepaliveSettings`) by the command layer and carried on the `SshHandler`
+/// so it reaches the `client::Config` built in `establish_over_stream` without
+/// threading an extra parameter through every establish function. russh drives
+/// the pings natively (see `client::Config::keepalive_interval`/`keepalive_max`):
+/// it sends a keepalive when the link is idle and drops the connection after
+/// `max` consecutive unanswered pings — the real dead-peer detection the old
+/// hand-rolled `send_keepalive(false)` loop lacked.
+#[derive(Debug, Clone, Copy)]
+pub struct KeepaliveConfig {
+    /// `None` disables keepalive; `Some(d)` sends a ping after `d` of idleness.
+    pub interval: Option<Duration>,
+    /// Consecutive unanswered pings tolerated before the connection is dropped.
+    pub max: usize,
+}
+
+impl KeepaliveConfig {
+    /// Build from the persisted `(interval_secs, count_max)` pair: `0` seconds
+    /// disables keepalive; `count_max` is floored at 1 (russh treats 0 oddly).
+    pub fn from_secs(interval_secs: u32, count_max: u32) -> Self {
+        KeepaliveConfig {
+            interval: (interval_secs > 0).then(|| Duration::from_secs(interval_secs as u64)),
+            max: count_max.max(1) as usize,
+        }
+    }
+
+    /// Keepalive off — used where liveness doesn't matter (e.g. the one-shot
+    /// `test_connection`).
+    pub fn disabled() -> Self {
+        KeepaliveConfig {
+            interval: None,
+            max: 3,
+        }
+    }
+}
+
 /// PTY terminal type requested from the server — SPEC.md §6.
 const TERM: &str = "xterm-256color";
 /// PTY terminal modes sent with the `pty-req`. `IUTF8` (RFC-8160, opcode 42)
@@ -177,6 +211,9 @@ pub struct ConnectParams {
     /// Optional jump host (`ProxyJump`): connect to this first, then reach
     /// `host:port` through a direct-tcpip channel over it. `None` ⇒ direct.
     pub jump: Option<JumpHop>,
+    /// SSH keepalive resolved from user settings, applied to this connection
+    /// (and, for a jumped connection, to the jump hop too).
+    pub keepalive: KeepaliveConfig,
 }
 
 /// The resolved connection parameters for a single jump hop (`ProxyJump`),
@@ -284,6 +321,9 @@ pub(crate) struct SshHandler {
     host: String,
     port: u16,
     prompt_timeout: Duration,
+    /// Keepalive applied to this connection's `client::Config` (read in
+    /// `establish_over_stream` before the handler is moved into `connect_stream`).
+    keepalive: KeepaliveConfig,
 }
 
 impl SshHandler {
@@ -298,6 +338,7 @@ impl SshHandler {
         host: String,
         port: u16,
         prompt_timeout: Duration,
+        keepalive: KeepaliveConfig,
     ) -> Self {
         SshHandler {
             sink,
@@ -306,6 +347,7 @@ impl SshHandler {
             host,
             port,
             prompt_timeout,
+            keepalive,
         }
     }
 
@@ -452,9 +494,14 @@ async fn establish_over_stream<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    // Keepalive is driven natively by russh (see `KeepaliveConfig`); no
+    // inactivity GC. Read it off the handler before it is moved into
+    // `connect_stream`.
+    let keepalive = handler.keepalive;
     let config = Arc::new(client::Config {
-        // We drive keepalive explicitly in the session loop; no inactivity GC.
         inactivity_timeout: None,
+        keepalive_interval: keepalive.interval,
+        keepalive_max: keepalive.max,
         ..Default::default()
     });
 
@@ -688,15 +735,14 @@ async fn run_shell(
         .await
         .map_err(|e| AppError::SshChannel(format!("shell request failed: {e}")))?;
 
-    let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
-    keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    keepalive.tick().await; // consume the immediate first tick
-
+    // Keepalive is handled by russh from the `client::Config` (see
+    // `KeepaliveConfig`): it pings an idle link and drops the connection after
+    // `keepalive_max` unanswered pings, which surfaces here as the channel
+    // closing — so the pump loop only needs the data and control arms.
     loop {
         let keep_running = tokio::select! {
             msg = channel.wait() => handle_channel_msg(msg, &sink),
             ctrl = control_rx.recv() => handle_control(ctrl, &mut channel).await,
-            _ = keepalive.tick() => handle_keepalive(&handle).await,
         };
         if !keep_running {
             break;
@@ -747,12 +793,6 @@ async fn handle_control(
             false
         }
     }
-}
-
-/// Send one keepalive ping. Returns whether the pump loop should keep running
-/// (a failed keepalive means the transport is gone).
-async fn handle_keepalive(handle: &client::Handle<SshHandler>) -> bool {
-    handle.send_keepalive(false).await.is_ok()
 }
 
 /// Drain control messages until a disconnect (or the manager drops the
@@ -890,7 +930,13 @@ impl SessionManager {
             .map(|h| h.control.clone())
     }
 
-    fn build_handler(&self, host: String, port: u16, sink: Arc<dyn SessionSink>) -> SshHandler {
+    fn build_handler(
+        &self,
+        host: String,
+        port: u16,
+        sink: Arc<dyn SessionSink>,
+        keepalive: KeepaliveConfig,
+    ) -> SshHandler {
         SshHandler {
             sink,
             known_hosts: Arc::clone(&self.known_hosts),
@@ -898,6 +944,7 @@ impl SessionManager {
             host,
             port,
             prompt_timeout: self.prompt_timeout,
+            keepalive,
         }
     }
 
@@ -919,13 +966,22 @@ impl SessionManager {
             },
         );
 
-        let handler = self.build_handler(params.host.clone(), params.port, Arc::clone(&sink));
+        let handler = self.build_handler(
+            params.host.clone(),
+            params.port,
+            Arc::clone(&sink),
+            params.keepalive,
+        );
         // A jumped connection needs a second handler for the jump host's own
         // host-key TOFU prompt (keyed by the jump host's address).
-        let jump_handler = params
-            .jump
-            .as_ref()
-            .map(|jump| self.build_handler(jump.host.clone(), jump.port, Arc::clone(&sink)));
+        let jump_handler = params.jump.as_ref().map(|jump| {
+            self.build_handler(
+                jump.host.clone(),
+                jump.port,
+                Arc::clone(&sink),
+                params.keepalive,
+            )
+        });
         let manager = Arc::clone(self);
         let connect_timeout = self.connect_timeout;
         let overall_timeout = self.overall_establish_timeout();
@@ -1014,7 +1070,7 @@ impl SessionManager {
         creds: AuthCredentials,
         sink: Arc<dyn SessionSink>,
     ) -> Result<(), AppError> {
-        let handler = self.build_handler(host.clone(), port, sink);
+        let handler = self.build_handler(host.clone(), port, sink, KeepaliveConfig::disabled());
         let handle = establish_with_deadline(
             &host,
             port,

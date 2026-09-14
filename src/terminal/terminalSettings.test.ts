@@ -23,6 +23,7 @@ describe("DEFAULT_TERMINAL_SETTINGS", () => {
   it("matches the backend defaults", () => {
     expect(DEFAULT_TERMINAL_SETTINGS.fontSize).toBe(14);
     expect(DEFAULT_TERMINAL_SETTINGS.theme).toBe("dark");
+    expect(DEFAULT_TERMINAL_SETTINGS.scrollback).toBe(1000);
     expect(DEFAULT_TERMINAL_SETTINGS.fontFamily).toContain("Cascadia Mono");
   });
   it("does not store the icon font — it is injected at render time", () => {

@@ -24,7 +24,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex as TokioMutex;
 
 use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
-use dasshboard_lib::session::AuthCredentials;
+use dasshboard_lib::session::{AuthCredentials, KeepaliveConfig};
 use dasshboard_lib::sftp::{SftpManager, SftpParams, SftpSink};
 
 const TEST_USER: &str = "tester";
@@ -523,6 +523,7 @@ async fn connect(manager: &SftpManager, device_id: &str, port: u16) -> String {
                 port,
                 username: TEST_USER.to_string(),
                 creds: AuthCredentials::Password(TEST_PASSWORD.to_string()),
+                keepalive: KeepaliveConfig::disabled(),
             },
             Arc::new(NoopSftpSink),
         )

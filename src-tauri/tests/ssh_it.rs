@@ -31,8 +31,8 @@ use dasshboard_lib::device::Forward;
 use dasshboard_lib::error::AppError;
 use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
 use dasshboard_lib::session::{
-    AuthCredentials, ConnectParams, HostKeyPromptPayload, JumpHop, SessionManager, SessionSink,
-    SessionStatus,
+    AuthCredentials, ConnectParams, HostKeyPromptPayload, JumpHop, KeepaliveConfig, SessionManager,
+    SessionSink, SessionStatus,
 };
 use dasshboard_lib::tunnel::{
     ForwardStatus, TunnelManager, TunnelParams, TunnelSink, TunnelStatus,
@@ -328,6 +328,7 @@ fn spawn_pw_session(
             cols: 80,
             rows: 24,
             jump: None,
+            keepalive: KeepaliveConfig::disabled(),
         },
         sink,
     );
@@ -563,6 +564,7 @@ async fn connects_to_target_through_a_jump_host() {
                 username: TEST_USER.to_string(),
                 creds: password_creds(),
             }),
+            keepalive: KeepaliveConfig::disabled(),
         },
         sink,
     );
@@ -638,6 +640,7 @@ async fn jump_host_auth_failure_is_attributed_to_the_jump_host() {
                 username: TEST_USER.to_string(),
                 creds: AuthCredentials::Password("wrong-jump-password".to_string()),
             }),
+            keepalive: KeepaliveConfig::disabled(),
         },
         sink,
     );
@@ -1238,6 +1241,7 @@ async fn tunnel_forwards_bytes_and_cleans_up() {
             username: TEST_USER.to_string(),
             creds: password_creds(),
             forwards: vec![forward],
+            keepalive: KeepaliveConfig::disabled(),
         },
         sink,
     );
@@ -1325,6 +1329,7 @@ async fn tunnel_bind_failure_errors_and_cleans_up() {
             username: TEST_USER.to_string(),
             creds: password_creds(),
             forwards: vec![forward],
+            keepalive: KeepaliveConfig::disabled(),
         },
         sink,
     );

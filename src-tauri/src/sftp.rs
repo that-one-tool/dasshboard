@@ -43,9 +43,9 @@ const TRANSFER_CHUNK: usize = 32 * 1024;
 use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
 use crate::session::{
-    establish_with_deadline, AuthCredentials, HostKeyPromptPayload, PromptRegistry, SessionSink,
-    SessionStatus, SshHandler, DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT,
-    DEFAULT_PROMPT_TIMEOUT,
+    establish_with_deadline, AuthCredentials, HostKeyPromptPayload, KeepaliveConfig,
+    PromptRegistry, SessionSink, SessionStatus, SshHandler, DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
 };
 
 /// One directory entry returned to the frontend for the file browser. Non-secret
@@ -78,6 +78,8 @@ pub struct SftpParams {
     pub port: u16,
     pub username: String,
     pub creds: AuthCredentials,
+    /// SSH keepalive resolved from user settings, applied to the SFTP connection.
+    pub keepalive: KeepaliveConfig,
 }
 
 /// Sink for the one thing the SFTP handshake surfaces to the frontend: a
@@ -250,6 +252,7 @@ impl SftpManager {
             params.host.clone(),
             params.port,
             self.prompt_timeout,
+            params.keepalive,
         );
 
         let handle = establish_with_deadline(

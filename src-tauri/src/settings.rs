@@ -26,6 +26,25 @@ const DEFAULT_FONT_SIZE: u32 = 14;
 // what font the user has saved or later picks.
 const DEFAULT_FONT_FAMILY: &str = "\"Cascadia Mono\", Consolas, monospace";
 
+/// Scrollback is clamped to this range on save so a hand-edited/stale value can't
+/// make a terminal drop all history (below 0) or exhaust memory (absurdly high).
+/// `0` is a valid setting (no scrollback); the default matches xterm.js's own.
+const MIN_SCROLLBACK: u32 = 0;
+const MAX_SCROLLBACK: u32 = 100_000;
+const DEFAULT_SCROLLBACK: u32 = 1000;
+
+/// SSH keepalive is clamped on save. Interval is seconds between pings; `0`
+/// disables keepalive entirely. Count-max is the number of consecutive
+/// unanswered pings tolerated before the connection is declared dead (russh
+/// drops it, which then feeds auto-reconnect). Defaults preserve the historic
+/// hard-coded 30 s cadence.
+const MIN_KEEPALIVE_INTERVAL: u32 = 0;
+const MAX_KEEPALIVE_INTERVAL: u32 = 3600;
+const DEFAULT_KEEPALIVE_INTERVAL: u32 = 30;
+const MIN_KEEPALIVE_COUNT_MAX: u32 = 1;
+const MAX_KEEPALIVE_COUNT_MAX: u32 = 10;
+const DEFAULT_KEEPALIVE_COUNT_MAX: u32 = 3;
+
 /// Which built-in xterm theme to apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -42,6 +61,35 @@ pub struct TerminalSettings {
     pub font_size: u32,
     pub font_family: String,
     pub theme: TerminalTheme,
+    /// Lines of scrollback xterm.js retains above the viewport. `#[serde(default)]`
+    /// so a `settings.json` written before this field existed still loads.
+    #[serde(default = "default_scrollback")]
+    pub scrollback: u32,
+}
+
+fn default_scrollback() -> u32 {
+    DEFAULT_SCROLLBACK
+}
+
+/// SSH keepalive settings, applied when a shell session or tunnel connects
+/// (SPEC.md §6). App-wide, not per-device. Serial and local-shell sessions
+/// ignore these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepaliveSettings {
+    /// Seconds between keepalive pings; `0` disables keepalive.
+    pub interval_secs: u32,
+    /// Consecutive unanswered pings before the connection is dropped.
+    pub count_max: u32,
+}
+
+impl Default for KeepaliveSettings {
+    fn default() -> Self {
+        KeepaliveSettings {
+            interval_secs: DEFAULT_KEEPALIVE_INTERVAL,
+            count_max: DEFAULT_KEEPALIVE_COUNT_MAX,
+        }
+    }
 }
 
 impl Default for TerminalSettings {
@@ -50,6 +98,7 @@ impl Default for TerminalSettings {
             font_size: DEFAULT_FONT_SIZE,
             font_family: DEFAULT_FONT_FAMILY.to_string(),
             theme: TerminalTheme::default(),
+            scrollback: DEFAULT_SCROLLBACK,
         }
     }
 }
@@ -75,6 +124,10 @@ pub struct Settings {
     /// doesn't recognize.
     #[serde(default)]
     pub language: Option<String>,
+    /// SSH keepalive cadence + dead-peer threshold. `#[serde(default)]` so a
+    /// `settings.json` written before this group existed still loads.
+    #[serde(default)]
+    pub keepalive: KeepaliveSettings,
 }
 
 fn default_version() -> u32 {
@@ -88,6 +141,7 @@ impl Default for Settings {
             terminal: TerminalSettings::default(),
             last_profile_id: None,
             language: None,
+            keepalive: KeepaliveSettings::default(),
         }
     }
 }
@@ -99,9 +153,21 @@ impl Settings {
     fn sanitized(mut self) -> Self {
         self.version = CURRENT_VERSION;
         self.terminal.font_size = self.terminal.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+        self.terminal.scrollback = self
+            .terminal
+            .scrollback
+            .clamp(MIN_SCROLLBACK, MAX_SCROLLBACK);
         if self.terminal.font_family.trim().is_empty() {
             self.terminal.font_family = DEFAULT_FONT_FAMILY.to_string();
         }
+        self.keepalive.interval_secs = self
+            .keepalive
+            .interval_secs
+            .clamp(MIN_KEEPALIVE_INTERVAL, MAX_KEEPALIVE_INTERVAL);
+        self.keepalive.count_max = self
+            .keepalive
+            .count_max
+            .clamp(MIN_KEEPALIVE_COUNT_MAX, MAX_KEEPALIVE_COUNT_MAX);
         self
     }
 }
@@ -314,11 +380,92 @@ mod tests {
     }
 
     #[test]
+    fn save_clamps_scrollback_and_defaults_when_field_absent() {
+        let dir = tempdir().unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        // Default is applied when nothing is set.
+        assert_eq!(store.get().terminal.scrollback, DEFAULT_SCROLLBACK);
+
+        // Clamp an absurdly high value down to the cap.
+        let mut s = store.get();
+        s.terminal.scrollback = 10_000_000;
+        let saved = store.save(s).unwrap();
+        assert_eq!(saved.terminal.scrollback, MAX_SCROLLBACK);
+
+        // 0 (no scrollback) is valid and preserved.
+        let mut s2 = store.get();
+        s2.terminal.scrollback = 0;
+        let saved2 = store.save(s2).unwrap();
+        assert_eq!(saved2.terminal.scrollback, 0);
+    }
+
+    #[test]
+    fn deserializes_older_file_missing_scrollback_field() {
+        // A settings.json written before `scrollback` existed must still load,
+        // defaulting to DEFAULT_SCROLLBACK.
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(SETTINGS_FILE),
+            r#"{ "version": 1, "terminal": { "fontSize": 14, "fontFamily": "Consolas", "theme": "dark" } }"#,
+        )
+        .unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        assert_eq!(store.get().terminal.scrollback, DEFAULT_SCROLLBACK);
+    }
+
+    #[test]
+    fn save_clamps_keepalive_and_defaults_when_group_absent() {
+        let dir = tempdir().unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        // Defaults applied when nothing is set.
+        assert_eq!(
+            store.get().keepalive.interval_secs,
+            DEFAULT_KEEPALIVE_INTERVAL
+        );
+        assert_eq!(store.get().keepalive.count_max, DEFAULT_KEEPALIVE_COUNT_MAX);
+
+        // Interval clamps to the cap; 0 (disabled) is valid and preserved.
+        let mut s = store.get();
+        s.keepalive.interval_secs = 999_999;
+        s.keepalive.count_max = 0; // below min → clamps up to 1
+        let saved = store.save(s).unwrap();
+        assert_eq!(saved.keepalive.interval_secs, MAX_KEEPALIVE_INTERVAL);
+        assert_eq!(saved.keepalive.count_max, MIN_KEEPALIVE_COUNT_MAX);
+
+        let mut s2 = store.get();
+        s2.keepalive.interval_secs = 0;
+        s2.keepalive.count_max = 100; // above max → clamps down
+        let saved2 = store.save(s2).unwrap();
+        assert_eq!(saved2.keepalive.interval_secs, 0);
+        assert_eq!(saved2.keepalive.count_max, MAX_KEEPALIVE_COUNT_MAX);
+    }
+
+    #[test]
+    fn deserializes_older_file_missing_keepalive_group() {
+        // A settings.json written before `keepalive` existed must still load,
+        // defaulting the whole group.
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(SETTINGS_FILE),
+            r#"{ "version": 1, "terminal": { "fontSize": 14, "fontFamily": "Consolas", "theme": "dark" } }"#,
+        )
+        .unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        assert_eq!(store.get().keepalive, KeepaliveSettings::default());
+    }
+
+    #[test]
     fn wire_format_is_camel_case() {
         let s = Settings::default();
         let value = serde_json::to_value(&s).unwrap();
         assert_eq!(value["terminal"]["fontSize"], DEFAULT_FONT_SIZE);
+        assert_eq!(value["terminal"]["scrollback"], DEFAULT_SCROLLBACK);
         assert_eq!(value["terminal"]["theme"], "dark");
+        assert_eq!(
+            value["keepalive"]["intervalSecs"],
+            DEFAULT_KEEPALIVE_INTERVAL
+        );
+        assert_eq!(value["keepalive"]["countMax"], DEFAULT_KEEPALIVE_COUNT_MAX);
         assert!(value.get("lastProfileId").is_some()); // present as null
         assert!(value.get("language").is_some()); // present as null
         assert!(value["language"].is_null());

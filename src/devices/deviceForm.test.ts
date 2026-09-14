@@ -178,6 +178,8 @@ describe("field-group and secret helpers", () => {
     expect(selectedKind(root)).toBe("ssh");
     q<HTMLSelectElement>("#device-kind").value = "serial";
     expect(selectedKind(root)).toBe("serial");
+    q<HTMLSelectElement>("#device-kind").value = "localShell";
+    expect(selectedKind(root)).toBe("localShell");
   });
 
   it("updateKindDisplay toggles the SSH/serial groups", () => {
@@ -187,6 +189,16 @@ describe("field-group and secret helpers", () => {
     expect(q("#serial-fields").classList.contains("device-kind-hidden")).toBe(
       false,
     );
+  });
+
+  it("updateKindDisplay shows only the local-shell group for a local shell", () => {
+    q<HTMLSelectElement>("#device-kind").value = "localShell";
+    updateKindDisplay(root);
+    expect(q("#ssh-fields").classList.contains("device-kind-hidden")).toBe(true);
+    expect(q("#serial-fields").classList.contains("device-kind-hidden")).toBe(true);
+    expect(
+      q("#local-shell-fields").classList.contains("device-kind-hidden"),
+    ).toBe(false);
   });
 
   it("setSecretPlaceholder(true) marks the fields 'unchanged'; clearSecretFields blanks them", () => {
@@ -236,5 +248,31 @@ describe("buildDeviceFromForm", () => {
       stopBits: 1,
       flowControl: "none",
     });
+  });
+
+  it("maps local shell values (explicit shell + cwd)", () => {
+    const device = buildDeviceFromForm({
+      id: "dev-3",
+      kind: "localShell",
+      name: "PowerShell",
+      shell: "pwsh.exe",
+      cwd: "C:/work",
+      autoReconnect: false,
+    });
+    expect(device).toMatchObject({
+      kind: "localShell",
+      shell: "pwsh.exe",
+      cwd: "C:/work",
+    });
+  });
+
+  it("defaults local shell shell/cwd to null when omitted", () => {
+    const device = buildDeviceFromForm({
+      id: "dev-4",
+      kind: "localShell",
+      name: "Default shell",
+      autoReconnect: false,
+    });
+    expect(device).toMatchObject({ kind: "localShell", shell: null, cwd: null });
   });
 });

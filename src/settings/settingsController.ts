@@ -23,11 +23,18 @@ export interface SettingsControllerOptions {
   onError: (message: string) => void;
 }
 
+/** Matches the backend `KeepaliveSettings` defaults (SPEC §6). */
+export const DEFAULT_KEEPALIVE_SETTINGS = {
+  intervalSecs: 30,
+  countMax: 3,
+} as const;
+
 const FALLBACK_SETTINGS: Settings = {
   version: 1,
   terminal: DEFAULT_TERMINAL_SETTINGS,
   lastProfileId: null,
   language: null,
+  keepalive: { ...DEFAULT_KEEPALIVE_SETTINGS },
 };
 
 export class SettingsController {
@@ -165,11 +172,26 @@ export class SettingsController {
           <input type="text" class="settings-font-family" />
         </label>
         <label class="form-field">
+          <span>${t("settings.scrollback")}</span>
+          <input type="number" class="settings-scrollback" min="0" max="100000" step="100" />
+          <small class="form-hint">${t("settings.scrollback.hint")}</small>
+        </label>
+        <label class="form-field">
           <span>${t("settings.theme")}</span>
           <select class="settings-theme">
             <option value="dark">${t("settings.theme.dark")}</option>
             <option value="light">${t("settings.theme.light")}</option>
           </select>
+        </label>
+        <label class="form-field">
+          <span>${t("settings.keepalive.interval")}</span>
+          <input type="number" class="settings-keepalive-interval" min="0" max="3600" step="5" />
+          <small class="form-hint">${t("settings.keepalive.interval.hint")}</small>
+        </label>
+        <label class="form-field">
+          <span>${t("settings.keepalive.countMax")}</span>
+          <input type="number" class="settings-keepalive-count" min="1" max="10" step="1" />
+          <small class="form-hint">${t("settings.keepalive.countMax.hint")}</small>
         </label>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" data-action="close">${t("common.close")}</button>
@@ -179,13 +201,21 @@ export class SettingsController {
     const language = root.querySelector<HTMLSelectElement>(".settings-language");
     const fontSize = root.querySelector<HTMLInputElement>(".settings-font-size");
     const fontFamily = root.querySelector<HTMLInputElement>(".settings-font-family");
+    const scrollback = root.querySelector<HTMLInputElement>(".settings-scrollback");
     const theme = root.querySelector<HTMLSelectElement>(".settings-theme");
+    const keepaliveInterval = root.querySelector<HTMLInputElement>(
+      ".settings-keepalive-interval",
+    );
+    const keepaliveCount = root.querySelector<HTMLInputElement>(".settings-keepalive-count");
     // Reflect the *stored* language (null/unsupported ⇒ "System default"), not
     // the resolved one, so the picker shows what the user chose.
     if (language) language.value = this.settings.language ?? "";
     if (fontSize) fontSize.value = String(term.fontSize);
     if (fontFamily) fontFamily.value = term.fontFamily;
+    if (scrollback) scrollback.value = String(term.scrollback);
     if (theme) theme.value = term.theme;
+    if (keepaliveInterval) keepaliveInterval.value = String(this.settings.keepalive.intervalSecs);
+    if (keepaliveCount) keepaliveCount.value = String(this.settings.keepalive.countMax);
 
     language?.addEventListener("change", () => {
       void this.applyLanguage(language.value);
@@ -197,19 +227,48 @@ export class SettingsController {
     // current size.
     const apply = async (): Promise<void> => {
       const parsed = Number.parseInt(fontSize?.value ?? "", 10);
+      const parsedScrollback = Number.parseInt(scrollback?.value ?? "", 10);
       const next: TerminalSettings = {
         fontSize: Number.isNaN(parsed) ? this.settings.terminal.fontSize : parsed,
         fontFamily: fontFamily?.value ?? this.settings.terminal.fontFamily,
+        scrollback: Number.isNaN(parsedScrollback)
+          ? this.settings.terminal.scrollback
+          : parsedScrollback,
         theme: theme?.value === "light" ? "light" : "dark",
       };
       await this.applyTerminal(next);
-      // Reflect the backend-sanitized values (e.g. a clamped font size).
+      // Reflect the backend-sanitized values (e.g. a clamped font size/scrollback).
       if (fontSize) fontSize.value = String(this.settings.terminal.fontSize);
+      if (scrollback) scrollback.value = String(this.settings.terminal.scrollback);
     };
     const onApply = (): void => void apply();
     fontSize?.addEventListener("change", onApply);
     fontFamily?.addEventListener("change", onApply);
+    scrollback?.addEventListener("change", onApply);
     theme?.addEventListener("change", onApply);
+
+    // Keepalive doesn't affect live terminals (it applies to connections opened
+    // afterwards), so it only needs to be persisted. A non-numeric field keeps
+    // the current value; the backend clamps interval (0..=3600) and count (1..=10)
+    // and we reflect the clamped values back into the fields.
+    const applyKeepalive = async (): Promise<void> => {
+      const current = this.settings.keepalive;
+      const parsedInterval = Number.parseInt(keepaliveInterval?.value ?? "", 10);
+      const parsedCount = Number.parseInt(keepaliveCount?.value ?? "", 10);
+      this.settings = {
+        ...this.settings,
+        keepalive: {
+          intervalSecs: Number.isNaN(parsedInterval) ? current.intervalSecs : parsedInterval,
+          countMax: Number.isNaN(parsedCount) ? current.countMax : parsedCount,
+        },
+      };
+      await this.save();
+      if (keepaliveInterval) keepaliveInterval.value = String(this.settings.keepalive.intervalSecs);
+      if (keepaliveCount) keepaliveCount.value = String(this.settings.keepalive.countMax);
+    };
+    const onApplyKeepalive = (): void => void applyKeepalive();
+    keepaliveInterval?.addEventListener("change", onApplyKeepalive);
+    keepaliveCount?.addEventListener("change", onApplyKeepalive);
 
     const previouslyFocused = document.activeElement;
     const close = (): void => {

@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crate::local_shell::LocalShellManager;
 use crate::profile_store::ProfileStore;
 use crate::secret::SecretStore;
 use crate::serial::SerialSessionManager;
@@ -38,7 +39,12 @@ pub struct AppState {
     /// decision applies to shells, tunnels and SFTP to the same host alike.
     pub sftp_manager: Arc<SftpManager>,
     /// Owns the live serial/COM sessions — the serial analogue of
-    /// `session_manager`. A session id belongs to exactly one of the two
-    /// managers; the command layer routes write/resize/disconnect by ownership.
+    /// `session_manager`. A session id belongs to exactly one of the
+    /// session managers; the command layer routes write/resize/disconnect by
+    /// ownership.
     pub serial_manager: Arc<SerialSessionManager>,
+    /// Owns the live local shell sessions (PowerShell/bash/zsh under a PTY) —
+    /// the local-terminal analogue of `session_manager`. Routed by ownership like
+    /// the serial manager.
+    pub local_shell_manager: Arc<LocalShellManager>,
 }

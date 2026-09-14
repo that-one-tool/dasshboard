@@ -324,7 +324,7 @@ export class DeviceManagerImpl {
     // the save just like a device-field error.
     const errors = validateDevice(values);
     const forwardsOk =
-      values.kind === "serial" ? true : (this.forwardsEditor?.validate() ?? true);
+      values.kind === "ssh" ? (this.forwardsEditor?.validate() ?? true) : true;
     if (errors.length > 0 || !forwardsOk) {
       displayFieldErrors(this.container, errors);
       return;

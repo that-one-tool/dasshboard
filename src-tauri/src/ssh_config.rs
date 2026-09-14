@@ -245,7 +245,8 @@ fn dedup_key(device: &Device) -> Option<(String, u16, String)> {
             username,
             ..
         } => Some((host.to_ascii_lowercase(), *port, username.clone())),
-        Connection::Serial { .. } => None,
+        // Non-SSH devices never collide with an imported SSH host.
+        _ => None,
     }
 }
 
@@ -373,6 +374,7 @@ mod tests {
             tunnel_manager,
             sftp_manager,
             serial_manager: Arc::new(SerialSessionManager::new()),
+            local_shell_manager: Arc::new(crate::local_shell::LocalShellManager::new()),
         }
     }
 

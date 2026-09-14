@@ -31,9 +31,10 @@ function fakeGrid(): { grid: Grid; applyTerminalSettings: ReturnType<typeof vi.f
 function settings(overrides: Partial<Settings> = {}): Settings {
   return {
     version: 1,
-    terminal: { fontSize: 14, fontFamily: "Consolas", theme: "dark" },
+    terminal: { fontSize: 14, fontFamily: "Consolas", theme: "dark", scrollback: 1000 },
     lastProfileId: null,
     language: null,
+    keepalive: { intervalSecs: 30, countMax: 3 },
     ...overrides,
   };
 }
@@ -52,7 +53,9 @@ describe("SettingsController.init", () => {
   it("loads persisted settings and exposes them via terminalSettings()", async () => {
     const g = fakeGrid();
     vi.mocked(getSettings).mockResolvedValue(
-      settings({ terminal: { fontSize: 20, fontFamily: "Fira Code", theme: "light" } }),
+      settings({
+        terminal: { fontSize: 20, fontFamily: "Fira Code", theme: "light", scrollback: 5000 },
+      }),
     );
 
     const controller = new SettingsController({ grid: g.grid, onError: vi.fn() });
@@ -62,6 +65,7 @@ describe("SettingsController.init", () => {
       fontSize: 20,
       fontFamily: "Fira Code",
       theme: "light",
+      scrollback: 5000,
     });
   });
 
@@ -78,6 +82,7 @@ describe("SettingsController.init", () => {
       fontSize: 14,
       fontFamily: '"Cascadia Mono", Consolas, monospace',
       theme: "dark",
+      scrollback: 1000,
     });
     expect(controller.lastProfileId()).toBeNull();
   });
@@ -149,7 +154,9 @@ describe("SettingsController live-apply round trip", () => {
   it("applies live, saves, and adopts the backend-clamped value back into the field", async () => {
     const g = fakeGrid();
     vi.mocked(getSettings).mockResolvedValue(
-      settings({ terminal: { fontSize: 14, fontFamily: "Consolas", theme: "dark" } }),
+      settings({
+        terminal: { fontSize: 14, fontFamily: "Consolas", theme: "dark", scrollback: 1000 },
+      }),
     );
     // Backend clamps an out-of-range font size to its max (40).
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => ({
@@ -184,7 +191,9 @@ describe("SettingsController live-apply round trip", () => {
   it("keeps the current font size when the field is non-numeric", async () => {
     const g = fakeGrid();
     vi.mocked(getSettings).mockResolvedValue(
-      settings({ terminal: { fontSize: 16, fontFamily: "Consolas", theme: "dark" } }),
+      settings({
+        terminal: { fontSize: 16, fontFamily: "Consolas", theme: "dark", scrollback: 1000 },
+      }),
     );
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
 

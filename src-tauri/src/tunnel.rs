@@ -45,14 +45,10 @@ use crate::device::Forward;
 use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
 use crate::session::{
-    establish_with_deadline, AuthCredentials, HostKeyPromptPayload, PromptRegistry, SessionSink,
-    SessionStatus, SshHandler, DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT,
-    DEFAULT_PROMPT_TIMEOUT,
+    establish_with_deadline, AuthCredentials, HostKeyPromptPayload, KeepaliveConfig,
+    PromptRegistry, SessionSink, SessionStatus, SshHandler, DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
 };
-
-/// Keepalive cadence for an otherwise-idle tunnel — same as a shell session, to
-/// keep NAT/firewall state alive and notice a dead transport promptly.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Control-channel bound. A tunnel's control channel only ever carries a single
 /// `Stop`; the bound just keeps it from being unbounded (a standing review
@@ -149,6 +145,9 @@ pub struct TunnelParams {
     pub creds: AuthCredentials,
     /// The forwards to bind. Non-empty (the command rejects a device with none).
     pub forwards: Vec<Forward>,
+    /// SSH keepalive resolved from user settings, applied to the tunnel's
+    /// connection (same semantics as a shell session).
+    pub keepalive: KeepaliveConfig,
 }
 
 /// Control messages sent to a tunnel task via its mpsc handle. Currently just a
@@ -277,6 +276,7 @@ impl TunnelManager {
             params.host.clone(),
             params.port,
             self.prompt_timeout,
+            params.keepalive,
         );
         let manager = Arc::clone(self);
         let connect_timeout = self.connect_timeout;
@@ -373,7 +373,7 @@ async fn run_tunnel(
 
     sink.on_status(TunnelStatus::Listening, None, statuses);
 
-    serve_until_stopped(&handle, &mut control_rx).await;
+    serve_until_stopped(&handle, &mut control_rx, params.keepalive).await;
 
     // Abort every listener (which cascades to their in-flight connection tasks),
     // then close the SSH transport cleanly.
@@ -480,19 +480,30 @@ async fn handle_connection(
     let _ = copy_bidirectional(&mut tcp, &mut stream).await;
 }
 
-/// Serve the tunnel until a stop is requested or the transport dies: drive
-/// keepalives and wait for a control message. Returns when the loop should end.
+/// Serve the tunnel until a stop is requested or the transport dies. russh
+/// drives the actual keepalive pings and dead-peer detection natively from the
+/// connection's `client::Config` (see `KeepaliveConfig`); this loop additionally
+/// probes the handle at the configured cadence so a dropped transport ends the
+/// tunnel promptly (a failed send means the connection is gone). With keepalive
+/// disabled it sends no periodic traffic and ends only on a stop / dropped handle.
 async fn serve_until_stopped(
     handle: &Arc<client::Handle<SshHandler>>,
     control_rx: &mut mpsc::Receiver<TunnelControl>,
+    keepalive: KeepaliveConfig,
 ) {
-    let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
-    keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    keepalive.tick().await; // consume the immediate first tick
+    let Some(interval) = keepalive.interval else {
+        // Any control message (currently only `Stop`) or a dropped handle ends it.
+        let _ = control_rx.recv().await;
+        return;
+    };
+
+    let mut probe = tokio::time::interval(interval);
+    probe.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    probe.tick().await; // consume the immediate first tick
 
     loop {
         let keep_running = tokio::select! {
-            _ = keepalive.tick() => handle.send_keepalive(false).await.is_ok(),
+            _ = probe.tick() => handle.send_keepalive(false).await.is_ok(),
             // Any control message (currently only `Stop`) or a dropped handle
             // (`None`) ends the tunnel.
             _ = control_rx.recv() => false,

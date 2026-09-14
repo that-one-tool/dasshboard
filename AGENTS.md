@@ -39,6 +39,10 @@ See `README.md` for features, prerequisites, and data-file layout.
   - `serial.rs` — serial/COM sessions via `tokio-serial`, reusing
     `session.rs`'s `SessionSink`/`SessionStatus`; the byte pump is
     stream-generic so it unit-tests against an in-memory pipe (no COM port)
+  - `local_shell.rs` — local PTY shells (PowerShell/bash/zsh) via `portable-pty`,
+    reusing the same `SessionSink`/`SessionStatus` seam; bridges the crate's
+    blocking reader/writer to the async sink with reader/writer threads + a
+    control task
   - `transfer.rs` — devices/profiles import-export
   - `state.rs` — `AppState` (managed Tauri state), `error.rs` — `AppError`
   - `ssh_it.rs` (test-only) — integration tests against an in-process throwaway

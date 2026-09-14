@@ -408,7 +408,11 @@ describe("TerminalPane terminal settings (Phase 5)", () => {
   const start = (pane: TerminalPane) =>
     (pane as unknown as { startSession(): Promise<void> }).startSession();
   const terminalOf = (pane: TerminalPane) =>
-    (pane as unknown as { terminal: { options: { fontSize?: number } } | null }).terminal;
+    (
+      pane as unknown as {
+        terminal: { options: { fontSize?: number; scrollback?: number } } | null;
+      }
+    ).terminal;
 
   beforeEach(() => {
     h.statusHandler = null;
@@ -417,24 +421,35 @@ describe("TerminalPane terminal settings (Phase 5)", () => {
   });
 
   it("a terminal created after a settings change uses the current settings", async () => {
-    let current: TerminalSettings = { fontSize: 14, fontFamily: "A", theme: "dark" };
+    let current: TerminalSettings = {
+      fontSize: 14,
+      fontFamily: "A",
+      theme: "dark",
+      scrollback: 1000,
+    };
     const root = q<HTMLElement>(document, "#pane-root");
     const pane = new TerminalPane(root, { getTerminalSettings: () => current });
     await pane.init();
     pane.assignDevice(h.device.id);
 
     // Settings change BEFORE this pane opens its terminal.
-    current = { fontSize: 22, fontFamily: "B", theme: "light" };
+    current = { fontSize: 22, fontFamily: "B", theme: "light", scrollback: 7000 };
     await start(pane);
     await flush();
 
     expect(terminalOf(pane)?.options.fontSize).toBe(22);
+    expect(terminalOf(pane)?.options.scrollback).toBe(7000);
   });
 
   it("applyTerminalSettings updates a live terminal", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
     const pane = new TerminalPane(root, {
-      getTerminalSettings: () => ({ fontSize: 14, fontFamily: "A", theme: "dark" }),
+      getTerminalSettings: () => ({
+        fontSize: 14,
+        fontFamily: "A",
+        theme: "dark",
+        scrollback: 1000,
+      }),
     });
     await pane.init();
     pane.assignDevice(h.device.id);
@@ -442,8 +457,14 @@ describe("TerminalPane terminal settings (Phase 5)", () => {
     await flush();
     expect(terminalOf(pane)?.options.fontSize).toBe(14);
 
-    pane.applyTerminalSettings({ fontSize: 30, fontFamily: "B", theme: "light" });
+    pane.applyTerminalSettings({
+      fontSize: 30,
+      fontFamily: "B",
+      theme: "light",
+      scrollback: 3000,
+    });
     expect(terminalOf(pane)?.options.fontSize).toBe(30);
+    expect(terminalOf(pane)?.options.scrollback).toBe(3000);
   });
 });
 

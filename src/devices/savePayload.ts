@@ -17,8 +17,9 @@ import type { DeviceKind } from "../ipc";
  * Decides whether to include a secret in a save payload.
  *
  * The behavior is the same for both new devices and editing existing devices:
- * - Serial device: always `undefined` — a serial device has no secret (SPEC §4),
- *   so nothing is ever written to the keyring for it, regardless of the field.
+ * - Serial or local-shell device: always `undefined` — these kinds have no
+ *   secret (SPEC §4), so nothing is ever written to the keyring for them,
+ *   regardless of the field.
  * - Empty secret field: return `undefined` (don't set a secret / leave keyring alone)
  * - Non-empty secret: return the secret value
  *
@@ -30,8 +31,8 @@ export function decideSecretToSend(
   secretValue: string,
   kind: DeviceKind = "ssh",
 ): string | undefined {
-  // A serial device stores no secret — never send one.
-  if (kind === "serial") {
+  // Only SSH devices store a secret — never send one for the other kinds.
+  if (kind !== "ssh") {
     return undefined;
   }
 

@@ -14,20 +14,33 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
 
 ## Features
 
-- **Device address book** — add/edit/delete devices of two kinds:
+- **Device address book** — add/edit/delete devices of three kinds:
     - **SSH** — host, port, username, password **or** key-file auth with optional
       passphrase. Secrets are stored in the OS keychain, never in a config file.
     - **Serial / COM port** — a local serial device (e.g. `COM3` on Windows,
       `/dev/ttyUSB0` on Linux) by port name + baud rate, with optional framing
       params (data bits, parity, stop bits, flow control; defaults to 8-N-1, no
       flow control). Serial devices have no host/auth and store **no** secret.
+    - **Local shell** — a local terminal (PowerShell/bash/zsh/…) run under a real
+      PTY right in the grid, with an optional shell path (blank = OS default) and
+      startup directory (blank = home). No host/auth and **no** secret.
+    - **Tags & search** — tag devices and filter the address book by name, host or
+      tag to find a device fast in a long list.
     - **Import from `~/.ssh/config`** — pull your existing OpenSSH hosts straight
       into the address book (`Host`/`HostName`/`Port`/`User`/`IdentityFile`; a host
       with an identity file becomes key auth, others password auth). Best-effort:
       wildcard/`Match`-only blocks and duplicates are skipped, so a re-import never
       creates duplicates and never fails on a messy entry.
+    - **Export / import devices & profiles** — back up or migrate your address book
+      and layout profiles to another machine via JSON files (secrets stay in the OS
+      keychain and are never exported).
+- **Jump hosts (ProxyJump / `ssh -J`)** — reach a device through a saved bastion:
+  point a device at another saved SSH device as its jump host and shell sessions
+  connect through the bastion first. (Wired for shell sessions; tunnels and SFTP
+  through a jump host are not supported yet.)
 - **Live multi-pane grid** — 1×1 up to 3×2 preset layouts, draggable splitters,
-  click-to-focus panes, each an independent SSH shell or serial terminal.
+  click-to-focus panes, each an independent SSH shell, serial terminal or local
+  shell.
 - **SSH tunnels (local port forwarding)** — give an SSH device one or more
   forwards (`ssh -L`): the app binds `127.0.0.1:<localPort>` locally and tunnels
   each connection to `remoteHost:remotePort` as reached from the SSH server, so a
@@ -47,14 +60,17 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   previously-trusted key changes (possible MITM).
 - **Auto-reconnect** (opt-in per device) — reconnects with backoff (2s/4s/8s,
   up to 5 attempts) after an unexpected drop, with a cancel control.
-- **Terminal settings** — font size/family and dark/light theme, applied live to
-  every terminal and persisted.
+- **Configurable SSH keepalive** — set the keepalive interval and the number of
+  unanswered pings tolerated before a dead connection is dropped (which then
+  feeds auto-reconnect); applies to shells, tunnels and SFTP. `0` disables it.
+- **Terminal settings** — font size/family, dark/light theme, and scrollback
+  buffer size, applied live to every terminal and persisted.
 - **Localized UI** — the interface ships in **English, French, Spanish, German,
   Portuguese, Simplified Chinese and Japanese**. Pick a language in Settings or
   let the app follow your OS locale; the choice applies live without a restart.
 - **Quality-of-life** — copy-on-select, `Ctrl+Shift+V` / right-click paste with a
   multi-line paste confirmation, full UTF-8 output with correct wide-character
-  (CJK/emoji) width via the Unicode 11 table, per-pane `host:port` tooltips,
+  (CJK/emoji) width via the Unicode 11 table, per-pane endpoint tooltips,
   window size/position remembered across restarts, a clean SSH disconnect of
   every session on app close, and broadcast input (multi-input).
 
@@ -117,15 +133,15 @@ All config is stored in the Tauri app-config directory
 
 | File               | Contents                                         |
 | ------------------ | ------------------------------------------------ |
-| `devices.json`     | Saved devices, SSH or serial (**never** secrets) |
+| `devices.json`     | Saved devices — SSH, serial or local shell (**never** secrets) |
 | `profiles.json`    | Saved layout profiles + the default-profile id   |
-| `settings.json`    | Terminal appearance + last-used grid shape       |
+| `settings.json`    | Terminal appearance (incl. scrollback), UI language, SSH keepalive, last-used profile |
 | `known_hosts.json` | Trusted host keys (TOFU)                         |
 
 **Secrets** (passwords, key passphrases) live only in the OS keychain — on
 Windows, in **Credential Manager** under the service name `DaSSHboard`, keyed by
-device id. Deleting a device removes its keychain entry. **Serial devices have
-no secret**, so nothing is ever written to the keychain for them.
+device id. Deleting a device removes its keychain entry. **Serial and local-shell
+devices have no secret**, so nothing is ever written to the keychain for them.
 
 ## Security notes
 
@@ -149,4 +165,5 @@ no secret**, so nothing is ever written to the keychain for them.
   port forwarding, reusing `session`'s connect/host-key path), `sftp` (SFTP
   browse/transfer over `russh-sftp`, reusing the same connect path), `ssh_config`
   (import devices from `~/.ssh/config`), `serial` (serial/COM via `tokio-serial`),
-  `commands`, `secret` (keyring).
+  `local_shell` (local PTY shells via `portable-pty`), `commands`, `secret`
+  (keyring).

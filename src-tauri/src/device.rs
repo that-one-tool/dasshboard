@@ -96,6 +96,19 @@ pub enum Connection {
         stop_bits: u8,
         flow_control: FlowControl,
     },
+    /// A local shell (PowerShell/bash/zsh/…) run under a PTY on this machine. No
+    /// host/username/auth and NO keyring secret (like serial). Both fields are
+    /// optional: `shell` empty/absent ⇒ the OS default shell, `cwd` empty/absent
+    /// ⇒ the user's home directory.
+    #[serde(rename_all = "camelCase")]
+    LocalShell {
+        /// Explicit shell binary, or `None`/empty for the OS default.
+        #[serde(default)]
+        shell: Option<String>,
+        /// Startup working directory, or `None`/empty for the user's home.
+        #[serde(default)]
+        cwd: Option<String>,
+    },
 }
 
 /// One local port-forward (`ssh -L`): the app binds `local_addr:local_port`
@@ -162,6 +175,7 @@ enum DeviceKind {
     #[default]
     Ssh,
     Serial,
+    LocalShell,
 }
 
 /// Flat, all-optional view of a `Connection` used only for deserialization: it
@@ -194,6 +208,10 @@ struct ConnectionRaw {
     stop_bits: u8,
     #[serde(default)]
     flow_control: FlowControl,
+    #[serde(default)]
+    shell: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 impl ConnectionRaw {
@@ -223,6 +241,15 @@ impl ConnectionRaw {
             flow_control: self.flow_control,
         })
     }
+
+    /// Build the local-shell variant. Both fields are optional, so this never
+    /// errors on a missing field.
+    fn into_local_shell(self) -> Result<Connection, &'static str> {
+        Ok(Connection::LocalShell {
+            shell: self.shell,
+            cwd: self.cwd,
+        })
+    }
 }
 
 impl<'de> Deserialize<'de> for Connection {
@@ -234,6 +261,7 @@ impl<'de> Deserialize<'de> for Connection {
         let built = match raw.kind {
             DeviceKind::Ssh => raw.into_ssh(),
             DeviceKind::Serial => raw.into_serial(),
+            DeviceKind::LocalShell => raw.into_local_shell(),
         };
         built.map_err(<D::Error as serde::de::Error>::missing_field)
     }
@@ -278,6 +306,7 @@ impl Device {
         match &self.connection {
             Connection::Ssh { auth, .. } => auth.method_name(),
             Connection::Serial { .. } => "serial",
+            Connection::LocalShell { .. } => "local",
         }
     }
 
@@ -285,6 +314,14 @@ impl Device {
     /// SSH devices may or may not have a secret; that is the keyring's concern.
     pub fn is_serial(&self) -> bool {
         matches!(self.connection, Connection::Serial { .. })
+    }
+
+    /// Whether this device kind can store a secret in the keyring: only SSH.
+    /// Serial and local-shell devices never do, so `save_device` drops any secret
+    /// passed for them. (SSH "has a secret" in the sense of a keyring slot; the
+    /// actual presence of a stored value is the keyring's concern.)
+    pub fn has_secret(&self) -> bool {
+        matches!(self.connection, Connection::Ssh { .. })
     }
 
     /// The id of this device's jump host (`ProxyJump`), if any. `None` for a
@@ -334,6 +371,9 @@ impl Device {
                 baud_rate,
                 ..
             } => validate_serial(port_name, *baud_rate),
+            // A local shell has only optional fields (shell/cwd), so a non-empty
+            // name — already checked above — is all it needs.
+            Connection::LocalShell { .. } => Ok(()),
         }
     }
 }
@@ -496,6 +536,54 @@ mod tests {
             auto_reconnect: false,
             tags: Vec::new(),
         }
+    }
+
+    fn valid_local_shell_device() -> Device {
+        Device {
+            id: "33333333-3333-4333-8333-333333333333".to_string(),
+            name: "PowerShell".to_string(),
+            connection: Connection::LocalShell {
+                shell: Some("pwsh.exe".to_string()),
+                cwd: None,
+            },
+            auto_reconnect: false,
+            tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn local_shell_record_loads_with_optional_fields_defaulting() {
+        // A minimal local-shell record (no shell/cwd) loads with both as None.
+        let minimal = r#"{ "id": "l1", "name": "Shell", "kind": "localShell" }"#;
+        let parsed: Device = serde_json::from_str(minimal).unwrap();
+        assert_eq!(
+            parsed.connection,
+            Connection::LocalShell {
+                shell: None,
+                cwd: None,
+            }
+        );
+    }
+
+    #[test]
+    fn local_shell_kind_serializes_to_camel_case_tag() {
+        let value = serde_json::to_value(valid_local_shell_device()).unwrap();
+        assert_eq!(value["kind"], "localShell");
+        assert_eq!(value["shell"], "pwsh.exe");
+        assert!(value["cwd"].is_null());
+    }
+
+    #[test]
+    fn local_shell_round_trips_and_validates_with_only_a_name() {
+        let device = valid_local_shell_device();
+        let json = serde_json::to_string(&device).unwrap();
+        let back: Device = serde_json::from_str(&json).unwrap();
+        assert_eq!(device, back);
+        assert!(device.validate().is_ok());
+        // No secret slot for a local shell, and it never counts as serial.
+        assert_eq!(device.secret_method(), "local");
+        assert!(!device.has_secret());
+        assert!(!device.is_serial());
     }
 
     #[test]

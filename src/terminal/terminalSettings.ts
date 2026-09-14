@@ -11,6 +11,7 @@ export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
   fontSize: 14,
   fontFamily: '"Cascadia Mono", Consolas, monospace',
   theme: "dark",
+  scrollback: 1000,
 };
 
 /**

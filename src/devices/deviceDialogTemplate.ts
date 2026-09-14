@@ -91,6 +91,7 @@ export function deviceManagerMarkup(): string {
               <select id="device-kind">
                 <option value="ssh" selected>${t("devices.kind.ssh")}</option>
                 <option value="serial">${t("devices.kind.serial")}</option>
+                <option value="localShell">${t("devices.kind.localShell")}</option>
               </select>
             </div>
 
@@ -251,6 +252,29 @@ export function deviceManagerMarkup(): string {
                   </select>
                 </div>
               </fieldset>
+            </div>
+
+            <div id="local-shell-fields" class="device-kind-hidden">
+              <div class="form-group">
+                <label for="device-shell">${t("devices.field.shell")}</label>
+                <input
+                  id="device-shell"
+                  type="text"
+                  placeholder="${t("devices.field.shell.placeholder")}"
+                  autocomplete="off"
+                />
+                <span class="error-text"></span>
+              </div>
+              <div class="form-group">
+                <label for="device-cwd">${t("devices.field.cwd")}</label>
+                <input
+                  id="device-cwd"
+                  type="text"
+                  placeholder="${t("devices.field.cwd.placeholder")}"
+                  autocomplete="off"
+                />
+                <span class="error-text"></span>
+              </div>
             </div>
 
             <div class="form-group form-group-checkbox">

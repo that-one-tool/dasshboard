@@ -17,14 +17,18 @@ import type { DeviceFormValues } from "./validation";
 
 /** The connection kind currently selected in the dialog. */
 export function selectedKind(root: ParentNode): DeviceKind {
-	return requireEl<HTMLInputElement>(root, "#device-kind").value === "serial" ? "serial" : "ssh";
+	const value = requireEl<HTMLInputElement>(root, "#device-kind").value;
+	return value === "serial" || value === "localShell" ? value : "ssh";
 }
 
-/** Show the SSH field group or the serial field group, per the selector. */
+/** Show the field group matching the selected kind, hiding the others. */
 export function updateKindDisplay(root: ParentNode): void {
-	const isSerial = selectedKind(root) === "serial";
-	root.querySelector("#ssh-fields")?.classList.toggle("device-kind-hidden", isSerial);
-	root.querySelector("#serial-fields")?.classList.toggle("device-kind-hidden", !isSerial);
+	const kind = selectedKind(root);
+	root.querySelector("#ssh-fields")?.classList.toggle("device-kind-hidden", kind !== "ssh");
+	root.querySelector("#serial-fields")?.classList.toggle("device-kind-hidden", kind !== "serial");
+	root
+		.querySelector("#local-shell-fields")
+		?.classList.toggle("device-kind-hidden", kind !== "localShell");
 }
 
 /** Show the password or key auth section, per the checked auth-method radio. */
@@ -102,6 +106,9 @@ export function populateForm(root: ParentNode, device: Device): void {
 
 	if (device.kind === "serial") {
 		populateSerialFields(root, device, setInputValue);
+	} else if (device.kind === "localShell") {
+		setInputValue("#device-shell", device.shell ?? "");
+		setInputValue("#device-cwd", device.cwd ?? "");
 	} else {
 		populateSshFields(root, device, setInputValue);
 	}
@@ -194,10 +201,28 @@ export function readFormValues(
 		secret: requireEl<HTMLInputElement>(form, "#device-secret").value,
 	};
 
-	if (selectedKind(form) === "serial") {
+	const kind = selectedKind(form);
+	if (kind === "serial") {
 		return { ...base, ...readSerialValues(form) };
 	}
+	if (kind === "localShell") {
+		return { ...base, ...readLocalShellValues(form) };
+	}
 	return { ...base, ...readSshValues(form, forwards) };
+}
+
+/** Read the local-shell inputs (shell + cwd) into a form-values fragment. A
+ * blank field maps to `null` (⇒ OS default shell / home dir). */
+function readLocalShellValues(form: ParentNode): DeviceFormValues {
+	const blankToNull = (v: string): string | null => {
+		const trimmed = v.trim();
+		return trimmed === "" ? null : trimmed;
+	};
+	return {
+		kind: "localShell",
+		shell: blankToNull(requireEl<HTMLInputElement>(form, "#device-shell").value),
+		cwd: blankToNull(requireEl<HTMLInputElement>(form, "#device-cwd").value),
+	};
 }
 
 /** Read the SSH-only inputs into a form-values fragment. */
@@ -261,6 +286,14 @@ export function buildDeviceFromForm(values: DeviceFormValues & { id: string }): 
 			parity: values.parity ?? "none",
 			stopBits: values.stopBits ?? 1,
 			flowControl: values.flowControl ?? "none",
+		};
+	}
+	if (values.kind === "localShell") {
+		return {
+			...common,
+			kind: "localShell",
+			shell: values.shell ?? null,
+			cwd: values.cwd ?? null,
 		};
 	}
 	return {

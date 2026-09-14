@@ -27,8 +27,9 @@ export interface AuthKey {
 
 export type Auth = AuthPassword | AuthKey;
 
-/** Connection kind discriminator (mirrors the Rust `kind` tag). */
-export type DeviceKind = "ssh" | "serial";
+/** Connection kind discriminator (mirrors the Rust `kind` tag; the local shell
+ * kind is `"localShell"`, the camelCase of the Rust `LocalShell` variant). */
+export type DeviceKind = "ssh" | "serial" | "localShell";
 
 /** Serial parity bit. */
 export type Parity = "none" | "odd" | "even";
@@ -99,12 +100,24 @@ export interface SerialDevice extends DeviceCommon {
 }
 
 /**
- * A saved device: an SSH target or a serial port, discriminated by `kind`
- * (mirrors the Rust `Device` + flattened `Connection` tagged union). A legacy
- * `devices.json` record without `kind` is read back by the backend as `"ssh"`,
- * so every device the frontend sees carries a `kind`.
+ * A local shell run under a PTY on this machine (PowerShell/bash/zsh). No
+ * host/auth and no keyring secret (like serial). Both fields are optional:
+ * `shell` `null`/empty ⇒ the OS default shell, `cwd` `null`/empty ⇒ the user's
+ * home. The backend always emits both fields (as `null` when unset).
  */
-export type Device = SshDevice | SerialDevice;
+export interface LocalShellDevice extends DeviceCommon {
+  kind: "localShell";
+  shell: string | null;
+  cwd: string | null;
+}
+
+/**
+ * A saved device: an SSH target, a serial port, or a local shell, discriminated
+ * by `kind` (mirrors the Rust `Device` + flattened `Connection` tagged union). A
+ * legacy `devices.json` record without `kind` is read back by the backend as
+ * `"ssh"`, so every device the frontend sees carries a `kind`.
+ */
+export type Device = SshDevice | SerialDevice | LocalShellDevice;
 
 /* ============================================================================
  * Error type (SPEC section 5)
@@ -521,6 +534,17 @@ export interface TerminalSettings {
   fontSize: number;
   fontFamily: string;
   theme: TerminalTheme;
+  /** Lines of scrollback xterm.js retains above the viewport (backend clamps
+   * 0..=100000). Applied live to existing terminals and to new ones. */
+  scrollback: number;
+}
+
+/** SSH keepalive settings (backend clamps interval 0..=3600, count 1..=10). */
+export interface KeepaliveSettings {
+  /** Seconds between keepalive pings; `0` disables keepalive. */
+  intervalSecs: number;
+  /** Consecutive unanswered pings before the connection is dropped. */
+  countMax: number;
 }
 
 /** The whole `settings.json` payload (SPEC §4). */
@@ -533,6 +557,9 @@ export interface Settings {
   /** UI language locale code (e.g. `"en"`, `"fr"`); `null` means "follow the
    * operating system", resolved by the frontend at startup (see `i18n`). */
   language: string | null;
+  /** SSH keepalive cadence + dead-peer threshold, applied to shell sessions and
+   * tunnels (not serial). */
+  keepalive: KeepaliveSettings;
 }
 
 /** Current app settings (SPEC §5). */

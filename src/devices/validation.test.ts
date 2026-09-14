@@ -249,6 +249,37 @@ describe("validateDevice", () => {
     });
   });
 
+  describe("local shell validation", () => {
+    it("accepts a local shell with only a name (shell/cwd optional)", () => {
+      const device: DeviceFormValues = { kind: "localShell", name: "Shell" };
+      expect(validateDevice(device)).toHaveLength(0);
+    });
+
+    it("accepts a local shell with an explicit shell and cwd", () => {
+      const device: DeviceFormValues = {
+        kind: "localShell",
+        name: "PowerShell",
+        shell: "pwsh.exe",
+        cwd: "C:/work",
+      };
+      expect(validateDevice(device)).toHaveLength(0);
+    });
+
+    it("still requires a non-empty name", () => {
+      const device: DeviceFormValues = { kind: "localShell", name: "" };
+      const errors = validateDevice(device);
+      expect(errors.some((e) => e.field === "name")).toBe(true);
+    });
+
+    it("does not require host/username/port for a local shell", () => {
+      const device: DeviceFormValues = { kind: "localShell", name: "Shell" };
+      const errors = validateDevice(device);
+      expect(errors.some((e) => e.field === "host")).toBe(false);
+      expect(errors.some((e) => e.field === "port")).toBe(false);
+      expect(errors.some((e) => e.field === "username")).toBe(false);
+    });
+  });
+
   describe("hasFieldError", () => {
     it("returns true if field has an error", () => {
       const errors = [{ field: "name", message: "Required" }];

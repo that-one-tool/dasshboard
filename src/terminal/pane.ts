@@ -371,6 +371,7 @@ export class TerminalPane {
       cursorBlink: true,
       fontFamily: withIconFont(settings.fontFamily),
       fontSize: settings.fontSize,
+      scrollback: settings.scrollback,
       theme: xtermThemeFor(settings.theme),
       // Required to access `terminal.unicode` and load the Unicode 11 addon.
       allowProposedApi: true,
@@ -731,6 +732,7 @@ export class TerminalPane {
     if (!terminal) return;
     terminal.options.fontSize = settings.fontSize;
     terminal.options.fontFamily = withIconFont(settings.fontFamily);
+    terminal.options.scrollback = settings.scrollback;
     terminal.options.theme = xtermThemeFor(settings.theme);
     this.syncSize();
   }

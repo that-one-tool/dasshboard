@@ -34,6 +34,9 @@ export interface DeviceFormValues {
   parity?: Parity;
   stopBits?: number;
   flowControl?: FlowControl;
+  // Local shell (both optional: blank ⇒ OS default shell / home dir)
+  shell?: string | null;
+  cwd?: string | null;
   autoReconnect?: boolean;
   // Free-form organizing labels (both kinds), normalized on save.
   tags?: string[];
@@ -62,6 +65,9 @@ export function validateDevice(device: DeviceFormValues): ValidationError[] {
 
   if (device.kind === "serial") {
     validateSerial(device, errors);
+  } else if (device.kind === "localShell") {
+    // A local shell has only optional fields (shell/cwd); a non-empty name —
+    // already checked above — is all it needs.
   } else {
     validateSsh(device, errors);
   }

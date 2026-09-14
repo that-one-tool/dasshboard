@@ -272,9 +272,10 @@ describe("IPC command wrapper argument shapes", () => {
 	it("getSettings forwards no arguments", async () => {
 		const settings: Settings = {
 			version: 1,
-			terminal: { fontSize: 14, fontFamily: "monospace", theme: "dark" },
+			terminal: { fontSize: 14, fontFamily: "monospace", theme: "dark", scrollback: 1000 },
 			lastProfileId: null,
 			language: null,
+			keepalive: { intervalSecs: 30, countMax: 3 },
 		};
 		invokeMock.mockResolvedValue(settings);
 		await expect(getSettings()).resolves.toEqual(settings);
@@ -284,9 +285,10 @@ describe("IPC command wrapper argument shapes", () => {
 	it("saveSettings sends { settings } and returns the backend-sanitized value", async () => {
 		const settings: Settings = {
 			version: 1,
-			terminal: { fontSize: 14, fontFamily: "monospace", theme: "dark" },
+			terminal: { fontSize: 14, fontFamily: "monospace", theme: "dark", scrollback: 1000 },
 			lastProfileId: "p1",
 			language: null,
+			keepalive: { intervalSecs: 30, countMax: 3 },
 		};
 		invokeMock.mockResolvedValue(settings);
 		await saveSettings(settings);

@@ -40,4 +40,11 @@ describe("decideSecretToSend", () => {
       expect(decideSecretToSend("my-password", "ssh")).toBe("my-password");
     });
   });
+
+  describe("local shell devices", () => {
+    it("never sends a secret for a local shell, even if one was typed", () => {
+      // A local shell has no keyring secret (SPEC §4), like serial.
+      expect(decideSecretToSend("typed-anyway", "localShell")).toBeUndefined();
+    });
+  });
 });

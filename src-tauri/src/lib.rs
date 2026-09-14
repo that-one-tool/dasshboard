@@ -4,6 +4,7 @@
 mod atomic_file;
 mod commands;
 mod config_watch;
+mod local_shell;
 mod profile;
 mod profile_store;
 mod secret;
@@ -41,6 +42,7 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use known_hosts::KnownHostsStore;
+use local_shell::LocalShellManager;
 use profile_store::ProfileStore;
 use secret::KeyringSecretStore;
 use serial::SerialSessionManager;
@@ -97,6 +99,8 @@ pub fn run() {
             ));
             // Serial/COM sessions live in their own manager, alongside the SSH one.
             let serial_manager = Arc::new(SerialSessionManager::new());
+            // Local shell sessions (PTY-backed) live in their own manager too.
+            let local_shell_manager = Arc::new(LocalShellManager::new());
             let secret_store: Arc<dyn secret::SecretStore> = Arc::new(KeyringSecretStore);
             app.manage(AppState {
                 device_store,
@@ -107,6 +111,7 @@ pub fn run() {
                 tunnel_manager,
                 sftp_manager,
                 serial_manager,
+                local_shell_manager,
             });
             // Watch the config dir so a change made by another running instance
             // (multi-instance sync) is picked up automatically: it emits a
@@ -128,10 +133,12 @@ pub fn run() {
                 let state = window.state::<AppState>();
                 let manager = Arc::clone(&state.session_manager);
                 let serial = Arc::clone(&state.serial_manager);
+                let local_shell = Arc::clone(&state.local_shell_manager);
                 let tunnels = Arc::clone(&state.tunnel_manager);
                 let sftp = Arc::clone(&state.sftp_manager);
                 if manager.session_count() == 0
                     && serial.session_count() == 0
+                    && local_shell.session_count() == 0
                     && tunnels.tunnel_count() == 0
                     && sftp.connection_count() == 0
                 {
@@ -142,6 +149,7 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     manager.disconnect_all().await;
                     serial.disconnect_all().await;
+                    local_shell.disconnect_all().await;
                     // Release every bound local listener before the window goes away.
                     tunnels.stop_all().await;
                     // Close every SFTP transport too.

@@ -19,11 +19,13 @@ use uuid::Uuid;
 use crate::device::{Auth, Connection, Device, Forward};
 use crate::error::AppError;
 use crate::known_hosts::KnownHostEntry;
+use crate::local_shell::LocalShellParams;
 use crate::profile::Profile;
 use crate::profile_store::ProfileList;
 use crate::serial::SerialParams;
 use crate::session::{
-    AuthCredentials, ConnectParams, HostKeyPromptPayload, JumpHop, SessionSink, SessionStatus,
+    AuthCredentials, ConnectParams, HostKeyPromptPayload, JumpHop, KeepaliveConfig, SessionSink,
+    SessionStatus,
 };
 use crate::settings::Settings;
 use crate::sftp::{SftpEntry, SftpParams, SftpSink};
@@ -74,11 +76,11 @@ fn save_device_impl(
     }
     device.validate()?;
 
-    // A serial device has NO secret (SPEC §4): never store one, even if the
-    // frontend erroneously supplied it. Dropping it here also means the
-    // ssh→serial edit path below sees the method change and clears any stale
-    // password/passphrase left over from when the device was SSH.
-    let secret = if device.is_serial() { None } else { secret };
+    // A serial or local-shell device has NO secret (SPEC §4): never store one,
+    // even if the frontend erroneously supplied it. Dropping it here also means
+    // the ssh→serial/local edit path below sees the method change and clears any
+    // stale password/passphrase left over from when the device was SSH.
+    let secret = if device.has_secret() { secret } else { None };
 
     // Capture the previously-stored secret "slot" (SSH auth method, or "serial")
     // if this is an edit of an existing device, before anything below changes
@@ -398,8 +400,8 @@ async fn resolve_jump_hop(state: &AppState, device: &Device) -> Result<Option<Ju
                 creds,
             }))
         }
-        Connection::Serial { .. } => Err(AppError::Validation(
-            "the configured jump host is a serial device and cannot be used as a jump host"
+        _ => Err(AppError::Validation(
+            "the configured jump host is not an SSH device and cannot be used as a jump host"
                 .to_string(),
         )),
     }
@@ -411,8 +413,8 @@ async fn resolve_jump_hop(state: &AppState, device: &Device) -> Result<Option<Ju
 fn ssh_auth_of(device: &Device) -> Result<&Auth, AppError> {
     match &device.connection {
         Connection::Ssh { auth, .. } => Ok(auth),
-        Connection::Serial { .. } => Err(AppError::Validation(
-            "serial devices have no SSH credentials".to_string(),
+        _ => Err(AppError::Validation(
+            "this device kind has no SSH credentials".to_string(),
         )),
     }
 }
@@ -459,6 +461,7 @@ pub async fn connect(
                     cols,
                     rows,
                     jump,
+                    keepalive: keepalive_config(&state),
                 },
                 sink,
             );
@@ -470,8 +473,28 @@ pub async fn connect(
                 sink,
             );
         }
+        Connection::LocalShell { shell, cwd } => {
+            state.local_shell_manager.spawn_session(
+                session_id.clone(),
+                LocalShellParams {
+                    shell: shell.clone(),
+                    cwd: cwd.clone(),
+                    cols: cols.min(u16::MAX as u32) as u16,
+                    rows: rows.min(u16::MAX as u32) as u16,
+                },
+                sink,
+            );
+        }
     }
     Ok(session_id)
+}
+
+/// Resolve the app-wide SSH keepalive settings into a [`KeepaliveConfig`] for a
+/// new connection. Read fresh from the settings store on each connect, so a
+/// changed keepalive applies to connections opened afterwards.
+fn keepalive_config(state: &AppState) -> KeepaliveConfig {
+    let k = state.settings_store.get().keepalive;
+    KeepaliveConfig::from_secs(k.interval_secs, k.count_max)
 }
 
 /// Build [`SerialParams`] from a `Connection::Serial`. A defensive `expect`
@@ -494,7 +517,7 @@ fn serial_params_of(connection: &Connection) -> SerialParams {
             stop_bits: *stop_bits,
             flow_control: *flow_control,
         },
-        Connection::Ssh { .. } => unreachable!("serial_params_of called on an SSH connection"),
+        _ => unreachable!("serial_params_of called on a non-serial connection"),
     }
 }
 
@@ -511,6 +534,10 @@ pub async fn write_stdin(
     // out before awaiting. An unknown id is a no-op in either manager.
     if state.session_manager.owns(&session_id) {
         Arc::clone(&state.session_manager)
+            .write_stdin(&session_id, bytes)
+            .await;
+    } else if state.local_shell_manager.owns(&session_id) {
+        Arc::clone(&state.local_shell_manager)
             .write_stdin(&session_id, bytes)
             .await;
     } else {
@@ -534,6 +561,11 @@ pub async fn resize_pty(
         Arc::clone(&state.session_manager)
             .resize_pty(&session_id, cols, rows)
             .await;
+    } else if state.local_shell_manager.owns(&session_id) {
+        state
+            .local_shell_manager
+            .resize_pty(&session_id, cols, rows)
+            .await;
     } else {
         state.serial_manager.resize_pty(&session_id, cols, rows);
     }
@@ -546,6 +578,10 @@ pub async fn resize_pty(
 pub async fn disconnect(state: State<'_, AppState>, session_id: String) -> Result<(), AppError> {
     if state.session_manager.owns(&session_id) {
         Arc::clone(&state.session_manager)
+            .disconnect(&session_id)
+            .await;
+    } else if state.local_shell_manager.owns(&session_id) {
+        Arc::clone(&state.local_shell_manager)
             .disconnect(&session_id)
             .await;
     } else {
@@ -624,6 +660,9 @@ pub async fn test_connection(
                 .test_connection(serial_params_of(&device.connection))
                 .await
         }
+        // A local shell has nothing to test ahead of time — it either spawns at
+        // connect time or reports an error then. Treat "test" as always OK.
+        Connection::LocalShell { .. } => Ok(()),
     }
 }
 
@@ -695,8 +734,8 @@ fn tunnel_target_of(device: &Device) -> Result<(&str, u16, &str, &[Forward]), Ap
             }
             Ok((host, *port, username, forwards))
         }
-        Connection::Serial { .. } => Err(AppError::Validation(
-            "serial devices do not support tunnels".to_string(),
+        _ => Err(AppError::Validation(
+            "only SSH devices support tunnels".to_string(),
         )),
     }
 }
@@ -741,6 +780,7 @@ pub async fn start_tunnel(
             username,
             creds,
             forwards,
+            keepalive: keepalive_config(&state),
         },
         sink,
     );
@@ -838,8 +878,8 @@ fn ssh_endpoint_of(device: &Device) -> Result<(&str, u16, &str), AppError> {
             username,
             ..
         } => Ok((host, *port, username)),
-        Connection::Serial { .. } => Err(AppError::Validation(
-            "serial devices do not support SFTP".to_string(),
+        _ => Err(AppError::Validation(
+            "only SSH devices support SFTP".to_string(),
         )),
     }
 }
@@ -877,6 +917,7 @@ pub async fn sftp_connect(
                 port,
                 username,
                 creds,
+                keepalive: keepalive_config(&state),
             },
             sink,
         )
@@ -1099,6 +1140,7 @@ mod tests {
             tunnel_manager,
             sftp_manager,
             serial_manager: Arc::new(SerialSessionManager::new()),
+            local_shell_manager: Arc::new(crate::local_shell::LocalShellManager::new()),
         }
     }
 
@@ -1121,6 +1163,7 @@ mod tests {
             tunnel_manager,
             sftp_manager,
             serial_manager: Arc::new(SerialSessionManager::new()),
+            local_shell_manager: Arc::new(crate::local_shell::LocalShellManager::new()),
         }
     }
 
