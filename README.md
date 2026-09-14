@@ -15,17 +15,17 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
 ## Features
 
 - **Device address book** — add/edit/delete devices of two kinds:
-  - **SSH** — host, port, username, password **or** key-file auth with optional
-    passphrase. Secrets are stored in the OS keychain, never in a config file.
-  - **Serial / COM port** — a local serial device (e.g. `COM3` on Windows,
-    `/dev/ttyUSB0` on Linux) by port name + baud rate, with optional framing
-    params (data bits, parity, stop bits, flow control; defaults to 8-N-1, no
-    flow control). Serial devices have no host/auth and store **no** secret.
-  - **Import from `~/.ssh/config`** — pull your existing OpenSSH hosts straight
-    into the address book (`Host`/`HostName`/`Port`/`User`/`IdentityFile`; a host
-    with an identity file becomes key auth, others password auth). Best-effort:
-    wildcard/`Match`-only blocks and duplicates are skipped, so a re-import never
-    creates duplicates and never fails on a messy entry.
+    - **SSH** — host, port, username, password **or** key-file auth with optional
+      passphrase. Secrets are stored in the OS keychain, never in a config file.
+    - **Serial / COM port** — a local serial device (e.g. `COM3` on Windows,
+      `/dev/ttyUSB0` on Linux) by port name + baud rate, with optional framing
+      params (data bits, parity, stop bits, flow control; defaults to 8-N-1, no
+      flow control). Serial devices have no host/auth and store **no** secret.
+    - **Import from `~/.ssh/config`** — pull your existing OpenSSH hosts straight
+      into the address book (`Host`/`HostName`/`Port`/`User`/`IdentityFile`; a host
+      with an identity file becomes key auth, others password auth). Best-effort:
+      wildcard/`Match`-only blocks and duplicates are skipped, so a re-import never
+      creates duplicates and never fails on a messy entry.
 - **Live multi-pane grid** — 1×1 up to 3×2 preset layouts, draggable splitters,
   click-to-focus panes, each an independent SSH shell or serial terminal.
 - **SSH tunnels (local port forwarding)** — give an SSH device one or more
@@ -55,8 +55,8 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
 - **Quality-of-life** — copy-on-select, `Ctrl+Shift+V` / right-click paste with a
   multi-line paste confirmation, full UTF-8 output with correct wide-character
   (CJK/emoji) width via the Unicode 11 table, per-pane `host:port` tooltips,
-  window size/position remembered across restarts, and a clean SSH disconnect of
-  every session on app close.
+  window size/position remembered across restarts, a clean SSH disconnect of
+  every session on app close, and broadcast input (multi-input).
 
 ## Download
 
@@ -115,12 +115,12 @@ The Rust SSH integration tests run entirely in-process against a throwaway
 All config is stored in the Tauri app-config directory
 (`%APPDATA%\com.dasshboard.app\` on Windows):
 
-| File               | Contents                                       |
-| ------------------ | ---------------------------------------------- |
+| File               | Contents                                         |
+| ------------------ | ------------------------------------------------ |
 | `devices.json`     | Saved devices, SSH or serial (**never** secrets) |
-| `profiles.json`    | Saved layout profiles + the default-profile id |
-| `settings.json`    | Terminal appearance + last-used grid shape     |
-| `known_hosts.json` | Trusted host keys (TOFU)                       |
+| `profiles.json`    | Saved layout profiles + the default-profile id   |
+| `settings.json`    | Terminal appearance + last-used grid shape       |
+| `known_hosts.json` | Trusted host keys (TOFU)                         |
 
 **Secrets** (passwords, key passphrases) live only in the OS keychain — on
 Windows, in **Credential Manager** under the service name `DaSSHboard`, keyed by

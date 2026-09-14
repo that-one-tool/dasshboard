@@ -23,53 +23,26 @@ env:
     CN_APPLICATION: "that-one-tool/dasshboard"
 
 jobs:
-    # Run the full check gate before anything else: TypeScript typecheck, the
-    # Vitest suite, cargo fmt --check, cargo test, and clippy (-D warnings).
-    # Everything downstream needs this job, so any failure blocks the release.
-    # No `if` guard here on purpose: the gate runs on every push to main, even
-    # chore:/docs: commits, so those still get tested.
+    # The full check gate (typecheck, Vitest, cargo fmt/test/clippy) plus the
+    # Conventional-Commit release decision live in the reusable
+    # ./.github/workflows/check.yml, shared with ci.yml so PR CI and this
+    # pre-release run stay identical. Runs on every push to main; its `release`
+    # output tells check-versions (and the rest of the chain) whether to cut a
+    # release.
     check:
-        runs-on: ubuntu-22.04
-        steps:
-            - uses: actions/checkout@v5
-
-            - uses: actions/setup-node@v5
-              with:
-                  node-version: "24"
-
-            - name: install Rust stable
-              uses: actions-rust-lang/setup-rust-toolchain@v1
-              with:
-                  toolchain: stable
-                  components: rustfmt, clippy
-                  cache: true
-
-            # Same Tauri Linux prerequisites the build job installs — cargo test
-            # and clippy compile the app, which links against WebKitGTK et al.
-            # (see the build job for why the dl.google.com apt source is removed).
-            - name: install Linux dependencies
-              run: |
-                  sudo grep -rlZ 'dl\.google\.com' /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -0 -r rm -f
-                  sudo apt-get update
-                  sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-
-            - name: install npm dependencies
-              run: npm ci
-
-            - name: run full check gate
-              run: npm run check
+        uses: ./.github/workflows/check.yml
 
     # CrabNebula/Tauri read the release version from src-tauri/tauri.conf.json
     # (Cargo.toml as its own fallback) — never from package.json. Fail fast if
     # the three drift apart instead of silently releasing the wrong version.
     #
-    # This is where the release chain begins, so the skip guard lives here: for a
-    # CI-only / docs-only push (head commit message starting with "chore:" or
-    # "docs:") this job — and thus every downstream release job — is skipped, so
-    # no release is cut. The `check` gate above still runs on those commits.
+    # This is where the release chain begins: it (and thus every downstream
+    # release job, which all chain off it via `needs`) runs only when the `check`
+    # job's Conventional-Commit gate decided this push is releasable. Non-release
+    # commits are still fully tested by `check`, they just don't cut a release.
     check-versions:
         needs: check
-        if: ${{ !startsWith(github.event.head_commit.message, 'chore:') && !startsWith(github.event.head_commit.message, 'docs:') }}
+        if: ${{ needs.check.outputs.release == 'true' }}
         runs-on: ubuntu-22.04
         steps:
             - uses: actions/checkout@v5
@@ -97,7 +70,7 @@ jobs:
                   command: release draft ${{ env.CN_APPLICATION }} --framework tauri
                   api-key: ${{ secrets.CN_API_KEY }}
 
-    build:
+    build-and-upload:
         needs: draft
         strategy:
             fail-fast: false
@@ -154,7 +127,7 @@ jobs:
                   api-key: ${{ secrets.CN_API_KEY }}
 
     publish:
-        needs: build
+        needs: build-and-upload
         runs-on: ubuntu-22.04
         steps:
             - uses: actions/checkout@v5

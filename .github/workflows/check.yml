@@ -1,0 +1,151 @@
+name: check
+
+# Reusable check gate: TypeScript typecheck, the Vitest suite, cargo fmt --check,
+# cargo test (with a job-summary report), and clippy (-D warnings). Mirrors
+# `npm run check` (still the local gate), split into steps so each suite reports
+# its own status and the Rust results get a summary card alongside Vitest's.
+#
+# Called by both `ci.yml` (on every pull request) and `release.yml` (on push to
+# main, where its `release` output gates the release chain). Kept in one place so
+# PR CI and the pre-release gate can never drift apart.
+
+on:
+    workflow_call:
+        outputs:
+            release:
+                description: "Whether the head commit is a releasable Conventional Commit (always false when there is no push head_commit, e.g. pull_request events)."
+                value: ${{ jobs.check.outputs.release }}
+
+jobs:
+    check:
+        runs-on: ubuntu-22.04
+        # Whether this push should cut a release (consumed by release.yml).
+        outputs:
+            release: ${{ steps.gate.outputs.release }}
+        steps:
+            - uses: actions/checkout@v5
+
+            - uses: actions/setup-node@v5
+              with:
+                  node-version: "24"
+
+            - name: install Rust stable
+              uses: actions-rust-lang/setup-rust-toolchain@v1
+              with:
+                  toolchain: stable
+                  components: rustfmt, clippy
+                  cache: true
+
+            # Same Tauri Linux prerequisites the build job installs — cargo test
+            # and clippy compile the app, which links against WebKitGTK et al.
+            # (see release.yml's build job for why the dl.google.com apt source is
+            # removed).
+            - name: install Linux dependencies
+              run: |
+                  sudo grep -rlZ 'dl\.google\.com' /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -0 -r rm -f
+                  sudo apt-get update
+                  sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+            - name: install npm dependencies
+              run: npm ci
+
+            # The steps below mirror `npm run check`, split out so each suite
+            # reports its own pass/fail status in the UI and so the Rust test
+            # results can be summarized in the job summary alongside Vitest's
+            # auto-generated card. Order matches `npm run check`.
+            - name: typecheck (tsc)
+              run: npx tsc --noEmit
+
+            # Vitest auto-enables its GitHub Actions reporter in CI, which writes
+            # the "Vitest Test Report" card to the job summary.
+            - name: frontend tests (Vitest)
+              run: npx vitest run
+
+            - name: rustfmt --check
+              working-directory: src-tauri
+              run: cargo fmt --check
+
+            # Capture cargo test's output so the next step can summarize it.
+            # `--no-fail-fast` runs every suite (so the report is complete) while
+            # still exiting non-zero on any failure, keeping the gate strict.
+            - name: backend tests (cargo test)
+              working-directory: src-tauri
+              shell: bash
+              env:
+                  CARGO_TERM_COLOR: never
+              run: |
+                  set -o pipefail
+                  cargo test --no-fail-fast 2>&1 | tee cargo-test.log
+
+            # Render a Cargo test summary card (analogous to Vitest's) from the
+            # per-binary "test result:" lines. `always()` so the report is written
+            # even when a test failed above (the job still fails via that step).
+            - name: Cargo test report
+              if: always()
+              working-directory: src-tauri
+              shell: bash
+              run: |
+                  # Aggregate the per-binary "test result:" lines. Base the
+                  # verdict on whether any such line was found (`binaries`), NOT
+                  # on the log file's existence: `tee` always creates the log, so
+                  # a compile failure (which runs no tests, emits no "test result:"
+                  # line) or a skipped step must not render as a green card.
+                  read -r binaries passed failed ignored < <(awk '
+                    /test result:/ {
+                      for (i = 1; i <= NF; i++) {
+                        if ($i == "passed;")  p  += $(i-1)
+                        else if ($i == "failed;")  f  += $(i-1)
+                        else if ($i == "ignored;") ig += $(i-1)
+                      }
+                      n++
+                    }
+                    END { printf "%d %d %d %d", n, p, f, ig }
+                  ' cargo-test.log 2>/dev/null)
+                  binaries=${binaries:-0}; passed=${passed:-0}; failed=${failed:-0}; ignored=${ignored:-0}
+                  if [ "$binaries" -eq 0 ]; then
+                    {
+                      echo "## Cargo Test Report"
+                      echo ""
+                      echo "⚠️ No test results were captured — \`cargo test\` did not run to completion (an earlier gate step failed, or a test target failed to compile). See the job log."
+                    } >> "$GITHUB_STEP_SUMMARY"
+                    exit 0
+                  fi
+                  if [ "$failed" -gt 0 ]; then icon="❌"; else icon="✅"; fi
+                  total=$(( passed + failed + ignored ))
+                  {
+                    echo "## Cargo Test Report"
+                    echo ""
+                    echo "### Summary"
+                    echo ""
+                    echo "- **Test binaries:** ${binaries} run"
+                    echo "- **Test Results:** ${icon} ${passed} passed · ${failed} failed · ${ignored} ignored · ${total} total"
+                  } >> "$GITHUB_STEP_SUMMARY"
+
+            - name: clippy (-D warnings)
+              working-directory: src-tauri
+              run: cargo clippy --all-targets -- -D warnings
+
+            # Decide whether this push should cut a release, following Conventional
+            # Commits: release on feat / fix / perf (optionally scoped), on any
+            # breaking change (`type!:`), and on the manual `Release vX.Y.Z`
+            # version-bump commits — matched case-insensitively against the commit
+            # header. Everything else (chore, docs, ci, refactor, style, test, and
+            # merge commits) is still fully tested but skips the release chain. A
+            # shell step is used because GitHub `if:` expressions can't lowercase
+            # or regex-match. Runs only if the gate above passed, so a failing
+            # check never releases. On a pull_request there is no `head_commit`, so
+            # this yields `false` — CI runs, no release.
+            - name: decide whether to release
+              id: gate
+              env:
+                  HEAD_MSG: ${{ github.event.head_commit.message }}
+              shell: bash
+              run: |
+                  header=${HEAD_MSG%%$'\n'*}
+                  if printf '%s' "$header" | grep -qiE '^([a-z]+(\([^)]+\))?!:|(feat|fix|perf)(\([^)]+\))?:|Release v[0-9])'; then
+                    echo "release=true" >> "$GITHUB_OUTPUT"
+                    echo "Releasable commit — release chain will run: $header"
+                  else
+                    echo "release=false" >> "$GITHUB_OUTPUT"
+                    echo "Not a releasable commit — release chain skipped: $header"
+                  fi

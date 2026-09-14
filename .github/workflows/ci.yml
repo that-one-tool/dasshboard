@@ -1,0 +1,18 @@
+name: CI
+
+# Runs the full check gate on every pull request (any target branch), so changes
+# are tested before merge — not only on the push-to-main pre-release run in
+# release.yml. Both workflows call the same reusable `check.yml`, so PR CI and the
+# pre-release gate can never diverge. No release is ever cut from here (the
+# reusable gate's `release` output is unused on pull_request events).
+
+on:
+    pull_request:
+
+concurrency:
+    group: ci-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    check:
+        uses: ./.github/workflows/check.yml
