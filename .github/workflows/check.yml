@@ -99,7 +99,7 @@ jobs:
                       }
                       n++
                     }
-                    END { printf "%d %d %d %d", n, p, f, ig }
+                    END { printf "%d %d %d %d\n", n, p, f, ig }
                   ' cargo-test.log 2>/dev/null)
                   binaries=${binaries:-0}; passed=${passed:-0}; failed=${failed:-0}; ignored=${ignored:-0}
                   if [ "$binaries" -eq 0 ]; then
