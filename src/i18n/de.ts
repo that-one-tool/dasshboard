@@ -18,7 +18,6 @@ export const de: Messages = {
 	"header.settings.aria": "Einstellungen",
 	"header.help.title": "Über DaSSHboard",
 	"header.help.aria": "Über DaSSHboard",
-	"header.profileBar.aria": "Aktuelles Profil",
 	"header.paneRoot.aria": "SSH-Terminal",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -186,7 +185,8 @@ export const de: Messages = {
 	"devices.exportedSshSkipped.one": "{count} Gerät in die SSH-Konfiguration exportiert ({skipped} Nicht-SSH übersprungen)",
 	"devices.exportedSshSkipped.other": "{count} Geräte in die SSH-Konfiguration exportiert ({skipped} Nicht-SSH übersprungen)",
 	"devices.forwardAgent": "SSH-Agent weiterleiten",
-	"devices.forwardAgent.hint": "Erlaubt Programmen auf dem entfernten Host, Ihre lokalen SSH-Schlüssel zu nutzen (git, weitere ssh-Sprünge); kein Schlüssel wird auf den Server kopiert.",
+	"devices.forwardAgent.hint":
+		"Erlaubt Programmen auf dem entfernten Host, Ihre lokalen SSH-Schlüssel zu nutzen (git, weitere ssh-Sprünge); kein Schlüssel wird auf den Server kopiert.",
 	"devices.forwardAgent.unavailable": "Kein lokaler SSH-Agent erkannt – starten Sie Ihren SSH-Agent, um die Weiterleitung zu nutzen.",
 
 	/* -- device validation -------------------------------------------------- */
@@ -217,12 +217,11 @@ export const de: Messages = {
 	"profiles.export.title": "Profile in eine JSON-Datei exportieren",
 	"profiles.import.title": "Profile aus einer JSON-Datei importieren",
 	"profiles.empty": "Noch keine gespeicherten Profile — mit Speichern unter eines erstellen.",
-	"profiles.bar.label": "Aktuelles Profil",
 	"profiles.bar.dirty": "Nicht gespeicherte Änderungen",
 	"profiles.bar.save": "Speichern",
 	"profiles.bar.saveAs": "Speichern unter…",
-	"profiles.bar.unsaved": "Nicht gespeicherter Arbeitsbereich",
 	"profiles.item.load": "Dieses Profil laden",
+	"profiles.item.current": "Aktuelles Profil",
 	"profiles.item.openInTab": "In neuem Tab öffnen",
 	"profiles.item.setDefault": "Als Standard festlegen",
 	"profiles.item.unsetDefault": "Standard aufheben",
@@ -260,7 +259,7 @@ export const de: Messages = {
 	"tunnels.error.generic": "der Tunnel wurde mit einem Fehler beendet",
 
 	/* -- files / SFTP ------------------------------------------------------- */
-	"sftp.title": "Dateien",
+	"sftp.title": "Dateien (SFTP)",
 	"sftp.empty": "Kein SSH-Gerät zum Durchsuchen. Fügen Sie eines unter Geräte hinzu.",
 	"sftp.browse": "Durchsuchen",
 	"sftp.drawer.title": "Dateien",

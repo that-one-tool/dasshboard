@@ -24,7 +24,6 @@ export const en = {
 	"header.settings.aria": "Settings",
 	"header.help.title": "About DaSSHboard",
 	"header.help.aria": "About DaSSHboard",
-	"header.profileBar.aria": "Current profile",
 	"header.paneRoot.aria": "SSH terminal",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -192,7 +191,8 @@ export const en = {
 	"devices.exportedSshSkipped.one": "Exported {count} device to SSH config ({skipped} non-SSH skipped)",
 	"devices.exportedSshSkipped.other": "Exported {count} devices to SSH config ({skipped} non-SSH skipped)",
 	"devices.forwardAgent": "Forward SSH agent",
-	"devices.forwardAgent.hint": "Lets programs on the remote host use your local SSH keys (git, further ssh hops); no key is copied to the server.",
+	"devices.forwardAgent.hint":
+		"Lets programs on the remote host use your local SSH keys (git, further ssh hops); no key is copied to the server.",
 	"devices.forwardAgent.unavailable": "No local SSH agent detected — start your SSH agent to use forwarding.",
 
 	/* -- device validation (devices/validation.ts, forwardValidation.ts) ---- */
@@ -223,12 +223,11 @@ export const en = {
 	"profiles.export.title": "Export profiles to a JSON file",
 	"profiles.import.title": "Import profiles from a JSON file",
 	"profiles.empty": "No saved profiles yet — Save As to create one.",
-	"profiles.bar.label": "Current profile",
 	"profiles.bar.dirty": "Unsaved changes",
 	"profiles.bar.save": "Save",
 	"profiles.bar.saveAs": "Save As…",
-	"profiles.bar.unsaved": "Unsaved workspace",
 	"profiles.item.load": "Load this profile",
+	"profiles.item.current": "Current profile",
 	"profiles.item.openInTab": "Open in a new tab",
 	"profiles.item.setDefault": "Set as default",
 	"profiles.item.unsetDefault": "Unset default",
@@ -266,7 +265,7 @@ export const en = {
 	"tunnels.error.generic": "the tunnel stopped with an error",
 
 	/* -- files / SFTP (sftp/sftpPanel.ts) ----------------------------------- */
-	"sftp.title": "Files",
+	"sftp.title": "Files (SFTP)",
 	"sftp.empty": "No SSH device to browse. Add one under Devices.",
 	"sftp.browse": "Browse",
 	"sftp.drawer.title": "Files",

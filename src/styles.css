@@ -1185,10 +1185,22 @@ body.grid-dragging-row * {
  * Profiles (Phase 4): sidebar list + toolbar bar with dirty dot
  * ========================================================================== */
 
-/* Mirrors `.device-list-header`: padded, underlined section title. */
+/* Mirrors `.device-list-header`: padded, underlined section title. Now a flex
+ * row so the Save / Save As actions sit on the right of the title (they moved
+ * here from the old standalone profile bar to save vertical space). */
 .sidebar-section-title {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
 	padding: 8px 4px;
 	border-bottom: 1px solid #3c3c3c;
+}
+
+.profile-header-actions {
+	display: flex;
+	gap: 4px;
+	flex: 0 0 auto;
 }
 
 .sidebar-empty {
@@ -1214,6 +1226,20 @@ body.grid-dragging-row * {
 
 .profile-item-loaded {
 	border-color: #007acc;
+}
+
+/* Status dot to the left of the current profile's name: green normally, gold
+ * when its workspace has unsaved changes (toggled via `.dirty` in JS). Only
+ * rendered on the loaded item. */
+.profile-status-dot {
+	color: #4ec94e;
+	font-size: 18px;
+	line-height: 1;
+	flex: 0 0 auto;
+}
+
+.profile-status-dot.dirty {
+	color: #e2c08d;
 }
 
 .profile-name {
@@ -1256,56 +1282,6 @@ body.grid-dragging-row * {
 
 .btn-star-active:hover:not(:disabled) {
 	color: #f0d4a8;
-}
-
-/* Toolbar bar for the current profile */
-/* The current-profile block sits at the top of the sidebar (its own card,
- * matching the Devices/Profiles cards): the "Current profile" label + name on
- * the left, the Save / Save As icon buttons pinned right — all on one row. */
-.profile-bar {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	background-color: #252526;
-	border: 1px solid #3c3c3c;
-	border-radius: 4px;
-	padding: 6px 8px;
-	flex: 0 0 auto;
-	font-size: 13px;
-}
-
-.profile-bar-info {
-	display: flex;
-	align-items: baseline;
-	gap: 6px;
-	min-width: 0;
-	flex: 1 1 auto;
-}
-
-.profile-current-label {
-	color: #9d9d9d;
-	flex: 0 0 auto;
-}
-
-.profile-current-name {
-	color: #d4d4d4;
-	font-weight: 600;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.profile-dirty-dot {
-	color: #e2c08d;
-	font-size: 18px;
-	line-height: 1;
-	flex: 0 0 auto;
-}
-
-.profile-bar-actions {
-	display: flex;
-	gap: 4px;
-	flex: 0 0 auto;
 }
 
 /* Prompt dialog (Save As / Rename) reuses the shared .dialog styling. The body

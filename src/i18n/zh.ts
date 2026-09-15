@@ -18,7 +18,6 @@ export const zh: Messages = {
 	"header.settings.aria": "设置",
 	"header.help.title": "关于 DaSSHboard",
 	"header.help.aria": "关于 DaSSHboard",
-	"header.profileBar.aria": "当前配置文件",
 	"header.paneRoot.aria": "SSH 终端",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -217,12 +216,11 @@ export const zh: Messages = {
 	"profiles.export.title": "将配置文件导出为 JSON 文件",
 	"profiles.import.title": "从 JSON 文件导入配置文件",
 	"profiles.empty": "还没有已保存的配置文件 — 使用“另存为”创建一个。",
-	"profiles.bar.label": "当前配置文件",
 	"profiles.bar.dirty": "未保存的更改",
 	"profiles.bar.save": "保存",
 	"profiles.bar.saveAs": "另存为…",
-	"profiles.bar.unsaved": "未保存的工作区",
 	"profiles.item.load": "加载此配置文件",
+	"profiles.item.current": "当前配置文件",
 	"profiles.item.openInTab": "在新标签页中打开",
 	"profiles.item.setDefault": "设为默认",
 	"profiles.item.unsetDefault": "取消默认",
@@ -260,7 +258,7 @@ export const zh: Messages = {
 	"tunnels.error.generic": "隧道因错误而停止",
 
 	/* -- files / SFTP ------------------------------------------------------- */
-	"sftp.title": "文件",
+	"sftp.title": "文件 (SFTP)",
 	"sftp.empty": "没有可浏览的 SSH 设备。请在“设备”中添加一个。",
 	"sftp.browse": "浏览",
 	"sftp.drawer.title": "文件",
@@ -300,8 +298,7 @@ export const zh: Messages = {
 
 	/* -- trusted hosts dialog ----------------------------------------------- */
 	"knownHosts.title": "受信任的主机",
-	"knownHosts.lead":
-		"您已信任的主机密钥。忘记某个主机后，下次连接时将再次提示您 — 如果服务器被重建或您不再信任它，请执行此操作。",
+	"knownHosts.lead": "您已信任的主机密钥。忘记某个主机后，下次连接时将再次提示您 — 如果服务器被重建或您不再信任它，请执行此操作。",
 	"knownHosts.empty": "还没有受信任的主机。",
 	"knownHosts.forget": "忘记",
 	"knownHosts.forget.title": "忘记主机",
@@ -317,8 +314,7 @@ export const zh: Messages = {
 	"hostkey.changed.lead":
 		"{host}:{port} 的主机密钥与之前信任的不同。这可能意味着服务器被重新安装 — 也可能是有人在拦截连接。只有在您知道密钥更改原因时才继续。",
 	"hostkey.unknown.heading": "未知的主机密钥",
-	"hostkey.unknown.lead":
-		"无法确认 {host}:{port} 的真实性，因为这是首次连接。请通过其他方式核对下面的指纹，然后决定是否信任它。",
+	"hostkey.unknown.lead": "无法确认 {host}:{port} 的真实性，因为这是首次连接。请通过其他方式核对下面的指纹，然后决定是否信任它。",
 
 	/* -- error prefixes ----------------------------------------------------- */
 	"error.prefix": "错误：{message}",

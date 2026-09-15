@@ -106,8 +106,13 @@ function profile(panes: (string | null)[]): Profile {
   };
 }
 
-function dot(): HTMLElement | null {
-  return document.querySelector<HTMLElement>(".profile-dirty-dot");
+/** The loaded profile's status dot shows unsaved changes via the `.dirty`
+ * class; absent when no profile is loaded (→ not dirty). */
+function dirtyShown(): boolean {
+  const d = document.querySelector<HTMLElement>(
+    ".profile-item-loaded .profile-status-dot",
+  );
+  return d !== null && d.classList.contains("dirty");
 }
 
 async function flush(): Promise<void> {
@@ -116,7 +121,6 @@ async function flush(): Promise<void> {
 
 beforeEach(() => {
   document.body.innerHTML = `
-    <div id="profile-bar"></div>
     <div class="profile-list"></div>
   `;
   vi.mocked(listProfiles).mockReset();
@@ -142,7 +146,7 @@ describe("ProfileManager app-start", () => {
       { confirmTeardown: false },
     );
     // Workspace matches the loaded profile → not dirty.
-    expect(dot()?.hidden).toBe(true);
+    expect(dirtyShown()).toBe(false);
   });
 
   it("loads the last-used profile when there is no default", async () => {
@@ -169,7 +173,7 @@ describe("ProfileManager app-start", () => {
       { confirmTeardown: false },
     );
     expect(onProfileChange).toHaveBeenLastCalledWith("p1");
-    expect(dot()?.hidden).toBe(true);
+    expect(dirtyShown()).toBe(false);
   });
 
   it("prefers the default profile over the last-used profile", async () => {
@@ -213,7 +217,7 @@ describe("ProfileManager app-start", () => {
     expect(g.applyProfile).not.toHaveBeenCalled();
     // The stale id is cleared so it stops being the restore target.
     expect(onProfileChange).toHaveBeenLastCalledWith(null);
-    expect(dot()?.hidden).toBe(true);
+    expect(dirtyShown()).toBe(false);
   });
 
   it("does not load anything and stays clean when there is no default or last profile", async () => {
@@ -225,7 +229,7 @@ describe("ProfileManager app-start", () => {
     await flush();
 
     expect(g.applyProfile).not.toHaveBeenCalled();
-    expect(dot()?.hidden).toBe(true);
+    expect(dirtyShown()).toBe(false);
   });
 });
 
@@ -256,12 +260,12 @@ describe("ProfileManager dirty state + save", () => {
     const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
     await mgr.init(null);
     await flush();
-    expect(dot()?.hidden).toBe(true);
+    expect(dirtyShown()).toBe(false);
 
     // Simulate a workspace edit: the second pane now has a device.
     g.setSnapshot(snapshot(["dev-1", "dev-2"]));
     mgr.refreshDirty();
-    expect(dot()?.hidden).toBe(false);
+    expect(dirtyShown()).toBe(true);
 
     // Save persists exactly the current snapshot; then the dot clears.
     document.querySelector<HTMLButtonElement>('[data-action="save"]')?.click();
@@ -270,7 +274,7 @@ describe("ProfileManager dirty state + save", () => {
     expect(vi.mocked(saveProfile)).toHaveBeenCalledTimes(1);
     const saved = vi.mocked(saveProfile).mock.calls[0]?.[0];
     expect(saved?.panes).toEqual([{ deviceId: "dev-1" }, { deviceId: "dev-2" }]);
-    expect(dot()?.hidden).toBe(true);
+    expect(dirtyShown()).toBe(false);
   });
 
   it("Save after a device deletion persists the nulled pane, not the stale id", async () => {

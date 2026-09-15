@@ -18,7 +18,6 @@ export const ja: Messages = {
 	"header.settings.aria": "設定",
 	"header.help.title": "DaSSHboard について",
 	"header.help.aria": "DaSSHboard について",
-	"header.profileBar.aria": "現在のプロファイル",
 	"header.paneRoot.aria": "SSH ターミナル",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -186,7 +185,8 @@ export const ja: Messages = {
 	"devices.exportedSshSkipped.one": "{count} 件のデバイスを SSH 設定にエクスポートしました（SSH 以外 {skipped} 件スキップ）",
 	"devices.exportedSshSkipped.other": "{count} 件のデバイスを SSH 設定にエクスポートしました（SSH 以外 {skipped} 件スキップ）",
 	"devices.forwardAgent": "SSH エージェントを転送",
-	"devices.forwardAgent.hint": "リモートホスト上のプログラムがローカルの SSH 鍵を使用できるようにします（git、さらなる ssh ホップ）。鍵はサーバーにコピーされません。",
+	"devices.forwardAgent.hint":
+		"リモートホスト上のプログラムがローカルの SSH 鍵を使用できるようにします（git、さらなる ssh ホップ）。鍵はサーバーにコピーされません。",
 	"devices.forwardAgent.unavailable": "ローカルの SSH エージェントが見つかりません — 転送を使うには SSH エージェントを起動してください。",
 
 	/* -- device validation -------------------------------------------------- */
@@ -217,12 +217,11 @@ export const ja: Messages = {
 	"profiles.export.title": "プロファイルを JSON ファイルにエクスポート",
 	"profiles.import.title": "JSON ファイルからプロファイルをインポート",
 	"profiles.empty": "保存済みのプロファイルはまだありません — 「名前を付けて保存」で作成してください。",
-	"profiles.bar.label": "現在のプロファイル",
 	"profiles.bar.dirty": "未保存の変更",
 	"profiles.bar.save": "保存",
 	"profiles.bar.saveAs": "名前を付けて保存…",
-	"profiles.bar.unsaved": "未保存のワークスペース",
 	"profiles.item.load": "このプロファイルを読み込む",
+	"profiles.item.current": "現在のプロファイル",
 	"profiles.item.openInTab": "新しいタブで開く",
 	"profiles.item.setDefault": "デフォルトに設定",
 	"profiles.item.unsetDefault": "デフォルトを解除",
@@ -260,7 +259,7 @@ export const ja: Messages = {
 	"tunnels.error.generic": "トンネルはエラーで停止しました",
 
 	/* -- files / SFTP ------------------------------------------------------- */
-	"sftp.title": "ファイル",
+	"sftp.title": "ファイル (SFTP)",
 	"sftp.empty": "参照できる SSH デバイスがありません。「デバイス」で追加してください。",
 	"sftp.browse": "参照",
 	"sftp.drawer.title": "ファイル",

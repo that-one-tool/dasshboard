@@ -86,7 +86,9 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   logs and archives rather than very large files.
 - **Layout profiles** — save a workspace (grid + device assignments), set a
   default, and have it restore and auto-connect every pane on launch. Load a
-  profile into the current tab, or open it in a new tab.
+  profile into the current tab, or open it in a new tab. Save / Save As sit in
+  the Profiles panel header, and the currently-loaded profile is marked in the
+  list with a status dot (green, or gold when it has unsaved changes).
 - **Host-key TOFU** — trust-on-first-use prompts with a prominent warning when a
   previously-trusted key changes (possible MITM).
 - **Auto-reconnect** (opt-in per device) — reconnects with backoff (2s/4s/8s,

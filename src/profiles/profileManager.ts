@@ -69,7 +69,6 @@ export class ProfileManager {
   private ws: ProfileWorkspace;
   private options: ProfileManagerOptions;
   private listEl: HTMLElement | null;
-  private barEl: HTMLElement | null;
 
   private profiles: Profile[] = [];
   private defaultProfileId: string | null = null;
@@ -85,7 +84,6 @@ export class ProfileManager {
     this.ws = options.workspace;
     this.options = options;
     this.listEl = document.querySelector<HTMLElement>(".profile-list");
-    this.barEl = document.querySelector<HTMLElement>("#profile-bar");
   }
 
   /** The profile the active tab is linked to (null = unsaved / missing). */
@@ -150,11 +148,17 @@ export class ProfileManager {
     this.refreshDirty();
   }
 
-  /** Recomputes the toolbar dirty dot (active tab) and refreshes the tab strip. */
+  /** Recolors the loaded profile's status dot (green → gold when the active
+   * tab's workspace is dirty) and refreshes the tab strip. */
   refreshDirty(): void {
     const dirty = isDirty(this.ws.activeGrid().snapshot(), this.activeLoaded());
-    const dot = this.barEl?.querySelector<HTMLElement>(".profile-dirty-dot");
-    if (dot) dot.hidden = !dirty;
+    const dot = this.listEl?.querySelector<HTMLElement>(
+      ".profile-item-loaded .profile-status-dot",
+    );
+    if (dot) {
+      dot.classList.toggle("dirty", dirty);
+      dot.title = dirty ? t("profiles.bar.dirty") : t("profiles.item.current");
+    }
     this.ws.refreshTabStrip();
   }
 
@@ -189,43 +193,22 @@ export class ProfileManager {
   /* ---------------------------------------------------------------------- */
 
   private render(): void {
-    this.renderBar();
     this.renderList();
-  }
-
-  private renderBar(): void {
-    const bar = this.barEl;
-    if (!bar) return;
-    bar.innerHTML = `
-      <div class="profile-bar-info">
-        <span class="profile-current-label">${t("profiles.bar.label")}</span>
-        <span class="profile-current-name"></span>
-        <span class="profile-dirty-dot" title="${t("profiles.bar.dirty")}" hidden>&bull;</span>
-      </div>
-      <div class="profile-bar-actions">
-        <button type="button" class="btn btn-icon" data-action="save"
-          title="${t("profiles.bar.save")}" aria-label="${t("profiles.bar.save")}">${saveIcon}</button>
-        <button type="button" class="btn btn-icon" data-action="save-as"
-          title="${t("profiles.bar.saveAs")}" aria-label="${t("profiles.bar.saveAs")}">${saveAsIcon}</button>
-      </div>
-    `;
-    const name = bar.querySelector<HTMLElement>(".profile-current-name");
-    const loaded = this.activeLoaded();
-    if (name) name.textContent = loaded ? loaded.name : t("profiles.bar.unsaved");
-
-    bar
-      .querySelector<HTMLButtonElement>('[data-action="save"]')
-      ?.addEventListener("click", () => void this.save());
-    bar
-      .querySelector<HTMLButtonElement>('[data-action="save-as"]')
-      ?.addEventListener("click", () => void this.saveAs());
   }
 
   private renderList(): void {
     const list = this.listEl;
     if (!list) return;
     list.innerHTML = `
-      <div class="sidebar-section-title">${t("profiles.title")}</div>
+      <div class="sidebar-section-title">
+        <span class="sidebar-section-title-text">${t("profiles.title")}</span>
+        <div class="profile-header-actions">
+          <button type="button" class="btn btn-icon" data-action="save"
+            title="${t("profiles.bar.save")}" aria-label="${t("profiles.bar.save")}">${saveIcon}</button>
+          <button type="button" class="btn btn-icon" data-action="save-as"
+            title="${t("profiles.bar.saveAs")}" aria-label="${t("profiles.bar.saveAs")}">${saveAsIcon}</button>
+        </div>
+      </div>
       <div class="section-actions">
         <button type="button" class="btn btn-small profile-export-btn"
           title="${t("profiles.export.title")}">${t("common.export")}</button>
@@ -233,6 +216,12 @@ export class ProfileManager {
           title="${t("profiles.import.title")}">${t("common.import")}</button>
       </div>
     `;
+    list
+      .querySelector<HTMLButtonElement>('[data-action="save"]')
+      ?.addEventListener("click", () => void this.save());
+    list
+      .querySelector<HTMLButtonElement>('[data-action="save-as"]')
+      ?.addEventListener("click", () => void this.saveAs());
     list
       .querySelector<HTMLButtonElement>(".profile-export-btn")
       ?.addEventListener("click", () => void this.exportAll());
@@ -257,6 +246,8 @@ export class ProfileManager {
       item.innerHTML = `
         <button type="button" class="profile-name" data-action="load"
           title="${t("profiles.item.load")}">
+          <span class="profile-status-dot"${isLoaded ? "" : " hidden"}
+            title="${t("profiles.item.current")}" aria-hidden="true">&bull;</span>
           <span class="profile-item-name"></span>
         </button>
         <div class="profile-item-actions">

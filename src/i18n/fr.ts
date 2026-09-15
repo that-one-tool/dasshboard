@@ -18,7 +18,6 @@ export const fr: Messages = {
 	"header.settings.aria": "Paramètres",
 	"header.help.title": "À propos de DaSSHboard",
 	"header.help.aria": "À propos de DaSSHboard",
-	"header.profileBar.aria": "Profil actuel",
 	"header.paneRoot.aria": "Terminal SSH",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -186,7 +185,8 @@ export const fr: Messages = {
 	"devices.exportedSshSkipped.one": "{count} appareil exporté vers la config SSH ({skipped} non-SSH ignorés)",
 	"devices.exportedSshSkipped.other": "{count} appareils exportés vers la config SSH ({skipped} non-SSH ignorés)",
 	"devices.forwardAgent": "Transférer l'agent SSH",
-	"devices.forwardAgent.hint": "Permet aux programmes de l'hôte distant d'utiliser vos clés SSH locales (git, sauts ssh supplémentaires) ; aucune clé n'est copiée sur le serveur.",
+	"devices.forwardAgent.hint":
+		"Permet aux programmes de l'hôte distant d'utiliser vos clés SSH locales (git, sauts ssh supplémentaires) ; aucune clé n'est copiée sur le serveur.",
 	"devices.forwardAgent.unavailable": "Aucun agent SSH local détecté — démarrez votre agent SSH pour utiliser le transfert.",
 
 	/* -- device validation -------------------------------------------------- */
@@ -217,12 +217,11 @@ export const fr: Messages = {
 	"profiles.export.title": "Exporter les profils vers un fichier JSON",
 	"profiles.import.title": "Importer les profils depuis un fichier JSON",
 	"profiles.empty": "Aucun profil enregistré — utilisez Enregistrer sous pour en créer un.",
-	"profiles.bar.label": "Profil actuel",
 	"profiles.bar.dirty": "Modifications non enregistrées",
 	"profiles.bar.save": "Enregistrer",
 	"profiles.bar.saveAs": "Enregistrer sous…",
-	"profiles.bar.unsaved": "Espace de travail non enregistré",
 	"profiles.item.load": "Charger ce profil",
+	"profiles.item.current": "Profil actuel",
 	"profiles.item.openInTab": "Ouvrir dans un nouvel onglet",
 	"profiles.item.setDefault": "Définir par défaut",
 	"profiles.item.unsetDefault": "Retirer par défaut",
@@ -260,7 +259,7 @@ export const fr: Messages = {
 	"tunnels.error.generic": "le tunnel s'est arrêté sur une erreur",
 
 	/* -- files / SFTP ------------------------------------------------------- */
-	"sftp.title": "Fichiers",
+	"sftp.title": "Fichiers (SFTP)",
 	"sftp.empty": "Aucun appareil SSH à parcourir. Ajoutez-en un sous Appareils.",
 	"sftp.browse": "Parcourir",
 	"sftp.drawer.title": "Fichiers",

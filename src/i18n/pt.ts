@@ -9,8 +9,7 @@ import type { Messages } from "./en";
 
 export const pt: Messages = {
 	/* -- header action buttons ---------------------------------------------- */
-	"header.reload.title":
-		"Recarregar dispositivos, perfis e configurações do disco (aplica alterações de outra janela)",
+	"header.reload.title": "Recarregar dispositivos, perfis e configurações do disco (aplica alterações de outra janela)",
 	"header.reload.aria": "Recarregar a configuração do disco",
 	"header.trustedHosts.title": "Gerir hosts confiáveis",
 	"header.trustedHosts.aria": "Gerir hosts confiáveis",
@@ -18,7 +17,6 @@ export const pt: Messages = {
 	"header.settings.aria": "Configurações",
 	"header.help.title": "Sobre o DaSSHboard",
 	"header.help.aria": "Sobre o DaSSHboard",
-	"header.profileBar.aria": "Perfil atual",
 	"header.paneRoot.aria": "Terminal SSH",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -186,7 +184,8 @@ export const pt: Messages = {
 	"devices.exportedSshSkipped.one": "{count} dispositivo exportado para a config SSH ({skipped} não SSH ignorados)",
 	"devices.exportedSshSkipped.other": "{count} dispositivos exportados para a config SSH ({skipped} não SSH ignorados)",
 	"devices.forwardAgent": "Encaminhar agente SSH",
-	"devices.forwardAgent.hint": "Permite que programas no host remoto usem suas chaves SSH locais (git, saltos ssh adicionais); nenhuma chave é copiada para o servidor.",
+	"devices.forwardAgent.hint":
+		"Permite que programas no host remoto usem suas chaves SSH locais (git, saltos ssh adicionais); nenhuma chave é copiada para o servidor.",
 	"devices.forwardAgent.unavailable": "Nenhum agente SSH local detectado — inicie o seu agente SSH para usar o encaminhamento.",
 
 	/* -- device validation -------------------------------------------------- */
@@ -217,12 +216,11 @@ export const pt: Messages = {
 	"profiles.export.title": "Exportar perfis para um ficheiro JSON",
 	"profiles.import.title": "Importar perfis de um ficheiro JSON",
 	"profiles.empty": "Ainda não há perfis guardados — use Guardar como para criar um.",
-	"profiles.bar.label": "Perfil atual",
 	"profiles.bar.dirty": "Alterações não guardadas",
 	"profiles.bar.save": "Guardar",
 	"profiles.bar.saveAs": "Guardar como…",
-	"profiles.bar.unsaved": "Espaço de trabalho não guardado",
 	"profiles.item.load": "Carregar este perfil",
+	"profiles.item.current": "Perfil atual",
 	"profiles.item.openInTab": "Abrir em uma nova aba",
 	"profiles.item.setDefault": "Definir como predefinido",
 	"profiles.item.unsetDefault": "Remover predefinição",
@@ -246,7 +244,8 @@ export const pt: Messages = {
 
 	/* -- tunnels ------------------------------------------------------------ */
 	"tunnels.title": "Túneis",
-	"tunnels.empty": "Nenhum dispositivo tem reencaminhamentos de portas. Adicione um no editor de um dispositivo para criar um túnel aqui.",
+	"tunnels.empty":
+		"Nenhum dispositivo tem reencaminhamentos de portas. Adicione um no editor de um dispositivo para criar um túnel aqui.",
 	"tunnels.status.connecting": "A ligar…",
 	"tunnels.status.listening": "A escutar",
 	"tunnels.status.error": "Erro",
@@ -260,7 +259,7 @@ export const pt: Messages = {
 	"tunnels.error.generic": "o túnel parou com um erro",
 
 	/* -- files / SFTP ------------------------------------------------------- */
-	"sftp.title": "Ficheiros",
+	"sftp.title": "Ficheiros (SFTP)",
 	"sftp.empty": "Nenhum dispositivo SSH para explorar. Adicione um em Dispositivos.",
 	"sftp.browse": "Explorar",
 	"sftp.drawer.title": "Ficheiros",
