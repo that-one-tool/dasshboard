@@ -14,12 +14,17 @@ use crate::settings::SettingsStore;
 use crate::sftp::SftpManager;
 use crate::store::DeviceStore;
 use crate::tunnel::TunnelManager;
+use crate::workspace_store::WorkspaceStore;
 
 pub struct AppState {
     pub device_store: DeviceStore,
     /// Saved workspace layouts (SPEC.md §4). Device deletion nulls the deleted
     /// device out of any profile pane referencing it (`clear_device`).
     pub profile_store: ProfileStore,
+    /// Per-instance open-tabs layout (Tabs milestone, Phase 3). Persisted to
+    /// `workspace_state.json`, restored on launch; NOT part of multi-instance
+    /// config sync (one window's tabs must not clobber another's).
+    pub workspace_store: WorkspaceStore,
     /// App settings (SPEC.md §4): terminal appearance + last-used grid.
     pub settings_store: SettingsStore,
     /// Behind an `Arc` (not a `Box`) so the async SSH commands can clone a

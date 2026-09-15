@@ -2,9 +2,9 @@
  * @vitest-environment happy-dom
  *
  * Unit tests for `SettingsController` (F6 — previously no colocated test).
- * `../ipc` is mocked; the `Grid` collaborator is a minimal fake exposing only
- * `applyTerminalSettings`, mirroring the fake-Grid pattern already used in
- * `profileManager.test.ts`.
+ * `../ipc` is mocked; terminal appearance is applied through an injected
+ * `applyTerminalSettings` callback (in the app, `main.ts` fans it across every
+ * tab's grid), so the tests pass a plain spy.
  *
  * Covers: settings load + fallback on failure, the `persistLastProfileId`
  * skip-if-unchanged optimization, and the live-apply → save →
@@ -12,8 +12,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { Grid } from "../grid";
-import type { Settings } from "../ipc";
+import type { Settings, TerminalSettings } from "../ipc";
 
 vi.mock("../ipc", () => ({
   getSettings: vi.fn(),
@@ -23,9 +22,10 @@ vi.mock("../ipc", () => ({
 import { SettingsController } from "./settingsController";
 import { getSettings, saveSettings } from "../ipc";
 
-function fakeGrid(): { grid: Grid; applyTerminalSettings: ReturnType<typeof vi.fn> } {
-  const applyTerminalSettings = vi.fn();
-  return { grid: { applyTerminalSettings } as unknown as Grid, applyTerminalSettings };
+function fakeGrid(): {
+  applyTerminalSettings: ReturnType<typeof vi.fn<(s: TerminalSettings) => void>>;
+} {
+  return { applyTerminalSettings: vi.fn<(s: TerminalSettings) => void>() };
 }
 
 function settings(overrides: Partial<Settings> = {}): Settings {
@@ -58,7 +58,7 @@ describe("SettingsController.init", () => {
       }),
     );
 
-    const controller = new SettingsController({ grid: g.grid, onError: vi.fn() });
+    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
     await controller.init();
 
     expect(controller.terminalSettings()).toEqual({
@@ -74,7 +74,7 @@ describe("SettingsController.init", () => {
     const onError = vi.fn();
     vi.mocked(getSettings).mockRejectedValue({ code: "Io", message: "disk error" });
 
-    const controller = new SettingsController({ grid: g.grid, onError });
+    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError });
     await controller.init();
 
     expect(onError).toHaveBeenCalledWith("disk error");
@@ -91,7 +91,7 @@ describe("SettingsController.init", () => {
     const g = fakeGrid();
     vi.mocked(getSettings).mockResolvedValue(settings());
 
-    const controller = new SettingsController({ grid: g.grid, onError: vi.fn() });
+    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
     await controller.init();
 
     expect(document.querySelector(".settings-dialog")).toBeNull();
@@ -105,7 +105,7 @@ describe("SettingsController.persistLastProfileId", () => {
     const g = fakeGrid();
     vi.mocked(getSettings).mockResolvedValue(settings({ lastProfileId: null }));
 
-    const controller = new SettingsController({ grid: g.grid, onError: vi.fn() });
+    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
     await controller.init();
 
     await controller.persistLastProfileId(null);
@@ -119,7 +119,7 @@ describe("SettingsController.persistLastProfileId", () => {
     vi.mocked(getSettings).mockResolvedValue(settings({ lastProfileId: null }));
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
 
-    const controller = new SettingsController({ grid: g.grid, onError: vi.fn() });
+    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
     await controller.init();
 
     await controller.persistLastProfileId("profile-1");
@@ -139,7 +139,7 @@ describe("SettingsController.persistLastProfileId", () => {
     vi.mocked(getSettings).mockResolvedValue(settings({ lastProfileId: null }));
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
 
-    const controller = new SettingsController({ grid: g.grid, onError: vi.fn() });
+    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
     await controller.init();
 
     await controller.persistLastProfileId("profile-1");
@@ -164,7 +164,7 @@ describe("SettingsController live-apply round trip", () => {
       terminal: { ...s.terminal, fontSize: 40 },
     }));
 
-    const controller = new SettingsController({ grid: g.grid, onError: vi.fn() });
+    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 
@@ -197,7 +197,7 @@ describe("SettingsController live-apply round trip", () => {
     );
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
 
-    const controller = new SettingsController({ grid: g.grid, onError: vi.fn() });
+    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 

@@ -44,6 +44,14 @@ export const zh: Messages = {
 	"grid.shrink.one": "将关闭 {count} 个活动会话。是否继续？",
 	"grid.shrink.other": "将关闭 {count} 个活动会话。是否继续？",
 
+	/* -- tabs (tabs/tabManager.ts) ------------------------------------------ */
+	"tabs.aria": "工作区标签页",
+	"tabs.new": "新建标签页",
+	"tabs.close": "关闭标签页",
+	"tabs.rename": "重命名标签页",
+	"tabs.untitled": "标签页 {index}",
+	"tabs.linked": "已关联到配置文件",
+
 	/* -- terminal pane ------------------------------------------------------ */
 	"pane.connect": "连接",
 	"pane.disconnect": "断开连接",
@@ -209,12 +217,13 @@ export const zh: Messages = {
 	"profiles.export.title": "将配置文件导出为 JSON 文件",
 	"profiles.import.title": "从 JSON 文件导入配置文件",
 	"profiles.empty": "还没有已保存的配置文件 — 使用“另存为”创建一个。",
-	"profiles.bar.label": "配置文件：",
+	"profiles.bar.label": "当前配置文件",
 	"profiles.bar.dirty": "未保存的更改",
 	"profiles.bar.save": "保存",
 	"profiles.bar.saveAs": "另存为…",
 	"profiles.bar.unsaved": "未保存的工作区",
 	"profiles.item.load": "加载此配置文件",
+	"profiles.item.openInTab": "在新标签页中打开",
 	"profiles.item.setDefault": "设为默认",
 	"profiles.item.unsetDefault": "取消默认",
 	"profiles.item.rename": "重命名配置文件",

@@ -20,7 +20,7 @@ import {
   type PaneRemap,
   type PresetId,
 } from "./gridModel";
-import { shouldConfirmTeardown, type WorkspaceSnapshot } from "./profiles/workspace";
+import { profileToSnapshot, shouldConfirmTeardown, type WorkspaceSnapshot } from "./profiles/workspace";
 import { confirm } from "./ui/confirm";
 import { requireEl } from "./ui/dom";
 import { t } from "./i18n";
@@ -328,6 +328,24 @@ export class Grid {
   }
 
   /**
+   * Re-fit every pane to its container and push the resulting size to any live
+   * PTY (Tabs, Phase 1). A hidden grid (`display:none`) can't be measured by
+   * xterm's FitAddon, so its terminals are laid out at zero size while
+   * backgrounded; `TabManager` calls this right after unhiding the tab so the
+   * now-visible terminals size correctly. Mirrors the fit→syncSize sequence the
+   * splitter drag runs on drag-end.
+   */
+  refit(): void {
+    for (const cell of this.cells) cell.pane.fit();
+    for (const cell of this.cells) cell.pane.syncSize();
+  }
+
+  /** Focus this grid's currently-focused pane (used when its tab is shown). */
+  focus(): void {
+    this.setFocus(this.focusedIndex, true);
+  }
+
+  /**
    * Load a profile (SPEC §7): if any session is live, confirm the teardown
    * first (unless `confirmTeardown` is false, e.g. the app-start default load);
    * then rebuild the grid to the profile's shape and auto-connect every assigned
@@ -338,13 +356,41 @@ export class Grid {
     profile: Profile,
     opts: { confirmTeardown?: boolean } = {},
   ): Promise<boolean> {
+    return this.applyWorkspace(profileToSnapshot(profile), opts);
+  }
+
+  /**
+   * Rebuild the grid from a raw workspace snapshot (grid shape + row-major
+   * device ids), rather than a named profile. Used to restore a tab's saved
+   * workspace on launch (Tabs, Phase 3); same teardown-confirm + auto-connect
+   * behaviour as {@link applyProfile}.
+   */
+  async applySnapshot(
+    snapshot: WorkspaceSnapshot,
+    opts: { confirmTeardown?: boolean } = {},
+  ): Promise<boolean> {
+    return this.applyWorkspace(snapshot, opts);
+  }
+
+  /**
+   * Shared body of {@link applyProfile} / {@link applySnapshot}: if any session
+   * is live, confirm the teardown first (unless `confirmTeardown` is false, e.g.
+   * an app-start restore); then rebuild the grid to the snapshot's shape and
+   * auto-connect every assigned pane in parallel. Per-pane connect failures
+   * surface in that pane's own error overlay and never block the others. Returns
+   * `false` if the user cancelled.
+   */
+  private async applyWorkspace(
+    snapshot: WorkspaceSnapshot,
+    opts: { confirmTeardown?: boolean },
+  ): Promise<boolean> {
     const container = this.beginTransition();
     if (!container) return false;
     try {
       if (!(await this.confirmProfileTeardown(opts.confirmTeardown ?? true))) {
         return false;
       }
-      await this.loadProfileCells(container, profile);
+      await this.loadWorkspaceCells(container, snapshot);
     } finally {
       this.endTransition();
     }
@@ -352,7 +398,7 @@ export class Grid {
     return true;
   }
 
-  /** Confirms tearing down any live sessions before loading a profile over them. */
+  /** Confirms tearing down any live sessions before loading over them. */
   private async confirmProfileTeardown(confirmTeardown: boolean): Promise<boolean> {
     if (!confirmTeardown || !shouldConfirmTeardown(this.liveSessionCount())) {
       return true;
@@ -365,25 +411,28 @@ export class Grid {
   }
 
   /**
-   * Tears the current grid down completely, rebuilds it to the profile's shape,
-   * then assigns and auto-connects the profile's panes.
+   * Tears the current grid down completely, rebuilds it to the snapshot's shape,
+   * then assigns and auto-connects its panes.
    */
-  private async loadProfileCells(container: HTMLElement, profile: Profile): Promise<void> {
+  private async loadWorkspaceCells(
+    container: HTMLElement,
+    snapshot: WorkspaceSnapshot,
+  ): Promise<void> {
     this.loading = true;
     try {
       this.teardownAllCells();
-      // A profile load swaps every pane to (potentially) different hosts, so
-      // silently keeping broadcast on would fan the next keystroke out to hosts
-      // the user didn't choose to broadcast to. Reset it off.
+      // A load swaps every pane to (potentially) different hosts, so silently
+      // keeping broadcast on would fan the next keystroke out to hosts the user
+      // didn't choose to broadcast to. Reset it off.
       if (this.broadcast) {
         this.broadcast = false;
         this.updateBroadcastUI();
       }
       this.model = {
-        rows: profile.grid.rows,
-        cols: profile.grid.cols,
-        rowSizes: [...profile.grid.rowSizes],
-        colSizes: [...profile.grid.colSizes],
+        rows: snapshot.grid.rows,
+        cols: snapshot.grid.cols,
+        rowSizes: [...snapshot.grid.rowSizes],
+        colSizes: [...snapshot.grid.colSizes],
       };
 
       const count = paneCount(this.model);
@@ -396,7 +445,7 @@ export class Grid {
       this.focusedIndex = 0;
       this.setFocus(0, false);
 
-      await this.connectProfilePanes(profile);
+      await this.connectSnapshotPanes(snapshot);
     } finally {
       this.loading = false;
     }
@@ -411,11 +460,11 @@ export class Grid {
     this.cells = [];
   }
 
-  /** Assigns each cell's device from the profile, then connects the assigned ones in parallel. */
-  private async connectProfilePanes(profile: Profile): Promise<void> {
+  /** Assigns each cell's device from the snapshot, then connects the assigned ones in parallel. */
+  private async connectSnapshotPanes(snapshot: WorkspaceSnapshot): Promise<void> {
     const connects: Promise<void>[] = [];
     this.cells.forEach((cell, i) => {
-      const deviceId = profile.panes[i]?.deviceId ?? null;
+      const deviceId = snapshot.panes[i] ?? null;
       cell.pane.assignDevice(deviceId);
       if (deviceId) connects.push(cell.pane.connectAssigned());
     });

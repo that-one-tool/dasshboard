@@ -64,6 +64,13 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
 - **Live multi-pane grid** — 1×1 up to 3×2 preset layouts, draggable splitters,
   click-to-focus panes, each an independent SSH shell, serial terminal or local
   shell.
+- **Tabbed workspaces** — keep several independent workspaces open as tabs, each
+  its own multi-pane grid with its own sessions. Only the active tab is shown; the
+  others keep running and buffering in the background. Add a tab (`Ctrl+Shift+T`),
+  close it (`Ctrl+Shift+W`), cycle with `Ctrl+Tab` / `Ctrl+Shift+Tab`, or
+  double-click a tab to rename it. A tab opened from a profile shows a link badge
+  and an unsaved-changes dot. Your open tabs — their layouts, device assignments
+  and the active one — are saved and restored on the next launch.
 - **SSH tunnels (local port forwarding)** — give an SSH device one or more
   forwards (`ssh -L`): the app binds `127.0.0.1:<localPort>` locally and tunnels
   each connection to `remoteHost:remotePort` as reached from the SSH server, so a
@@ -78,7 +85,8 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   drawer does. Whole-file transfers (not streamed), so best for config files,
   logs and archives rather than very large files.
 - **Layout profiles** — save a workspace (grid + device assignments), set a
-  default, and have it restore and auto-connect every pane on launch.
+  default, and have it restore and auto-connect every pane on launch. Load a
+  profile into the current tab, or open it in a new tab.
 - **Host-key TOFU** — trust-on-first-use prompts with a prominent warning when a
   previously-trusted key changes (possible MITM).
 - **Auto-reconnect** (opt-in per device) — reconnects with backoff (2s/4s/8s,
@@ -159,6 +167,7 @@ All config is stored in the Tauri app-config directory
 | `devices.json`     | Saved devices — SSH, serial or local shell (**never** secrets) |
 | `profiles.json`    | Saved layout profiles + the default-profile id   |
 | `settings.json`    | Terminal appearance (incl. scrollback), UI language, SSH keepalive, last-used profile |
+| `workspace_state.json` | Open tabs restored on launch (per install; not synced between instances) |
 | `known_hosts.json` | Trusted host keys (TOFU)                         |
 
 **Secrets** (passwords, key passphrases) live only in the OS keychain — on

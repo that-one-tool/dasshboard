@@ -550,6 +550,39 @@ export async function setDefaultProfile(profileId: string | null): Promise<void>
 }
 
 /* ============================================================================
+ * Workspace state (Tabs milestone, Phase 3)
+ *
+ * Per-instance open-tabs layout, persisted to `workspace_state.json`. Separate
+ * from profiles and NOT part of the multi-instance config sync — so these use
+ * plain `invokeChecked` (no `markLocalConfigWrite`): the backend deliberately
+ * excludes `workspace_state.json` from the config file-watcher.
+ * ============================================================================ */
+
+/** One saved tab: display name, grid layout, row-major panes, linked profile. */
+export interface WorkspaceTabState {
+  name: string;
+  grid: GridModel;
+  panes: ProfilePane[];
+  linkedProfileId: string | null;
+}
+
+/** The saved open-tabs workspace. Empty `tabs` means nothing persisted yet. */
+export interface WorkspaceState {
+  tabs: WorkspaceTabState[];
+  activeIndex: number;
+}
+
+/** The saved workspace, or an empty one (no tabs) on first launch / corrupt file. */
+export async function getWorkspaceState(): Promise<WorkspaceState> {
+  return invokeChecked<WorkspaceState>("get_workspace_state");
+}
+
+/** Persists the open-tabs workspace (validated + atomic on the backend). */
+export async function saveWorkspaceState(workspace: WorkspaceState): Promise<void> {
+  await invokeChecked<void>("save_workspace_state", { workspace });
+}
+
+/* ============================================================================
  * Settings types & commands (SPEC §4–5, Phase 5)
  * ============================================================================ */
 

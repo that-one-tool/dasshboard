@@ -50,6 +50,14 @@ export const en = {
 	"grid.shrink.one": "{count} active session will be closed. Continue?",
 	"grid.shrink.other": "{count} active sessions will be closed. Continue?",
 
+	/* -- tabs (tabs/tabManager.ts) ------------------------------------------ */
+	"tabs.aria": "Workspace tabs",
+	"tabs.new": "New tab",
+	"tabs.close": "Close tab",
+	"tabs.rename": "Rename tab",
+	"tabs.untitled": "Tab {index}",
+	"tabs.linked": "Linked to a profile",
+
 	/* -- terminal pane (terminal/pane.ts, terminal/overlay.ts) -------------- */
 	"pane.connect": "Connect",
 	"pane.disconnect": "Disconnect",
@@ -215,12 +223,13 @@ export const en = {
 	"profiles.export.title": "Export profiles to a JSON file",
 	"profiles.import.title": "Import profiles from a JSON file",
 	"profiles.empty": "No saved profiles yet — Save As to create one.",
-	"profiles.bar.label": "Profile:",
+	"profiles.bar.label": "Current profile",
 	"profiles.bar.dirty": "Unsaved changes",
 	"profiles.bar.save": "Save",
 	"profiles.bar.saveAs": "Save As…",
 	"profiles.bar.unsaved": "Unsaved workspace",
 	"profiles.item.load": "Load this profile",
+	"profiles.item.openInTab": "Open in a new tab",
 	"profiles.item.setDefault": "Set as default",
 	"profiles.item.unsetDefault": "Unset default",
 	"profiles.item.rename": "Rename profile",

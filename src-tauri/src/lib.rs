@@ -16,6 +16,8 @@ mod ssh_config;
 mod state;
 mod store;
 mod transfer;
+mod workspace;
+mod workspace_store;
 
 // These modules are `pub` (not private `mod`) solely so the in-process
 // integration tests in `tests/` — a separate crate — can reach the types they
@@ -53,6 +55,7 @@ use settings::SettingsStore;
 use state::AppState;
 use store::DeviceStore;
 use tunnel::TunnelManager;
+use workspace_store::WorkspaceStore;
 
 /// Returns the application's semantic version, as recorded in `Cargo.toml`.
 ///
@@ -83,6 +86,9 @@ pub fn run() {
             let profile_store = ProfileStore::load(config_dir.clone());
             // App settings (SPEC.md §4): terminal appearance + last-used grid.
             let settings_store = SettingsStore::load(config_dir.clone());
+            // Per-instance open-tabs layout (Tabs milestone, Phase 3). Same
+            // app-config dir; restored on launch, saved (debounced) on change.
+            let workspace_store = WorkspaceStore::load(config_dir.clone());
             // Host-key TOFU store + SSH session manager (SPEC.md §3/§6). The
             // manager owns the known-hosts store (behind an `Arc`) so its
             // session tasks can consult/persist trust decisions.
@@ -108,6 +114,7 @@ pub fn run() {
                 device_store,
                 profile_store,
                 settings_store,
+                workspace_store,
                 secret_store,
                 session_manager,
                 tunnel_manager,
@@ -182,6 +189,8 @@ pub fn run() {
             commands::set_default_profile,
             commands::get_settings,
             commands::save_settings,
+            commands::get_workspace_state,
+            commands::save_workspace_state,
             commands::reload_config,
             commands::export_devices,
             commands::import_devices,

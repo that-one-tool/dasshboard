@@ -44,6 +44,14 @@ export const fr: Messages = {
 	"grid.shrink.one": "{count} session active sera fermée. Continuer ?",
 	"grid.shrink.other": "{count} sessions actives seront fermées. Continuer ?",
 
+	/* -- tabs (tabs/tabManager.ts) ------------------------------------------ */
+	"tabs.aria": "Onglets d'espace de travail",
+	"tabs.new": "Nouvel onglet",
+	"tabs.close": "Fermer l'onglet",
+	"tabs.rename": "Renommer l'onglet",
+	"tabs.untitled": "Onglet {index}",
+	"tabs.linked": "Lié à un profil",
+
 	/* -- terminal pane ------------------------------------------------------ */
 	"pane.connect": "Connecter",
 	"pane.disconnect": "Déconnecter",
@@ -209,12 +217,13 @@ export const fr: Messages = {
 	"profiles.export.title": "Exporter les profils vers un fichier JSON",
 	"profiles.import.title": "Importer les profils depuis un fichier JSON",
 	"profiles.empty": "Aucun profil enregistré — utilisez Enregistrer sous pour en créer un.",
-	"profiles.bar.label": "Profil :",
+	"profiles.bar.label": "Profil actuel",
 	"profiles.bar.dirty": "Modifications non enregistrées",
 	"profiles.bar.save": "Enregistrer",
 	"profiles.bar.saveAs": "Enregistrer sous…",
 	"profiles.bar.unsaved": "Espace de travail non enregistré",
 	"profiles.item.load": "Charger ce profil",
+	"profiles.item.openInTab": "Ouvrir dans un nouvel onglet",
 	"profiles.item.setDefault": "Définir par défaut",
 	"profiles.item.unsetDefault": "Retirer par défaut",
 	"profiles.item.rename": "Renommer le profil",

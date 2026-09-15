@@ -548,6 +548,7 @@ mod tests {
             device_store: DeviceStore::load(dir.to_path_buf()),
             profile_store: ProfileStore::load(dir.to_path_buf()),
             settings_store: SettingsStore::load(dir.to_path_buf()),
+            workspace_store: crate::workspace_store::WorkspaceStore::load(dir.to_path_buf()),
             secret_store: Arc::new(InMemorySecretStore::new()),
             session_manager,
             tunnel_manager,

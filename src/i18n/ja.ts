@@ -44,6 +44,14 @@ export const ja: Messages = {
 	"grid.shrink.one": "アクティブなセッション {count} 件が閉じられます。続行しますか？",
 	"grid.shrink.other": "アクティブなセッション {count} 件が閉じられます。続行しますか？",
 
+	/* -- tabs (tabs/tabManager.ts) ------------------------------------------ */
+	"tabs.aria": "ワークスペースタブ",
+	"tabs.new": "新しいタブ",
+	"tabs.close": "タブを閉じる",
+	"tabs.rename": "タブの名前を変更",
+	"tabs.untitled": "タブ {index}",
+	"tabs.linked": "プロファイルにリンク済み",
+
 	/* -- terminal pane ------------------------------------------------------ */
 	"pane.connect": "接続",
 	"pane.disconnect": "切断",
@@ -209,12 +217,13 @@ export const ja: Messages = {
 	"profiles.export.title": "プロファイルを JSON ファイルにエクスポート",
 	"profiles.import.title": "JSON ファイルからプロファイルをインポート",
 	"profiles.empty": "保存済みのプロファイルはまだありません — 「名前を付けて保存」で作成してください。",
-	"profiles.bar.label": "プロファイル：",
+	"profiles.bar.label": "現在のプロファイル",
 	"profiles.bar.dirty": "未保存の変更",
 	"profiles.bar.save": "保存",
 	"profiles.bar.saveAs": "名前を付けて保存…",
 	"profiles.bar.unsaved": "未保存のワークスペース",
 	"profiles.item.load": "このプロファイルを読み込む",
+	"profiles.item.openInTab": "新しいタブで開く",
 	"profiles.item.setDefault": "デフォルトに設定",
 	"profiles.item.unsetDefault": "デフォルトを解除",
 	"profiles.item.rename": "プロファイルの名前を変更",

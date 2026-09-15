@@ -35,7 +35,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openMock(...args),
 }));
 
-import { ProfileManager } from "./profileManager";
+import { ProfileManager, type ProfileWorkspace } from "./profileManager";
 import {
   listProfiles,
   saveProfile,
@@ -43,25 +43,49 @@ import {
   importProfiles,
 } from "../ipc";
 
-/** A minimal stand-in for `Grid`: only `snapshot`/`applyProfile` are exercised. */
+/**
+ * A minimal stand-in for the tabbed workspace: one grid whose `snapshot()` /
+ * `applyProfile()` are exercised, plus a `workspace` bridge that tracks the
+ * active tab's linked-profile id in memory (as `TabManager` would).
+ */
 function fakeGrid(snapshot: WorkspaceSnapshot): {
   grid: Grid;
+  workspace: ProfileWorkspace;
   applyProfile: ReturnType<typeof vi.fn>;
   setSnapshot: (s: WorkspaceSnapshot) => void;
+  linkedProfileId: () => string | null;
 } {
   let current = snapshot;
+  let linked: string | null = null;
   const applyProfile = vi.fn(async () => true);
   const stub = {
     snapshot: () => current,
     applyProfile,
     liveSessionCount: () => 0,
+  } as unknown as Grid;
+  const workspace: ProfileWorkspace = {
+    activeGrid: () => stub,
+    activeLinkedProfileId: () => linked,
+    setActiveLinkedProfileId: (id) => {
+      linked = id;
+    },
+    refreshTabStrip: () => {},
+    clearProfileLink: (id) => {
+      if (linked === id) linked = null;
+    },
+    openTab: async (opts) => {
+      linked = opts.linkedProfileId; // mirror TabManager: the new tab is active + linked
+      return stub;
+    },
   };
   return {
-    grid: stub as unknown as Grid,
+    grid: stub,
+    workspace,
     applyProfile,
     setSnapshot: (s) => {
       current = s;
     },
+    linkedProfileId: () => linked,
   };
 }
 
@@ -107,7 +131,7 @@ describe("ProfileManager app-start", () => {
       profiles: [profile(["dev-1", null])],
     });
 
-    const mgr = new ProfileManager({ grid: g.grid, onError: vi.fn(), onSuccess: vi.fn() });
+    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
     await mgr.init(null);
     await flush();
 
@@ -130,7 +154,7 @@ describe("ProfileManager app-start", () => {
 
     const onProfileChange = vi.fn();
     const mgr = new ProfileManager({
-      grid: g.grid,
+      workspace: g.workspace,
       onError: vi.fn(),
       onSuccess: vi.fn(),
       onProfileChange,
@@ -157,7 +181,7 @@ describe("ProfileManager app-start", () => {
       profiles: [def, last],
     });
 
-    const mgr = new ProfileManager({ grid: g.grid, onError: vi.fn(), onSuccess: vi.fn() });
+    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
     await mgr.init("last"); // last-used points elsewhere, but default wins
     await flush();
 
@@ -177,7 +201,7 @@ describe("ProfileManager app-start", () => {
 
     const onProfileChange = vi.fn();
     const mgr = new ProfileManager({
-      grid: g.grid,
+      workspace: g.workspace,
       onError: vi.fn(),
       onSuccess: vi.fn(),
       onProfileChange,
@@ -196,7 +220,7 @@ describe("ProfileManager app-start", () => {
     const g = fakeGrid(snapshot([null, null]));
     vi.mocked(listProfiles).mockResolvedValue({ defaultProfileId: null, profiles: [] });
 
-    const mgr = new ProfileManager({ grid: g.grid, onError: vi.fn(), onSuccess: vi.fn() });
+    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
     await mgr.init(null);
     await flush();
 
@@ -229,7 +253,7 @@ describe("ProfileManager dirty state + save", () => {
     const g = fakeGrid(snapshot(["dev-1", null]));
     wireStore([profile(["dev-1", null])], "p1");
 
-    const mgr = new ProfileManager({ grid: g.grid, onError: vi.fn(), onSuccess: vi.fn() });
+    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
     await mgr.init(null);
     await flush();
     expect(dot()?.hidden).toBe(true);
@@ -256,7 +280,7 @@ describe("ProfileManager dirty state + save", () => {
     const g = fakeGrid(snapshot(["dev-1", "dev-2"]));
     wireStore([profile(["dev-1", "dev-2"])], "p1");
 
-    const mgr = new ProfileManager({ grid: g.grid, onError: vi.fn(), onSuccess: vi.fn() });
+    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
     await mgr.init(null);
     await flush();
 
@@ -270,12 +294,58 @@ describe("ProfileManager dirty state + save", () => {
   });
 });
 
+describe("ProfileManager per-tab (Tabs Phase 2)", () => {
+  it("resolveTabState reports linked + dirty against the tab's profile", async () => {
+    const g = fakeGrid(snapshot(["dev-1", null]));
+    vi.mocked(listProfiles).mockResolvedValue({
+      defaultProfileId: null,
+      profiles: [profile(["dev-1", null])], // id "p1"
+    });
+    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
+    await mgr.init(null);
+    await flush();
+
+    // Linked to an existing profile, snapshot matches → not dirty.
+    expect(mgr.resolveTabState("p1", g.grid)).toEqual({ linked: true, dirty: false });
+    // Unknown id (deleted/dangling) → not linked.
+    expect(mgr.resolveTabState("gone", g.grid)).toEqual({ linked: false, dirty: false });
+    // Linked but the live workspace differs → dirty.
+    g.setSnapshot(snapshot(["dev-1", "dev-2"]));
+    expect(mgr.resolveTabState("p1", g.grid)).toEqual({ linked: true, dirty: true });
+  });
+
+  it("Open-in-new-tab applies the profile into a fresh linked tab", async () => {
+    const g = fakeGrid(snapshot([null, null]));
+    const onSuccess = vi.fn();
+    vi.mocked(listProfiles).mockResolvedValue({
+      defaultProfileId: null,
+      profiles: [profile(["dev-1", null])], // id "p1"
+    });
+    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess });
+    await mgr.init(null); // nothing loaded → active tab unlinked
+    await flush();
+    expect(g.linkedProfileId()).toBeNull();
+
+    document.querySelector<HTMLButtonElement>('[data-action="open-tab"]')?.click();
+    await flush();
+
+    // The profile was applied into the new tab (no teardown confirm) and that
+    // tab is now linked to it.
+    expect(g.applyProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "p1" }),
+      { confirmTeardown: false },
+    );
+    expect(g.linkedProfileId()).toBe("p1");
+    expect(onSuccess).toHaveBeenCalled();
+  });
+});
+
 describe("ProfileManager busy guard (F12)", () => {
   it("does not open two Save As prompts on a rapid double click", async () => {
     const g = fakeGrid(snapshot([null, null]));
     vi.mocked(listProfiles).mockResolvedValue({ defaultProfileId: null, profiles: [] });
 
-    const mgr = new ProfileManager({ grid: g.grid, onError: vi.fn(), onSuccess: vi.fn() });
+    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
     await mgr.init(null);
     await flush();
 
@@ -308,7 +378,7 @@ describe("ProfileManager busy guard (F12)", () => {
         }),
     );
 
-    const mgr = new ProfileManager({ grid: g.grid, onError: vi.fn(), onSuccess: vi.fn() });
+    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
     await mgr.init(null);
     await flush();
 
@@ -343,7 +413,7 @@ describe("ProfileManager import/export", () => {
   async function initManager(): Promise<ProfileManager> {
     const g = fakeGrid(snapshot(["dev-1", null]));
     const mgr = new ProfileManager({
-      grid: g.grid,
+      workspace: g.workspace,
       onError: vi.fn(),
       onSuccess: vi.fn(),
     });

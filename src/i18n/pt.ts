@@ -44,6 +44,14 @@ export const pt: Messages = {
 	"grid.shrink.one": "{count} sessão ativa será fechada. Continuar?",
 	"grid.shrink.other": "{count} sessões ativas serão fechadas. Continuar?",
 
+	/* -- tabs (tabs/tabManager.ts) ------------------------------------------ */
+	"tabs.aria": "Abas do espaço de trabalho",
+	"tabs.new": "Nova aba",
+	"tabs.close": "Fechar aba",
+	"tabs.rename": "Renomear aba",
+	"tabs.untitled": "Aba {index}",
+	"tabs.linked": "Vinculada a um perfil",
+
 	/* -- terminal pane ------------------------------------------------------ */
 	"pane.connect": "Ligar",
 	"pane.disconnect": "Desligar",
@@ -209,12 +217,13 @@ export const pt: Messages = {
 	"profiles.export.title": "Exportar perfis para um ficheiro JSON",
 	"profiles.import.title": "Importar perfis de um ficheiro JSON",
 	"profiles.empty": "Ainda não há perfis guardados — use Guardar como para criar um.",
-	"profiles.bar.label": "Perfil:",
+	"profiles.bar.label": "Perfil atual",
 	"profiles.bar.dirty": "Alterações não guardadas",
 	"profiles.bar.save": "Guardar",
 	"profiles.bar.saveAs": "Guardar como…",
 	"profiles.bar.unsaved": "Espaço de trabalho não guardado",
 	"profiles.item.load": "Carregar este perfil",
+	"profiles.item.openInTab": "Abrir em uma nova aba",
 	"profiles.item.setDefault": "Definir como predefinido",
 	"profiles.item.unsetDefault": "Remover predefinição",
 	"profiles.item.rename": "Renomear perfil",

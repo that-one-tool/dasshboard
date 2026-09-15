@@ -31,6 +31,7 @@ use crate::settings::Settings;
 use crate::sftp::{SftpEntry, SftpParams, SftpSink};
 use crate::state::AppState;
 use crate::tunnel::{ForwardStatus, TunnelInfo, TunnelParams, TunnelSink, TunnelStatus};
+use crate::workspace::WorkspaceState;
 
 fn list_devices_impl(state: &AppState) -> Vec<Device> {
     state.device_store.list()
@@ -156,6 +157,14 @@ fn save_settings_impl(state: &AppState, settings: Settings) -> Result<Settings, 
     state.settings_store.save(settings)
 }
 
+fn get_workspace_state_impl(state: &AppState) -> WorkspaceState {
+    state.workspace_store.get()
+}
+
+fn save_workspace_state_impl(state: &AppState, workspace: WorkspaceState) -> Result<(), AppError> {
+    state.workspace_store.save(workspace)
+}
+
 /// Re-reads every persisted config file (devices, profiles, settings, known
 /// hosts) from disk into the in-memory stores, so a second running app instance
 /// picks up changes another instance made. Each store caches its file at
@@ -248,6 +257,25 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, AppError> {
 #[tauri::command]
 pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<Settings, AppError> {
     save_settings_impl(&state, settings)
+}
+
+/// The saved open-tabs workspace (Tabs milestone, Phase 3). Empty `tabs` means
+/// nothing has been persisted yet — the frontend then falls back to the
+/// default/last profile (the `lastProfileId` migration).
+#[tauri::command]
+pub fn get_workspace_state(state: State<'_, AppState>) -> Result<WorkspaceState, AppError> {
+    Ok(get_workspace_state_impl(&state))
+}
+
+/// Persists the open-tabs workspace (validated, atomic). Per-instance UI state:
+/// `workspace_state.json` is deliberately excluded from the config watcher, so
+/// this write never triggers a multi-instance reload.
+#[tauri::command]
+pub fn save_workspace_state(
+    state: State<'_, AppState>,
+    workspace: WorkspaceState,
+) -> Result<(), AppError> {
+    save_workspace_state_impl(&state, workspace)
 }
 
 /// Reloads every persisted config file from disk into memory (multi-instance
@@ -1176,6 +1204,7 @@ mod tests {
             device_store: DeviceStore::load(dir.to_path_buf()),
             profile_store: ProfileStore::load(dir.to_path_buf()),
             settings_store: SettingsStore::load(dir.to_path_buf()),
+            workspace_store: crate::workspace_store::WorkspaceStore::load(dir.to_path_buf()),
             secret_store: Arc::new(InMemorySecretStore::new()),
             session_manager,
             tunnel_manager,
@@ -1199,6 +1228,7 @@ mod tests {
             device_store: DeviceStore::load(dir.to_path_buf()),
             profile_store: ProfileStore::load(dir.to_path_buf()),
             settings_store: SettingsStore::load(dir.to_path_buf()),
+            workspace_store: crate::workspace_store::WorkspaceStore::load(dir.to_path_buf()),
             secret_store,
             session_manager,
             tunnel_manager,

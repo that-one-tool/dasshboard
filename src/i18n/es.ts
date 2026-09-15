@@ -44,6 +44,14 @@ export const es: Messages = {
 	"grid.shrink.one": "Se cerrará {count} sesión activa. ¿Continuar?",
 	"grid.shrink.other": "Se cerrarán {count} sesiones activas. ¿Continuar?",
 
+	/* -- tabs (tabs/tabManager.ts) ------------------------------------------ */
+	"tabs.aria": "Pestañas del espacio de trabajo",
+	"tabs.new": "Nueva pestaña",
+	"tabs.close": "Cerrar pestaña",
+	"tabs.rename": "Cambiar nombre de la pestaña",
+	"tabs.untitled": "Pestaña {index}",
+	"tabs.linked": "Vinculada a un perfil",
+
 	/* -- terminal pane ------------------------------------------------------ */
 	"pane.connect": "Conectar",
 	"pane.disconnect": "Desconectar",
@@ -209,12 +217,13 @@ export const es: Messages = {
 	"profiles.export.title": "Exportar perfiles a un archivo JSON",
 	"profiles.import.title": "Importar perfiles desde un archivo JSON",
 	"profiles.empty": "Aún no hay perfiles guardados — usa Guardar como para crear uno.",
-	"profiles.bar.label": "Perfil:",
+	"profiles.bar.label": "Perfil actual",
 	"profiles.bar.dirty": "Cambios sin guardar",
 	"profiles.bar.save": "Guardar",
 	"profiles.bar.saveAs": "Guardar como…",
 	"profiles.bar.unsaved": "Espacio de trabajo sin guardar",
 	"profiles.item.load": "Cargar este perfil",
+	"profiles.item.openInTab": "Abrir en una pestaña nueva",
 	"profiles.item.setDefault": "Establecer como predeterminado",
 	"profiles.item.unsetDefault": "Quitar predeterminado",
 	"profiles.item.rename": "Renombrar perfil",

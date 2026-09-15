@@ -44,6 +44,14 @@ export const de: Messages = {
 	"grid.shrink.one": "{count} aktive Sitzung wird geschlossen. Fortfahren?",
 	"grid.shrink.other": "{count} aktive Sitzungen werden geschlossen. Fortfahren?",
 
+	/* -- tabs (tabs/tabManager.ts) ------------------------------------------ */
+	"tabs.aria": "Arbeitsbereich-Tabs",
+	"tabs.new": "Neuer Tab",
+	"tabs.close": "Tab schließen",
+	"tabs.rename": "Tab umbenennen",
+	"tabs.untitled": "Tab {index}",
+	"tabs.linked": "Mit einem Profil verknüpft",
+
 	/* -- terminal pane ------------------------------------------------------ */
 	"pane.connect": "Verbinden",
 	"pane.disconnect": "Trennen",
@@ -209,12 +217,13 @@ export const de: Messages = {
 	"profiles.export.title": "Profile in eine JSON-Datei exportieren",
 	"profiles.import.title": "Profile aus einer JSON-Datei importieren",
 	"profiles.empty": "Noch keine gespeicherten Profile — mit Speichern unter eines erstellen.",
-	"profiles.bar.label": "Profil:",
+	"profiles.bar.label": "Aktuelles Profil",
 	"profiles.bar.dirty": "Nicht gespeicherte Änderungen",
 	"profiles.bar.save": "Speichern",
 	"profiles.bar.saveAs": "Speichern unter…",
 	"profiles.bar.unsaved": "Nicht gespeicherter Arbeitsbereich",
 	"profiles.item.load": "Dieses Profil laden",
+	"profiles.item.openInTab": "In neuem Tab öffnen",
 	"profiles.item.setDefault": "Als Standard festlegen",
 	"profiles.item.unsetDefault": "Standard aufheben",
 	"profiles.item.rename": "Profil umbenennen",

@@ -2,11 +2,13 @@
  * Settings controller (Phase 5): loads `settings.json`, owns the current
  * in-memory settings, renders the settings dialog, applies terminal appearance
  * live to every pane, and persists the id of the last-used profile. Thin glue
- * over the settings IPC + the `Grid`; the pure bits (theme mapping, defaults)
- * live in `../terminal/terminalSettings`.
+ * over the settings IPC; the pure bits (theme mapping, defaults) live in
+ * `../terminal/terminalSettings`. Terminal appearance is pushed out through an
+ * injected `applyTerminalSettings` callback (wired in `main.ts` to fan across
+ * every tab's grid) rather than a direct `Grid` reference, so it stays correct
+ * as the active tab changes.
  */
 
-import type { Grid } from "../grid";
 import { getSettings, saveSettings, type Settings, type TerminalSettings } from "../ipc";
 import { DEFAULT_TERMINAL_SETTINGS } from "../terminal/terminalSettings";
 import {
@@ -19,7 +21,8 @@ import {
 } from "../i18n";
 
 export interface SettingsControllerOptions {
-  grid: Grid;
+  /** Applies terminal appearance live (main.ts fans it across every tab's grid). */
+  applyTerminalSettings: (settings: TerminalSettings) => void;
   onError: (message: string) => void;
 }
 
@@ -38,12 +41,12 @@ const FALLBACK_SETTINGS: Settings = {
 };
 
 export class SettingsController {
-  private grid: Grid;
+  private applyTerminalSettings: (settings: TerminalSettings) => void;
   private onError: (message: string) => void;
   private settings: Settings = FALLBACK_SETTINGS;
 
   constructor(options: SettingsControllerOptions) {
-    this.grid = options.grid;
+    this.applyTerminalSettings = options.applyTerminalSettings;
     this.onError = options.onError;
   }
 
@@ -77,7 +80,7 @@ export class SettingsController {
     try {
       const fresh = await getSettings();
       this.settings = fresh;
-      this.grid.applyTerminalSettings(fresh.terminal);
+      this.applyTerminalSettings(fresh.terminal);
       // Another instance may have changed the language; adopt it. `setLocale`
       // is a no-op when unchanged, and otherwise notifies the locale listeners
       // (wired in `main.ts`) to re-render every view.
@@ -111,7 +114,7 @@ export class SettingsController {
 
   private async applyTerminal(terminal: TerminalSettings): Promise<void> {
     this.settings = { ...this.settings, terminal };
-    this.grid.applyTerminalSettings(terminal); // live to existing terminals
+    this.applyTerminalSettings(terminal); // live to existing terminals
     await this.save();
   }
 

@@ -55,27 +55,19 @@ body {
 	height: 100vh;
 }
 
-.app-header {
-	display: flex;
-	align-items: center;
-	gap: 12px;
-	flex: 0 0 auto;
-	padding: 12px;
-	border-bottom: 1px solid #3c3c3c;
-}
-
-.app-header h1 {
-	margin: 0;
-	font-size: 1.25rem;
-}
-
-/* The action buttons cluster at the right edge of the header (`margin-left:auto`
- * pushes the whole group past the title). */
+/* The app-action buttons (reload / trusted-hosts / settings / help). There is no
+ * separate app header any more — the TabManager mounts this group at the right
+ * end of the tab-strip row, where `margin-left:auto` pins it past the tabs. */
 .header-actions {
 	display: flex;
 	align-items: center;
 	gap: 8px;
 	margin-left: auto;
+	/* Centred in the strip and nudged up so the icons don't crowd the tab-row
+	 * bottom border. */
+	align-self: center;
+	margin-bottom: 4px;
+	flex: 0 0 auto;
 }
 
 .app-content {
@@ -278,6 +270,196 @@ body {
 	flex: 1 1 auto;
 	min-height: 0;
 	display: flex;
+}
+
+/* ============================================================================
+ * Tabs (Tabs milestone, Phase 1): strip on top, the active workspace below.
+ * `#pane-root` keeps its `.pane-root` class (flex) but `.tab-root` stacks the
+ * strip over the workspace stack. Inactive panels are `display:none` so their
+ * background sessions keep running; the active panel holds a full `.grid-root`.
+ * ============================================================================ */
+
+.tab-root {
+	flex-direction: column;
+	gap: 6px;
+}
+
+/* The strip reads as a browser-style tab bar: a full-width baseline that the
+ * active tab connects into (its bottom edge overlaps the line and its
+ * content-coloured fill hides that segment, so it looks joined to the workspace
+ * below). */
+.tab-strip {
+	display: flex;
+	align-items: stretch;
+	gap: 2px;
+	flex: 0 0 auto;
+	padding: 0 2px;
+	border-bottom: 1px solid #333;
+}
+
+/* Only the tabs scroll when they overflow; the `+` button and the mounted
+ * app-action buttons after it stay pinned at the right. */
+.tab-strip-tabs {
+	display: flex;
+	align-items: stretch;
+	gap: 2px;
+	min-width: 0;
+	flex: 0 1 auto;
+	overflow-x: auto;
+	overflow-y: hidden; /* stop overflow-x:auto from forcing a vertical scrollbar */
+	scrollbar-width: thin;
+}
+
+.tab {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	padding: 6px 9px;
+	min-width: 92px;
+	max-width: 220px;
+	border: 1px solid transparent;
+	border-bottom: none;
+	border-radius: 7px 7px 0 0;
+	background: transparent;
+	color: #9d9d9d;
+	font-size: 0.83rem;
+	cursor: pointer;
+	white-space: nowrap;
+	transition:
+		background 150ms ease,
+		color 150ms ease;
+}
+
+.tab:hover {
+	background: #2a2a2b;
+	color: #d4d4d4;
+}
+
+/* Active tab: filled with the workspace colour, outlined on three sides, and
+ * capped by a 2px accent bar drawn as an inset shadow (no layout shift and no
+ * vertical overflow, so the tab row never grows a scrollbar). */
+.tab.tab-active {
+	background: #1e1e1e;
+	color: #fff;
+	border-color: #333;
+	font-weight: 500;
+	box-shadow: inset 0 2px 0 #007acc;
+}
+
+.tab-name {
+	flex: 0 1 auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Inline rename field (double-click a tab), sized to sit in place of the name. */
+.tab-rename-input {
+	font: inherit;
+	color: #fff;
+	background: #111;
+	border: 1px solid #007acc;
+	border-radius: 4px;
+	padding: 1px 5px;
+	width: 12ch;
+	min-width: 0;
+}
+
+/* Profile-link badge (blue ring) and unsaved-changes dot (warm accent); both a
+ * touch larger with a soft halo so they register without shouting. Toggled via
+ * the `hidden` attribute. */
+.tab-badge,
+.tab-dirty-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	flex: 0 0 auto;
+}
+
+.tab-badge {
+	background: #3794ff;
+	box-shadow: 0 0 0 2px rgba(55, 148, 255, 0.18);
+}
+
+.tab-dirty-dot {
+	background: #e0913a;
+	box-shadow: 0 0 0 2px rgba(224, 145, 58, 0.2);
+}
+
+/* Close affordance: reserves its slot always (no width shift), but only fades in
+ * on hover or for the active tab. */
+.tab-close {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	width: 17px;
+	height: 17px;
+	margin-right: -2px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+	opacity: 0;
+	transition:
+		opacity 120ms ease,
+		background 120ms ease;
+}
+
+.tab:hover .tab-close,
+.tab.tab-active .tab-close {
+	opacity: 0.55;
+}
+
+.tab-close:hover {
+	opacity: 1;
+	background: rgba(255, 255, 255, 0.14);
+}
+
+/* "New tab" button: a quiet ghost icon that echoes the tab hover treatment. */
+.tab-new-btn {
+	flex: 0 0 auto;
+	align-self: center;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	margin-left: 2px;
+	padding: 0;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: #9d9d9d;
+	cursor: pointer;
+	transition:
+		background 150ms ease,
+		color 150ms ease;
+}
+
+.tab-new-btn:hover {
+	background: #2a2a2b;
+	color: #d4d4d4;
+}
+
+.tab-stack {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	min-width: 0;
+	display: flex;
+}
+
+.tab-panel {
+	flex: 1 1 auto;
+	min-height: 0;
+	min-width: 0;
+	display: flex;
+}
+
+.tab-hidden {
+	display: none;
 }
 
 /* ============================================================================
@@ -1077,33 +1259,53 @@ body.grid-dragging-row * {
 }
 
 /* Toolbar bar for the current profile */
+/* The current-profile block sits at the top of the sidebar (its own card,
+ * matching the Devices/Profiles cards): the "Current profile" label + name on
+ * the left, the Save / Save As icon buttons pinned right — all on one row. */
 .profile-bar {
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	padding: 6px 10px;
+	gap: 6px;
 	background-color: #252526;
-	border-bottom: 1px solid #3c3c3c;
+	border: 1px solid #3c3c3c;
+	border-radius: 4px;
+	padding: 6px 8px;
+	flex: 0 0 auto;
 	font-size: 13px;
+}
+
+.profile-bar-info {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	min-width: 0;
+	flex: 1 1 auto;
 }
 
 .profile-current-label {
 	color: #9d9d9d;
+	flex: 0 0 auto;
 }
 
 .profile-current-name {
 	color: #d4d4d4;
 	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .profile-dirty-dot {
 	color: #e2c08d;
 	font-size: 18px;
 	line-height: 1;
+	flex: 0 0 auto;
 }
 
-.profile-bar-spacer {
-	flex: 1 1 auto;
+.profile-bar-actions {
+	display: flex;
+	gap: 4px;
+	flex: 0 0 auto;
 }
 
 /* Prompt dialog (Save As / Rename) reuses the shared .dialog styling. The body

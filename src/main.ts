@@ -3,10 +3,14 @@ import {
   reloadConfig,
   onConfigChanged,
   isLocalConfigWriteRecent,
+  getWorkspaceState,
+  saveWorkspaceState,
   type AppError,
+  type WorkspaceState,
 } from "./ipc";
 import { initDeviceManager } from "./devices/deviceManager";
-import { Grid } from "./grid";
+import { TabManager, type TabProfileState } from "./tabs/tabManager";
+import type { Grid } from "./grid";
 import { ProfileManager } from "./profiles/profileManager";
 import { SettingsController } from "./settings/settingsController";
 import { DEFAULT_TERMINAL_SETTINGS } from "./terminal/terminalSettings";
@@ -65,52 +69,91 @@ async function initApp(): Promise<void> {
 	// (a live connect or the device editor's Test connection button).
 	initHostKeyDialog();
 
-	// The multi-pane grid of SSH terminals (Phase 3). Starts as a 1x1 grid; the
-	// toolbar preset picker grows/shrinks it and each cell is an independent
-	// `TerminalPane` managing its own session/status/overlay.
+	// The tabbed workspace (Tabs milestone, Phase 1). Each tab owns an independent
+	// multi-pane `Grid` of SSH terminals; only the active tab is visible while the
+	// rest keep their sessions alive in the background. Profile/settings actions
+	// target the active tab's grid; refresh/retranslate fan across every tab.
 	const paneRoot = document.querySelector<HTMLElement>("#pane-root");
 	if (!paneRoot) return;
 
-	// `onChange` is wired to the collaborators once they exist (below); the grid
-	// is constructed first, so route through a late-bound callback. Terminal
-	// settings are read live via `settings` (also constructed after the grid).
+	// `onChange` is wired to the collaborators once they exist (below); the tabs
+	// are constructed first, so route through a late-bound callback. Terminal
+	// settings are read live via `settings` (also constructed after the tabs).
 	let onWorkspaceChange = (): void => {};
+	let onActiveTabChange = (): void => {};
+	let resolveTabState = (_id: string | null, _g: Grid): TabProfileState => ({
+		linked: false,
+		dirty: false,
+	});
 	let currentTerminalSettings = () => DEFAULT_TERMINAL_SETTINGS;
-	const grid = new Grid(paneRoot, {
-		onError: (message) => showToast(t("error.prefix", { message }), "error"),
-		onChange: () => onWorkspaceChange(),
-		getTerminalSettings: () => currentTerminalSettings(),
+	const tabs = new TabManager(paneRoot, {
+		grid: {
+			onError: (message) => showToast(t("error.prefix", { message }), "error"),
+			onChange: () => onWorkspaceChange(),
+			getTerminalSettings: () => currentTerminalSettings(),
+		},
+		onActiveTabChange: () => onActiveTabChange(),
+		resolveTabState: (id, g) => resolveTabState(id, g),
+		// Per-instance UI state — plain save, not routed through the config watcher.
+		// Surface a failed save like every other IPC call rather than dropping it.
+		persist: (state) =>
+			void saveWorkspaceState(state).catch((error: AppError) =>
+				showToast(t("error.prefix", { message: error.message }), "error"),
+			),
+		// The app-action buttons move into the tab-strip row (no separate header).
+		headerActions: document.querySelector<HTMLElement>(".header-actions"),
 	});
 
 	// Settings (Phase 5): terminal appearance + UI language. Initialized BEFORE
-	// the grid and the other views render, because `settings.init()` resolves and
+	// the tabs and the other views render, because `settings.init()` resolves and
 	// applies the UI locale (stored language → OS → English) and translates the
 	// static header; everything built afterwards renders in the right language.
+	// Terminal appearance is fanned across every tab's grid.
 	const settings = new SettingsController({
-		grid,
+		applyTerminalSettings: (s) => tabs.forEachGrid((g) => g.applyTerminalSettings(s)),
 		onError: (message) => showToast(t("error.prefix", { message }), "error"),
 	});
 	await settings.init();
 	currentTerminalSettings = () => settings.terminalSettings();
 
-	await grid.init();
+	// Restore the saved tab set (Tabs, Phase 3). An empty/absent state → one
+	// blank tab, into which ProfileManager then loads the default/last profile
+	// (the `lastProfileId` migration). A non-empty state → tabs are rebuilt from
+	// their own snapshots, so the profile start-load is skipped.
+	let restoredWorkspace: WorkspaceState = { tabs: [], activeIndex: 0 };
+	try {
+		restoredWorkspace = await getWorkspaceState();
+	} catch (error) {
+		showToast(t("error.prefix", { message: (error as AppError).message }), "error");
+	}
+	const workspaceRestored = restoredWorkspace.tabs.length > 0;
+	await tabs.init(workspaceRestored ? restoredWorkspace : undefined);
 
 	// Profiles (Phase 4): the sidebar list + toolbar Save/Save As with a
 	// dirty-state dot. `init()` loads the start profile — default if set, else
-	// the last-used profile, else nothing (1x1) — per SPEC §7.
+	// the last-used profile, else nothing (1x1) — per SPEC §7. Acts on the
+	// active tab's grid.
 	const profileManager = new ProfileManager({
-		grid,
+		workspace: {
+			activeGrid: () => tabs.activeGrid(),
+			activeLinkedProfileId: () => tabs.activeLinkedProfileId(),
+			setActiveLinkedProfileId: (id) => tabs.setActiveLinkedProfileId(id),
+			refreshTabStrip: () => tabs.refreshStrip(),
+			clearProfileLink: (id) => tabs.clearProfileLink(id),
+			openTab: (opts) => tabs.openTab(opts),
+		},
 		onError: (message) => showToast(t("error.prefix", { message }), "error"),
 		onSuccess: (message) => showToast(message, "success"),
-		// Remember the loaded profile so a restart without a default reloads it.
+		// Remember the active tab's profile so a restart without a default reloads it.
 		onProfileChange: (id) => void settings.persistLastProfileId(id),
 	});
-	// A workspace change just updates the dirty dot; the last-used *profile* is
-	// tracked via `onProfileChange`, not the live (possibly unsaved) grid.
-	onWorkspaceChange = () => {
-		profileManager.refreshDirty();
-	};
-	await profileManager.init(settings.lastProfileId());
+	// A workspace change just updates the dirty dot (bar + strip). A tab switch
+	// re-renders the bar/list for the newly active tab. The tab strip's per-tab
+	// badge + dot are computed by the profile manager via `resolveTabState`.
+	onWorkspaceChange = () => profileManager.refreshDirty();
+	onActiveTabChange = () => profileManager.onActiveTabChanged();
+	resolveTabState = (id, g) => profileManager.resolveTabState(id, g);
+	await profileManager.init(settings.lastProfileId(), { loadStart: !workspaceRestored });
 
 	// Tunnels drawer (local port-forwarding): a header-toggled panel listing
 	// SSH devices with forwards, with Start/Stop + live status. Independent of
@@ -138,7 +181,7 @@ async function initApp(): Promise<void> {
 		},
 		onSuccess: (message: string) => {
 			showToast(message, "success");
-			void grid.refreshDevices();
+			tabs.forEachGrid((g) => void g.refreshDevices());
 			void profileManager.reload();
 			void tunnelsPanel.refresh();
 			void sftpPanel.refresh();
@@ -164,7 +207,7 @@ async function initApp(): Promise<void> {
 		// skip the others, so settle all rather than short-circuiting.
 		await Promise.allSettled([
 			deviceManager?.reload() ?? Promise.resolve(),
-			grid.refreshDevices(),
+			...tabs.mapGrids((g) => g.refreshDevices()),
 			profileManager.reload(),
 			settings.reloadFromDisk(),
 			tunnelsPanel.refresh(),
@@ -193,7 +236,8 @@ async function initApp(): Promise<void> {
 	// untouched — only their labels change.
 	onLocaleChange(() => {
 		applyDomTranslations(document);
-		grid.retranslate();
+		tabs.forEachGrid((g) => g.retranslate());
+		tabs.retranslate();
 		profileManager.retranslate();
 		deviceManager?.retranslate();
 		tunnelsPanel.retranslate();
