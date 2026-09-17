@@ -95,13 +95,13 @@ export const de: Messages = {
 	"about.unavailable": "Version nicht verfügbar",
 
 	/* -- devices sidebar + dialog ------------------------------------------- */
-	"devices.title": "Geräte",
+	"devices.title": "Hosts/Geräte",
 	"devices.add.title": "Gerät hinzufügen",
 	"devices.export.title": "Geräte in eine JSON-Datei exportieren",
 	"devices.import.title": "Geräte aus einer JSON-Datei importieren",
 	"devices.importSsh": "SSH-Konfiguration importieren",
 	"devices.importSsh.title": "Geräte aus einer OpenSSH-Konfiguration importieren (~/.ssh/config)",
-	"devices.empty": "Noch keine Geräte.<br />Klicken Sie oben auf <strong>+ Hinzufügen</strong>, um das erste zu erstellen.",
+	"devices.empty": "Noch keine Hosts/Geräte.<br />Klicken Sie oben auf <strong>+ Hinzufügen</strong>, um das erste zu erstellen.",
 	"devices.noMatches": "Keine Geräte entsprechen Ihrer Suche.",
 	"devices.search.placeholder": "Geräte suchen…",
 	"devices.search.aria": "Geräte nach Name, Host oder Tag suchen",
@@ -122,6 +122,10 @@ export const de: Messages = {
 	"devices.field.shell.placeholder": "Leer lassen für die Standard-Shell",
 	"devices.field.cwd": "Startverzeichnis",
 	"devices.field.cwd.placeholder": "Leer lassen für Ihr Benutzerverzeichnis",
+	"devices.field.connectSnippet": "Befehle beim Verbinden",
+	"devices.field.connectSnippet.placeholder": "cd /var/log\ntail -f app.log",
+	"devices.field.connectSnippet.hint":
+		"Werden nach dem Verbinden Zeile für Zeile ins Terminal eingegeben, als drückten Sie die Eingabetaste.",
 	"devices.field.host": "Host",
 	"devices.field.host.placeholder": "192.168.1.10",
 	"devices.field.port": "Port",

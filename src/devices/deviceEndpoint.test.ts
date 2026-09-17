@@ -16,6 +16,7 @@ const sshDevice: Device = {
   forwardAgent: false,
   autoReconnect: false,
   tags: [],
+  connectSnippet: null,
 };
 
 const serialDevice: Device = {
@@ -30,6 +31,7 @@ const serialDevice: Device = {
   flowControl: "none",
   autoReconnect: false,
   tags: [],
+  connectSnippet: null,
 };
 
 const localShellWithShell: Device = {
@@ -40,6 +42,7 @@ const localShellWithShell: Device = {
   cwd: null,
   autoReconnect: false,
   tags: [],
+  connectSnippet: null,
 };
 
 const localShellDefault: Device = {
@@ -50,6 +53,7 @@ const localShellDefault: Device = {
   cwd: null,
   autoReconnect: false,
   tags: [],
+  connectSnippet: null,
 };
 
 describe("deviceEndpoint", () => {

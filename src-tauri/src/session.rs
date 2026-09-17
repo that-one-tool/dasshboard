@@ -239,6 +239,10 @@ pub struct ConnectParams {
     /// agent-forwarding channels and relay them to this machine's agent. Applies
     /// to the target only, never the jump hop.
     pub forward_agent: bool,
+    /// Optional commands to type into the shell once it is ready (SPEC connect
+    /// snippet). Already the device's stored snippet text; the session normalizes
+    /// its line endings and sends it as keystrokes. `None` ⇒ nothing is sent.
+    pub connect_snippet: Option<String>,
 }
 
 /// The resolved connection parameters for a single jump hop (`ProxyJump`),
@@ -826,6 +830,7 @@ async fn run_shell(
     cols: u32,
     rows: u32,
     forward_agent: bool,
+    connect_snippet: Option<String>,
 ) -> Result<(), AppError> {
     let mut channel = handle
         .channel_open_session()
@@ -855,6 +860,13 @@ async fn run_shell(
         .request_shell(true)
         .await
         .map_err(|e| AppError::SshChannel(format!("shell request failed: {e}")))?;
+
+    // Connect snippet: type the device's saved commands into the fresh shell, as
+    // if the user had. Best-effort — a write failure just means the first
+    // keystrokes didn't land, not a reason to fail the whole session.
+    if let Some(bytes) = crate::device::connect_snippet_bytes(connect_snippet.as_deref()) {
+        let _ = channel.data(&bytes[..]).await;
+    }
 
     // Keepalive is handled by russh from the `client::Config` (see
     // `KeepaliveConfig`): it pings an idle link and drops the connection after
@@ -970,6 +982,7 @@ async fn run_session(
         params.cols,
         params.rows,
         params.forward_agent,
+        params.connect_snippet,
     )
     .await
 }

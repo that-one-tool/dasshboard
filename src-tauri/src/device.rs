@@ -46,6 +46,35 @@ pub struct Device {
     /// `auto_reconnect` / `forwards`.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Optional commands to run automatically right after the session's shell is
+    /// ready (all kinds: SSH, serial, local shell). The snippet is typed into the
+    /// terminal verbatim — each line is sent followed by a carriage return, as if
+    /// the user pressed Enter — to automate a repetitive login routine (e.g.
+    /// `cd /var/log && tail -f app.log`). `None`/empty ⇒ nothing is sent.
+    /// `#[serde(default)]` keeps a devices.json written before this field existed
+    /// loadable (reads back as `None`), and the field is always emitted (as `null`
+    /// when absent) — the same pattern as `proxy_jump`.
+    #[serde(default)]
+    pub connect_snippet: Option<String>,
+}
+
+/// Turn a saved connect snippet into the bytes to send to a freshly-opened shell:
+/// each line is terminated with a carriage return (`\r`) — what pressing Enter
+/// sends in a terminal — so every command is executed, including the last.
+/// Line endings in the stored text (`\n` or `\r\n`) are normalized to `\r`.
+/// Returns `None` for an absent or all-whitespace snippet, so callers send
+/// nothing in that case.
+pub fn connect_snippet_bytes(snippet: Option<&str>) -> Option<Vec<u8>> {
+    let snippet = snippet?;
+    if snippet.trim().is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for line in snippet.lines() {
+        out.push_str(line);
+        out.push('\r');
+    }
+    Some(out.into_bytes())
 }
 
 /// The connection kind and its parameters. Internally tagged by `kind`
@@ -345,6 +374,12 @@ impl Device {
         matches!(self.connection, Connection::Ssh { .. })
     }
 
+    /// The connect snippet to run once the shell is ready, if any. `None` for a
+    /// device with no snippet or an all-whitespace one.
+    pub fn connect_snippet(&self) -> Option<&str> {
+        self.connect_snippet.as_deref()
+    }
+
     /// Whether this device forwards the local SSH agent (`ssh -A`). Always
     /// `false` for a non-SSH device.
     pub fn forward_agent_enabled(&self) -> bool {
@@ -551,6 +586,7 @@ mod tests {
             },
             auto_reconnect: false,
             tags: Vec::new(),
+            connect_snippet: None,
         }
     }
 
@@ -640,6 +676,7 @@ mod tests {
             },
             auto_reconnect: false,
             tags: Vec::new(),
+            connect_snippet: None,
         }
     }
 
@@ -653,6 +690,7 @@ mod tests {
             },
             auto_reconnect: false,
             tags: Vec::new(),
+            connect_snippet: None,
         }
     }
 
@@ -711,6 +749,7 @@ mod tests {
                 "forwardAgent": false,
                 "autoReconnect": false,
                 "tags": [],
+                "connectSnippet": null,
             })
         );
     }
@@ -733,6 +772,7 @@ mod tests {
                 "flowControl": "none",
                 "autoReconnect": false,
                 "tags": [],
+                "connectSnippet": null,
             })
         );
     }
@@ -1273,6 +1313,45 @@ mod tests {
             device.validate().unwrap_err(),
             AppError::Validation(_)
         ));
+    }
+
+    #[test]
+    fn connect_snippet_round_trips_and_defaults_to_none() {
+        // Present snippet survives a round trip and is always emitted on the wire.
+        let device = Device {
+            connect_snippet: Some("cd /var/log\ntail -f app.log".to_string()),
+            ..valid_password_device()
+        };
+        let value = serde_json::to_value(&device).unwrap();
+        assert_eq!(
+            value["connectSnippet"],
+            serde_json::json!("cd /var/log\ntail -f app.log")
+        );
+        let back: Device = serde_json::from_value(value).unwrap();
+        assert_eq!(back.connect_snippet(), Some("cd /var/log\ntail -f app.log"));
+
+        // A legacy record (no connectSnippet) loads with no snippet.
+        let legacy = r#"{ "id": "x", "name": "n", "host": "h", "port": 22, "username": "u", "auth": { "method": "password" } }"#;
+        let parsed: Device = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.connect_snippet(), None);
+    }
+
+    #[test]
+    fn connect_snippet_bytes_terminates_each_line_with_cr() {
+        // Each line gets a carriage return; \n and \r\n are both normalized.
+        assert_eq!(
+            connect_snippet_bytes(Some("uptime\r\nwhoami\nexit")),
+            Some(b"uptime\rwhoami\rexit\r".to_vec())
+        );
+        // A single line still gets a trailing CR so it executes.
+        assert_eq!(connect_snippet_bytes(Some("ls")), Some(b"ls\r".to_vec()));
+    }
+
+    #[test]
+    fn connect_snippet_bytes_is_none_for_empty_or_whitespace() {
+        assert_eq!(connect_snippet_bytes(None), None);
+        assert_eq!(connect_snippet_bytes(Some("")), None);
+        assert_eq!(connect_snippet_bytes(Some("   \n\t ")), None);
     }
 
     #[test]

@@ -390,6 +390,35 @@ fn spawn_pw_session_with_agent(
             jump: None,
             keepalive: KeepaliveConfig::disabled(),
             forward_agent,
+            connect_snippet: None,
+        },
+        sink,
+    );
+}
+
+/// Spawn a password-auth session carrying a connect snippet, so the end-to-end
+/// test can observe the snippet being typed into the shell (the echo server
+/// reflects it back on the data channel).
+fn spawn_pw_session_with_snippet(
+    manager: &Arc<SessionManager>,
+    id: &str,
+    port: u16,
+    sink: Arc<dyn SessionSink>,
+    connect_snippet: &str,
+) {
+    manager.spawn_session(
+        id.to_string(),
+        ConnectParams {
+            host: "127.0.0.1".to_string(),
+            port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            cols: 80,
+            rows: 24,
+            jump: None,
+            keepalive: KeepaliveConfig::disabled(),
+            forward_agent: false,
+            connect_snippet: Some(connect_snippet.to_string()),
         },
         sink,
     );
@@ -594,6 +623,51 @@ async fn echo_through_pty_and_clean_disconnect() {
     );
 }
 
+/// A device's connect snippet is typed into the shell right after it opens: the
+/// echo server reflects it back, so we should see the snippet's commands — each
+/// terminated with a carriage return — arrive on the data channel without any
+/// `write_stdin` from the test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connect_snippet_is_sent_to_the_shell_on_connect() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_test_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session_with_snippet(&manager, "s1", port, sink, "uptime\nwhoami");
+
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+
+    // The snippet is sent by the session itself (no write_stdin here); the echo
+    // server reflects it, so we expect to see both commands, each CR-terminated.
+    let mut seen = Vec::new();
+    for _ in 0..50 {
+        match recv_timeout(&mut chans.data_rx, Duration::from_secs(5)).await {
+            Some(chunk) => {
+                seen.extend_from_slice(&chunk);
+                if seen.windows(8).any(|w| w == b"uptime\rw") {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+    assert!(
+        seen.windows(7).any(|w| w == b"uptime\r"),
+        "expected the snippet's first command CR-terminated, saw {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert!(
+        seen.windows(7).any(|w| w == b"whoami\r"),
+        "expected the snippet's second command CR-terminated, saw {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+
+    manager.disconnect("s1").await;
+}
+
 /// Agent forwarding ON: the client must accept the server's
 /// `auth-agent@openssh.com` channel. The probe server opens one on shell request
 /// and reports acceptance; we assert it arrives. (The client then tries to reach
@@ -682,6 +756,7 @@ async fn connects_to_target_through_a_jump_host() {
             }),
             keepalive: KeepaliveConfig::disabled(),
             forward_agent: false,
+            connect_snippet: None,
         },
         sink,
     );
@@ -759,6 +834,7 @@ async fn jump_host_auth_failure_is_attributed_to_the_jump_host() {
             }),
             keepalive: KeepaliveConfig::disabled(),
             forward_agent: false,
+            connect_snippet: None,
         },
         sink,
     );

@@ -95,7 +95,7 @@ export const zh: Messages = {
 	"about.unavailable": "版本不可用",
 
 	/* -- devices sidebar + dialog ------------------------------------------- */
-	"devices.title": "设备",
+	"devices.title": "主机/设备",
 	"devices.add.title": "添加设备",
 	"devices.export.title": "将设备导出为 JSON 文件",
 	"devices.import.title": "从 JSON 文件导入设备",
@@ -122,6 +122,9 @@ export const zh: Messages = {
 	"devices.field.shell.placeholder": "留空则使用默认 Shell",
 	"devices.field.cwd": "启动目录",
 	"devices.field.cwd.placeholder": "留空则使用主目录",
+	"devices.field.connectSnippet": "连接后执行的命令",
+	"devices.field.connectSnippet.placeholder": "cd /var/log\ntail -f app.log",
+	"devices.field.connectSnippet.hint": "连接后逐行输入到终端，如同按下回车键。",
 	"devices.field.host": "主机",
 	"devices.field.host.placeholder": "192.168.1.10",
 	"devices.field.port": "端口",

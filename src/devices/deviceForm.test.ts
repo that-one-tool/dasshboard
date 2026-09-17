@@ -147,6 +147,19 @@ describe("readFormValues", () => {
     expect(readFormValues(root, "dev-1", []).forwardAgent).toBe(true);
   });
 
+  it("reads the connect snippet (blank ⇒ null, otherwise trimmed text)", () => {
+    q<HTMLInputElement>("#device-name").value = "NAS";
+    q<HTMLInputElement>("#device-host").value = "10.0.0.1";
+    q<HTMLInputElement>("#device-port").value = "22";
+    q<HTMLInputElement>("#device-username").value = "root";
+
+    // Blank textarea ⇒ null.
+    expect(readFormValues(root, "dev-1", []).connectSnippet).toBeNull();
+
+    q<HTMLTextAreaElement>("#device-connect-snippet").value = "uptime\nwhoami";
+    expect(readFormValues(root, "dev-1", []).connectSnippet).toBe("uptime\nwhoami");
+  });
+
   it("uses an empty id/secret when the form is absent", () => {
     const empty = document.createElement("div");
     expect(readFormValues(empty, "ignored", [])).toEqual({ id: "", secret: "" });
@@ -169,11 +182,13 @@ describe("populateForm", () => {
       forwardAgent: true,
       autoReconnect: true,
       tags: ["web", "prod"],
+      connectSnippet: "uptime\nwhoami",
     };
 
     populateForm(root, device);
 
     expect(q<HTMLInputElement>("#device-name").value).toBe("Alpha");
+    expect(q<HTMLTextAreaElement>("#device-connect-snippet").value).toBe("uptime\nwhoami");
     expect(q<HTMLInputElement>("#device-host").value).toBe("10.0.0.9");
     expect(q<HTMLInputElement>("#device-key-path").value).toBe("C:/k");
     expect(
@@ -203,6 +218,7 @@ describe("populateForm", () => {
       forwardAgent: false,
       autoReconnect: false,
       tags: [],
+      connectSnippet: null,
     };
 
     populateForm(root, device);
@@ -230,6 +246,7 @@ describe("populateForm", () => {
       flowControl: "none",
       autoReconnect: false,
       tags: [],
+      connectSnippet: null,
     };
 
     populateForm(root, device);
@@ -329,6 +346,24 @@ describe("buildDeviceFromForm", () => {
       autoReconnect: false,
     });
     expect(device).toMatchObject({ kind: "ssh", host: "10.0.0.1", port: 22 });
+    // Absent snippet ⇒ null (always emitted, like proxyJump).
+    expect(device.connectSnippet).toBeNull();
+  });
+
+  it("carries the connect snippet onto the built device (any kind)", () => {
+    const device = buildDeviceFromForm({
+      id: "dev-1",
+      kind: "ssh",
+      name: "NAS",
+      host: "10.0.0.1",
+      port: 22,
+      username: "root",
+      auth: { method: "password" },
+      forwards: [],
+      autoReconnect: false,
+      connectSnippet: "cd /tmp",
+    });
+    expect(device.connectSnippet).toBe("cd /tmp");
   });
 
   it("maps serial values and fills framing defaults", () => {

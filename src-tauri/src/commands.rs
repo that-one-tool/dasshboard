@@ -499,6 +499,7 @@ pub async fn connect(
                     jump,
                     keepalive: keepalive_config(&state),
                     forward_agent: device.forward_agent_enabled(),
+                    connect_snippet: device.connect_snippet().map(str::to_string),
                 },
                 sink,
             );
@@ -506,7 +507,7 @@ pub async fn connect(
         Connection::Serial { .. } => {
             state.serial_manager.spawn_session(
                 session_id.clone(),
-                serial_params_of(&device.connection),
+                serial_params_of(&device.connection, device.connect_snippet()),
                 sink,
             );
         }
@@ -518,6 +519,7 @@ pub async fn connect(
                     cwd: cwd.clone(),
                     cols: cols.min(u16::MAX as u32) as u16,
                     rows: rows.min(u16::MAX as u32) as u16,
+                    connect_snippet: device.connect_snippet().map(str::to_string),
                 },
                 sink,
             );
@@ -537,7 +539,7 @@ fn keepalive_config(state: &AppState) -> KeepaliveConfig {
 /// Build [`SerialParams`] from a `Connection::Serial`. A defensive `expect`
 /// covers the impossible SSH case — callers only reach this on the serial
 /// branch of a `match`.
-fn serial_params_of(connection: &Connection) -> SerialParams {
+fn serial_params_of(connection: &Connection, connect_snippet: Option<&str>) -> SerialParams {
     match connection {
         Connection::Serial {
             port_name,
@@ -553,6 +555,7 @@ fn serial_params_of(connection: &Connection) -> SerialParams {
             parity: *parity,
             stop_bits: *stop_bits,
             flow_control: *flow_control,
+            connect_snippet: connect_snippet.map(str::to_string),
         },
         _ => unreachable!("serial_params_of called on a non-serial connection"),
     }
@@ -694,7 +697,7 @@ pub async fn test_connection(
         Connection::Serial { .. } => {
             state
                 .serial_manager
-                .test_connection(serial_params_of(&device.connection))
+                .test_connection(serial_params_of(&device.connection, None))
                 .await
         }
         // A local shell has nothing to test ahead of time — it either spawns at
@@ -1254,6 +1257,7 @@ mod tests {
             },
             auto_reconnect: false,
             tags: Vec::new(),
+            connect_snippet: None,
         }
     }
 
@@ -1271,6 +1275,7 @@ mod tests {
             },
             auto_reconnect: false,
             tags: Vec::new(),
+            connect_snippet: None,
         }
     }
 

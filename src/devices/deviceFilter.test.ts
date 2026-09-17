@@ -22,6 +22,7 @@ function ssh(name: string, host: string, tags: string[] = []): Device {
     forwardAgent: false,
     autoReconnect: false,
     tags,
+    connectSnippet: null,
   };
 }
 
@@ -38,6 +39,7 @@ function serial(name: string, portName: string, tags: string[] = []): Device {
     flowControl: "none",
     autoReconnect: false,
     tags,
+    connectSnippet: null,
   };
 }
 

@@ -52,6 +52,9 @@ pub struct SerialParams {
     pub parity: Parity,
     pub stop_bits: u8,
     pub flow_control: FlowControl,
+    /// Optional commands to send once the port is open (the device's connect
+    /// snippet). Sent verbatim (each line terminated with `\r`); `None` ⇒ nothing.
+    pub connect_snippet: Option<String>,
 }
 
 /// Control messages to a serial session task. There is no resize: a serial line
@@ -189,8 +192,16 @@ async fn run_session(
     sink: Arc<dyn SessionSink>,
     control_rx: mpsc::Receiver<SerialControl>,
 ) -> Result<(), AppError> {
-    let stream = open_port(&params)?;
+    let mut stream = open_port(&params)?;
     sink.on_status(SessionStatus::Connected, None);
+    // Connect snippet: send the device's saved commands once the port is open.
+    // Best-effort — a write failure ends the pump the same way a failed keystroke
+    // would; it is not a reason to skip reporting Connected above.
+    if let Some(bytes) = crate::device::connect_snippet_bytes(params.connect_snippet.as_deref()) {
+        if stream.write_all(&bytes).await.is_ok() {
+            let _ = stream.flush().await;
+        }
+    }
     run_pump(stream, sink, control_rx).await
 }
 
@@ -354,6 +365,7 @@ mod tests {
             parity: Parity::None,
             stop_bits: 1,
             flow_control: FlowControl::None,
+            connect_snippet: None,
         }
     }
 

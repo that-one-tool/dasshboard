@@ -95,7 +95,7 @@ export const ja: Messages = {
 	"about.unavailable": "バージョンを取得できません",
 
 	/* -- devices sidebar + dialog ------------------------------------------- */
-	"devices.title": "デバイス",
+	"devices.title": "ホスト/デバイス",
 	"devices.add.title": "デバイスを追加",
 	"devices.export.title": "デバイスを JSON ファイルにエクスポート",
 	"devices.import.title": "JSON ファイルからデバイスをインポート",
@@ -122,6 +122,9 @@ export const ja: Messages = {
 	"devices.field.shell.placeholder": "空欄で既定のシェルを使用",
 	"devices.field.cwd": "起動ディレクトリ",
 	"devices.field.cwd.placeholder": "空欄でホームディレクトリを使用",
+	"devices.field.connectSnippet": "接続時に実行するコマンド",
+	"devices.field.connectSnippet.placeholder": "cd /var/log\ntail -f app.log",
+	"devices.field.connectSnippet.hint": "接続後、Enter キーを押したように 1 行ずつターミナルに入力されます。",
 	"devices.field.host": "ホスト",
 	"devices.field.host.placeholder": "192.168.1.10",
 	"devices.field.port": "ポート",

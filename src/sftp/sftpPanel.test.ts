@@ -73,6 +73,7 @@ function sshDevice(id: string, name: string): Device {
     forwardAgent: false,
     autoReconnect: false,
     tags: [],
+    connectSnippet: null,
   } as Device;
 }
 

@@ -316,6 +316,19 @@ export function deviceManagerMarkup(): string {
               </div>
             </div>
 
+            <div class="form-group">
+              <label for="device-connect-snippet">${t("devices.field.connectSnippet")}</label>
+              <textarea
+                id="device-connect-snippet"
+                rows="3"
+                placeholder="${t("devices.field.connectSnippet.placeholder")}"
+                autocomplete="off"
+                spellcheck="false"
+              ></textarea>
+              <span class="form-hint">${t("devices.field.connectSnippet.hint")}</span>
+              <span class="error-text"></span>
+            </div>
+
             <div class="form-group form-group-checkbox">
               <label for="device-auto-reconnect">
                 <input id="device-auto-reconnect" type="checkbox" />

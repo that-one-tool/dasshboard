@@ -15,6 +15,12 @@ import { requireEl } from "../ui/dom";
 import { parseTags } from "./deviceFilter";
 import type { DeviceFormValues } from "./validation";
 
+/** Trim a text input; an empty result becomes `null` (⇒ "unset" on the wire). */
+function blankToNull(value: string): string | null {
+	const trimmed = value.trim();
+	return trimmed === "" ? null : trimmed;
+}
+
 /** The connection kind currently selected in the dialog. */
 export function selectedKind(root: ParentNode): DeviceKind {
 	const value = requireEl<HTMLInputElement>(root, "#device-kind").value;
@@ -144,6 +150,9 @@ export function populateForm(root: ParentNode, device: Device): void {
 	const autoReconnect = root.querySelector<HTMLInputElement>("#device-auto-reconnect");
 	if (autoReconnect) autoReconnect.checked = device.autoReconnect ?? false;
 
+	const connectSnippet = root.querySelector<HTMLTextAreaElement>("#device-connect-snippet");
+	if (connectSnippet) connectSnippet.value = device.connectSnippet ?? "";
+
 	updateKindDisplay(root);
 	updateAuthMethodDisplay(root);
 }
@@ -234,6 +243,7 @@ export function readFormValues(
 		name: requireEl<HTMLInputElement>(form, "#device-name").value,
 		tags: parseTags(requireEl<HTMLInputElement>(form, "#device-tags").value),
 		autoReconnect: requireEl<HTMLInputElement>(form, "#device-auto-reconnect").checked,
+		connectSnippet: blankToNull(requireEl<HTMLTextAreaElement>(form, "#device-connect-snippet").value),
 		secret: requireEl<HTMLInputElement>(form, "#device-secret").value,
 	};
 
@@ -250,10 +260,6 @@ export function readFormValues(
 /** Read the local-shell inputs (shell + cwd) into a form-values fragment. A
  * blank field maps to `null` (⇒ OS default shell / home dir). */
 function readLocalShellValues(form: ParentNode): DeviceFormValues {
-	const blankToNull = (v: string): string | null => {
-		const trimmed = v.trim();
-		return trimmed === "" ? null : trimmed;
-	};
 	return {
 		kind: "localShell",
 		shell: blankToNull(requireEl<HTMLInputElement>(form, "#device-shell").value),
@@ -316,6 +322,7 @@ export function buildDeviceFromForm(values: DeviceFormValues & { id: string }): 
 		name: values.name ?? "",
 		autoReconnect: values.autoReconnect ?? false,
 		tags: values.tags ?? [],
+		connectSnippet: values.connectSnippet ?? null,
 	};
 	if (values.kind === "serial") {
 		return {

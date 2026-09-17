@@ -33,6 +33,7 @@ const h = vi.hoisted(() => {
     forwardAgent: false,
     autoReconnect: false,
     tags: [],
+    connectSnippet: null,
   };
   return {
     device,
@@ -87,6 +88,7 @@ describe("device dropdown label + tooltip", () => {
     forwardAgent: false,
     autoReconnect: false,
     tags: [],
+    connectSnippet: null,
   };
 
   const serial: Device = {
@@ -101,6 +103,7 @@ describe("device dropdown label + tooltip", () => {
     flowControl: "none",
     autoReconnect: false,
     tags: [],
+    connectSnippet: null,
   };
 
   it("shows host:port for an SSH device", () => {

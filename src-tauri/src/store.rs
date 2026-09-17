@@ -177,6 +177,7 @@ mod tests {
             },
             auto_reconnect: false,
             tags: Vec::new(),
+            connect_snippet: None,
         }
     }
 

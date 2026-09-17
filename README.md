@@ -91,6 +91,10 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   list with a status dot (green, or gold when it has unsaved changes).
 - **Host-key TOFU** — trust-on-first-use prompts with a prominent warning when a
   previously-trusted key changes (possible MITM).
+- **Connect snippet (commands on connect)** — give any device (SSH, serial or
+  local shell) a saved block of commands that is typed into the terminal the
+  moment its shell opens, one line at a time as if you pressed Enter — automate a
+  repetitive login routine (`cd`, `tail -f`, activating an environment, …).
 - **Auto-reconnect** (opt-in per device) — reconnects with backoff (2s/4s/8s,
   up to 5 attempts) after an unexpected drop, with a cancel control.
 - **Configurable SSH keepalive** — set the keepalive interval and the number of

@@ -118,6 +118,7 @@ describe("saveDevice tri-state secret payload", () => {
 		forwardAgent: false,
 		autoReconnect: false,
 		tags: [],
+		connectSnippet: null,
 	};
 
 	it("omits the `secret` key entirely when secret is undefined (leave untouched)", async () => {

@@ -52,6 +52,10 @@ pub struct LocalShellParams {
     /// pane is laid out.
     pub cols: u16,
     pub rows: u16,
+    /// Optional commands to type into the shell once it is ready (the device's
+    /// connect snippet). Sent verbatim (each line terminated with `\r`); `None` ⇒
+    /// nothing is sent.
+    pub connect_snippet: Option<String>,
 }
 
 /// Control messages to a local shell session task.
@@ -211,6 +215,8 @@ async fn run_session(
     sink: Arc<dyn SessionSink>,
     mut control_rx: mpsc::Receiver<ShellControl>,
 ) -> Result<(), AppError> {
+    // Capture the connect snippet before `params` moves into the blocking open.
+    let connect_snippet = params.connect_snippet.clone();
     // Opening the PTY and spawning are blocking; do them off the async runtime.
     let opened = tokio::task::spawn_blocking(move || open_shell(&params))
         .await
@@ -253,6 +259,13 @@ async fn run_session(
             let _ = writer.flush();
         }
     });
+
+    // Connect snippet: type the device's saved commands into the fresh shell via
+    // the writer thread. Best-effort — if the writer is already gone the send
+    // fails harmlessly and the loop below will end the session on the next write.
+    if let Some(bytes) = crate::device::connect_snippet_bytes(connect_snippet.as_deref()) {
+        let _ = write_tx.send(bytes);
+    }
 
     // Detect the shell exiting on its own: a blocking `wait` fires `done`.
     let (done_tx, mut done_rx) = mpsc::channel::<()>(1);
@@ -506,6 +519,7 @@ mod tests {
                 cwd: None,
                 cols: 80,
                 rows: 24,
+                connect_snippet: None,
             },
             Arc::clone(&sink) as Arc<dyn SessionSink>,
         );

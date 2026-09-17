@@ -56,6 +56,7 @@ const deviceA: Device = {
   forwardAgent: false,
   autoReconnect: false,
   tags: [],
+  connectSnippet: null,
 };
 
 const deviceB: Device = {
@@ -72,6 +73,7 @@ const deviceB: Device = {
   forwardAgent: false,
   autoReconnect: true,
   tags: [],
+  connectSnippet: null,
 };
 
 const serialDevice: Device = {
@@ -86,6 +88,7 @@ const serialDevice: Device = {
   flowControl: "none",
   autoReconnect: false,
   tags: [],
+  connectSnippet: null,
 };
 
 function q<T extends Element>(root: ParentNode, selector: string): T {
@@ -274,6 +277,7 @@ describe("device delete confirmation (Phase 6)", () => {
     forwardAgent: false,
     autoReconnect: false,
     tags: [],
+    connectSnippet: null,
   };
 
   beforeEach(() => {
@@ -604,6 +608,7 @@ describe("device search + tag grouping", () => {
     forwardAgent: false,
     autoReconnect: false,
     tags,
+    connectSnippet: null,
   });
 
   const web = tagged("id-web", "Web One", "10.0.0.1", ["web"]);

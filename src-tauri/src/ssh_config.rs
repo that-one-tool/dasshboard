@@ -246,6 +246,7 @@ fn to_device(host: ParsedHost, default_user: Option<&str>, home: Option<&str>) -
         },
         auto_reconnect: false,
         tags: Vec::new(),
+        connect_snippet: None,
     }
 }
 
@@ -858,6 +859,7 @@ Host b
             connection,
             auto_reconnect: false,
             tags: Vec::new(),
+            connect_snippet: None,
         }
     }
 
@@ -1114,6 +1116,7 @@ Host b
                 },
                 auto_reconnect: false,
                 tags: Vec::new(),
+                connect_snippet: None,
             })
             .unwrap();
 

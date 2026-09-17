@@ -40,6 +40,8 @@ export interface DeviceFormValues {
   autoReconnect?: boolean;
   // Free-form organizing labels (both kinds), normalized on save.
   tags?: string[];
+  // Commands run on connect (all kinds); null/blank ⇒ nothing sent.
+  connectSnippet?: string | null;
   // SSH forwards, edited by the forwarding sub-editor.
   forwards?: Forward[];
   // Start this device's tunnel automatically on app launch (SSH only).

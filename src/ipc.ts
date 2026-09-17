@@ -67,6 +67,14 @@ interface DeviceCommon {
    * frontend sees carries the field — mirrors `forwards`/`autoReconnect`.
    */
   tags: string[];
+  /**
+   * Optional commands run automatically once the session's shell is ready (all
+   * kinds). The snippet is typed into the terminal verbatim — each line sent as
+   * if the user pressed Enter — to automate a repetitive login routine. The
+   * backend always emits the field (as `null` when unset), so every device the
+   * frontend sees carries it — mirrors `proxyJump`.
+   */
+  connectSnippet: string | null;
 }
 
 /**
