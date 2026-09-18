@@ -80,7 +80,10 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   app launch. Forwards bind loopback only.
 - **SFTP file browser** — a standalone **Files** drawer per SSH device: browse
   remote directories, download files to a local path and upload local files, plus
-  make/rename/delete entries. Reuses the SSH connect + host-key path, so a
+  make/rename/delete entries. The toolbar path is editable — type a path and
+  press Enter to jump there (a file path opens its parent folder) — and a copy
+  button copies the current remote path to the clipboard. Reuses the SSH connect
+  + host-key path, so a
   first-contact key prompts exactly like a shell; the connection closes when the
   drawer does. Whole-file transfers (not streamed), so best for config files,
   logs and archives rather than very large files.

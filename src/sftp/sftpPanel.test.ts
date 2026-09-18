@@ -21,7 +21,16 @@ vi.mock("../ipc", () => ({
   sftpConnect: vi.fn(async () => "/home/j"),
   sftpDisconnect: vi.fn(async () => {}),
   sftpList: vi.fn(async () => h.listResult),
-  sftpRealpath: vi.fn(async (_id: string, p: string) => p.replace(/\/\.\.$/, "")),
+  sftpRealpath: vi.fn(async (_id: string, p: string) => {
+    // Minimal POSIX canonicalize: collapse "." and ".." segments.
+    const stack: string[] = [];
+    for (const seg of p.split("/")) {
+      if (seg === "" || seg === ".") continue;
+      if (seg === "..") stack.pop();
+      else stack.push(seg);
+    }
+    return "/" + stack.join("/");
+  }),
   sftpDownload: vi.fn(async () => 123),
   sftpUpload: vi.fn(async () => 10),
   sftpMkdir: vi.fn(async () => {}),
@@ -52,6 +61,7 @@ import { SftpPanel, browsableDevices } from "./sftpPanel";
 import {
   sftpConnect,
   sftpList,
+  sftpRealpath,
   sftpDisconnect,
   sftpDownload,
   sftpCancelTransfer,
@@ -131,7 +141,7 @@ describe("SftpPanel", () => {
 
     expect(sftpConnect).toHaveBeenCalledWith("a");
     expect(sftpList).toHaveBeenCalledWith("a", "/home/j");
-    expect(q(".sftp-path").textContent).toBe("/home/j");
+    expect(q<HTMLInputElement>(".sftp-path").value).toBe("/home/j");
     // Two entries rendered (a dir and a file).
     expect(document.querySelectorAll(".sftp-entry").length).toBe(2);
   });
@@ -198,12 +208,49 @@ describe("SftpPanel", () => {
     q<HTMLButtonElement>('.sftp-drawer [data-action="back"]').click();
     await flush();
     expect(sftpList).toHaveBeenLastCalledWith("a", "/home/j");
-    expect(q(".sftp-path").textContent).toBe("/home/j");
+    expect(q<HTMLInputElement>(".sftp-path").value).toBe("/home/j");
 
     // Forward → /home/j/sub
     q<HTMLButtonElement>('.sftp-drawer [data-action="forward"]').click();
     await flush();
     expect(sftpList).toHaveBeenLastCalledWith("a", "/home/j/sub");
+  });
+
+  it("typing a directory path and pressing Enter navigates there", async () => {
+    await setup();
+    q<HTMLButtonElement>(".sftp-device-row .btn").click();
+    await flush();
+
+    const path = q<HTMLInputElement>(".sftp-path");
+    path.value = "/var/log";
+    path.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    await flush();
+
+    expect(sftpRealpath).toHaveBeenCalledWith("a", "/var/log");
+    expect(sftpList).toHaveBeenLastCalledWith("a", "/var/log");
+    expect(q<HTMLInputElement>(".sftp-path").value).toBe("/var/log");
+  });
+
+  it("typing a file path navigates to its parent folder", async () => {
+    await setup();
+    q<HTMLButtonElement>(".sftp-device-row .btn").click();
+    await flush();
+
+    // The probe list of the file path fails (it isn't a directory); the parent
+    // list then succeeds.
+    vi.mocked(sftpList).mockRejectedValueOnce(new Error("not a directory"));
+
+    const path = q<HTMLInputElement>(".sftp-path");
+    path.value = "/etc/hosts";
+    path.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    await flush();
+
+    expect(sftpList).toHaveBeenLastCalledWith("a", "/etc");
+    expect(q<HTMLInputElement>(".sftp-path").value).toBe("/etc");
   });
 
   it("Back is disabled at the start of history and Forward at the end", async () => {

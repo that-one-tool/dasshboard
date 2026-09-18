@@ -1798,10 +1798,21 @@ body.grid-dragging-row * {
 	color: #9cdcfe;
 	font-family: "Cascadia Mono", Consolas, monospace;
 	font-size: 0.8rem;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 	text-align: left;
+	background: #1e1e1e;
+	border: 1px solid #3c3c3c;
+	border-radius: 4px;
+	padding: 5px 8px;
+	text-overflow: ellipsis;
+}
+
+.sftp-path:focus {
+	outline: none;
+	border-color: #0e639c;
+}
+
+.sftp-path:read-only {
+	opacity: 0.6;
 }
 
 /* Toolbar action group: pinned to the right, icon-only buttons. */

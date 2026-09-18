@@ -42,6 +42,7 @@ import {
   trashIcon,
   pencilIcon,
   arrowUpIcon,
+  copyIcon,
   arrowLeftIcon,
   arrowRightIcon,
   reloadIcon,
@@ -71,7 +72,7 @@ export class SftpPanel {
   /** The browser drawer (built once, shown/hidden). */
   private drawer: HTMLElement | null = null;
   private titleEl: HTMLElement | null = null;
-  private pathEl: HTMLElement | null = null;
+  private pathEl: HTMLInputElement | null = null;
   private listEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
   private progressEl: HTMLElement | null = null;
@@ -215,8 +216,10 @@ export class SftpPanel {
           <button type="button" class="dialog-close-btn" data-action="close" aria-label="${t("common.close")}">&times;</button>
         </div>
         <div class="sftp-toolbar">
-          <code class="sftp-path" aria-label="${t("sftp.path.aria")}"></code>
+          <input type="text" class="sftp-path" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="${t("sftp.path.aria")}" title="${t("sftp.path.edit")}" />
+
           <div class="sftp-toolbar-actions">
+            <button type="button" class="btn btn-icon" data-action="copy-path" title="${t("sftp.nav.copyPath")}" aria-label="${t("sftp.nav.copyPath")}">${copyIcon}</button>
             <button type="button" class="btn btn-icon" data-action="back" title="${t("sftp.nav.back")}" aria-label="${t("sftp.nav.back")}">${arrowLeftIcon}</button>
             <button type="button" class="btn btn-icon" data-action="forward" title="${t("sftp.nav.forward")}" aria-label="${t("sftp.nav.forward")}">${arrowRightIcon}</button>
             <button type="button" class="btn btn-icon" data-action="up" title="${t("sftp.nav.up")}" aria-label="${t("sftp.nav.up")}">${arrowUpIcon}</button>
@@ -240,6 +243,18 @@ export class SftpPanel {
     this.drawer = drawer;
     this.titleEl = drawer.querySelector(".sftp-title");
     this.pathEl = drawer.querySelector(".sftp-path");
+    this.pathEl?.addEventListener("keydown", (e) => {
+      const ev = e as KeyboardEvent;
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        if (!this.busy) void this.goToPath(this.pathEl?.value ?? "");
+      } else if (ev.key === "Escape") {
+        // Revert the edit and hand focus back rather than closing the drawer.
+        ev.stopPropagation();
+        this.syncPathInput();
+        this.pathEl?.blur();
+      }
+    });
     this.listEl = drawer.querySelector(".sftp-entries");
     this.statusEl = drawer.querySelector(".sftp-status");
     this.progressEl = drawer.querySelector(".sftp-progress");
@@ -263,6 +278,9 @@ export class SftpPanel {
       switch (action) {
         case "close":
           void this.close();
+          break;
+        case "copy-path":
+          void this.handleCopyPath();
           break;
         case "back":
           if (!this.busy) void this.goBack();
@@ -346,7 +364,7 @@ export class SftpPanel {
     try {
       const entries = await sftpList(this.activeDeviceId, path);
       this.cwd = path;
-      if (this.pathEl) this.pathEl.textContent = path;
+      this.syncPathInput();
       this.renderEntries(entries);
       this.setStatus(tp("sftp.count", entries.length));
     } catch (err) {
@@ -370,6 +388,57 @@ export class SftpPanel {
     this.history.push(path);
     this.historyIndex = this.history.length - 1;
     await this.loadDir(path);
+  }
+
+  /** Reflect the current directory in the editable path input. */
+  private syncPathInput(): void {
+    if (this.pathEl) this.pathEl.value = this.cwd;
+  }
+
+  /**
+   * Navigate to a path typed into the path input. The path is canonicalized
+   * server-side (resolving `..` and relative paths); if it turns out to be a
+   * file rather than a directory (i.e. it can't be listed), we open its parent
+   * folder instead.
+   */
+  private async goToPath(raw: string): Promise<void> {
+    const deviceId = this.activeDeviceId;
+    const input = raw.trim();
+    if (deviceId === null || input === "") {
+      this.syncPathInput();
+      return;
+    }
+    let target: string;
+    this.setBusy(true);
+    try {
+      const resolved = await sftpRealpath(deviceId, input);
+      try {
+        await sftpList(deviceId, resolved);
+        target = resolved;
+      } catch {
+        // Not a listable directory — treat it as a file and open its parent,
+        // resolving `..` server-side so the displayed path stays clean.
+        target = await sftpRealpath(deviceId, parentOf(resolved));
+      }
+    } catch (err) {
+      this.options.onError?.(err as AppError);
+      this.syncPathInput();
+      this.setBusy(false);
+      return;
+    }
+    this.setBusy(false);
+    await this.goTo(target);
+  }
+
+  /** Copy the current directory path to the clipboard. */
+  private async handleCopyPath(): Promise<void> {
+    if (!this.cwd) return;
+    try {
+      await navigator.clipboard.writeText(this.cwd);
+      this.options.onSuccess?.(t("sftp.pathCopied"));
+    } catch (err) {
+      this.options.onError?.(err as AppError);
+    }
   }
 
   /** Step back to the previous directory in history (no-op at the start). */
@@ -617,6 +686,7 @@ export class SftpPanel {
       .forEach((b) => {
         b.disabled = busy;
       });
+    if (this.pathEl) this.pathEl.readOnly = busy;
     // While idle, Back/Forward reflect where we are in history rather than being
     // blanket-enabled (setBusy(false) just re-enabled the whole toolbar).
     if (!busy) this.updateNavButtons();
