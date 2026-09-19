@@ -106,6 +106,7 @@ mod tests {
                 linked_profile_id: Some("p1".to_string()),
             }],
             active_index: 0,
+            sftp: None,
         }
     }
 

@@ -78,15 +78,22 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   Start/stop per device from the **Tunnels** sidebar card with live status, copy
   the local endpoint with a click, and optionally auto-start a device's tunnel on
   app launch. Forwards bind loopback only.
-- **SFTP file browser** — a standalone **Files** drawer per SSH device: browse
-  remote directories, download files to a local path and upload local files, plus
-  make/rename/delete entries. The toolbar path is editable — type a path and
-  press Enter to jump there (a file path opens its parent folder) — and a copy
-  button copies the current remote path to the clipboard. Reuses the SSH connect
-  + host-key path, so a
-  first-contact key prompts exactly like a shell; the connection closes when the
-  drawer does. Whole-file transfers (not streamed), so best for config files,
-  logs and archives rather than very large files.
+- **SFTP file browser** — a persistent, resizable **Files** panel docked beside
+  the terminal grid (toggle it from the header bar): pick a device from the
+  panel's device dropdown to browse remote directories, download files to a local
+  path and upload local files, plus make/rename/delete entries. The toolbar path
+  is editable — type a path and press Enter to jump there (a file path opens its
+  parent folder) — and a copy button copies the current remote path to the
+  clipboard. Drag the divider to resize it, or collapse it to a rail to keep the
+  connection alive while you work in a terminal beside it. Reuses the SSH connect
+  + host-key path, so a first-contact key prompts exactly like a shell. Fully
+  closing the panel (or an explicit Disconnect) drops the connection immediately;
+  a collapsed panel auto-disconnects after a configurable idle timeout (Settings
+  → *SFTP idle disconnect*, `0` to keep it open). The panel's open/collapsed
+  state, width and last-selected device are remembered across restarts (it never
+  auto-reconnects — it preselects the device and offers one-click Reconnect).
+  Whole-file transfers (not streamed), so best for config files, logs and
+  archives rather than very large files.
 - **Layout profiles** — save a workspace (grid + device assignments), set a
   default, and have it restore and auto-connect every pane on launch. Load a
   profile into the current tab, or open it in a new tab. Save / Save As sit in
@@ -205,7 +212,7 @@ devices have no secret**, so nothing is ever written to the keychain for them.
 - `src/` — frontend (TypeScript): `grid.ts`/`gridModel.ts` (multi-pane grid),
   `terminal/` (pane, overlay, reconnect, settings), `devices/` (CRUD + the
   port-forward editor), `tunnels/` (the Tunnels sidebar card), `sftp/` (the Files
-  card + browser drawer), `profiles/`, `settings/`, `ipc.ts` (typed command
+  card + docked browser panel), `profiles/`, `settings/`, `ipc.ts` (typed command
   wrappers).
 - `src-tauri/src/` — backend (Rust): stores (`store`, `profile_store`,
   `settings`, `known_hosts`), `session` (SSH shells via `russh`), `tunnel` (local

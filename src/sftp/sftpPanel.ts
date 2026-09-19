@@ -1,14 +1,21 @@
 /**
- * The Files (SFTP) feature: a sidebar card under Tunnels listing every SSH
- * device with a "Browse" button, plus a standalone browser drawer that opens
- * over the app for the chosen device. Intentionally separate from the terminal
- * grid — an SFTP browse has no terminal — mirroring how the Tunnels card is its
- * own thing.
+ * The Files (SFTP) feature: a persistent, resizable browser **panel** docked to
+ * the right of the terminal grid (built into the `.sftp-panel` aside in
+ * `index.html`), opened from the header toggle. A device picker in the panel
+ * header chooses which SSH device to browse. Intentionally separate from the
+ * terminal grid — an SFTP browse has no terminal.
  *
- * The drawer connects on open (reusing the shell connect + host-key path in the
- * backend), lists the server's home directory, and lets the user navigate,
- * download, upload, make/rename/delete entries. Closing the drawer disconnects,
- * so an idle SSH connection is never left open.
+ * Connection lifecycle (the point of the panel over the old modal drawer):
+ * selecting a device connects and lists its home directory; the connection then
+ * stays alive while you work in a terminal beside it. Three states gate the two
+ * safety nets that keep an idle SSH session from leaking:
+ *   - expanded  → connected, actively browsing;
+ *   - collapsed → connected but set aside; an idle timer (from settings, 0 =
+ *     off) disconnects it after N minutes;
+ *   - hidden    → fully closed (header toggle off, or the × / Disconnect), which
+ *     disconnects immediately.
+ * Switching the device picker disconnects the previous device before connecting
+ * the new one (one live browse at a time; the backend keys connections by id).
  *
  * Remote paths are POSIX; see `sftpFormat.ts` for the path/size/time helpers.
  */
@@ -29,6 +36,7 @@ import {
   type AppError,
   type Device,
   type SftpEntry,
+  type SftpPanelState,
   type SftpProgressEvent,
   type SshDevice,
 } from "../ipc";
@@ -49,6 +57,9 @@ import {
   uploadIcon,
   downloadIcon,
   folderPlusIcon,
+  chevronLeftIcon,
+  chevronRightIcon,
+  disconnectIcon,
 } from "../ui/icons";
 import { joinRemote, parentOf, formatSize, formatMtime } from "./sftpFormat";
 import { basename } from "@tauri-apps/api/path";
@@ -57,6 +68,26 @@ import { t, tp } from "../i18n";
 export interface SftpPanelOptions {
   onError?: (error: AppError) => void;
   onSuccess?: (message: string) => void;
+  /**
+   * Current idle-disconnect timeout in minutes (`0` disables it), read each time
+   * the panel collapses so it always arms the latest setting. Wired to the
+   * settings controller in `main.ts`.
+   */
+  getIdleDisconnectMins?: () => number;
+  /**
+   * Fired whenever the panel's presence or width changes (open/close/collapse/
+   * resize), so the caller can re-fit the terminal grid whose width just changed.
+   */
+  onLayoutChange?: () => void;
+  /**
+   * Fired when the panel's persisted state changes (open/collapse/resize-end/
+   * device switch), so the caller can schedule a workspace save. Not fired
+   * during a drag (only on drag end) to avoid a write per mouse move.
+   */
+  onPersist?: () => void;
+  /** The panel's persisted state to restore on startup (open/collapsed/width +
+   * last device). Applied at the end of `init`; never auto-reconnects. */
+  initialState?: SftpPanelState;
 }
 
 /** The SSH devices — the only ones that can be browsed over SFTP. */
@@ -64,14 +95,25 @@ export function browsableDevices(devices: Device[]): SshDevice[] {
   return devices.filter((d): d is SshDevice => d.kind === "ssh");
 }
 
+/** Panel width bounds (px). The upper bound is also clamped to a fraction of the
+ * workspace at drag time so the grid never disappears. */
+const MIN_PANEL_WIDTH = 260;
+const DEFAULT_PANEL_WIDTH = 360;
+/** Absolute upper bound for a restored width (the live drag re-clamps against
+ * the workspace row so the grid never disappears). */
+const MAX_PANEL_WIDTH = 2000;
+/** The grid keeps at least this much of the workspace row when dragging. */
+const MIN_GRID_WIDTH = 240;
+
 export class SftpPanel {
   private devices: Device[] = [];
-  private readonly container: HTMLElement | null;
-  private cardBody: HTMLElement | null = null;
 
-  /** The browser drawer (built once, shown/hidden). */
-  private drawer: HTMLElement | null = null;
-  private titleEl: HTMLElement | null = null;
+  /** The docked panel + its resize splitter (both live in `index.html`). */
+  private panel: HTMLElement | null;
+  private splitter: HTMLElement | null;
+  private deviceSelectEl: HTMLSelectElement | null = null;
+  private connDotEl: HTMLElement | null = null;
+  private connToggleEl: HTMLButtonElement | null = null;
   private pathEl: HTMLInputElement | null = null;
   private listEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
@@ -80,67 +122,127 @@ export class SftpPanel {
   private progressFillEl: HTMLElement | null = null;
   private progressPctEl: HTMLElement | null = null;
 
-  /** `sftp_progress` event subscription (live while the drawer exists). */
+  /** `sftp_progress` event subscription (live while the panel exists). */
   private unlistenProgress: UnlistenFn | null = null;
   /** Timer that hides the completed-progress row after a short delay. */
   private progressHideTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Idle-disconnect timer, armed while collapsed + connected. */
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** The device whose connection the drawer is currently showing. */
+  /** The device whose connection the panel is currently showing (null when not
+   * connected). */
   private activeDeviceId: string | null = null;
+  /** The device chosen in the picker (may be selected but not yet connected, or
+   * remembered across an idle/explicit disconnect for a one-click reconnect). */
+  private selectedDeviceId: string | null = null;
+  /** True after an idle-timeout disconnect, so the disconnected state can say so. */
+  private idleDisconnected = false;
+  /** Panel visibility + collapse state. */
+  private panelOpen = false;
+  private collapsed = false;
+  /** True once the panel has been opened at least once (this session or a
+   * restored state), gating whether its state is persisted at all. */
+  private everOpened = false;
+  /** Current panel width in px (persisted by the caller via `layoutState`). */
+  private width = DEFAULT_PANEL_WIDTH;
+
   /** The directory currently listed. */
   private cwd = "/";
-  /**
-   * Visited-directory stack for Back/Forward, oldest first. `historyIndex` points
-   * at the current directory within it; going Back/Forward moves the index without
-   * pushing, while a fresh navigation truncates any forward entries (browser
-   * semantics). Reset on each `openFor`.
-   */
+  /** Visited-directory stack for Back/Forward (see `goTo`/`goBack`). */
   private history: string[] = [];
   private historyIndex = -1;
   /** True while a connect/list/transfer is in flight (disables the toolbar). */
   private busy = false;
 
+  /** Splitter drag state; non-null only while the handle is held. */
+  private drag: { startX: number; startWidth: number } | null = null;
+  /** The splitter lives outside the panel's replaced innerHTML, so its listener
+   * survives a `buildPanel()` rebuild — wire it exactly once. */
+  private splitterWired = false;
+
   constructor(private readonly options: SftpPanelOptions = {}) {
-    this.container = document.querySelector<HTMLElement>(".sftp-list");
+    this.panel = document.querySelector<HTMLElement>(".sftp-panel");
+    this.splitter = document.querySelector<HTMLElement>(".sftp-splitter");
   }
 
   async init(): Promise<void> {
-    this.buildCard();
-    this.buildDrawer();
+    this.buildPanel();
     this.devices = await this.safeListDevices();
-    this.render();
-  }
-
-  /** Re-fetch devices and re-render the card (device CRUD happened). */
-  async refresh(): Promise<void> {
-    this.devices = await this.safeListDevices();
-    this.render();
+    this.refreshDeviceSelect();
+    this.applyInitialState();
   }
 
   /**
-   * Rebuild the card + drawer in the current locale (language change). The
-   * drawer is rebuilt only while idle (closed): tearing down a live browse
-   * session would be surprising, and a language change is initiated from the
-   * settings dialog with the drawer closed. Its progress subscription is
-   * unlistened first so the rebuild doesn't leak a second listener.
+   * Restore the persisted panel state (open/collapsed/width + preselected
+   * device). Never connects — a restored device is only preselected, so a
+   * restart doesn't silently re-authenticate; the disconnected state offers a
+   * one-click Reconnect.
    */
-  retranslate(): void {
-    this.buildCard();
-    this.render();
-    if (!this.activeDeviceId) {
-      this.unlistenProgress?.();
-      this.unlistenProgress = null;
-      this.drawer?.remove();
-      this.buildDrawer();
+  private applyInitialState(): void {
+    const s = this.options.initialState;
+    if (!s) return;
+    this.width = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, s.width));
+    const known = s.deviceId && browsableDevices(this.devices).some((d) => d.id === s.deviceId);
+    this.selectedDeviceId = known ? s.deviceId : null;
+    if (!s.open) return;
+    this.everOpened = true;
+    this.panelOpen = true;
+    this.collapsed = s.collapsed;
+    this.applyOpenState();
+    this.syncDeviceSelect();
+    this.renderDisconnectedState();
+    this.options.onLayoutChange?.();
+  }
+
+  /** The persisted panel state, or `undefined` until the panel has been opened
+   * (so the workspace file stays clean until the feature is used). */
+  layoutState(): SftpPanelState | undefined {
+    if (!this.everOpened) return undefined;
+    return {
+      open: this.panelOpen,
+      collapsed: this.collapsed,
+      width: this.width,
+      deviceId: this.activeDeviceId ?? this.selectedDeviceId ?? null,
+    };
+  }
+
+  /** Notify the caller that persisted state changed (debounced save). */
+  private persist(): void {
+    this.options.onPersist?.();
+  }
+
+  /** Re-fetch devices and refresh the picker (device CRUD happened). */
+  async refresh(): Promise<void> {
+    this.devices = await this.safeListDevices();
+    this.refreshDeviceSelect();
+    // The active device may have been deleted out from under us.
+    if (this.activeDeviceId && !this.devices.some((d) => d.id === this.activeDeviceId)) {
+      await this.handleDisconnect();
     }
   }
 
-  /** Stop listening for progress events — used by tests; the app keeps the panel
-   * for its lifetime. */
+  /**
+   * Rebuild the panel chrome in the current locale (language change), but only
+   * while not connected: tearing down a live browse would be surprising, and a
+   * language change is initiated from the settings dialog.
+   */
+  retranslate(): void {
+    if (!this.activeDeviceId) {
+      this.unlistenProgress?.();
+      this.unlistenProgress = null;
+      this.buildPanel();
+      this.refreshDeviceSelect();
+      if (this.panelOpen) this.applyOpenState();
+    }
+  }
+
+  /** Stop listening for progress events + clear timers (tests; the app keeps the
+   * panel for its lifetime). */
   dispose(): void {
     this.unlistenProgress?.();
     this.unlistenProgress = null;
     this.clearHideTimer();
+    this.clearIdleTimer();
   }
 
   private async safeListDevices(): Promise<Device[]> {
@@ -152,72 +254,32 @@ export class SftpPanel {
     }
   }
 
-  /* ----- sidebar card ----------------------------------------------------- */
+  /* ----- panel shell ------------------------------------------------------ */
 
-  private buildCard(): void {
-    if (!this.container) return;
-    this.container.innerHTML = `
-      <div class="sftp-manager">
-        <div class="device-list-header">
-          <h2>${t("sftp.title")}</h2>
-        </div>
-        <div class="sftp-list-items"></div>
+  private buildPanel(): void {
+    const panel = this.panel;
+    if (!panel) return;
+    panel.innerHTML = `
+      <div class="sftp-rail">
+        <button type="button" class="btn btn-icon" data-action="expand"
+          title="${t("sftp.expand")}" aria-label="${t("sftp.expand")}">${chevronLeftIcon}</button>
+        <span class="sftp-conn-dot" aria-hidden="true"></span>
       </div>
-    `;
-    this.cardBody = this.container.querySelector<HTMLElement>(".sftp-list-items");
-  }
-
-  private render(): void {
-    if (!this.cardBody) return;
-    this.cardBody.replaceChildren();
-
-    const devices = browsableDevices(this.devices);
-    if (devices.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "sftp-empty";
-      empty.textContent = t("sftp.empty");
-      this.cardBody.appendChild(empty);
-      return;
-    }
-    for (const device of devices) {
-      const row = document.createElement("div");
-      row.className = "sftp-device-row";
-
-      const name = document.createElement("span");
-      name.className = "sftp-device-name";
-      name.textContent = device.name;
-
-      const browse = document.createElement("button");
-      browse.type = "button";
-      browse.className = "btn btn-primary btn-small";
-      browse.textContent = t("sftp.browse");
-      browse.addEventListener("click", () => void this.openFor(device.id));
-
-      row.append(name, browse);
-      this.cardBody.appendChild(row);
-    }
-  }
-
-  /* ----- drawer shell ----------------------------------------------------- */
-
-  private buildDrawer(): void {
-    // Appended to <body> so the overlay covers the whole app, like the shared
-    // confirm/prompt modals.
-    const drawer = document.createElement("div");
-    drawer.className = "dialog sftp-drawer dialog-hidden";
-    drawer.setAttribute("role", "dialog");
-    drawer.setAttribute("aria-modal", "true");
-    drawer.setAttribute("aria-hidden", "true");
-    drawer.innerHTML = `
-      <div class="dialog-overlay" data-action="close"></div>
-      <div class="dialog-content sftp-content">
-        <div class="dialog-header">
-          <h2 class="sftp-title">${t("sftp.drawer.title")}</h2>
-          <button type="button" class="dialog-close-btn" data-action="close" aria-label="${t("common.close")}">&times;</button>
+      <div class="sftp-panel-body">
+        <div class="sftp-panel-header">
+          <span class="sftp-panel-title">${t("sftp.panelTitle")}</span>
+          <select class="sftp-device-select" aria-label="${t("sftp.selectDevice")}"></select>
+          <div class="sftp-panel-header-actions">
+            <button type="button" class="btn btn-icon sftp-conn-toggle" data-action="conn-toggle"
+              title="${t("sftp.disconnect")}" aria-label="${t("sftp.disconnect")}">${disconnectIcon}</button>
+            <button type="button" class="btn btn-icon" data-action="collapse"
+              title="${t("sftp.collapse")}" aria-label="${t("sftp.collapse")}">${chevronRightIcon}</button>
+            <button type="button" class="btn btn-icon" data-action="hide"
+              title="${t("common.close")}" aria-label="${t("common.close")}">&times;</button>
+          </div>
         </div>
         <div class="sftp-toolbar">
           <input type="text" class="sftp-path" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="${t("sftp.path.aria")}" title="${t("sftp.path.edit")}" />
-
           <div class="sftp-toolbar-actions">
             <button type="button" class="btn btn-icon" data-action="copy-path" title="${t("sftp.nav.copyPath")}" aria-label="${t("sftp.nav.copyPath")}">${copyIcon}</button>
             <button type="button" class="btn btn-icon" data-action="back" title="${t("sftp.nav.back")}" aria-label="${t("sftp.nav.back")}">${arrowLeftIcon}</button>
@@ -238,46 +300,53 @@ export class SftpPanel {
         <div class="sftp-status" aria-live="polite"></div>
       </div>
     `;
-    document.body.appendChild(drawer);
 
-    this.drawer = drawer;
-    this.titleEl = drawer.querySelector(".sftp-title");
-    this.pathEl = drawer.querySelector(".sftp-path");
+    this.deviceSelectEl = panel.querySelector(".sftp-device-select");
+    this.connDotEl = panel.querySelector(".sftp-conn-dot");
+    this.connToggleEl = panel.querySelector(".sftp-conn-toggle");
+    this.pathEl = panel.querySelector(".sftp-path");
+    this.listEl = panel.querySelector(".sftp-entries");
+    this.statusEl = panel.querySelector(".sftp-status");
+    this.progressEl = panel.querySelector(".sftp-progress");
+    this.progressIconEl = panel.querySelector(".sftp-progress-icon");
+    this.progressFillEl = panel.querySelector(".sftp-progress-fill");
+    this.progressPctEl = panel.querySelector(".sftp-progress-pct");
+
     this.pathEl?.addEventListener("keydown", (e) => {
       const ev = e as KeyboardEvent;
       if (ev.key === "Enter") {
         ev.preventDefault();
         if (!this.busy) void this.goToPath(this.pathEl?.value ?? "");
       } else if (ev.key === "Escape") {
-        // Revert the edit and hand focus back rather than closing the drawer.
         ev.stopPropagation();
         this.syncPathInput();
         this.pathEl?.blur();
       }
     });
-    this.listEl = drawer.querySelector(".sftp-entries");
-    this.statusEl = drawer.querySelector(".sftp-status");
-    this.progressEl = drawer.querySelector(".sftp-progress");
-    this.progressIconEl = drawer.querySelector(".sftp-progress-icon");
-    this.progressFillEl = drawer.querySelector(".sftp-progress-fill");
-    this.progressPctEl = drawer.querySelector(".sftp-progress-pct");
 
-    // Live transfer progress (throttled events from the backend).
-    void onSftpProgress((e) => this.onProgress(e)).then((un) => {
-      this.unlistenProgress = un;
+    this.deviceSelectEl?.addEventListener("change", () => {
+      const id = this.deviceSelectEl?.value ?? "";
+      if (id) void this.selectDevice(id);
     });
 
-    drawer.addEventListener("click", (e) => {
+    panel.addEventListener("click", (e) => {
       const target = e.target;
-      // Use `Element`, not `HTMLElement`: a click landing on a button's inline
-      // SVG icon has an `SVGElement` target, which is an `Element` but not an
-      // `HTMLElement` — guarding on `HTMLElement` silently dropped icon clicks.
-      // `closest` still resolves to the enclosing `[data-action]` button.
+      // Use `Element` (not `HTMLElement`): a click on a button's inline SVG has
+      // an `SVGElement` target; `closest` still resolves the enclosing button.
       if (!(target instanceof Element)) return;
       const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
       switch (action) {
-        case "close":
-          void this.close();
+        case "hide":
+          void this.hide();
+          break;
+        case "collapse":
+          this.setCollapsed(true);
+          break;
+        case "expand":
+          this.setCollapsed(false);
+          break;
+        case "conn-toggle":
+          void this.handleConnToggle();
           break;
         case "copy-path":
           void this.handleCopyPath();
@@ -305,43 +374,134 @@ export class SftpPanel {
           break;
       }
     });
-    drawer.addEventListener("keydown", (e) => {
-      if ((e as KeyboardEvent).key === "Escape") void this.close();
+
+    this.wireSplitter();
+
+    // Live transfer progress (throttled events from the backend).
+    void onSftpProgress((e) => this.onProgress(e)).then((un) => {
+      this.unlistenProgress = un;
     });
+  }
+
+  /* ----- open / collapse / hide (panel visibility) ------------------------ */
+
+  /** Whether the panel is currently shown (open, expanded or collapsed). */
+  isOpen(): boolean {
+    return this.panelOpen;
+  }
+
+  /** Show the panel (expanded). Does not connect — the picker's disconnected
+   * state offers a Connect button. */
+  open(): void {
+    this.panelOpen = true;
+    this.everOpened = true;
+    this.collapsed = false;
+    this.idleDisconnected = false;
+    this.applyOpenState();
+    if (!this.activeDeviceId) this.renderDisconnectedState();
+    this.options.onLayoutChange?.();
+    this.persist();
+  }
+
+  /** Open the panel and connect to a specific device (sidebar "Browse"). */
+  openWith(deviceId: string): void {
+    this.open();
+    void this.selectDevice(deviceId);
+  }
+
+  /** Toggle the panel from the header button: open when hidden, fully close
+   * (disconnecting) when shown. */
+  toggle(): void {
+    if (this.panelOpen) void this.hide();
+    else this.open();
+  }
+
+  /** Fully close the panel: disconnect the live connection immediately (the
+   * "closed" state's rule) and hide the panel + splitter. */
+  private async hide(): Promise<void> {
+    this.panelOpen = false;
+    this.clearIdleTimer();
+    this.hideProgress();
+    this.applyOpenState();
+    this.options.onLayoutChange?.();
+    this.persist();
+    await this.disconnectActive();
+    if (this.listEl) this.listEl.replaceChildren();
+  }
+
+  /** Collapse to the rail (keeps the connection, arms the idle timer) or expand
+   * back (clears it). A no-op when the panel is hidden. */
+  private setCollapsed(collapsed: boolean): void {
+    if (!this.panelOpen) return;
+    this.collapsed = collapsed;
+    if (collapsed) this.armIdleTimer();
+    else {
+      this.clearIdleTimer();
+      if (this.idleDisconnected && !this.activeDeviceId) this.renderDisconnectedState();
+    }
+    this.applyOpenState();
+    this.options.onLayoutChange?.();
+    this.persist();
+  }
+
+  /** Reflect open/collapsed/width onto the panel + splitter + toggle button. */
+  private applyOpenState(): void {
+    const panel = this.panel;
+    if (!panel) return;
+    panel.hidden = !this.panelOpen;
+    panel.classList.toggle("sftp-collapsed", this.collapsed);
+    // Clear the inline width while collapsed so the `.sftp-collapsed` rail width
+    // (40px) applies; an inline width would otherwise override it.
+    panel.style.width = this.collapsed ? "" : `${this.width}px`;
+    if (this.splitter) this.splitter.hidden = !this.panelOpen || this.collapsed;
+    this.updateConnDot();
+    const btn = document.querySelector<HTMLButtonElement>("#sftp-btn");
+    btn?.setAttribute("aria-pressed", String(this.panelOpen));
   }
 
   /* ----- connection lifecycle -------------------------------------------- */
 
-  private async openFor(deviceId: string): Promise<void> {
-    const device = this.devices.find((d) => d.id === deviceId);
-    this.activeDeviceId = deviceId;
+  /**
+   * Connect the panel to `deviceId`, disconnecting whatever it was showing.
+   * `force` reconnects even when the id equals the (already-selected) device —
+   * used by the Reconnect button after an idle/explicit disconnect.
+   */
+  private async selectDevice(deviceId: string, force = false): Promise<void> {
+    if (!force && deviceId === this.activeDeviceId) return;
+    if (this.activeDeviceId && this.activeDeviceId !== deviceId) {
+      await this.disconnectActive();
+    }
+    this.selectedDeviceId = deviceId;
+    this.syncDeviceSelect();
+    this.idleDisconnected = false;
     this.history = [];
     this.historyIndex = -1;
-    this.showDrawer(true);
-    if (this.titleEl) this.titleEl.textContent = t("sftp.drawer.titleFor", { name: device?.name ?? "device" });
     this.setStatus(t("sftp.connecting"));
     this.setBusy(true);
     try {
-      // A first-contact host key raises the global host-key dialog; on accept
-      // the connect proceeds and resolves here.
+      // A first-contact host key raises the global host-key dialog; on accept the
+      // connect proceeds and resolves here.
       const startDir = await sftpConnect(deviceId);
+      this.activeDeviceId = deviceId;
+      this.updateConnDot();
       await this.goTo(startDir);
     } catch (err) {
+      this.activeDeviceId = null;
       this.setStatus("");
       this.options.onError?.(err as AppError);
-      await this.close();
+      this.renderDisconnectedState();
+      this.updateConnDot();
     } finally {
       this.setBusy(false);
+      this.persist(); // remember the (now-)selected device
     }
   }
 
-  /** Hide the drawer and disconnect the active connection (idempotent). */
-  private async close(): Promise<void> {
-    this.showDrawer(false);
-    this.hideProgress();
+  /** Disconnect the live connection (if any) without touching panel visibility.
+   * Idempotent and best-effort. */
+  private async disconnectActive(): Promise<void> {
     const deviceId = this.activeDeviceId;
     this.activeDeviceId = null;
-    if (this.listEl) this.listEl.replaceChildren();
     if (deviceId) {
       try {
         await sftpDisconnect(deviceId);
@@ -349,6 +509,63 @@ export class SftpPanel {
         // Best-effort — the connection is torn down backend-side regardless.
       }
     }
+  }
+
+  /** The header connect/disconnect toggle: disconnect when connected, otherwise
+   * connect the selected device (the replacement for the old Reconnect button). */
+  private handleConnToggle(): void {
+    if (this.activeDeviceId) {
+      void this.handleDisconnect();
+    } else if (this.selectedDeviceId) {
+      void this.selectDevice(this.selectedDeviceId, true);
+    }
+  }
+
+  /** Drop the connection but keep the panel open, showing the disconnected
+   * state (the green toggle then offers connect/reconnect). */
+  private async handleDisconnect(): Promise<void> {
+    this.clearIdleTimer();
+    this.idleDisconnected = false;
+    await this.disconnectActive();
+    this.hideProgress();
+    this.setStatus("");
+    this.syncPathInput();
+    this.renderDisconnectedState();
+    this.updateConnDot();
+  }
+
+  /* ----- idle timer ------------------------------------------------------- */
+
+  /** Arm the idle-disconnect timer for a collapsed, connected panel (using the
+   * live setting; `0` disables it). */
+  private armIdleTimer(): void {
+    this.clearIdleTimer();
+    if (!this.activeDeviceId) return;
+    const mins = this.options.getIdleDisconnectMins?.() ?? 0;
+    if (mins <= 0) return;
+    this.idleTimer = setTimeout(() => void this.onIdleTimeout(), mins * 60_000);
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer !== null) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+
+  /** Re-arm the idle timer if the setting changed while collapsed + connected. */
+  onIdleSettingChange(): void {
+    if (this.collapsed && this.activeDeviceId) this.armIdleTimer();
+  }
+
+  private async onIdleTimeout(): Promise<void> {
+    this.idleTimer = null;
+    if (!this.activeDeviceId) return;
+    await this.disconnectActive();
+    this.idleDisconnected = true;
+    this.setStatus(t("sftp.idleDisconnected"));
+    this.renderDisconnectedState();
+    this.updateConnDot();
   }
 
   /* ----- navigation + operations ----------------------------------------- */
@@ -376,8 +593,8 @@ export class SftpPanel {
 
   /**
    * Navigate to a new directory, recording it in history: truncate any forward
-   * entries and push, then load it. Navigating to the directory already current
-   * (e.g. a redundant click) only re-lists it.
+   * entries and push, then load it. Navigating to the current directory only
+   * re-lists it.
    */
   private async goTo(path: string): Promise<void> {
     if (path === this.history[this.historyIndex]) {
@@ -392,14 +609,13 @@ export class SftpPanel {
 
   /** Reflect the current directory in the editable path input. */
   private syncPathInput(): void {
-    if (this.pathEl) this.pathEl.value = this.cwd;
+    if (this.pathEl) this.pathEl.value = this.activeDeviceId ? this.cwd : "";
   }
 
   /**
    * Navigate to a path typed into the path input. The path is canonicalized
    * server-side (resolving `..` and relative paths); if it turns out to be a
-   * file rather than a directory (i.e. it can't be listed), we open its parent
-   * folder instead.
+   * file rather than a directory, we open its parent folder instead.
    */
   private async goToPath(raw: string): Promise<void> {
     const deviceId = this.activeDeviceId;
@@ -432,7 +648,7 @@ export class SftpPanel {
 
   /** Copy the current directory path to the clipboard. */
   private async handleCopyPath(): Promise<void> {
-    if (!this.cwd) return;
+    if (!this.cwd || !this.activeDeviceId) return;
     try {
       await navigator.clipboard.writeText(this.cwd);
       this.options.onSuccess?.(t("sftp.pathCopied"));
@@ -470,8 +686,18 @@ export class SftpPanel {
     }
   }
 
+  /** Clear the JS hover flag from every row. Called before opening a dialog so
+   * the action buttons don't stay visible while a native dialog (which suppresses
+   * `mouseleave`) is up. */
+  private clearHover(): void {
+    this.listEl
+      ?.querySelectorAll(".sftp-entry.hovering")
+      .forEach((el) => el.classList.remove("hovering"));
+  }
+
   private async handleDownload(entry: SftpEntry): Promise<void> {
     if (this.activeDeviceId === null) return;
+    this.clearHover();
     const local = await pickDownloadSavePath(entry.name);
     if (local === null) return; // cancelled
     const remote = joinRemote(this.cwd, entry.name);
@@ -550,6 +776,7 @@ export class SftpPanel {
 
   private async handleRename(entry: SftpEntry): Promise<void> {
     if (this.activeDeviceId === null) return;
+    this.clearHover();
     const next = await prompt(t("sftp.rename.title"), t("sftp.rename.placeholder"), entry.name);
     if (next === null || next.trim() === "" || next.trim() === entry.name) return;
     try {
@@ -566,6 +793,7 @@ export class SftpPanel {
 
   private async handleDelete(entry: SftpEntry): Promise<void> {
     if (this.activeDeviceId === null) return;
+    this.clearHover();
     const isDir = entry.kind === "dir";
     const confirmed = await confirm(
       isDir
@@ -580,6 +808,59 @@ export class SftpPanel {
     } catch (err) {
       this.options.onError?.(err as AppError);
     }
+  }
+
+  /* ----- device picker + disconnected state ------------------------------ */
+
+  /** Rebuild the device `<select>` options from the current browsable devices,
+   * preserving the current selection when it still exists. */
+  private refreshDeviceSelect(): void {
+    const select = this.deviceSelectEl;
+    if (!select) return;
+    const devices = browsableDevices(this.devices);
+    select.replaceChildren();
+
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = t("sftp.selectDevice");
+    select.appendChild(placeholder);
+
+    for (const device of devices) {
+      const opt = document.createElement("option");
+      opt.value = device.id;
+      opt.textContent = device.name;
+      select.appendChild(opt);
+    }
+    this.syncDeviceSelect();
+  }
+
+  /** Point the picker at the connected/selected device (falls back to the
+   * placeholder). */
+  private syncDeviceSelect(): void {
+    if (this.deviceSelectEl) {
+      this.deviceSelectEl.value = this.activeDeviceId ?? this.selectedDeviceId ?? "";
+    }
+  }
+
+  /** Render the entry area for a not-connected panel: a Connect/Reconnect button
+   * when a device is selected, or a prompt to pick one otherwise. */
+  private renderDisconnectedState(): void {
+    if (!this.listEl) return;
+    this.listEl.replaceChildren();
+    this.syncPathInput();
+
+    const wrap = document.createElement("div");
+    wrap.className = "sftp-disconnected";
+
+    const msg = document.createElement("p");
+    msg.className = "sftp-empty";
+    msg.textContent = this.idleDisconnected
+      ? t("sftp.idleDisconnected")
+      : this.selectedDeviceId
+        ? t("sftp.notConnected")
+        : t("sftp.pickDevice");
+    wrap.appendChild(msg);
+    this.listEl.appendChild(wrap);
   }
 
   /* ----- entry rendering -------------------------------------------------- */
@@ -606,6 +887,10 @@ export class SftpPanel {
     const row = document.createElement("div");
     row.className = `sftp-entry is-${entry.kind}`;
     row.setAttribute("role", "listitem");
+    // Hover is tracked in JS (not CSS `:hover`): a native OS dialog opens without
+    // firing `mouseleave`, which would leave the row's action buttons stuck on.
+    row.addEventListener("mouseenter", () => row.classList.add("hovering"));
+    row.addEventListener("mouseleave", () => row.classList.remove("hovering"));
 
     const icon = document.createElement("span");
     icon.className = "sftp-entry-icon";
@@ -616,8 +901,7 @@ export class SftpPanel {
     name.className = "sftp-entry-name";
     name.textContent = entry.name;
     name.title = isDir ? t("sftp.entry.openFolder") : t("sftp.entry.downloadFile");
-    // A directory descends; a file/symlink downloads (double-click parity with
-    // a desktop file manager, but a single click is enough here for reachability).
+    // A directory descends; a file/symlink downloads.
     name.addEventListener("click", () => {
       if (this.busy) return;
       if (isDir) void this.goTo(joinRemote(this.cwd, entry.name));
@@ -667,35 +951,84 @@ export class SftpPanel {
     return btn;
   }
 
-  /* ----- small view helpers ---------------------------------------------- */
+  /* ----- splitter (resize) ------------------------------------------------ */
 
-  private showDrawer(show: boolean): void {
-    if (!this.drawer) return;
-    this.drawer.classList.toggle("dialog-hidden", !show);
-    this.drawer.setAttribute("aria-hidden", show ? "false" : "true");
+  private wireSplitter(): void {
+    const splitter = this.splitter;
+    if (!splitter || this.splitterWired) return;
+    this.splitterWired = true;
+    splitter.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      this.drag = { startX: e.clientX, startWidth: this.width };
+      splitter.classList.add("dragging");
+      document.body.classList.add("sftp-resizing");
+      window.addEventListener("mousemove", this.onDragMove);
+      window.addEventListener("mouseup", this.onDragEnd);
+    });
   }
+
+  /** Dragging left (toward the grid) widens the right-docked panel. Clamped to
+   * `[MIN_PANEL_WIDTH, workspace − MIN_GRID_WIDTH]`. */
+  private onDragMove = (e: MouseEvent): void => {
+    if (!this.drag || !this.panel) return;
+    const rowWidth =
+      this.panel.parentElement?.getBoundingClientRect().width ?? this.width + MIN_GRID_WIDTH;
+    const max = Math.max(MIN_PANEL_WIDTH, rowWidth - MIN_GRID_WIDTH);
+    const next = this.drag.startWidth + (this.drag.startX - e.clientX);
+    this.width = Math.min(max, Math.max(MIN_PANEL_WIDTH, next));
+    this.panel.style.width = `${this.width}px`;
+    this.options.onLayoutChange?.();
+  };
+
+  private onDragEnd = (): void => {
+    this.drag = null;
+    this.splitter?.classList.remove("dragging");
+    document.body.classList.remove("sftp-resizing");
+    window.removeEventListener("mousemove", this.onDragMove);
+    window.removeEventListener("mouseup", this.onDragEnd);
+    this.options.onLayoutChange?.();
+    this.persist(); // save the new width once, at drag end
+  };
+
+  /* ----- small view helpers ---------------------------------------------- */
 
   private setStatus(text: string): void {
     if (this.statusEl) this.statusEl.textContent = text;
   }
 
+  /** Reflect connection state onto the indicator dot and the connect/disconnect
+   * toggle (red + Disconnect when connected, green + Connect when not). */
+  private updateConnDot(): void {
+    const connected = this.activeDeviceId !== null;
+    this.connDotEl?.classList.toggle("connected", connected);
+    const btn = this.connToggleEl;
+    if (btn) {
+      btn.classList.toggle("is-connected", connected);
+      btn.classList.toggle("is-disconnected", !connected);
+      // Disconnected with no device chosen yet → nothing to connect.
+      btn.disabled = !connected && !this.selectedDeviceId;
+      const label = connected ? t("sftp.disconnect") : t("sftp.connect");
+      btn.title = label;
+      btn.setAttribute("aria-label", label);
+    }
+  }
+
   private setBusy(busy: boolean): void {
     this.busy = busy;
-    this.drawer
+    this.panel
       ?.querySelectorAll<HTMLButtonElement>(".sftp-toolbar .btn")
       .forEach((b) => {
         b.disabled = busy;
       });
     if (this.pathEl) this.pathEl.readOnly = busy;
-    // While idle, Back/Forward reflect where we are in history rather than being
-    // blanket-enabled (setBusy(false) just re-enabled the whole toolbar).
+    if (this.deviceSelectEl) this.deviceSelectEl.disabled = busy;
     if (!busy) this.updateNavButtons();
   }
 
   /** Enable/disable Back and Forward per the history cursor (idle state only). */
   private updateNavButtons(): void {
-    const back = this.drawer?.querySelector<HTMLButtonElement>('[data-action="back"]');
-    const forward = this.drawer?.querySelector<HTMLButtonElement>('[data-action="forward"]');
+    const back = this.panel?.querySelector<HTMLButtonElement>('[data-action="back"]');
+    const forward = this.panel?.querySelector<HTMLButtonElement>('[data-action="forward"]');
     if (back) back.disabled = this.historyIndex <= 0;
     if (forward) forward.disabled = this.historyIndex >= this.history.length - 1;
   }

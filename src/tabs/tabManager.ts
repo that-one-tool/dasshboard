@@ -21,7 +21,7 @@ import { requireEl } from "../ui/dom";
 import { closeIcon, plusIcon } from "../ui/icons";
 import { shrinkConfirmMessage } from "../gridModel";
 import { t } from "../i18n";
-import type { WorkspaceState } from "../ipc";
+import type { SftpPanelState, WorkspaceState } from "../ipc";
 
 /** One open tab: its live grid, the panel it lives in, and its strip button. */
 interface Tab {
@@ -52,6 +52,13 @@ export interface TabManagerOptions {
   resolveTabState?: (linkedProfileId: string | null, grid: Grid) => TabProfileState;
   /** Persists the serialized workspace (debounced by the manager). */
   persist?: (state: WorkspaceState) => void;
+  /**
+   * Contributes the Files (SFTP) panel's state into the persisted workspace
+   * (they share `workspace_state.json`). Returns `undefined` until the panel has
+   * been used, so the file stays clean. The panel triggers a save via
+   * {@link scheduleSave}.
+   */
+  getSftpState?: () => SftpPanelState | undefined;
   /**
    * The app-action buttons (reload / trusted-hosts / settings / help), mounted
    * into the right side of the tab-strip row so the app has no separate header.
@@ -360,7 +367,14 @@ export class TabManager {
         };
       }),
       activeIndex: Math.max(0, this.activeIndex),
+      sftp: this.options.getSftpState?.(),
     };
+  }
+
+  /** Schedule a debounced workspace save from an external contributor (the SFTP
+   * panel, when its state changes). A no-op before `init` finishes. */
+  scheduleSave(): void {
+    this.schedulePersist();
   }
 
   /**

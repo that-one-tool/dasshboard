@@ -95,8 +95,7 @@ body {
 
 .device-list,
 .profile-list,
-.tunnel-list,
-.sftp-list {
+.tunnel-list {
 	background-color: #252526;
 	border: 1px solid #3c3c3c;
 	border-radius: 4px;
@@ -270,6 +269,71 @@ body {
 	flex: 1 1 auto;
 	min-height: 0;
 	display: flex;
+}
+
+/* Horizontal workspace row: the tabbed terminal grid (flexes to fill) on the
+ * left, an optional resizable SFTP panel docked on the right, separated by a
+ * draggable splitter. `min-width: 0` on the grid lets it shrink when the panel
+ * grows without overflowing the row. */
+.workspace-row {
+	display: flex;
+	flex: 1 1 auto;
+	min-height: 0;
+	min-width: 0;
+}
+
+.workspace-row > .pane-root {
+	min-width: 0;
+}
+
+/* Vertical drag handle between the grid and the SFTP panel (6px hit area, like
+ * the grid's own splitters). Hidden until the panel is open. */
+.sftp-splitter {
+	flex: 0 0 auto;
+	width: 6px;
+	margin: 0 1px;
+	cursor: col-resize;
+	background-color: transparent;
+	border-radius: 3px;
+}
+
+.sftp-splitter:hover,
+.sftp-splitter.dragging {
+	background-color: rgba(0, 122, 204, 0.4);
+}
+
+/* The docked Files (SFTP) panel: a full-height bordered column that stacks its
+ * own header, toolbar, entry list, progress row and status line. Its width is
+ * set inline (persisted) and adjusted by the splitter; the flex-basis is the
+ * live width while `flex-grow/shrink` stay 0 so it holds its size. */
+.sftp-panel {
+	flex: 0 0 auto;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	width: 360px;
+	background-color: #1e1e1e;
+	border: 1px solid #3c3c3c;
+	border-radius: 4px;
+	overflow: hidden;
+}
+
+/* `display: flex` above beats the `[hidden]` UA rule, so hide explicitly (same
+ * for the splitter, which is hidden alongside the panel). */
+.sftp-panel[hidden],
+.sftp-splitter[hidden] {
+	display: none;
+}
+
+/* Collapsed rail: a thin strip showing only the expand affordance + a
+ * connection dot, keeping the SSH session alive while set aside. */
+.sftp-panel.sftp-collapsed {
+	width: 40px;
+	min-width: 40px;
+}
+
+.sftp-panel.sftp-collapsed > .sftp-panel-body {
+	display: none;
 }
 
 /* ============================================================================
@@ -1736,51 +1800,130 @@ body.grid-dragging-row * {
 	outline: none;
 }
 
-/* --- Files (SFTP) sidebar card --- */
+/* --- Files (SFTP) browser panel --- */
 
-.sftp-list-items {
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-	padding-top: 8px;
-}
-
+/* Empty/placeholder text inside the entry list (empty dir, disconnected). */
 .sftp-empty {
 	color: #858585;
 	font-size: 0.85rem;
 	padding: 8px 4px 0;
 }
 
-/* A bordered card row matching `.device-item`, so the Files tile reads as a
- * sibling of Devices / Tunnels rather than a bare list. */
-.sftp-device-row {
+/* The panel body stacks header → toolbar → entries (grows) → progress → status,
+ * filling the docked panel. Hidden by the collapse rule (see `.sftp-collapsed`). */
+.sftp-panel-body {
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+/* The collapsed rail: hidden while expanded, a thin vertical strip while
+ * collapsed (expand affordance + connection dot). */
+.sftp-rail {
+	display: none;
+}
+
+.sftp-panel.sftp-collapsed .sftp-rail {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 0;
+}
+
+/* Panel header: the device picker (grows) + action buttons. */
+.sftp-panel-header {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
-	gap: 8px;
-	padding: 8px;
-	background-color: #1e1e1e;
-	border: 1px solid #3c3c3c;
-	border-radius: 3px;
+	gap: 6px;
+	padding: 8px 10px;
+	border-bottom: 1px solid #3c3c3c;
+	flex: 0 0 auto;
+}
+
+.sftp-panel-title {
+	flex: 0 0 auto;
+	font-weight: 600;
 	font-size: 0.9rem;
+	color: #d4d4d4;
 }
 
-.sftp-device-name {
+.sftp-device-select {
 	flex: 1 1 auto;
-	font-weight: 500;
-	color: #fff;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	min-width: 0;
+	background: #2d2d2d;
+	color: #d4d4d4;
+	border: 1px solid #3c3c3c;
+	border-radius: 4px;
+	padding: 4px 6px;
+	font: inherit;
+	font-size: 0.85rem;
 }
 
-/* --- Files (SFTP) browser drawer --- */
+.sftp-device-select:focus {
+	outline: none;
+	border-color: #0e639c;
+}
 
-/* Wider than the standard 500px dialog: a file list needs room. */
-.sftp-content {
-	max-width: 720px;
-	width: 92%;
-	height: 80vh;
+.sftp-panel-header-actions {
+	flex: 0 0 auto;
+	display: flex;
+	gap: 2px;
+}
+
+.sftp-panel-header-actions .btn-icon,
+.sftp-rail .btn-icon {
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	color: #d4d4d4;
+}
+
+/* Connect/disconnect toggle: red while connected (click = drop the live
+ * connection), green while disconnected (click = connect the selected device). */
+.sftp-conn-toggle.is-connected {
+	color: #f14c4c;
+}
+
+.sftp-conn-toggle.is-connected:hover:not(:disabled) {
+	color: #ff6b6b;
+}
+
+.sftp-conn-toggle.is-disconnected {
+	color: #3fb950;
+}
+
+.sftp-conn-toggle.is-disconnected:hover:not(:disabled) {
+	color: #56d364;
+}
+
+/* Connection indicator dot: grey when disconnected, green when live. */
+.sftp-conn-dot {
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	background-color: #6a6a6a;
+	flex: 0 0 auto;
+}
+
+.sftp-conn-dot.connected {
+	background-color: #3fb950;
+}
+
+/* Not-connected placeholder inside the entry area (Connect/Reconnect prompt). */
+.sftp-disconnected {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 12px 4px;
+}
+
+/* Keep the col-resize cursor + suppress selection for the whole splitter drag. */
+body.sftp-resizing {
+	cursor: col-resize;
+	user-select: none;
 }
 
 .sftp-toolbar {
@@ -1900,8 +2043,12 @@ body.grid-dragging-row * {
 	visibility: hidden;
 }
 
-.sftp-entry:hover .sftp-entry-actions,
-.sftp-entry:focus-within .sftp-entry-actions {
+/* Hover-only, driven by a JS-toggled `.hovering` class rather than the `:hover`
+ * pseudo-class: a native OS dialog (e.g. the download save dialog) opens without
+ * firing `mouseleave`, which leaves CSS `:hover` stuck on the row so the actions
+ * lingered. `mouseenter`/`mouseleave` listeners (plus an explicit clear when a
+ * dialog opens) track hover reliably instead. */
+.sftp-entry.hovering .sftp-entry-actions {
 	visibility: visible;
 }
 

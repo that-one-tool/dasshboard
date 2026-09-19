@@ -6,6 +6,7 @@ import {
   getWorkspaceState,
   saveWorkspaceState,
   type AppError,
+  type SftpPanelState,
   type WorkspaceState,
 } from "./ipc";
 import { initDeviceManager } from "./devices/deviceManager";
@@ -20,7 +21,7 @@ import { initSftpPanel } from "./sftp/sftpPanel";
 import { openAboutDialog } from "./ui/aboutDialog";
 import { openKnownHostsDialog } from "./settings/knownHostsDialog";
 import { showToast } from "./ui/toast";
-import { helpIcon, reloadIcon, lockIcon, gearIcon } from "./ui/icons";
+import { helpIcon, reloadIcon, lockIcon, gearIcon, filesIcon } from "./ui/icons";
 import { applyDomTranslations, onLocaleChange, t } from "./i18n";
 
 /** Injects the SVG glyph into each header action button (kept in one place so
@@ -30,6 +31,7 @@ function initHeaderIcons(): void {
 	const icons: Array<[string, string]> = [
 		["#reload-btn", reloadIcon],
 		["#trusted-hosts-btn", lockIcon],
+		["#sftp-btn", filesIcon],
 		["#settings-btn", gearIcon],
 		["#help-btn", helpIcon],
 	];
@@ -86,6 +88,9 @@ async function initApp(): Promise<void> {
 		dirty: false,
 	});
 	let currentTerminalSettings = () => DEFAULT_TERMINAL_SETTINGS;
+	// Late-bound bridges to collaborators built after the tabs/settings (below).
+	let notifySftpIdleChange = (): void => {};
+	let sftpLayoutState = (): SftpPanelState | undefined => undefined;
 	const tabs = new TabManager(paneRoot, {
 		grid: {
 			onError: (message) => showToast(t("error.prefix", { message }), "error"),
@@ -100,6 +105,8 @@ async function initApp(): Promise<void> {
 			void saveWorkspaceState(state).catch((error: AppError) =>
 				showToast(t("error.prefix", { message: error.message }), "error"),
 			),
+		// The SFTP panel shares this file; contribute its state into each save.
+		getSftpState: () => sftpLayoutState(),
 		// The app-action buttons move into the tab-strip row (no separate header).
 		headerActions: document.querySelector<HTMLElement>(".header-actions"),
 	});
@@ -111,6 +118,8 @@ async function initApp(): Promise<void> {
 	// Terminal appearance is fanned across every tab's grid.
 	const settings = new SettingsController({
 		applyTerminalSettings: (s) => tabs.forEachGrid((g) => g.applyTerminalSettings(s)),
+		// A live idle-timeout change re-arms the SFTP panel's idle timer.
+		onSftpSettingsChange: () => notifySftpIdleChange(),
 		onError: (message) => showToast(t("error.prefix", { message }), "error"),
 	});
 	await settings.init();
@@ -163,12 +172,24 @@ async function initApp(): Promise<void> {
 		onSuccess: (message: string) => showToast(message, "success"),
 	});
 
-	// Files (SFTP) panel: a sidebar card listing SSH devices, each opening a
-	// standalone browser drawer for browse + up/download. Independent of the grid.
+	// Files (SFTP) panel: a sidebar card listing SSH devices plus a persistent,
+	// resizable browser panel docked to the right of the grid. Independent of the
+	// grid, but resizing/opening it changes the grid's width, so re-fit on layout
+	// change. The idle-disconnect timeout is read live from settings.
 	const sftpPanel = initSftpPanel({
 		onError: (error: AppError) => showToast(t("error.prefix", { message: error.message }), "error"),
 		onSuccess: (message: string) => showToast(message, "success"),
+		getIdleDisconnectMins: () => settings.sftpSettings().idleDisconnectMins,
+		onLayoutChange: () => tabs.activeGrid().refit(),
+		onPersist: () => tabs.scheduleSave(),
+		initialState: restoredWorkspace.sftp,
 	});
+	notifySftpIdleChange = () => sftpPanel.onIdleSettingChange();
+	sftpLayoutState = () => sftpPanel.layoutState();
+	// Header toggle: show/hide the Files panel (hiding disconnects).
+	document
+		.querySelector<HTMLButtonElement>("#sftp-btn")
+		?.addEventListener("click", () => sftpPanel.toggle());
 
 	// Device manager: on any successful change, refresh every pane's device
 	// dropdown so a newly added/edited/deleted device shows up immediately; also

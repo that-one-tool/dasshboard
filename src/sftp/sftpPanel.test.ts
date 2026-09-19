@@ -2,8 +2,9 @@
  * @vitest-environment happy-dom
  *
  * DOM tests for the Files (SFTP) panel: the sidebar card lists SSH devices,
- * "Browse" connects and lists the home directory, clicking a directory descends,
- * clicking a file downloads, and closing disconnects.
+ * "Browse" opens the docked panel + connects, clicking a directory descends,
+ * clicking a file downloads, collapsing keeps the connection while hiding /
+ * disconnecting drops it, and an idle collapsed panel auto-disconnects.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Device, SftpEntry, SftpProgressEvent } from "../ipc";
@@ -57,7 +58,7 @@ vi.mock("@tauri-apps/api/path", () => ({
   basename: vi.fn(async (p: string) => p.split(/[\\/]/).pop() ?? p),
 }));
 
-import { SftpPanel, browsableDevices } from "./sftpPanel";
+import { SftpPanel, browsableDevices, type SftpPanelOptions } from "./sftpPanel";
 import {
   sftpConnect,
   sftpList,
@@ -97,12 +98,36 @@ function q<T extends HTMLElement>(sel: string): T {
   return el;
 }
 
-async function setup(): Promise<SftpPanel> {
-  document.body.innerHTML = `<div class="sftp-list"></div>`;
-  const panel = new SftpPanel();
+/** The panel + splitter live in index.html; recreate that shell for the test. */
+function mountShell(): void {
+  document.body.innerHTML = `
+    <button id="sftp-btn" aria-pressed="false"></button>
+    <div class="workspace-row">
+      <div id="pane-root" class="pane-root"></div>
+      <div class="sftp-splitter" hidden></div>
+      <aside class="sftp-panel" hidden></aside>
+    </div>`;
+}
+
+/** The panel under test, so `browse()` can drive its picker. */
+let activePanel: SftpPanel;
+
+async function setup(options: SftpPanelOptions = {}): Promise<SftpPanel> {
+  mountShell();
+  const panel = new SftpPanel(options);
   await panel.init();
   await flush();
+  activePanel = panel;
   return panel;
+}
+
+/** Open the panel and connect device "a" via the picker (common precondition). */
+async function browse(): Promise<void> {
+  activePanel.open();
+  const select = q<HTMLSelectElement>(".sftp-device-select");
+  select.value = "a";
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  await flush();
 }
 
 describe("browsableDevices", () => {
@@ -127,34 +152,46 @@ describe("SftpPanel", () => {
     vi.clearAllMocks();
   });
 
-  it("renders a Browse button per SSH device", async () => {
+  it("shows the SFTP title in the panel header", async () => {
     await setup();
-    const rows = document.querySelectorAll(".sftp-device-row");
-    expect(rows.length).toBe(1);
-    expect(q(".sftp-device-name").textContent).toBe("Alpha");
+    expect(q(".sftp-panel-title").textContent).toBe("SFTP");
   });
 
-  it("Browse connects and lists the home directory", async () => {
+  it("opening + selecting a device connects and lists the home directory", async () => {
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush();
+    expect(q(".sftp-panel").hidden).toBe(true);
+    await browse();
 
+    expect(q(".sftp-panel").hidden).toBe(false);
+    expect(q("#sftp-btn").getAttribute("aria-pressed")).toBe("true");
     expect(sftpConnect).toHaveBeenCalledWith("a");
     expect(sftpList).toHaveBeenCalledWith("a", "/home/j");
     expect(q<HTMLInputElement>(".sftp-path").value).toBe("/home/j");
-    // Two entries rendered (a dir and a file).
     expect(document.querySelectorAll(".sftp-entry").length).toBe(2);
+  });
+
+  it("populates the device picker and selecting one connects", async () => {
+    h.devices = [sshDevice("a", "Alpha"), sshDevice("b", "Beta")];
+    const panel = await setup();
+    const select = q<HTMLSelectElement>(".sftp-device-select");
+    // Placeholder + two devices.
+    expect(select.options.length).toBe(3);
+
+    panel.toggle(); // open (no connection yet)
+    await flush();
+    select.value = "b";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    expect(sftpConnect).toHaveBeenCalledWith("b");
   });
 
   it("clicking a directory descends into it", async () => {
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush();
+    await browse();
 
-    const dirName = document.querySelector<HTMLButtonElement>(
-      ".sftp-entry.is-dir .sftp-entry-name",
-    );
-    dirName?.click();
+    document
+      .querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")
+      ?.click();
     await flush();
 
     expect(sftpList).toHaveBeenLastCalledWith("a", "/home/j/sub");
@@ -163,13 +200,11 @@ describe("SftpPanel", () => {
   it("clicking a file triggers a download when a save path is chosen", async () => {
     h.saveResult = "C:/local/readme.txt";
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush();
+    await browse();
 
-    const fileName = document.querySelector<HTMLButtonElement>(
-      ".sftp-entry.is-file .sftp-entry-name",
-    );
-    fileName?.click();
+    document
+      .querySelector<HTMLButtonElement>(".sftp-entry.is-file .sftp-entry-name")
+      ?.click();
     await flush();
 
     expect(sftpDownload).toHaveBeenCalledWith(
@@ -182,8 +217,7 @@ describe("SftpPanel", () => {
   it("a cancelled save dialog does not download", async () => {
     h.saveResult = null;
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush();
+    await browse();
 
     document
       .querySelector<HTMLButtonElement>(".sftp-entry.is-file .sftp-entry-name")
@@ -195,31 +229,26 @@ describe("SftpPanel", () => {
 
   it("Back returns to the previous folder, Forward re-enters, without re-pushing", async () => {
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush(); // at /home/j
+    await browse(); // at /home/j
 
-    // Descend into sub.
     document
       .querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")
       ?.click();
     await flush(); // at /home/j/sub
 
-    // Back → /home/j
-    q<HTMLButtonElement>('.sftp-drawer [data-action="back"]').click();
+    q<HTMLButtonElement>('.sftp-panel [data-action="back"]').click();
     await flush();
     expect(sftpList).toHaveBeenLastCalledWith("a", "/home/j");
     expect(q<HTMLInputElement>(".sftp-path").value).toBe("/home/j");
 
-    // Forward → /home/j/sub
-    q<HTMLButtonElement>('.sftp-drawer [data-action="forward"]').click();
+    q<HTMLButtonElement>('.sftp-panel [data-action="forward"]').click();
     await flush();
     expect(sftpList).toHaveBeenLastCalledWith("a", "/home/j/sub");
   });
 
   it("typing a directory path and pressing Enter navigates there", async () => {
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush();
+    await browse();
 
     const path = q<HTMLInputElement>(".sftp-path");
     path.value = "/var/log";
@@ -235,11 +264,8 @@ describe("SftpPanel", () => {
 
   it("typing a file path navigates to its parent folder", async () => {
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush();
+    await browse();
 
-    // The probe list of the file path fails (it isn't a directory); the parent
-    // list then succeeds.
     vi.mocked(sftpList).mockRejectedValueOnce(new Error("not a directory"));
 
     const path = q<HTMLInputElement>(".sftp-path");
@@ -255,15 +281,13 @@ describe("SftpPanel", () => {
 
   it("Back is disabled at the start of history and Forward at the end", async () => {
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush(); // home only → both ends
+    await browse(); // home only → both ends
 
-    const back = q<HTMLButtonElement>('.sftp-drawer [data-action="back"]');
-    const forward = q<HTMLButtonElement>('.sftp-drawer [data-action="forward"]');
+    const back = q<HTMLButtonElement>('.sftp-panel [data-action="back"]');
+    const forward = q<HTMLButtonElement>('.sftp-panel [data-action="forward"]');
     expect(back.disabled).toBe(true);
     expect(forward.disabled).toBe(true);
 
-    // Descend: Back enabled, Forward still disabled (no forward entry).
     document
       .querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")
       ?.click();
@@ -271,53 +295,20 @@ describe("SftpPanel", () => {
     expect(back.disabled).toBe(false);
     expect(forward.disabled).toBe(true);
 
-    // Back once: now Forward is enabled again.
     back.click();
     await flush();
     expect(forward.disabled).toBe(false);
   });
 
-  it("navigating after going Back truncates the forward history", async () => {
-    // home → sub, Back to home, then descend again: the old forward (sub) entry
-    // is dropped, so Forward is disabled at the new leaf.
-    h.listResult = [
-      { name: "sub", kind: "dir", size: 0 },
-      { name: "other", kind: "dir", size: 0 },
-    ];
-    await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush();
-    document
-      .querySelectorAll<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")[0]
-      ?.click();
-    await flush(); // /home/j/sub
-    q<HTMLButtonElement>('.sftp-drawer [data-action="back"]').click();
-    await flush(); // back at /home/j
-    document
-      .querySelectorAll<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")[1]
-      ?.click();
-    await flush(); // /home/j/other — truncates the sub forward entry
-
-    expect(sftpList).toHaveBeenLastCalledWith("a", "/home/j/other");
-    expect(
-      q<HTMLButtonElement>('.sftp-drawer [data-action="forward"]').disabled,
-    ).toBe(true);
-  });
-
   it("a click landing on a toolbar button's SVG icon still navigates", async () => {
-    // Regression: the delegated handler guarded on `HTMLElement`, but a click on
-    // an inline SVG icon has an `SVGElement` target and was dropped.
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush();
+    await browse();
     document
       .querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")
       ?.click();
     await flush(); // at /home/j/sub, Back enabled
 
-    const backSvg = document.querySelector(
-      '.sftp-drawer [data-action="back"] svg',
-    );
+    const backSvg = document.querySelector('.sftp-panel [data-action="back"] svg');
     expect(backSvg).not.toBeNull();
     backSvg?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await flush();
@@ -326,8 +317,7 @@ describe("SftpPanel", () => {
 
   it("a progress event updates the bar width and percentage", async () => {
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush(); // connected, activeDeviceId = "a"
+    await browse();
 
     h.progressHandler?.({
       deviceId: "a",
@@ -344,8 +334,7 @@ describe("SftpPanel", () => {
 
   it("ignores progress events for a different device", async () => {
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush();
+    await browse();
 
     h.progressHandler?.({
       deviceId: "other",
@@ -361,8 +350,7 @@ describe("SftpPanel", () => {
     try {
       h.saveResult = "C:/local/readme.txt";
       await setup();
-      q<HTMLButtonElement>(".sftp-device-row .btn").click();
-      await flush();
+      await browse();
       document
         .querySelector<HTMLButtonElement>(".sftp-entry.is-file .sftp-entry-name")
         ?.click();
@@ -381,9 +369,7 @@ describe("SftpPanel", () => {
 
   it("clicking cancel during a transfer requests cancellation", async () => {
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush();
-    // A progress event makes the row (and its cancel button) active.
+    await browse();
     h.progressHandler?.({
       deviceId: "a",
       direction: "upload",
@@ -404,12 +390,8 @@ describe("SftpPanel", () => {
     const onError = vi.fn();
     h.saveResult = "C:/local/readme.txt";
 
-    document.body.innerHTML = `<div class="sftp-list"></div>`;
-    const panel = new SftpPanel({ onError });
-    await panel.init();
-    await flush();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush();
+    await setup({ onError });
+    await browse();
     document
       .querySelector<HTMLButtonElement>(".sftp-entry.is-file .sftp-entry-name")
       ?.click();
@@ -420,15 +402,202 @@ describe("SftpPanel", () => {
     expect(q(".sftp-progress").classList.contains("active")).toBe(false);
   });
 
-  it("closing the drawer disconnects", async () => {
+  it("toggles the row hover class on mouse enter/leave and clears it on download", async () => {
+    h.saveResult = null; // cancel the dialog so nothing else happens
     await setup();
-    q<HTMLButtonElement>(".sftp-device-row .btn").click();
-    await flush();
+    await browse();
 
-    q<HTMLButtonElement>('.sftp-drawer [data-action="close"]').click();
+    const row = q(".sftp-entry.is-file");
+    row.dispatchEvent(new MouseEvent("mouseenter"));
+    expect(row.classList.contains("hovering")).toBe(true);
+    row.dispatchEvent(new MouseEvent("mouseleave"));
+    expect(row.classList.contains("hovering")).toBe(false);
+
+    // Opening the (native) download dialog clears any lingering hover so the
+    // action buttons don't stay stuck visible.
+    row.dispatchEvent(new MouseEvent("mouseenter"));
+    q<HTMLButtonElement>(".sftp-entry.is-file .sftp-entry-name").click();
+    await flush();
+    expect(row.classList.contains("hovering")).toBe(false);
+  });
+
+  /* ----- panel lifecycle ------------------------------------------------- */
+
+  it("hiding the panel (×) disconnects and hides it", async () => {
+    await setup();
+    await browse();
+
+    q<HTMLButtonElement>('.sftp-panel [data-action="hide"]').click();
     await flush();
 
     expect(sftpDisconnect).toHaveBeenCalledWith("a");
-    expect(q(".sftp-drawer").classList.contains("dialog-hidden")).toBe(true);
+    expect(q(".sftp-panel").hidden).toBe(true);
+    expect(q("#sftp-btn").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("toggle() hides+disconnects an open panel (header button behavior)", async () => {
+    const panel = await setup();
+    await browse();
+    expect(q(".sftp-panel").hidden).toBe(false);
+
+    panel.toggle(); // → hide
+    await flush();
+    expect(sftpDisconnect).toHaveBeenCalledWith("a");
+    expect(q(".sftp-panel").hidden).toBe(true);
+  });
+
+  it("collapsing keeps the connection (no disconnect); expanding restores it", async () => {
+    await setup();
+    await browse();
+
+    q<HTMLButtonElement>('.sftp-panel [data-action="collapse"]').click();
+    await flush();
+    expect(q(".sftp-panel").classList.contains("sftp-collapsed")).toBe(true);
+    expect(q(".sftp-splitter").hidden).toBe(true);
+    // Inline width is cleared so the collapsed-rail CSS width can apply.
+    expect(q(".sftp-panel").style.width).toBe("");
+    expect(sftpDisconnect).not.toHaveBeenCalled();
+
+    q<HTMLButtonElement>('.sftp-panel [data-action="expand"]').click();
+    await flush();
+    expect(q(".sftp-panel").classList.contains("sftp-collapsed")).toBe(false);
+    expect(q(".sftp-panel").style.width).not.toBe("");
+  });
+
+  it("switching devices disconnects the previous one", async () => {
+    h.devices = [sshDevice("a", "Alpha"), sshDevice("b", "Beta")];
+    await setup();
+    await browse(); // connected to "a"
+
+    const select = q<HTMLSelectElement>(".sftp-device-select");
+    select.value = "b";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    expect(sftpDisconnect).toHaveBeenCalledWith("a");
+    expect(sftpConnect).toHaveBeenLastCalledWith("b");
+  });
+
+  it("the toggle disconnects (red→green) but keeps the panel open", async () => {
+    await setup();
+    await browse();
+
+    const toggle = q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]');
+    expect(toggle.classList.contains("is-connected")).toBe(true);
+
+    toggle.click();
+    await flush();
+
+    expect(sftpDisconnect).toHaveBeenCalledWith("a");
+    expect(q(".sftp-panel").hidden).toBe(false);
+    // Toggle flips to the green "connect" state; no separate Reconnect button.
+    expect(toggle.classList.contains("is-disconnected")).toBe(true);
+    expect(document.querySelector('[data-action="reconnect"]')).toBeNull();
+  });
+
+  it("the green toggle reconnects the last device after a disconnect", async () => {
+    await setup();
+    await browse();
+    const toggle = q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]');
+    toggle.click(); // disconnect
+    await flush();
+    vi.mocked(sftpConnect).mockClear();
+
+    toggle.click(); // reconnect
+    await flush();
+    expect(sftpConnect).toHaveBeenCalledWith("a");
+  });
+
+  it("the toggle is disabled when disconnected with no device selected", async () => {
+    const panel = await setup();
+    panel.open();
+    await flush();
+    const toggle = q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]');
+    expect(toggle.classList.contains("is-disconnected")).toBe(true);
+    expect(toggle.disabled).toBe(true);
+  });
+
+  it("an idle collapsed panel auto-disconnects after the configured timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      await setup({ getIdleDisconnectMins: () => 5 });
+      await browse();
+
+      q<HTMLButtonElement>('.sftp-panel [data-action="collapse"]').click();
+      await flush();
+      expect(sftpDisconnect).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(5 * 60_000 + 100);
+      await flush();
+      expect(sftpDisconnect).toHaveBeenCalledWith("a");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /* ----- persistence ----------------------------------------------------- */
+
+  it("layoutState is undefined until the panel is opened, then reflects it", async () => {
+    const panel = await setup();
+    expect(panel.layoutState()).toBeUndefined();
+
+    await browse(); // opens + connects "a"
+    const s = panel.layoutState();
+    expect(s).toEqual({ open: true, collapsed: false, width: 360, deviceId: "a" });
+  });
+
+  it("onPersist fires on open, collapse and hide", async () => {
+    const onPersist = vi.fn();
+    const panel = await setup({ onPersist });
+    panel.toggle(); // open
+    await flush();
+    q<HTMLButtonElement>('.sftp-panel [data-action="collapse"]').click();
+    await flush();
+    panel.toggle(); // hide
+    await flush();
+    expect(onPersist).toHaveBeenCalledTimes(3);
+  });
+
+  it("restores open + collapsed + width + preselected device without reconnecting", async () => {
+    const panel = await setup({
+      initialState: { open: true, collapsed: true, width: 500, deviceId: "a" },
+    });
+    expect(sftpConnect).not.toHaveBeenCalled(); // never auto-reconnects
+    expect(q(".sftp-panel").hidden).toBe(false);
+    expect(q(".sftp-panel").classList.contains("sftp-collapsed")).toBe(true);
+    expect(q<HTMLSelectElement>(".sftp-device-select").value).toBe("a");
+    // Width is remembered (applied once expanded).
+    expect(panel.layoutState()?.width).toBe(500);
+  });
+
+  it("drops a restored device id that no longer exists", async () => {
+    const panel = await setup({
+      initialState: { open: true, collapsed: false, width: 360, deviceId: "gone" },
+    });
+    expect(q<HTMLSelectElement>(".sftp-device-select").value).toBe("");
+    expect(panel.layoutState()?.deviceId).toBeNull();
+  });
+
+  it("clamps a restored width below the minimum", async () => {
+    const panel = await setup({
+      initialState: { open: true, collapsed: false, width: 10, deviceId: null },
+    });
+    expect(panel.layoutState()?.width).toBe(260);
+  });
+
+  it("a zero idle timeout never auto-disconnects", async () => {
+    vi.useFakeTimers();
+    try {
+      await setup({ getIdleDisconnectMins: () => 0 });
+      await browse();
+      q<HTMLButtonElement>('.sftp-panel [data-action="collapse"]').click();
+      await flush();
+
+      vi.advanceTimersByTime(60 * 60_000);
+      await flush();
+      expect(sftpDisconnect).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

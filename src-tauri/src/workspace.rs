@@ -59,12 +59,33 @@ impl TabState {
     }
 }
 
-/// The full saved workspace: the ordered open tabs plus the active tab index.
+/// The docked Files (SFTP) panel's per-instance UI state: whether it is open,
+/// collapsed to the rail, its width in px, and the device last selected in its
+/// picker (preselected on restore, but never auto-reconnected). Entirely
+/// cosmetic — a bad value can only mis-size a panel — so it carries no
+/// validation beyond the width clamp the frontend applies on read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpPanelState {
+    pub open: bool,
+    pub collapsed: bool,
+    pub width: u32,
+    #[serde(default)]
+    pub device_id: Option<String>,
+}
+
+/// The full saved workspace: the ordered open tabs plus the active tab index,
+/// and the optional SFTP panel state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceState {
     pub tabs: Vec<TabState>,
     pub active_index: u32,
+    /// The Files panel's UI state. `#[serde(default)]` so a `workspace_state.json`
+    /// written before this field existed still loads (as `None`); skipped on
+    /// serialize when absent so the file stays clean until the panel is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sftp: Option<SftpPanelState>,
 }
 
 impl WorkspaceState {
@@ -75,6 +96,7 @@ impl WorkspaceState {
         WorkspaceState {
             tabs: Vec::new(),
             active_index: 0,
+            sftp: None,
         }
     }
 
@@ -123,6 +145,7 @@ mod tests {
         WorkspaceState {
             tabs: vec![tab()],
             active_index: 0,
+            sftp: None,
         }
     }
 
@@ -172,5 +195,39 @@ mod tests {
         let json = serde_json::to_string(&s).expect("serialize");
         let back: WorkspaceState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn sftp_panel_state_round_trips_and_is_camel_case() {
+        let mut s = state();
+        s.sftp = Some(SftpPanelState {
+            open: true,
+            collapsed: false,
+            width: 420,
+            device_id: Some("dev-1".to_string()),
+        });
+        let value = serde_json::to_value(&s).expect("serialize");
+        assert_eq!(value["sftp"]["open"], true);
+        assert_eq!(value["sftp"]["width"], 420);
+        assert_eq!(value["sftp"]["deviceId"], "dev-1");
+
+        let json = serde_json::to_string(&s).expect("serialize");
+        let back: WorkspaceState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(s, back);
+    }
+
+    #[test]
+    fn omits_sftp_field_when_absent() {
+        // A clean file until the panel is used: `None` is skipped on serialize.
+        let value = serde_json::to_value(state()).expect("serialize");
+        assert!(value.get("sftp").is_none());
+    }
+
+    #[test]
+    fn deserializes_older_file_missing_sftp_field() {
+        // A workspace_state.json written before `sftp` existed loads as `None`.
+        let json = r#"{ "tabs": [], "activeIndex": 0 }"#;
+        let back: WorkspaceState = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(back.sftp, None);
     }
 }

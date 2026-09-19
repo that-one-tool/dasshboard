@@ -21,6 +21,9 @@
         <button type="button" id="trusted-hosts-btn" class="icon-btn"
           data-i18n-title="header.trustedHosts.title" data-i18n-aria="header.trustedHosts.aria"
           title="Manage trusted hosts" aria-label="Manage trusted hosts"></button>
+        <button type="button" id="sftp-btn" class="icon-btn"
+          data-i18n-title="header.files.title" data-i18n-aria="header.files.aria"
+          title="Files (SFTP)" aria-label="Files (SFTP)" aria-pressed="false"></button>
         <button type="button" id="settings-btn" class="icon-btn"
           data-i18n-title="header.settings.title" data-i18n-aria="header.settings.aria"
           title="Settings" aria-label="Settings"></button>
@@ -34,12 +37,19 @@
           <div class="profile-list"></div>
           <div class="device-list"></div>
           <div class="tunnel-list"></div>
-          <div class="sftp-list"></div>
         </aside>
 
         <main class="main-content">
-          <div id="pane-root" class="pane-root"
-            data-i18n-aria="header.paneRoot.aria" aria-label="SSH terminal"></div>
+          <!-- Horizontal workspace row: the tabbed terminal grid on the left, an
+               optional resizable SFTP panel docked on the right. The splitter and
+               panel are populated + toggled by SftpPanel; they stay hidden until
+               the panel is opened. -->
+          <div class="workspace-row">
+            <div id="pane-root" class="pane-root"
+              data-i18n-aria="header.paneRoot.aria" aria-label="SSH terminal"></div>
+            <div class="sftp-splitter" role="separator" aria-orientation="vertical" hidden></div>
+            <aside class="sftp-panel" hidden></aside>
+          </div>
         </main>
       </div>
     </div>

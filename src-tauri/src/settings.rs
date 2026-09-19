@@ -45,6 +45,15 @@ const MIN_KEEPALIVE_COUNT_MAX: u32 = 1;
 const MAX_KEEPALIVE_COUNT_MAX: u32 = 10;
 const DEFAULT_KEEPALIVE_COUNT_MAX: u32 = 3;
 
+/// The SFTP browser disconnects an idle (collapsed) connection after this many
+/// minutes. `0` disables the idle timeout entirely (the connection then lives
+/// until the panel is closed or the app quits). Clamped on save; the default
+/// balances "still connected when you come back" against not leaking an SSH
+/// session that has sat untouched for the afternoon.
+const MIN_SFTP_IDLE_DISCONNECT_MINS: u32 = 0;
+const MAX_SFTP_IDLE_DISCONNECT_MINS: u32 = 1440;
+const DEFAULT_SFTP_IDLE_DISCONNECT_MINS: u32 = 10;
+
 /// Which built-in xterm theme to apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -92,6 +101,25 @@ impl Default for KeepaliveSettings {
     }
 }
 
+/// SFTP file-browser behavior. App-wide, not per-device. Purely a frontend
+/// concern (the backend keeps a connection alive until told to drop it), stored
+/// here so the preference persists like every other app setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpSettings {
+    /// Minutes an idle (collapsed) SFTP connection lives before it is
+    /// auto-disconnected; `0` disables the idle timeout.
+    pub idle_disconnect_mins: u32,
+}
+
+impl Default for SftpSettings {
+    fn default() -> Self {
+        SftpSettings {
+            idle_disconnect_mins: DEFAULT_SFTP_IDLE_DISCONNECT_MINS,
+        }
+    }
+}
+
 impl Default for TerminalSettings {
     fn default() -> Self {
         TerminalSettings {
@@ -128,6 +156,10 @@ pub struct Settings {
     /// `settings.json` written before this group existed still loads.
     #[serde(default)]
     pub keepalive: KeepaliveSettings,
+    /// SFTP browser behavior. `#[serde(default)]` so a `settings.json` written
+    /// before this group existed still loads.
+    #[serde(default)]
+    pub sftp: SftpSettings,
 }
 
 fn default_version() -> u32 {
@@ -142,6 +174,7 @@ impl Default for Settings {
             last_profile_id: None,
             language: None,
             keepalive: KeepaliveSettings::default(),
+            sftp: SftpSettings::default(),
         }
     }
 }
@@ -168,6 +201,10 @@ impl Settings {
             .keepalive
             .count_max
             .clamp(MIN_KEEPALIVE_COUNT_MAX, MAX_KEEPALIVE_COUNT_MAX);
+        self.sftp.idle_disconnect_mins = self
+            .sftp
+            .idle_disconnect_mins
+            .clamp(MIN_SFTP_IDLE_DISCONNECT_MINS, MAX_SFTP_IDLE_DISCONNECT_MINS);
         self
     }
 }
@@ -455,6 +492,45 @@ mod tests {
     }
 
     #[test]
+    fn save_clamps_sftp_idle_and_defaults_when_group_absent() {
+        let dir = tempdir().unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        // Default applied when nothing is set.
+        assert_eq!(
+            store.get().sftp.idle_disconnect_mins,
+            DEFAULT_SFTP_IDLE_DISCONNECT_MINS
+        );
+
+        // Above the cap clamps down; 0 (disabled) is valid and preserved.
+        let mut s = store.get();
+        s.sftp.idle_disconnect_mins = 999_999;
+        let saved = store.save(s).unwrap();
+        assert_eq!(
+            saved.sftp.idle_disconnect_mins,
+            MAX_SFTP_IDLE_DISCONNECT_MINS
+        );
+
+        let mut s2 = store.get();
+        s2.sftp.idle_disconnect_mins = 0;
+        let saved2 = store.save(s2).unwrap();
+        assert_eq!(saved2.sftp.idle_disconnect_mins, 0);
+    }
+
+    #[test]
+    fn deserializes_older_file_missing_sftp_group() {
+        // A settings.json written before `sftp` existed must still load,
+        // defaulting the whole group.
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(SETTINGS_FILE),
+            r#"{ "version": 1, "terminal": { "fontSize": 14, "fontFamily": "Consolas", "theme": "dark" } }"#,
+        )
+        .unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        assert_eq!(store.get().sftp, SftpSettings::default());
+    }
+
+    #[test]
     fn wire_format_is_camel_case() {
         let s = Settings::default();
         let value = serde_json::to_value(&s).unwrap();
@@ -466,6 +542,10 @@ mod tests {
             DEFAULT_KEEPALIVE_INTERVAL
         );
         assert_eq!(value["keepalive"]["countMax"], DEFAULT_KEEPALIVE_COUNT_MAX);
+        assert_eq!(
+            value["sftp"]["idleDisconnectMins"],
+            DEFAULT_SFTP_IDLE_DISCONNECT_MINS
+        );
         assert!(value.get("lastProfileId").is_some()); // present as null
         assert!(value.get("language").is_some()); // present as null
         assert!(value["language"].is_null());

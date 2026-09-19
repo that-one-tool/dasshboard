@@ -35,6 +35,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     lastProfileId: null,
     language: null,
     keepalive: { intervalSecs: 30, countMax: 3 },
+    sftp: { idleDisconnectMins: 10 },
     ...overrides,
   };
 }

@@ -61,7 +61,7 @@ describe("t", () => {
   });
 
   it("interpolates named parameters", () => {
-    expect(t("sftp.drawer.titleFor", { name: "web01" })).toBe("Files — web01");
+    expect(t("sftp.downloadedToast", { name: "web01" })).toBe("Downloaded web01");
   });
 
   it("leaves an unmatched placeholder in place", () => {

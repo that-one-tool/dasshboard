@@ -574,10 +574,21 @@ export interface WorkspaceTabState {
   linkedProfileId: string | null;
 }
 
+/** The docked Files (SFTP) panel's per-instance UI state (open/collapsed/width
+ * + last-selected device, preselected on restore but not auto-reconnected). */
+export interface SftpPanelState {
+  open: boolean;
+  collapsed: boolean;
+  width: number;
+  deviceId: string | null;
+}
+
 /** The saved open-tabs workspace. Empty `tabs` means nothing persisted yet. */
 export interface WorkspaceState {
   tabs: WorkspaceTabState[];
   activeIndex: number;
+  /** The Files panel's UI state, or absent/undefined before it has been used. */
+  sftp?: SftpPanelState;
 }
 
 /** The saved workspace, or an empty one (no tabs) on first launch / corrupt file. */
@@ -614,6 +625,13 @@ export interface KeepaliveSettings {
   countMax: number;
 }
 
+/** SFTP browser behavior (backend clamps idle-disconnect 0..=1440). */
+export interface SftpSettings {
+  /** Minutes an idle (collapsed) SFTP connection lives before it is
+   * auto-disconnected; `0` disables the idle timeout. */
+  idleDisconnectMins: number;
+}
+
 /** The whole `settings.json` payload (SPEC §4). */
 export interface Settings {
   version: number;
@@ -627,6 +645,8 @@ export interface Settings {
   /** SSH keepalive cadence + dead-peer threshold, applied to shell sessions and
    * tunnels (not serial). */
   keepalive: KeepaliveSettings;
+  /** SFTP file-browser behavior (idle-disconnect timeout). */
+  sftp: SftpSettings;
 }
 
 /** Current app settings (SPEC §5). */

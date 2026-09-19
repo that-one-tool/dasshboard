@@ -9,7 +9,13 @@
  * as the active tab changes.
  */
 
-import { getSettings, saveSettings, type Settings, type TerminalSettings } from "../ipc";
+import {
+  getSettings,
+  saveSettings,
+  type Settings,
+  type SftpSettings,
+  type TerminalSettings,
+} from "../ipc";
 import { DEFAULT_TERMINAL_SETTINGS } from "../terminal/terminalSettings";
 import {
   SUPPORTED_LOCALES,
@@ -23,6 +29,9 @@ import {
 export interface SettingsControllerOptions {
   /** Applies terminal appearance live (main.ts fans it across every tab's grid). */
   applyTerminalSettings: (settings: TerminalSettings) => void;
+  /** Notified when SFTP behavior changes, so the panel can re-arm its idle
+   * timer with the new timeout. Optional (unset during tests). */
+  onSftpSettingsChange?: (settings: SftpSettings) => void;
   onError: (message: string) => void;
 }
 
@@ -32,21 +41,29 @@ export const DEFAULT_KEEPALIVE_SETTINGS = {
   countMax: 3,
 } as const;
 
+/** Matches the backend `SftpSettings` defaults. */
+export const DEFAULT_SFTP_SETTINGS = {
+  idleDisconnectMins: 10,
+} as const;
+
 const FALLBACK_SETTINGS: Settings = {
   version: 1,
   terminal: DEFAULT_TERMINAL_SETTINGS,
   lastProfileId: null,
   language: null,
   keepalive: { ...DEFAULT_KEEPALIVE_SETTINGS },
+  sftp: { ...DEFAULT_SFTP_SETTINGS },
 };
 
 export class SettingsController {
   private applyTerminalSettings: (settings: TerminalSettings) => void;
+  private onSftpSettingsChange?: (settings: SftpSettings) => void;
   private onError: (message: string) => void;
   private settings: Settings = FALLBACK_SETTINGS;
 
   constructor(options: SettingsControllerOptions) {
     this.applyTerminalSettings = options.applyTerminalSettings;
+    this.onSftpSettingsChange = options.onSftpSettingsChange;
     this.onError = options.onError;
   }
 
@@ -81,6 +98,7 @@ export class SettingsController {
       const fresh = await getSettings();
       this.settings = fresh;
       this.applyTerminalSettings(fresh.terminal);
+      this.onSftpSettingsChange?.(fresh.sftp);
       // Another instance may have changed the language; adopt it. `setLocale`
       // is a no-op when unchanged, and otherwise notifies the locale listeners
       // (wired in `main.ts`) to re-render every view.
@@ -93,6 +111,12 @@ export class SettingsController {
   /** Current terminal appearance — read by panes when they create a terminal. */
   terminalSettings(): TerminalSettings {
     return this.settings.terminal;
+  }
+
+  /** Current SFTP browser behavior — read by the SFTP panel when it arms its
+   * idle-disconnect timer. */
+  sftpSettings(): SftpSettings {
+    return this.settings.sftp;
   }
 
   /** The persisted id of the last-used profile, if any (for app-start restore). */
@@ -115,6 +139,12 @@ export class SettingsController {
   private async applyTerminal(terminal: TerminalSettings): Promise<void> {
     this.settings = { ...this.settings, terminal };
     this.applyTerminalSettings(terminal); // live to existing terminals
+    await this.save();
+  }
+
+  private async applySftp(sftp: SftpSettings): Promise<void> {
+    this.settings = { ...this.settings, sftp };
+    this.onSftpSettingsChange?.(sftp); // re-arm the panel's idle timer
     await this.save();
   }
 
@@ -196,6 +226,11 @@ export class SettingsController {
           <input type="number" class="settings-keepalive-count" min="1" max="10" step="1" />
           <small class="form-hint">${t("settings.keepalive.countMax.hint")}</small>
         </label>
+        <label class="form-field">
+          <span>${t("settings.sftp.idleDisconnect")}</span>
+          <input type="number" class="settings-sftp-idle" min="0" max="1440" step="1" />
+          <small class="form-hint">${t("settings.sftp.idleDisconnect.hint")}</small>
+        </label>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" data-action="close">${t("common.close")}</button>
         </div>
@@ -210,6 +245,7 @@ export class SettingsController {
       ".settings-keepalive-interval",
     );
     const keepaliveCount = root.querySelector<HTMLInputElement>(".settings-keepalive-count");
+    const sftpIdle = root.querySelector<HTMLInputElement>(".settings-sftp-idle");
     // Reflect the *stored* language (null/unsupported ⇒ "System default"), not
     // the resolved one, so the picker shows what the user chose.
     if (language) language.value = this.settings.language ?? "";
@@ -219,6 +255,7 @@ export class SettingsController {
     if (theme) theme.value = term.theme;
     if (keepaliveInterval) keepaliveInterval.value = String(this.settings.keepalive.intervalSecs);
     if (keepaliveCount) keepaliveCount.value = String(this.settings.keepalive.countMax);
+    if (sftpIdle) sftpIdle.value = String(this.settings.sftp.idleDisconnectMins);
 
     language?.addEventListener("change", () => {
       void this.applyLanguage(language.value);
@@ -272,6 +309,19 @@ export class SettingsController {
     const onApplyKeepalive = (): void => void applyKeepalive();
     keepaliveInterval?.addEventListener("change", onApplyKeepalive);
     keepaliveCount?.addEventListener("change", onApplyKeepalive);
+
+    // SFTP idle-disconnect: a non-numeric field keeps the current value; the
+    // backend clamps (0..=1440) and we reflect the clamped value back.
+    const applySftp = async (): Promise<void> => {
+      const parsed = Number.parseInt(sftpIdle?.value ?? "", 10);
+      await this.applySftp({
+        idleDisconnectMins: Number.isNaN(parsed)
+          ? this.settings.sftp.idleDisconnectMins
+          : parsed,
+      });
+      if (sftpIdle) sftpIdle.value = String(this.settings.sftp.idleDisconnectMins);
+    };
+    sftpIdle?.addEventListener("change", () => void applySftp());
 
     const previouslyFocused = document.activeElement;
     const close = (): void => {

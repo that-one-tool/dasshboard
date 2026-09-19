@@ -278,6 +278,7 @@ describe("IPC command wrapper argument shapes", () => {
 			lastProfileId: null,
 			language: null,
 			keepalive: { intervalSecs: 30, countMax: 3 },
+			sftp: { idleDisconnectMins: 10 },
 		};
 		invokeMock.mockResolvedValue(settings);
 		await expect(getSettings()).resolves.toEqual(settings);
@@ -291,6 +292,7 @@ describe("IPC command wrapper argument shapes", () => {
 			lastProfileId: "p1",
 			language: null,
 			keepalive: { intervalSecs: 30, countMax: 3 },
+			sftp: { idleDisconnectMins: 10 },
 		};
 		invokeMock.mockResolvedValue(settings);
 		await saveSettings(settings);
