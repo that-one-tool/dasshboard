@@ -848,13 +848,17 @@ export async function sftpRename(
   await invokeChecked<void>("sftp_rename", { deviceId, from, to });
 }
 
-/** Removes a remote entry — a directory (must be empty) when `isDir`, else a file. */
+/**
+ * Removes a remote entry: a file when `isDir` is false; a directory otherwise —
+ * recursively (whole tree) when `recursive`, else only when already empty.
+ */
 export async function sftpRemove(
   deviceId: string,
   path: string,
   isDir: boolean,
+  recursive = false,
 ): Promise<void> {
-  await invokeChecked<void>("sftp_remove", { deviceId, path, isDir });
+  await invokeChecked<void>("sftp_remove", { deviceId, path, isDir, recursive });
 }
 
 /**

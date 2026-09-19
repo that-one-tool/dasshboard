@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   listResult: [] as SftpEntry[],
   saveResult: null as string | null,
   openResult: null as string | null,
+  dirResult: null as string | null,
   progressHandler: null as ((e: SftpProgressEvent) => void) | null,
 }));
 
@@ -47,6 +48,7 @@ vi.mock("../ipc", () => ({
 vi.mock("../ui/fileDialog", () => ({
   pickDownloadSavePath: vi.fn(async () => h.saveResult),
   pickUploadOpenPath: vi.fn(async () => h.openResult),
+  pickDownloadDirPath: vi.fn(async () => h.dirResult),
 }));
 
 vi.mock("../ui/confirm", () => ({
@@ -56,6 +58,7 @@ vi.mock("../ui/confirm", () => ({
 
 vi.mock("@tauri-apps/api/path", () => ({
   basename: vi.fn(async (p: string) => p.split(/[\\/]/).pop() ?? p),
+  join: vi.fn(async (...parts: string[]) => parts.join("/")),
 }));
 
 import { SftpPanel, browsableDevices, type SftpPanelOptions } from "./sftpPanel";
@@ -65,6 +68,8 @@ import {
   sftpRealpath,
   sftpDisconnect,
   sftpDownload,
+  sftpRemove,
+  sftpRename,
   sftpCancelTransfer,
 } from "../ipc";
 import type { AppError } from "../ipc";
@@ -149,6 +154,7 @@ describe("SftpPanel", () => {
     ];
     h.saveResult = null;
     h.openResult = null;
+    h.dirResult = null;
     vi.clearAllMocks();
   });
 
@@ -533,6 +539,123 @@ describe("SftpPanel", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /* ----- multi-select + bulk operations ---------------------------------- */
+
+  function checks(): HTMLInputElement[] {
+    return [...document.querySelectorAll<HTMLInputElement>(".sftp-entry-check")];
+  }
+  function check(i: number): HTMLInputElement {
+    const el = checks()[i];
+    if (!el) throw new Error(`missing checkbox ${i}`);
+    return el;
+  }
+
+  it("selecting rows updates the bulk-bar count; select-all toggles everything", async () => {
+    await setup();
+    await browse(); // entries: [sub (dir), readme.txt (file)]
+
+    check(1).click();
+    expect(q(".sftp-sel-count").textContent).toBe("1 selected");
+
+    q<HTMLButtonElement>('[data-action="select-all"]').click();
+    expect(q(".sftp-sel-count").textContent).toBe("2 selected");
+    expect(checks().every((c) => c.checked)).toBe(true);
+
+    q<HTMLButtonElement>('[data-action="select-all"]').click();
+    expect(checks().some((c) => c.checked)).toBe(false);
+  });
+
+  it("bulk delete removes each selected entry, recursively for folders", async () => {
+    await setup();
+    await browse();
+    check(0).click(); // sub (dir)
+    check(1).click(); // readme.txt (file)
+
+    q<HTMLButtonElement>('[data-action="bulk-delete"]').click();
+    await flush();
+
+    expect(sftpRemove).toHaveBeenCalledWith("a", "/home/j/sub", true, true);
+    expect(sftpRemove).toHaveBeenCalledWith("a", "/home/j/readme.txt", false, false);
+  });
+
+  it("bulk download saves selected files into a chosen folder and skips directories", async () => {
+    h.dirResult = "C:/dest";
+    await setup();
+    await browse();
+    check(0).click(); // sub (dir) — should be skipped
+    check(1).click(); // readme.txt (file)
+
+    q<HTMLButtonElement>('[data-action="bulk-download"]').click();
+    await flush();
+
+    expect(sftpDownload).toHaveBeenCalledTimes(1);
+    expect(sftpDownload).toHaveBeenCalledWith("a", "/home/j/readme.txt", "C:/dest/readme.txt");
+  });
+
+  it("cut then paste moves entries via server-side rename", async () => {
+    await setup();
+    await browse();
+    check(1).click(); // readme.txt
+
+    q<HTMLButtonElement>('[data-action="bulk-cut"]').click();
+    await flush();
+    // Paste is hidden in the source directory (a move there is a no-op).
+    expect(q<HTMLButtonElement>(".sftp-bulk-paste").hidden).toBe(true);
+
+    // The destination (sub) has a collision-free listing so the move proceeds.
+    h.listResult = [{ name: "keep", kind: "dir", size: 0 }];
+    document.querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")?.click();
+    await flush();
+    expect(q<HTMLButtonElement>(".sftp-bulk-paste").hidden).toBe(false);
+
+    q<HTMLButtonElement>('[data-action="bulk-paste"]').click();
+    await flush();
+    expect(sftpRename).toHaveBeenCalledWith("a", "/home/j/readme.txt", "/home/j/sub/readme.txt");
+  });
+
+  it("paste refuses moving a folder into itself/a descendant", async () => {
+    await setup();
+    await browse();
+    check(0).click(); // sub (dir)
+    q<HTMLButtonElement>('[data-action="bulk-cut"]').click();
+    await flush();
+
+    // Navigate into the cut folder, then attempt to paste it into itself.
+    document.querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")?.click();
+    await flush();
+    q<HTMLButtonElement>('[data-action="bulk-paste"]').click();
+    await flush();
+
+    expect(sftpRename).not.toHaveBeenCalled();
+  });
+
+  it("paste skips a name that already exists in the destination", async () => {
+    await setup();
+    await browse();
+    check(1).click(); // readme.txt
+    q<HTMLButtonElement>('[data-action="bulk-cut"]').click();
+    await flush();
+
+    // sub's listing still contains readme.txt (default mock) → collision → skip.
+    document.querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")?.click();
+    await flush();
+    q<HTMLButtonElement>('[data-action="bulk-paste"]').click();
+    await flush();
+
+    expect(sftpRename).not.toHaveBeenCalled();
+  });
+
+  it("navigating clears the selection", async () => {
+    await setup();
+    await browse();
+    check(1).click();
+    expect(q(".sftp-sel-count").textContent).toBe("1 selected");
+
+    document.querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")?.click();
+    await flush();
+    expect(checks().some((c) => c.checked)).toBe(false);
   });
 
   /* ----- persistence ----------------------------------------------------- */

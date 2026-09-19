@@ -84,3 +84,12 @@ export async function pickDownloadSavePath(
 export async function pickUploadOpenPath(): Promise<string | null> {
   return open({ multiple: false });
 }
+
+/**
+ * Opens a native "choose folder" dialog for a bulk SFTP download destination.
+ * Each selected remote file is then saved into this directory under its own
+ * name. Returns the chosen directory, or `null` if the user cancels.
+ */
+export async function pickDownloadDirPath(): Promise<string | null> {
+  return open({ directory: true, multiple: false });
+}

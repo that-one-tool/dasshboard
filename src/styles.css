@@ -1983,10 +1983,53 @@ body.sftp-resizing {
 	height: 16px;
 }
 
+/* Bulk-action bar between the toolbar and the entry list: select-all + count on
+ * the left, the bulk actions on the right. Hidden until a listing is shown. */
+.sftp-bulkbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 6px 12px;
+	border-bottom: 1px solid #3c3c3c;
+	flex: 0 0 auto;
+}
+
+.sftp-selectall {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: #b0b0b0;
+	font-size: 0.8rem;
+	cursor: pointer;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.sftp-bulk-actions {
+	display: flex;
+	gap: 4px;
+	flex: 0 0 auto;
+}
+
+.sftp-bulk-actions .btn-small {
+	padding: 3px 8px;
+	font-size: 0.78rem;
+}
+
 .sftp-entries {
 	flex: 1 1 auto;
 	overflow-y: auto;
 	padding: 4px 8px;
+}
+
+/* Per-row selection checkbox (leads each entry row). */
+.sftp-entry-check {
+	flex: 0 0 auto;
+	cursor: pointer;
+	margin: 0;
 }
 
 .sftp-entry {

@@ -660,6 +660,35 @@ async fn mkdir_rename_and_remove_round_trip() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_recursive_deletes_a_nested_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+
+    // Build /top with a file and a nested subdirectory holding another file.
+    manager.mkdir("dev-1", "/top").await.unwrap();
+    manager.mkdir("dev-1", "/top/sub").await.unwrap();
+    manager
+        .write_file("dev-1", "/top/b.txt", b"b", &noop_progress())
+        .await
+        .unwrap();
+    manager
+        .write_file("dev-1", "/top/sub/a.txt", b"a", &noop_progress())
+        .await
+        .unwrap();
+
+    // A plain remove_dir refuses a non-empty directory (mirrors a real server).
+    assert!(manager.remove_dir("dev-1", "/top").await.is_err());
+
+    // Recursive removal deletes the whole tree, leaving the root empty.
+    manager.remove_recursive("dev-1", "/top").await.unwrap();
+    assert!(manager.list("dev-1", "/").await.unwrap().is_empty());
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reading_a_missing_file_is_an_sftp_error() {
     let dir = tempfile::tempdir().unwrap();
     let (port, fp) = spawn_sftp_server().await;

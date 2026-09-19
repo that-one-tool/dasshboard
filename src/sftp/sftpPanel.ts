@@ -43,6 +43,7 @@ import {
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   pickDownloadSavePath,
+  pickDownloadDirPath,
   pickUploadOpenPath,
 } from "../ui/fileDialog";
 import { confirm, prompt } from "../ui/confirm";
@@ -62,7 +63,7 @@ import {
   disconnectIcon,
 } from "../ui/icons";
 import { joinRemote, parentOf, formatSize, formatMtime } from "./sftpFormat";
-import { basename } from "@tauri-apps/api/path";
+import { basename, join } from "@tauri-apps/api/path";
 import { t, tp } from "../i18n";
 
 export interface SftpPanelOptions {
@@ -116,6 +117,10 @@ export class SftpPanel {
   private connToggleEl: HTMLButtonElement | null = null;
   private pathEl: HTMLInputElement | null = null;
   private listEl: HTMLElement | null = null;
+  private bulkBarEl: HTMLElement | null = null;
+  private selectAllEl: HTMLInputElement | null = null;
+  private selCountEl: HTMLElement | null = null;
+  private pasteBtnEl: HTMLButtonElement | null = null;
   private statusEl: HTMLElement | null = null;
   private progressEl: HTMLElement | null = null;
   private progressIconEl: HTMLElement | null = null;
@@ -148,6 +153,18 @@ export class SftpPanel {
 
   /** The directory currently listed. */
   private cwd = "/";
+  /** The entries currently rendered (for select-all + shift-range + kind lookup). */
+  private currentEntries: SftpEntry[] = [];
+  /** Names (cwd-relative) selected via the checkboxes; cleared on navigation. */
+  private selected = new Set<string>();
+  /** Row index of the last checkbox toggled, for shift-click range selection. */
+  private lastClickedIndex = -1;
+  /**
+   * The pending Move ("cut") set: the source device + directory and the entry
+   * names to move on the next Paste. Survives navigation (cut here → open a
+   * folder → paste), but is tied to one connection.
+   */
+  private moveClipboard: { deviceId: string; dir: string; names: string[] } | null = null;
   /** Visited-directory stack for Back/Forward (see `goTo`/`goBack`). */
   private history: string[] = [];
   private historyIndex = -1;
@@ -290,6 +307,19 @@ export class SftpPanel {
             <button type="button" class="btn btn-icon" data-action="mkdir" title="${t("sftp.nav.mkdir")}" aria-label="${t("sftp.nav.mkdir")}">${folderPlusIcon}</button>
           </div>
         </div>
+        <div class="sftp-bulkbar" hidden>
+          <label class="sftp-selectall">
+            <input type="checkbox" data-action="select-all" aria-label="${t("sftp.selectAll")}" />
+            <span class="sftp-sel-count"></span>
+          </label>
+          <div class="sftp-bulk-actions">
+            <button type="button" class="btn btn-small" data-action="bulk-download">${t("sftp.bulk.download")}</button>
+            <button type="button" class="btn btn-small" data-action="bulk-cut">${t("sftp.bulk.move")}</button>
+            <button type="button" class="btn btn-small sftp-bulk-paste" data-action="bulk-paste" hidden>${t("sftp.bulk.paste")}</button>
+            <button type="button" class="btn btn-small btn-danger" data-action="bulk-delete">${t("common.delete")}</button>
+            <button type="button" class="btn btn-small" data-action="bulk-clear">${t("sftp.bulk.clear")}</button>
+          </div>
+        </div>
         <div class="sftp-entries" role="list"></div>
         <div class="sftp-progress" role="status" aria-live="polite">
           <span class="sftp-progress-icon" aria-hidden="true"></span>
@@ -306,6 +336,10 @@ export class SftpPanel {
     this.connToggleEl = panel.querySelector(".sftp-conn-toggle");
     this.pathEl = panel.querySelector(".sftp-path");
     this.listEl = panel.querySelector(".sftp-entries");
+    this.bulkBarEl = panel.querySelector(".sftp-bulkbar");
+    this.selectAllEl = panel.querySelector('[data-action="select-all"]');
+    this.selCountEl = panel.querySelector(".sftp-sel-count");
+    this.pasteBtnEl = panel.querySelector(".sftp-bulk-paste");
     this.statusEl = panel.querySelector(".sftp-status");
     this.progressEl = panel.querySelector(".sftp-progress");
     this.progressIconEl = panel.querySelector(".sftp-progress-icon");
@@ -371,6 +405,24 @@ export class SftpPanel {
           break;
         case "cancel-transfer":
           void this.handleCancelTransfer();
+          break;
+        case "select-all":
+          this.toggleSelectAll();
+          break;
+        case "bulk-download":
+          if (!this.busy) void this.handleBulkDownload();
+          break;
+        case "bulk-cut":
+          this.handleBulkCut();
+          break;
+        case "bulk-paste":
+          if (!this.busy) void this.handleBulkPaste();
+          break;
+        case "bulk-delete":
+          if (!this.busy) void this.handleBulkDelete();
+          break;
+        case "bulk-clear":
+          this.clearSelection();
           break;
       }
     });
@@ -502,6 +554,7 @@ export class SftpPanel {
   private async disconnectActive(): Promise<void> {
     const deviceId = this.activeDeviceId;
     this.activeDeviceId = null;
+    this.moveClipboard = null; // a pending move is tied to this connection
     if (deviceId) {
       try {
         await sftpDisconnect(deviceId);
@@ -577,6 +630,9 @@ export class SftpPanel {
    */
   private async loadDir(path: string): Promise<void> {
     if (this.activeDeviceId === null) return;
+    // A new listing invalidates the selection (names are directory-relative).
+    this.selected.clear();
+    this.lastClickedIndex = -1;
     this.setBusy(true);
     try {
       const entries = await sftpList(this.activeDeviceId, path);
@@ -803,7 +859,7 @@ export class SftpPanel {
     );
     if (!confirmed) return;
     try {
-      await sftpRemove(this.activeDeviceId, joinRemote(this.cwd, entry.name), isDir);
+      await sftpRemove(this.activeDeviceId, joinRemote(this.cwd, entry.name), isDir, isDir);
       await this.loadDir(this.cwd);
     } catch (err) {
       this.options.onError?.(err as AppError);
@@ -846,6 +902,9 @@ export class SftpPanel {
    * when a device is selected, or a prompt to pick one otherwise. */
   private renderDisconnectedState(): void {
     if (!this.listEl) return;
+    this.selected.clear();
+    this.currentEntries = [];
+    if (this.bulkBarEl) this.bulkBarEl.hidden = true;
     this.listEl.replaceChildren();
     this.syncPathInput();
 
@@ -863,26 +922,273 @@ export class SftpPanel {
     this.listEl.appendChild(wrap);
   }
 
+  /* ----- multi-select + bulk operations ---------------------------------- */
+
+  /** Toggle one row's checkbox; with `shift`, select the range from the last
+   * toggled row (inclusive) to this one. */
+  private onCheckToggle(index: number, shift: boolean): void {
+    if (shift && this.lastClickedIndex >= 0) {
+      const lo = Math.min(this.lastClickedIndex, index);
+      const hi = Math.max(this.lastClickedIndex, index);
+      for (let i = lo; i <= hi; i++) {
+        const name = this.currentEntries[i]?.name;
+        if (name) this.selected.add(name);
+      }
+    } else {
+      const name = this.currentEntries[index]?.name;
+      if (name) {
+        if (this.selected.has(name)) this.selected.delete(name);
+        else this.selected.add(name);
+      }
+    }
+    this.lastClickedIndex = index;
+    this.syncSelectionDom();
+  }
+
+  /** Select every entry when not all are selected, else clear (the header box). */
+  private toggleSelectAll(): void {
+    const allSelected = this.currentEntries.length > 0 && this.selected.size === this.currentEntries.length;
+    this.selected.clear();
+    if (!allSelected) {
+      for (const entry of this.currentEntries) this.selected.add(entry.name);
+    }
+    // Reset the shift-range anchor so a following shift-click doesn't extend from
+    // a stale row.
+    this.lastClickedIndex = -1;
+    this.syncSelectionDom();
+  }
+
+  private clearSelection(): void {
+    this.selected.clear();
+    this.lastClickedIndex = -1;
+    this.syncSelectionDom();
+  }
+
+  /** Push the selection state onto the row checkboxes + the bulk bar. */
+  private syncSelectionDom(): void {
+    this.listEl
+      ?.querySelectorAll<HTMLElement>(".sftp-entry")
+      .forEach((row, i) => {
+        const check = row.querySelector<HTMLInputElement>(".sftp-entry-check");
+        if (check) check.checked = this.selected.has(this.currentEntries[i]?.name ?? "");
+      });
+    this.updateBulkBar();
+  }
+
+  /** Reflect selection count + clipboard onto the bulk bar (count, enabled
+   * actions, Paste visibility). */
+  private updateBulkBar(): void {
+    const n = this.selected.size;
+    if (this.selCountEl) {
+      this.selCountEl.textContent = n > 0 ? tp("sftp.selected", n) : t("sftp.selectAll");
+    }
+    if (this.selectAllEl) {
+      const total = this.currentEntries.length;
+      this.selectAllEl.checked = total > 0 && n === total;
+      this.selectAllEl.indeterminate = n > 0 && n < total;
+    }
+    this.bulkBarEl
+      ?.querySelectorAll<HTMLButtonElement>('[data-action^="bulk-"]:not(.sftp-bulk-paste)')
+      .forEach((b) => {
+        b.disabled = n === 0;
+      });
+    // Paste shows only when a move is pending on THIS connection and we've moved
+    // to a different directory than the source (pasting into the source is a no-op).
+    const canPaste =
+      this.moveClipboard !== null &&
+      this.moveClipboard.deviceId === this.activeDeviceId &&
+      this.moveClipboard.dir !== this.cwd;
+    if (this.pasteBtnEl) {
+      this.pasteBtnEl.hidden = !canPaste;
+      this.pasteBtnEl.disabled = !canPaste;
+    }
+  }
+
+  /** The selected entries, resolved against the current listing. */
+  private selectedEntries(): SftpEntry[] {
+    return this.currentEntries.filter((e) => this.selected.has(e.name));
+  }
+
+  /** Download every selected file into one chosen local folder (directories are
+   * skipped — recursive folder download comes later). Sequential, with the
+   * shared progress bar per file. */
+  private async handleBulkDownload(): Promise<void> {
+    if (this.activeDeviceId === null) return;
+    const files = this.selectedEntries().filter((e) => e.kind !== "dir");
+    if (files.length === 0) {
+      this.options.onError?.(validationError(t("sftp.bulk.noFiles")));
+      return;
+    }
+    this.clearHover();
+    const dir = await pickDownloadDirPath();
+    if (dir === null) return; // cancelled
+    const deviceId = this.activeDeviceId;
+    const srcDir = this.cwd;
+    this.setBusy(true);
+    let done = 0;
+    let firstError: AppError | null = null;
+    let cancelled = false;
+    try {
+      for (const file of files) {
+        const remote = joinRemote(srcDir, file.name);
+        const local = await join(dir, file.name);
+        this.setStatus(t("sftp.downloading", { name: file.name }));
+        this.startProgress("download");
+        try {
+          await sftpDownload(deviceId, remote, local);
+          done += 1;
+        } catch (err) {
+          const e = err as AppError;
+          if (e.code === "Cancelled") {
+            this.handleTransferError(e); // hides progress + sets the cancelled status
+            cancelled = true;
+            break;
+          }
+          firstError ??= e;
+        }
+      }
+      // A cancel already reported itself; don't also claim success.
+      if (!cancelled) {
+        this.completeProgress();
+        this.finishBulk(tp("sftp.downloadedFiles", done), done, files.length, firstError);
+      }
+    } finally {
+      this.setBusy(false);
+    }
+  }
+
+  /** "Cut": record the selection for a later Paste, then clear it. */
+  private handleBulkCut(): void {
+    if (this.activeDeviceId === null || this.selected.size === 0) return;
+    this.moveClipboard = {
+      deviceId: this.activeDeviceId,
+      dir: this.cwd,
+      names: [...this.selected],
+    };
+    this.setStatus(tp("sftp.cutNotice", this.moveClipboard.names.length));
+    this.clearSelection(); // also refreshes the bar (Paste now shown after navigating)
+  }
+
+  /** "Paste": move each cut entry into the current directory (server-side
+   * rename). Same-connection only; conflicts surface per item. */
+  private async handleBulkPaste(): Promise<void> {
+    const clip = this.moveClipboard;
+    if (this.activeDeviceId === null || clip === null || clip.deviceId !== this.activeDeviceId) {
+      return;
+    }
+    if (clip.dir === this.cwd) {
+      this.moveClipboard = null;
+      this.updateBulkBar();
+      return;
+    }
+    const deviceId = this.activeDeviceId;
+    const dir = this.cwd;
+    // The destination listing is the current directory, so name collisions can be
+    // checked without an extra round trip (avoids relying on undefined server
+    // overwrite-on-rename behavior — proper conflict resolution comes with #3).
+    const existing = new Set(this.currentEntries.map((e) => e.name));
+    this.setBusy(true);
+    let done = 0;
+    let firstError: AppError | null = null;
+    try {
+      for (const name of clip.names) {
+        const src = joinRemote(clip.dir, name);
+        // Reject moving a folder into itself or a descendant of itself.
+        if (dir === src || dir.startsWith(`${src}/`)) {
+          firstError ??= validationError(t("sftp.move.intoSelf"));
+          continue;
+        }
+        if (existing.has(name)) {
+          firstError ??= validationError(t("sftp.move.exists"));
+          continue;
+        }
+        try {
+          await sftpRename(deviceId, src, joinRemote(dir, name));
+          done += 1;
+        } catch (err) {
+          firstError ??= err as AppError;
+        }
+      }
+    } finally {
+      this.moveClipboard = null;
+      await this.loadDir(dir); // reflect the moved entries; also setBusy(false)
+      this.finishBulk(tp("sftp.moved", done), done, clip.names.length, firstError);
+    }
+  }
+
+  /** Delete every selected entry (folders recursively) after one confirmation. */
+  private async handleBulkDelete(): Promise<void> {
+    if (this.activeDeviceId === null || this.selected.size === 0) return;
+    const entries = this.selectedEntries();
+    const confirmed = await confirm(tp("sftp.deleteConfirm", entries.length), {
+      title: t("sftp.delete.title"),
+      confirmLabel: t("common.delete"),
+      danger: true,
+    });
+    if (!confirmed) return;
+    this.clearHover();
+    // Snapshot the device + directory and hold `busy` for the whole loop: the
+    // path is rebuilt each iteration, so without this a mid-loop navigation
+    // would delete same-named entries in a different directory.
+    const deviceId = this.activeDeviceId;
+    const dir = this.cwd;
+    this.setBusy(true);
+    let done = 0;
+    let firstError: AppError | null = null;
+    for (const entry of entries) {
+      const isDir = entry.kind === "dir";
+      try {
+        await sftpRemove(deviceId, joinRemote(dir, entry.name), isDir, isDir);
+        done += 1;
+      } catch (err) {
+        firstError ??= err as AppError;
+      }
+    }
+    await this.loadDir(dir); // re-lists + clears `busy`
+    this.finishBulk(tp("sftp.deleted", done), done, entries.length, firstError);
+  }
+
+  /** Shared bulk-op epilogue: a success status/toast, or a partial-failure
+   * status plus the first error surfaced through `onError`. */
+  private finishBulk(
+    successMsg: string,
+    done: number,
+    total: number,
+    firstError: AppError | null,
+  ): void {
+    if (firstError && done < total) {
+      this.setStatus(t("sftp.bulk.partial"));
+      this.options.onError?.(firstError);
+    } else if (done > 0) {
+      this.setStatus(successMsg);
+      this.options.onSuccess?.(successMsg);
+    }
+  }
+
   /* ----- entry rendering -------------------------------------------------- */
 
   private renderEntries(entries: SftpEntry[]): void {
     if (!this.listEl) return;
+    this.currentEntries = entries;
     this.listEl.replaceChildren();
+    if (this.bulkBarEl) this.bulkBarEl.hidden = false;
 
     if (entries.length === 0) {
       const empty = document.createElement("p");
       empty.className = "sftp-empty";
       empty.textContent = t("sftp.emptyDir");
       this.listEl.appendChild(empty);
+      this.updateBulkBar();
       return;
     }
 
-    for (const entry of entries) {
-      this.listEl.appendChild(this.renderEntryRow(entry));
-    }
+    entries.forEach((entry, index) => {
+      this.listEl?.appendChild(this.renderEntryRow(entry, index));
+    });
+    this.updateBulkBar();
   }
 
-  private renderEntryRow(entry: SftpEntry): HTMLElement {
+  private renderEntryRow(entry: SftpEntry, index: number): HTMLElement {
     const isDir = entry.kind === "dir";
     const row = document.createElement("div");
     row.className = `sftp-entry is-${entry.kind}`;
@@ -891,6 +1197,17 @@ export class SftpPanel {
     // firing `mouseleave`, which would leave the row's action buttons stuck on.
     row.addEventListener("mouseenter", () => row.classList.add("hovering"));
     row.addEventListener("mouseleave", () => row.classList.remove("hovering"));
+
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "sftp-entry-check";
+    check.checked = this.selected.has(entry.name);
+    check.setAttribute("aria-label", entry.name);
+    // Shift-click selects the range from the last-toggled row (file-manager
+    // convention); a plain click toggles just this entry.
+    check.addEventListener("click", (e) => {
+      this.onCheckToggle(index, (e as MouseEvent).shiftKey);
+    });
 
     const icon = document.createElement("span");
     icon.className = "sftp-entry-icon";
@@ -928,7 +1245,7 @@ export class SftpPanel {
       this.iconButton(trashIcon, t("sftp.entry.delete"), () => void this.handleDelete(entry), true),
     );
 
-    row.append(icon, name, meta, actions);
+    row.append(check, icon, name, meta, actions);
     return row;
   }
 
@@ -1095,6 +1412,12 @@ export class SftpPanel {
         direction === "upload" ? uploadIcon : downloadIcon;
     }
   }
+}
+
+/** A client-side validation error shaped like the backend `AppError`, for the
+ * quiet-skip paths in bulk operations (move-into-self, name collision, …). */
+function validationError(message: string): AppError {
+  return { code: "Validation", message } as AppError;
 }
 
 /** Constructs and initializes the Files (SFTP) panel. */

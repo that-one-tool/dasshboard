@@ -1081,16 +1081,22 @@ pub async fn sftp_rename(
     state.sftp_manager.rename(&device_id, &from, &to).await
 }
 
-/// Remove a remote entry — a directory (must be empty) when `isDir`, else a file.
+/// Remove a remote entry: a file when `isDir` is false; a directory otherwise —
+/// recursively (whole tree) when `recursive`, else only if it is already empty.
 #[tauri::command]
 pub async fn sftp_remove(
     state: State<'_, AppState>,
     device_id: String,
     path: String,
     is_dir: bool,
+    recursive: bool,
 ) -> Result<(), AppError> {
     if is_dir {
-        state.sftp_manager.remove_dir(&device_id, &path).await
+        if recursive {
+            state.sftp_manager.remove_recursive(&device_id, &path).await
+        } else {
+            state.sftp_manager.remove_dir(&device_id, &path).await
+        }
     } else {
         state.sftp_manager.remove_file(&device_id, &path).await
     }

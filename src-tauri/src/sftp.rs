@@ -488,13 +488,23 @@ impl SftpManager {
             .map_err(|e| sftp_err(&format!("could not delete {path}"), e))
     }
 
-    /// Remove a remote directory (must be empty — the frontend does not recurse).
+    /// Remove a remote directory (must be empty — see [`remove_recursive`] for a
+    /// non-empty tree).
     pub async fn remove_dir(&self, device_id: &str, path: &str) -> Result<(), AppError> {
         let conn = self.conn_of(device_id)?;
         conn.session
             .remove_dir(path.to_string())
             .await
             .map_err(|e| sftp_err(&format!("could not remove directory {path}"), e))
+    }
+
+    /// Recursively delete a directory and everything under it (depth-first:
+    /// children first, then the directory). Symlinks are removed as links (never
+    /// followed), so a symlinked directory's target is left untouched. Used by
+    /// bulk delete so a non-empty folder can be removed in one action.
+    pub async fn remove_recursive(&self, device_id: &str, path: &str) -> Result<(), AppError> {
+        let conn = self.conn_of(device_id)?;
+        remove_tree(&conn, path).await
     }
 
     /// Close and forget a device's SFTP connection. Idempotent: an unknown
@@ -515,6 +525,47 @@ impl SftpManager {
             let _ = conn.session.close().await;
         }
     }
+}
+
+/// Join a POSIX parent path and a child name for remote paths (root stays a
+/// single leading slash, never `//child`).
+fn join_remote(parent: &str, name: &str) -> String {
+    format!("{}/{}", parent.trim_end_matches('/'), name)
+}
+
+/// Depth-first recursive delete of a directory tree, boxed so the `async fn` can
+/// recurse. Deletes every child (recursing into real subdirectories, removing
+/// files and symlinks directly) before removing the now-empty directory itself.
+fn remove_tree<'a>(
+    conn: &'a Arc<SftpConn>,
+    path: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AppError>> + Send + 'a>> {
+    Box::pin(async move {
+        let read_dir = conn
+            .session
+            .read_dir(path.to_string())
+            .await
+            .map_err(|e| sftp_err(&format!("could not list {path}"), e))?;
+        for entry in read_dir {
+            let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let child = join_remote(path, &name);
+            if entry.file_type().is_dir() {
+                remove_tree(conn, &child).await?;
+            } else {
+                conn.session
+                    .remove_file(child.clone())
+                    .await
+                    .map_err(|e| sftp_err(&format!("could not delete {child}"), e))?;
+            }
+        }
+        conn.session
+            .remove_dir(path.to_string())
+            .await
+            .map_err(|e| sftp_err(&format!("could not remove directory {path}"), e))
+    })
 }
 
 /// Map any `russh_sftp` error to a secret-free [`AppError::Sftp`] with context.

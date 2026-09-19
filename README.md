@@ -81,7 +81,11 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
 - **SFTP file browser** — a persistent, resizable **Files** panel docked beside
   the terminal grid (toggle it from the header bar): pick a device from the
   panel's device dropdown to browse remote directories, download files to a local
-  path and upload local files, plus make/rename/delete entries. The toolbar path
+  path and upload local files, plus make/rename/delete entries (deleting a folder
+  removes it and everything inside). Select multiple entries with the row
+  checkboxes (or select-all, shift-click for a range) and act on them in bulk:
+  **Download** the selected files into one folder, **Move** them with cut/paste
+  into another directory, or **Delete** them all at once. The toolbar path
   is editable — type a path and press Enter to jump there (a file path opens its
   parent folder) — and a copy button copies the current remote path to the
   clipboard. Drag the divider to resize it, or collapse it to a rail to keep the
@@ -91,7 +95,8 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   a collapsed panel auto-disconnects after a configurable idle timeout (Settings
   → *SFTP idle disconnect*, `0` to keep it open). The panel's open/collapsed
   state, width and last-selected device are remembered across restarts (it never
-  auto-reconnects — it preselects the device and offers one-click Reconnect).
+  auto-reconnects — it preselects the device; the header's green connect toggle
+  reconnects on demand).
   Whole-file transfers (not streamed), so best for config files, logs and
   archives rather than very large files.
 - **Layout profiles** — save a workspace (grid + device assignments), set a
