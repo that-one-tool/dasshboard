@@ -106,7 +106,9 @@ function sshDevice(id: string, name: string): Device {
 }
 
 async function flush(): Promise<void> {
-  for (let i = 0; i < 6; i++) await Promise.resolve();
+  // Enough to drain the transfer queue draining several items back-to-back
+  // (each item completes, then the worker starts the next on a microtask).
+  for (let i = 0; i < 15; i++) await Promise.resolve();
 }
 
 function q<T extends HTMLElement>(sel: string): T {
@@ -337,37 +339,53 @@ describe("SftpPanel", () => {
     expect(sftpList).toHaveBeenLastCalledWith("a", "/home/j");
   });
 
-  it("a progress event updates the bar width and percentage", async () => {
+  /** Start a file download whose backend call stays pending, so its queue item
+   * sits in the `active` state. Returns the resolver to finish it. */
+  async function startPendingDownload(): Promise<(bytes: number) => void> {
+    let resolve!: (bytes: number) => void;
+    vi.mocked(sftpDownload).mockReturnValueOnce(
+      new Promise<number>((res) => {
+        resolve = res;
+      }),
+    );
+    h.saveResult = "C:/local/readme.txt";
+    document
+      .querySelector<HTMLButtonElement>(".sftp-entry.is-file .sftp-entry-name")
+      ?.click();
+    await flush(); // enqueued → active, run pending
+    return resolve;
+  }
+
+  it("a progress event updates the active item's bar and percentage", async () => {
     await setup();
     await browse();
+    const finish = await startPendingDownload();
 
-    h.progressHandler?.({
-      deviceId: "a",
-      direction: "download",
-      transferred: 50,
-      total: 100,
-    });
+    const rowBefore = q(".sftp-queue-item");
+    h.progressHandler?.({ deviceId: "a", direction: "download", transferred: 50, total: 100 });
 
-    const row = q(".sftp-progress");
-    expect(row.classList.contains("active")).toBe(true);
-    expect(q<HTMLElement>(".sftp-progress-fill").style.width).toBe("50%");
-    expect(q(".sftp-progress-pct").textContent).toBe("50%");
+    expect(q(".sftp-queue").hidden).toBe(false);
+    expect(q<HTMLElement>(".sftp-queue-fill").style.width).toBe("50%");
+    expect(q(".sftp-queue-pct").textContent).toBe("50%");
+    // Updated in place — the row node is NOT rebuilt on a progress tick (so a
+    // rapid tick can't swallow a cancel click or re-announce the aria-live row).
+    expect(q(".sftp-queue-item")).toBe(rowBefore);
+    finish(123);
+    await flush();
   });
 
   it("ignores progress events for a different device", async () => {
     await setup();
     await browse();
+    const finish = await startPendingDownload();
 
-    h.progressHandler?.({
-      deviceId: "other",
-      direction: "download",
-      transferred: 50,
-      total: 100,
-    });
-    expect(q(".sftp-progress").classList.contains("active")).toBe(false);
+    h.progressHandler?.({ deviceId: "other", direction: "download", transferred: 50, total: 100 });
+    expect(q<HTMLElement>(".sftp-queue-fill").style.width).toBe("0%");
+    finish(123);
+    await flush();
   });
 
-  it("a completed download collapses to a checkmark, then auto-hides", async () => {
+  it("a completed download shows Done, then auto-removes its row", async () => {
     vi.useFakeTimers();
     try {
       h.saveResult = "C:/local/readme.txt";
@@ -376,35 +394,32 @@ describe("SftpPanel", () => {
       document
         .querySelector<HTMLButtonElement>(".sftp-entry.is-file .sftp-entry-name")
         ?.click();
-      await flush(); // download resolves → completeProgress
+      await flush(); // download resolves → done
 
-      const row = q(".sftp-progress");
-      expect(row.classList.contains("done")).toBe(true);
-      expect(q(".sftp-progress-pct").textContent).toBe("Done");
+      const item = q(".sftp-queue-item");
+      expect(item.classList.contains("is-done")).toBe(true);
+      expect(q(".sftp-queue-detail").textContent).toContain("Done");
 
-      vi.advanceTimersByTime(2600);
-      expect(row.classList.contains("active")).toBe(false);
+      vi.advanceTimersByTime(3100);
+      expect(document.querySelector(".sftp-queue-item")).toBeNull();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("clicking cancel during a transfer requests cancellation", async () => {
+  it("clicking cancel on an active transfer requests cancellation", async () => {
     await setup();
     await browse();
-    h.progressHandler?.({
-      deviceId: "a",
-      direction: "upload",
-      transferred: 10,
-      total: 100,
-    });
+    const finish = await startPendingDownload();
 
-    q<HTMLButtonElement>(".sftp-progress-cancel").click();
+    q<HTMLButtonElement>(".sftp-queue-cancel").click();
     await flush();
     expect(sftpCancelTransfer).toHaveBeenCalledWith("a");
+    finish(123);
+    await flush();
   });
 
-  it("a cancelled download is reported quietly (status, no error toast)", async () => {
+  it("a cancelled download is shown quietly in the queue (no error toast)", async () => {
     vi.mocked(sftpDownload).mockRejectedValueOnce({
       code: "Cancelled",
       message: "transfer cancelled",
@@ -420,8 +435,9 @@ describe("SftpPanel", () => {
     await flush();
 
     expect(onError).not.toHaveBeenCalled();
-    expect(q(".sftp-status").textContent).toBe("Transfer cancelled");
-    expect(q(".sftp-progress").classList.contains("active")).toBe(false);
+    const item = q(".sftp-queue-item");
+    expect(item.classList.contains("is-cancelled")).toBe(true);
+    expect(q(".sftp-queue-detail").textContent).toBe("Transfer cancelled");
   });
 
   it("toggles the row hover class on mouse enter/leave and clears it on download", async () => {

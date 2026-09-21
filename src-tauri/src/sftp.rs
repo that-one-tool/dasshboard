@@ -21,12 +21,19 @@
 //! layer supplies an [`SftpSink`] that emits the shared `host_key_prompt` event;
 //! everything here speaks only in [`AppError`] and plain data.
 //!
-//! Transfers read/write whole files in memory (`read`/`write`), which is simple
-//! and correct for the config files, logs and archives this drawer is for; very
-//! large files are not streamed in v1.
+//! File transfers **stream chunk-by-chunk between the remote SFTP file and a
+//! local [`tokio::fs::File`]** ([`download_to_file`] / [`upload_from_file`]),
+//! never holding more than one [`TRANSFER_CHUNK`] in memory, so an arbitrarily
+//! large file transfers in constant memory. A download streams into a sibling
+//! `.part` file and is renamed onto the target only on success, so a failed or
+//! cancelled download never truncates or deletes an existing file; an upload
+//! removes the remote file only if it fails after creating it. The
+//! whole-file-in-memory [`SftpManager::read_file`] /
+//! [`SftpManager::write_file`] helpers are retained only for the integration
+//! tests' small byte round-trips.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -119,8 +126,9 @@ pub struct SftpManager {
     conns: Mutex<HashMap<String, Arc<SftpConn>>>,
     /// Cancel flags for in-flight transfers, keyed by device id. A transfer
     /// registers a fresh flag on start and removes it on end; `cancel_transfer`
-    /// flips it, and the streaming loops check it each chunk. One transfer per
-    /// device at a time (the UI disables the toolbar during a transfer).
+    /// flips it, and the streaming loops check it each chunk. At most one
+    /// transfer per device runs at a time (the frontend queue drains them
+    /// sequentially), so a single flag per device is sufficient.
     transfers: Mutex<HashMap<String, Arc<AtomicBool>>>,
     prompts: Arc<PromptRegistry>,
     known_hosts: Arc<KnownHostsStore>,
@@ -353,11 +361,53 @@ impl SftpManager {
             .map_err(|e| sftp_err(&format!("could not resolve {path}"), e))
     }
 
-    /// Download a remote file into memory, streaming it over SFTP in chunks so
-    /// `on_progress(transferred, total)` can drive a progress bar. Only the
-    /// *network* read is chunked (the slow part); the caller writes the returned
-    /// buffer to local disk in one go. `total` is the remote size from `stat`
-    /// (0 if the server omits it). The command throttles the callback.
+    /// Stream a remote file straight to `local_path`, chunk by chunk, never
+    /// buffering the whole file (constant memory regardless of size). Drives
+    /// `on_progress(transferred, total)` for a progress bar; `total` is the
+    /// remote size from `stat`. On cancel or error the partial local file is
+    /// removed. Returns the number of bytes written. This is the production
+    /// single-file download path (see [`download_to_file`]).
+    pub async fn download_to_path(
+        &self,
+        device_id: &str,
+        remote_path: &str,
+        local_path: &Path,
+        on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<u64, AppError> {
+        let conn = self.conn_of(device_id)?;
+        let cancel = self.begin_transfer(device_id);
+        let _guard = TransferGuard {
+            manager: self,
+            device_id: device_id.to_string(),
+        };
+        download_to_file(&conn, remote_path, local_path, &cancel, on_progress).await
+    }
+
+    /// Stream `local_path` straight to a remote file (create/truncate), chunk by
+    /// chunk, never buffering the whole file. Drives `on_progress`; `total` is
+    /// the local file size. On cancel or error the partial remote file is
+    /// removed. Returns the number of bytes uploaded. This is the production
+    /// single-file upload path (see [`upload_from_file`]).
+    pub async fn upload_from_path(
+        &self,
+        device_id: &str,
+        local_path: &Path,
+        remote_path: &str,
+        on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<u64, AppError> {
+        let conn = self.conn_of(device_id)?;
+        let cancel = self.begin_transfer(device_id);
+        let _guard = TransferGuard {
+            manager: self,
+            device_id: device_id.to_string(),
+        };
+        upload_from_file(&conn, local_path, remote_path, &cancel, on_progress).await
+    }
+
+    /// Download a remote file into memory (whole-file), chunking only the network
+    /// read so `on_progress` can drive a bar. Retained for the integration tests'
+    /// small byte round-trips; production downloads stream via
+    /// [`download_to_path`] instead.
     pub async fn read_file(
         &self,
         device_id: &str,
@@ -374,10 +424,9 @@ impl SftpManager {
         download_bytes(&conn, path, &cancel, on_progress).await
     }
 
-    /// Upload bytes to a remote file (create/truncate), streaming the *network*
-    /// write in chunks so `on_progress(transferred, total)` can drive a progress
-    /// bar. The caller has already read the local file into `data`. The command
-    /// throttles the callback.
+    /// Upload bytes to a remote file (create/truncate), whole-file, chunking only
+    /// the network write. Retained for the integration tests' small byte
+    /// round-trips; production uploads stream via [`upload_from_path`] instead.
     pub async fn write_file(
         &self,
         device_id: &str,
@@ -665,6 +714,167 @@ async fn upload_bytes(
     Ok(())
 }
 
+/// The scratch path a download streams into before it is renamed onto the real
+/// target — the target name with `.part` appended, so it sits in the same
+/// directory (same filesystem ⇒ the finalizing rename is atomic and never
+/// crosses devices).
+fn partial_path(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".part");
+    PathBuf::from(s)
+}
+
+/// Stream one remote file to a local path, chunk by chunk, holding at most one
+/// [`TRANSFER_CHUNK`] in memory. **The bytes land in a sibling `.part` file and
+/// are renamed onto `local_path` only on full success**, so a failed or
+/// cancelled download never truncates — let alone deletes — an existing target
+/// (the user may have picked "overwrite" over a file they care about). On any
+/// failure the scratch file is removed and the real target is untouched. Returns
+/// the bytes written. Shared by the single-file download command and the
+/// recursive [`download_tree`].
+async fn download_to_file(
+    conn: &Arc<SftpConn>,
+    remote_path: &str,
+    local_path: &Path,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<u64, AppError> {
+    let tmp = partial_path(local_path);
+    let outcome =
+        download_into_scratch(conn, remote_path, local_path, &tmp, cancel, on_progress).await;
+    if outcome.is_err() {
+        // Only ever the scratch file — never the real target.
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    outcome
+}
+
+async fn download_into_scratch(
+    conn: &Arc<SftpConn>,
+    remote_path: &str,
+    local_path: &Path,
+    tmp: &Path,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<u64, AppError> {
+    let ctx = || format!("could not download {remote_path}");
+    let disp = local_path.display().to_string();
+    // Resolve size + open the remote source BEFORE creating any local file, so a
+    // remote error (missing file, no permission) never touches the local side.
+    let total = conn
+        .session
+        .metadata(remote_path.to_string())
+        .await
+        .map_err(|e| sftp_err(&ctx(), e))?
+        .size
+        .unwrap_or(0);
+    let mut remote = conn
+        .session
+        .open(remote_path.to_string())
+        .await
+        .map_err(|e| sftp_err(&ctx(), e))?;
+    let mut local = tokio::fs::File::create(tmp)
+        .await
+        .map_err(|e| AppError::Io(format!("could not create {disp}: {e}")))?;
+    let mut chunk = vec![0u8; TRANSFER_CHUNK];
+    let mut transferred: u64 = 0;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
+        let n = remote
+            .read(&mut chunk)
+            .await
+            .map_err(|e| sftp_err(&ctx(), e))?;
+        if n == 0 {
+            break;
+        }
+        local
+            .write_all(&chunk[..n])
+            .await
+            .map_err(|e| AppError::Io(format!("could not write {disp}: {e}")))?;
+        transferred += n as u64;
+        on_progress(transferred, total.max(transferred));
+    }
+    local
+        .flush()
+        .await
+        .map_err(|e| AppError::Io(format!("could not write {disp}: {e}")))?;
+    let _ = remote.close().await;
+    // Atomically put the finished bytes in place (replaces an existing target on
+    // both Unix and Windows — Rust's rename uses REPLACE_EXISTING).
+    tokio::fs::rename(tmp, local_path)
+        .await
+        .map_err(|e| AppError::Io(format!("could not finalize {disp}: {e}")))?;
+    Ok(transferred)
+}
+
+/// Stream one local file to a remote path (create/truncate), chunk by chunk,
+/// holding at most one [`TRANSFER_CHUNK`] in memory. The remote file is removed
+/// only if the transfer fails **after** we created it — a failure reading the
+/// local source (missing/unreadable) happens first and leaves any pre-existing
+/// remote file untouched. Returns the bytes uploaded. Shared by the single-file
+/// upload command and the recursive [`upload_tree`].
+///
+/// Unlike download, upload does not use a scratch-then-rename dance: SFTP rename
+/// over an existing name is not portably an overwrite (see the Move feature's
+/// collision check), so an "overwrite" upload truncates the target in place.
+async fn upload_from_file(
+    conn: &Arc<SftpConn>,
+    local_path: &Path,
+    remote_path: &str,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<u64, AppError> {
+    let ctx = || format!("could not upload to {remote_path}");
+    let disp = local_path.display().to_string();
+    // Open the LOCAL source first; if this fails the remote target is untouched.
+    let total = tokio::fs::metadata(local_path)
+        .await
+        .map_err(|e| AppError::Io(format!("could not stat {disp}: {e}")))?
+        .len();
+    let mut local = tokio::fs::File::open(local_path)
+        .await
+        .map_err(|e| AppError::Io(format!("could not open {disp}: {e}")))?;
+    // From here on the remote file exists (created/truncated), so a later failure
+    // cleans it up.
+    let mut remote = conn
+        .session
+        .create(remote_path.to_string())
+        .await
+        .map_err(|e| sftp_err(&ctx(), e))?;
+
+    let mut chunk = vec![0u8; TRANSFER_CHUNK];
+    let mut transferred: u64 = 0;
+    let outcome: Result<(), AppError> = loop {
+        if cancel.load(Ordering::Relaxed) {
+            break Err(cancelled());
+        }
+        let n = match local.read(&mut chunk).await {
+            Ok(0) => break Ok(()),
+            Ok(n) => n,
+            Err(e) => break Err(AppError::Io(format!("could not read {disp}: {e}"))),
+        };
+        if let Err(e) = remote.write_all(&chunk[..n]).await {
+            break Err(sftp_err(&ctx(), e));
+        }
+        transferred += n as u64;
+        on_progress(transferred, total.max(transferred));
+    };
+
+    match outcome {
+        Ok(()) => {
+            remote.close().await.map_err(|e| sftp_err(&ctx(), e))?;
+            Ok(transferred)
+        }
+        Err(e) => {
+            let _ = remote.close().await;
+            let _ = conn.session.remove_file(remote_path.to_string()).await;
+            Err(e)
+        }
+    }
+}
+
 /// Recursively download `remote_dir` into `local_dir`, boxed so the `async fn`
 /// can recurse. Creates each local directory, then downloads files (skipping
 /// existing ones when `skip_existing`). Checks `cancel` before each entry.
@@ -727,13 +937,8 @@ fn download_tree<'a>(
                         continue;
                     }
                 }
-                let bytes = download_bytes(conn, &remote_child, cancel, on_progress).await?;
-                let target = local_child.clone();
-                let disp = local_child.display().to_string();
-                tokio::task::spawn_blocking(move || std::fs::write(&target, &bytes))
-                    .await
-                    .map_err(|e| AppError::Io(format!("write task failed: {e}")))?
-                    .map_err(|e| AppError::Io(format!("could not write {disp}: {e}")))?;
+                // Stream straight to disk — no whole-file buffer per entry.
+                download_to_file(conn, &remote_child, &local_child, cancel, on_progress).await?;
             }
         }
         Ok(())
@@ -811,12 +1016,8 @@ async fn upload_tree(
                 continue;
             }
             let local_file = local_dir.join(&entry.rel);
-            let disp = local_file.display().to_string();
-            let bytes = tokio::task::spawn_blocking(move || std::fs::read(&local_file))
-                .await
-                .map_err(|e| AppError::Io(format!("upload read task failed: {e}")))?
-                .map_err(|e| AppError::Io(format!("could not read {disp}: {e}")))?;
-            upload_bytes(conn, &remote_child, &bytes, cancel, on_progress).await?;
+            // Stream straight from disk — no whole-file buffer per entry.
+            upload_from_file(conn, &local_file, &remote_child, cancel, on_progress).await?;
         }
     }
     Ok(())

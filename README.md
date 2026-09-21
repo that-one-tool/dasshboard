@@ -90,7 +90,10 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   row checkboxes (or select-all, shift-click for a range) and act on them in
   bulk: **Download** the selected files and folders into one destination folder,
   **Move** them with cut/paste into another directory, or **Delete** them all at
-  once. The toolbar path
+  once. Transfers run in a **background queue** — they stream one at a time while
+  you keep browsing, each shown in a live list at the bottom of the panel with a
+  progress bar and a cancel button (queue up several at once; cancel a queued or
+  in-flight one anytime). The toolbar path
   is editable — type a path and press Enter to jump there (a file path opens its
   parent folder) — and a copy button copies the current remote path to the
   clipboard. Drag the divider to resize it, or collapse it to a rail to keep the
@@ -102,8 +105,9 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   state, width and last-selected device are remembered across restarts (it never
   auto-reconnects — it preselects the device; the header's green connect toggle
   reconnects on demand).
-  Whole-file transfers (not streamed), so best for config files, logs and
-  archives rather than very large files.
+  Transfers **stream chunk-by-chunk straight to/from disk** (constant memory, no
+  whole-file buffering), so files of any size transfer without a memory ceiling;
+  an interrupted or cancelled transfer removes its partial file.
 - **Layout profiles** — save a workspace (grid + device assignments), set a
   default, and have it restore and auto-connect every pane on launch. Load a
   profile into the current tab, or open it in a new tab. Save / Save As sit in

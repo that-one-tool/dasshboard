@@ -591,6 +591,114 @@ async fn upload_list_download_round_trips_bytes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_upload_download_round_trips_via_disk() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+
+    // A payload several chunks long (TRANSFER_CHUNK is 32 KiB) so the streaming
+    // loop iterates, written to a real local file — never a whole-file buffer.
+    let payload: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    let src = dir.path().join("src.bin");
+    std::fs::write(&src, &payload).unwrap();
+
+    // Upload straight from disk; the final progress tick must reach the total.
+    let seen_total = std::sync::Arc::new(AtomicU64::new(0));
+    let last = std::sync::Arc::new(AtomicU64::new(0));
+    let (st, lt) = (seen_total.clone(), last.clone());
+    let up_progress = move |transferred: u64, total: u64| {
+        st.store(total, Ordering::Relaxed);
+        lt.store(transferred, Ordering::Relaxed);
+    };
+    let uploaded = manager
+        .upload_from_path("dev-1", &src, "/streamed.bin", &up_progress)
+        .await
+        .unwrap();
+    assert_eq!(uploaded, payload.len() as u64);
+    assert_eq!(last.load(Ordering::Relaxed), payload.len() as u64);
+    assert_eq!(seen_total.load(Ordering::Relaxed), payload.len() as u64);
+
+    // The remote listing reports the streamed size.
+    let entries = manager.list("dev-1", "/").await.unwrap();
+    let streamed = entries.iter().find(|e| e.name == "streamed.bin").unwrap();
+    assert_eq!(streamed.size, payload.len() as u64);
+
+    // Download straight to a fresh local path and compare the bytes.
+    let dst = dir.path().join("dst.bin");
+    let downloaded = manager
+        .download_to_path("dev-1", "/streamed.bin", &dst, &noop_progress())
+        .await
+        .unwrap();
+    assert_eq!(downloaded, payload.len() as u64);
+    assert_eq!(std::fs::read(&dst).unwrap(), payload);
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_download_leaves_an_existing_local_target_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+
+    // A local file the user already has (they'd pick "overwrite" in the dialog).
+    let dst = dir.path().join("precious.txt");
+    std::fs::write(&dst, b"do not lose me").unwrap();
+
+    // Download a remote path that does not exist → the transfer fails before it
+    // ever touches the local side.
+    let err = manager
+        .download_to_path("dev-1", "/nope.txt", &dst, &noop_progress())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Sftp(_)));
+
+    // The pre-existing file is untouched and no scratch file was left behind.
+    assert_eq!(std::fs::read(&dst).unwrap(), b"do not lose me");
+    assert!(
+        !dir.path().join("precious.txt.part").exists(),
+        "the .part scratch file must be cleaned up"
+    );
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_upload_leaves_an_existing_remote_target_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+
+    // A remote file that already exists.
+    manager
+        .write_file("dev-1", "/keep.txt", b"original remote", &noop_progress())
+        .await
+        .unwrap();
+
+    // Upload from a local path that does not exist → fails before the remote file
+    // is created/truncated, so the existing remote file must survive.
+    let missing = dir.path().join("does-not-exist.bin");
+    let err = manager
+        .upload_from_path("dev-1", &missing, "/keep.txt", &noop_progress())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Io(_)));
+
+    let got = manager
+        .read_file("dev-1", "/keep.txt", &noop_progress())
+        .await
+        .unwrap();
+    assert_eq!(got, b"original remote");
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_sorts_dirs_first_then_case_insensitive() {
     let dir = tempfile::tempdir().unwrap();
     let (port, fp) = spawn_sftp_server().await;

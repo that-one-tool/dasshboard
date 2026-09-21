@@ -42,7 +42,6 @@ import {
   type Device,
   type SftpEntry,
   type SftpPanelState,
-  type SftpProgressEvent,
   type SshDevice,
 } from "../ipc";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -70,6 +69,7 @@ import {
   disconnectIcon,
 } from "../ui/icons";
 import { joinRemote, parentOf, formatSize, formatMtime } from "./sftpFormat";
+import { TransferQueue, type TransferItem } from "./transferQueue";
 import { basename, join } from "@tauri-apps/api/path";
 import { t, tp } from "../i18n";
 
@@ -129,15 +129,17 @@ export class SftpPanel {
   private selCountEl: HTMLElement | null = null;
   private pasteBtnEl: HTMLButtonElement | null = null;
   private statusEl: HTMLElement | null = null;
-  private progressEl: HTMLElement | null = null;
-  private progressIconEl: HTMLElement | null = null;
-  private progressFillEl: HTMLElement | null = null;
-  private progressPctEl: HTMLElement | null = null;
+  /** Container for the background transfer-queue list (rendered from `queue`). */
+  private queueEl: HTMLElement | null = null;
+
+  /** The background transfer queue: up/downloads run here while browsing stays
+   * live. Rebuilt on every panel rebuild so its hooks close over fresh DOM refs. */
+  private queue!: TransferQueue;
+  /** Per-item auto-remove timers for completed transfers (id → timer). */
+  private queueHideTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
   /** `sftp_progress` event subscription (live while the panel exists). */
   private unlistenProgress: UnlistenFn | null = null;
-  /** Timer that hides the completed-progress row after a short delay. */
-  private progressHideTimer: ReturnType<typeof setTimeout> | null = null;
   /** Idle-disconnect timer, armed while collapsed + connected. */
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -187,6 +189,12 @@ export class SftpPanel {
   constructor(private readonly options: SftpPanelOptions = {}) {
     this.panel = document.querySelector<HTMLElement>(".sftp-panel");
     this.splitter = document.querySelector<HTMLElement>(".sftp-splitter");
+    this.queue = new TransferQueue({
+      cancelActive: (deviceId) => void this.cancelActiveTransfer(deviceId),
+      onChange: () => this.renderQueue(),
+      onProgress: (item) => this.updateQueueRowProgress(item),
+      onComplete: (item, ctx) => this.onTransferComplete(item, ctx),
+    });
   }
 
   async init(): Promise<void> {
@@ -265,7 +273,7 @@ export class SftpPanel {
   dispose(): void {
     this.unlistenProgress?.();
     this.unlistenProgress = null;
-    this.clearHideTimer();
+    this.clearQueueHideTimers();
     this.clearIdleTimer();
   }
 
@@ -329,12 +337,7 @@ export class SftpPanel {
           </div>
         </div>
         <div class="sftp-entries" role="list"></div>
-        <div class="sftp-progress" role="status" aria-live="polite">
-          <span class="sftp-progress-icon" aria-hidden="true"></span>
-          <div class="sftp-progress-track"><div class="sftp-progress-fill"></div></div>
-          <span class="sftp-progress-pct"></span>
-          <button type="button" class="btn btn-icon sftp-progress-cancel" data-action="cancel-transfer" title="${t("sftp.cancelTransfer")}" aria-label="${t("sftp.cancelTransfer")}">&times;</button>
-        </div>
+        <div class="sftp-queue" role="status" aria-live="polite" hidden></div>
         <div class="sftp-status" aria-live="polite"></div>
       </div>
     `;
@@ -349,10 +352,8 @@ export class SftpPanel {
     this.selCountEl = panel.querySelector(".sftp-sel-count");
     this.pasteBtnEl = panel.querySelector(".sftp-bulk-paste");
     this.statusEl = panel.querySelector(".sftp-status");
-    this.progressEl = panel.querySelector(".sftp-progress");
-    this.progressIconEl = panel.querySelector(".sftp-progress-icon");
-    this.progressFillEl = panel.querySelector(".sftp-progress-fill");
-    this.progressPctEl = panel.querySelector(".sftp-progress-pct");
+    this.queueEl = panel.querySelector(".sftp-queue");
+    this.renderQueue();
 
     this.pathEl?.addEventListener("keydown", (e) => {
       const ev = e as KeyboardEvent;
@@ -414,8 +415,24 @@ export class SftpPanel {
         case "mkdir":
           if (!this.busy) void this.handleMkdir();
           break;
-        case "cancel-transfer":
-          void this.handleCancelTransfer();
+        case "tx-cancel": {
+          const id = Number(target.closest<HTMLElement>("[data-tx-id]")?.dataset.txId);
+          if (Number.isFinite(id)) this.queue.cancel(id);
+          break;
+        }
+        case "tx-dismiss": {
+          const id = Number(target.closest<HTMLElement>("[data-tx-id]")?.dataset.txId);
+          if (Number.isFinite(id)) {
+            const timer = this.queueHideTimers.get(id);
+            if (timer) clearTimeout(timer);
+            this.queueHideTimers.delete(id);
+            this.queue.remove(id);
+          }
+          break;
+        }
+        case "tx-clear":
+          this.clearQueueHideTimers();
+          this.queue.clearFinished();
           break;
         case "select-all":
           this.toggleSelectAll();
@@ -440,10 +457,12 @@ export class SftpPanel {
 
     this.wireSplitter();
 
-    // Live transfer progress (throttled events from the backend).
-    void onSftpProgress((e) => this.onProgress(e)).then((un) => {
-      this.unlistenProgress = un;
-    });
+    // Live transfer progress (throttled events from the backend) → active item.
+    void onSftpProgress((e) => this.queue.applyProgress(e.deviceId, e.transferred, e.total)).then(
+      (un) => {
+        this.unlistenProgress = un;
+      },
+    );
   }
 
   /* ----- open / collapse / hide (panel visibility) ------------------------ */
@@ -484,7 +503,6 @@ export class SftpPanel {
   private async hide(): Promise<void> {
     this.panelOpen = false;
     this.clearIdleTimer();
-    this.hideProgress();
     this.applyOpenState();
     this.options.onLayoutChange?.();
     this.persist();
@@ -567,6 +585,9 @@ export class SftpPanel {
     this.activeDeviceId = null;
     this.moveClipboard = null; // a pending move is tied to this connection
     if (deviceId) {
+      // Cancel + drop any transfers for this device — the connection is going
+      // away, so nothing more can run against it.
+      this.queue.cancelDevice(deviceId);
       try {
         await sftpDisconnect(deviceId);
       } catch {
@@ -591,7 +612,6 @@ export class SftpPanel {
     this.clearIdleTimer();
     this.idleDisconnected = false;
     await this.disconnectActive();
-    this.hideProgress();
     this.setStatus("");
     this.syncPathInput();
     this.renderDisconnectedState();
@@ -767,43 +787,35 @@ export class SftpPanel {
     this.clearHover();
     const local = await pickDownloadSavePath(entry.name);
     if (local === null) return; // cancelled
+    const deviceId = this.activeDeviceId;
     const remote = joinRemote(this.cwd, entry.name);
-    this.setBusy(true);
-    this.setStatus(t("sftp.downloading", { name: entry.name }));
-    this.startProgress("download");
-    try {
-      const bytes = await sftpDownload(this.activeDeviceId, remote, local);
-      this.completeProgress();
-      this.setStatus(t("sftp.downloaded", { name: entry.name, size: formatSize(bytes) }));
-      this.options.onSuccess?.(t("sftp.downloadedToast", { name: entry.name }));
-    } catch (err) {
-      this.handleTransferError(err as AppError);
-    } finally {
-      this.setBusy(false);
-    }
+    this.queue.enqueue({
+      deviceId,
+      direction: "download",
+      isDir: false,
+      name: entry.name,
+      run: () => sftpDownload(deviceId, remote, local),
+      successToast: t("sftp.downloadedToast", { name: entry.name }),
+    });
   }
 
   private async handleUpload(): Promise<void> {
     if (this.activeDeviceId === null) return;
     const local = await pickUploadOpenPath();
     if (local === null) return; // cancelled
+    const deviceId = this.activeDeviceId;
+    const dir = this.cwd;
     const name = await basename(local);
-    const remote = joinRemote(this.cwd, name);
-    this.setBusy(true);
-    this.setStatus(t("sftp.uploading", { name }));
-    this.startProgress("upload");
-    try {
-      await sftpUpload(this.activeDeviceId, local, remote);
-      this.completeProgress();
-      this.options.onSuccess?.(t("sftp.uploadedToast", { name }));
-      await this.loadDir(this.cwd); // reflect the new file
-    } catch (err) {
-      this.handleTransferError(err as AppError);
-    } finally {
-      // Always clear busy: loadDir early-returns without clearing it if the
-      // device dropped between the upload and the reload.
-      this.setBusy(false);
-    }
+    const remote = joinRemote(dir, name);
+    this.queue.enqueue({
+      deviceId,
+      direction: "upload",
+      isDir: false,
+      name,
+      run: () => sftpUpload(deviceId, local, remote),
+      successToast: t("sftp.uploadedToast", { name }),
+      refreshDir: dir,
+    });
   }
 
   /** Recursively download a folder into a chosen local directory, resolving a
@@ -821,18 +833,14 @@ export class SftpPanel {
       t("sftp.conflict.message", { name: entry.name }),
     );
     if (policy === null) return; // cancelled the conflict dialog
-    this.setBusy(true);
-    this.setStatus(t("sftp.downloadingFolder", { name: entry.name }));
-    this.startProgress("download");
-    try {
-      await sftpDownloadDir(deviceId, remote, target, policy);
-      this.completeProgress();
-      this.options.onSuccess?.(t("sftp.downloadedFolderToast", { name: entry.name }));
-    } catch (err) {
-      this.handleTransferError(err as AppError);
-    } finally {
-      this.setBusy(false);
-    }
+    this.queue.enqueue({
+      deviceId,
+      direction: "download",
+      isDir: true,
+      name: entry.name,
+      run: () => sftpDownloadDir(deviceId, remote, target, policy),
+      successToast: t("sftp.downloadedFolderToast", { name: entry.name }),
+    });
   }
 
   /** Recursively upload a chosen local folder into the current directory. */
@@ -841,28 +849,23 @@ export class SftpPanel {
     const localDir = await pickUploadDirPath();
     if (localDir === null) return; // cancelled
     const deviceId = this.activeDeviceId;
+    const dir = this.cwd;
     const name = await basename(localDir);
-    const target = joinRemote(this.cwd, name);
+    const target = joinRemote(dir, name);
     const policy = await this.resolvePolicy(
       await sftpExists(deviceId, target),
       t("sftp.conflict.message", { name }),
     );
     if (policy === null) return;
-    this.setBusy(true);
-    this.setStatus(t("sftp.uploadingFolder", { name }));
-    this.startProgress("upload");
-    try {
-      await sftpUploadDir(deviceId, localDir, target, policy);
-      this.completeProgress();
-      this.options.onSuccess?.(t("sftp.uploadedFolderToast", { name }));
-      await this.loadDir(this.cwd); // reflect the new folder
-    } catch (err) {
-      this.handleTransferError(err as AppError);
-    } finally {
-      // `finally` (not a catch-only clear): loadDir early-returns without
-      // clearing busy if the device dropped meanwhile, which would lock the UI.
-      this.setBusy(false);
-    }
+    this.queue.enqueue({
+      deviceId,
+      direction: "upload",
+      isDir: true,
+      name,
+      run: () => sftpUploadDir(deviceId, localDir, target, policy),
+      successToast: t("sftp.uploadedFolderToast", { name }),
+      refreshDir: dir,
+    });
   }
 
   /**
@@ -889,29 +892,58 @@ export class SftpPanel {
   }
 
   /**
-   * Shared error handling for a transfer: a user cancellation
-   * (`code === "Cancelled"`) is quiet — just a status line, no error toast —
-   * while a real failure surfaces through `onError`. Either way the progress
-   * bar is hidden.
+   * Queue hook: an item reached a terminal state. A success surfaces its toast
+   * (and re-lists the directory if an upload landed in the one on screen), then
+   * auto-clears the row after a moment; a real failure surfaces through `onError`
+   * and the row stays until dismissed; a user cancel is quiet.
    */
-  private handleTransferError(error: AppError): void {
-    this.hideProgress();
-    if (error.code === "Cancelled") {
-      this.setStatus(t("sftp.transferCancelled"));
-    } else {
-      this.setStatus("");
-      this.options.onError?.(error);
+  private onTransferComplete(
+    item: TransferItem,
+    ctx: { successToast?: string; refreshDir?: string },
+  ): void {
+    if (item.state === "done") {
+      if (ctx.successToast) this.options.onSuccess?.(ctx.successToast);
+      // Reflect a new upload if we're still showing the directory it landed in.
+      if (
+        ctx.refreshDir !== undefined &&
+        this.activeDeviceId === item.deviceId &&
+        this.cwd === ctx.refreshDir &&
+        !this.busy
+      ) {
+        void this.loadDir(this.cwd);
+      }
+      this.scheduleQueueItemHide(item.id);
+    } else if (item.state === "failed" && item.error) {
+      this.options.onError?.(item.error);
     }
+    // "cancelled": quiet — the row stays until dismissed/cleared.
   }
 
-  private async handleCancelTransfer(): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    this.setStatus(t("sftp.cancelling"));
+  /** Queue hook: ask the backend to cancel the in-flight transfer for a device. */
+  private async cancelActiveTransfer(deviceId: string): Promise<void> {
     try {
-      await sftpCancelTransfer(this.activeDeviceId);
+      await sftpCancelTransfer(deviceId);
     } catch (err) {
       this.options.onError?.(err as AppError);
     }
+  }
+
+  /** Auto-remove a completed transfer row after a short delay. */
+  private scheduleQueueItemHide(id: number): void {
+    const existing = this.queueHideTimers.get(id);
+    if (existing) clearTimeout(existing);
+    this.queueHideTimers.set(
+      id,
+      setTimeout(() => {
+        this.queueHideTimers.delete(id);
+        this.queue.remove(id);
+      }, 3000),
+    );
+  }
+
+  private clearQueueHideTimers(): void {
+    for (const timer of this.queueHideTimers.values()) clearTimeout(timer);
+    this.queueHideTimers.clear();
   }
 
   private async handleMkdir(): Promise<void> {
@@ -1134,44 +1166,35 @@ export class SftpPanel {
     const policy = await this.resolvePolicy(conflict, message);
     if (policy === null) return;
 
-    this.setBusy(true);
-    let done = 0;
-    let firstError: AppError | null = null;
-    let cancelled = false;
-    try {
-      for (const { entry, target } of targets) {
-        const remote = joinRemote(srcDir, entry.name);
-        try {
-          if (entry.kind === "dir") {
-            this.setStatus(t("sftp.downloadingFolder", { name: entry.name }));
-            this.startProgress("download");
-            await sftpDownloadDir(deviceId, remote, target, policy);
-          } else {
-            if (policy === "skip" && (await sftpLocalExists(target))) continue;
+    // Enqueue each selection as its own background item; they drain one at a
+    // time while browsing stays live. Skip/rename are resolved at run time per
+    // file. Bulk items are quiet (no per-item toast) — the queue list is the
+    // feedback; a single explicit download still toasts.
+    for (const { entry, target } of targets) {
+      const remote = joinRemote(srcDir, entry.name);
+      if (entry.kind === "dir") {
+        this.queue.enqueue({
+          deviceId,
+          direction: "download",
+          isDir: true,
+          name: entry.name,
+          run: () => sftpDownloadDir(deviceId, remote, target, policy),
+        });
+      } else {
+        this.queue.enqueue({
+          deviceId,
+          direction: "download",
+          isDir: false,
+          name: entry.name,
+          run: async () => {
+            if (policy === "skip" && (await sftpLocalExists(target))) return;
             const local = policy === "rename" ? await this.freshLocalName(target) : target;
-            this.setStatus(t("sftp.downloading", { name: entry.name }));
-            this.startProgress("download");
             await sftpDownload(deviceId, remote, local);
-          }
-          done += 1;
-        } catch (err) {
-          const e = err as AppError;
-          if (e.code === "Cancelled") {
-            this.handleTransferError(e); // hides progress + sets the cancelled status
-            cancelled = true;
-            break;
-          }
-          firstError ??= e;
-        }
+          },
+        });
       }
-      // A cancel already reported itself; don't also claim success.
-      if (!cancelled) {
-        this.completeProgress();
-        this.finishBulk(tp("sftp.downloadedFiles", done), done, targets.length, firstError);
-      }
-    } finally {
-      this.setBusy(false);
     }
+    this.clearSelection();
   }
 
   /** "Cut": record the selection for a later Paste, then clear it. */
@@ -1469,67 +1492,131 @@ export class SftpPanel {
     if (forward) forward.disabled = this.historyIndex >= this.history.length - 1;
   }
 
-  /* ----- transfer progress ----------------------------------------------- */
+  /* ----- transfer queue rendering ---------------------------------------- */
 
-  /** Show the progress row at 0 % for a starting transfer. */
-  private startProgress(direction: "download" | "upload"): void {
-    if (!this.progressEl) return;
-    this.clearHideTimer();
-    this.progressEl.classList.remove("done");
-    this.progressEl.classList.add("active");
-    this.setProgressIcon(direction);
-    this.setFill(0);
-    if (this.progressPctEl) this.progressPctEl.textContent = "0%";
+  /** Rebuild the background transfer-queue list from `queue` state (hidden when
+   * empty). Called on every queue change and after a panel rebuild. */
+  private renderQueue(): void {
+    const el = this.queueEl;
+    if (!el) return;
+    const items = this.queue.items();
+    el.replaceChildren();
+    if (items.length === 0) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+
+    const head = document.createElement("div");
+    head.className = "sftp-queue-head";
+    const title = document.createElement("span");
+    title.className = "sftp-queue-title";
+    title.textContent = t("sftp.queue.title");
+    head.appendChild(title);
+    if (items.some((i) => i.state === "done" || i.state === "failed" || i.state === "cancelled")) {
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "btn btn-small";
+      clear.dataset.action = "tx-clear";
+      clear.textContent = t("sftp.queue.clear");
+      head.appendChild(clear);
+    }
+    el.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "sftp-queue-list";
+    for (const item of items) list.appendChild(this.renderQueueRow(item));
+    el.appendChild(list);
   }
 
-  /** Update the bar from a throttled `sftp_progress` event for the active device. */
-  private onProgress(e: SftpProgressEvent): void {
-    if (e.deviceId !== this.activeDeviceId || !this.progressEl) return;
-    this.clearHideTimer();
-    this.progressEl.classList.remove("done");
-    this.progressEl.classList.add("active");
-    this.setProgressIcon(e.direction);
+  /** Update just the active row's bar + percentage in place, from a progress
+   * tick. Avoids rebuilding the whole list (and re-announcing the aria-live
+   * region, and re-creating the cancel button mid-click) ~20×/s. Falls back to a
+   * full render if the row isn't present yet. */
+  private updateQueueRowProgress(item: TransferItem): void {
+    const row = this.queueEl?.querySelector<HTMLElement>(
+      `.sftp-queue-item[data-tx-id="${item.id}"]`,
+    );
+    const fill = row?.querySelector<HTMLElement>(".sftp-queue-fill");
+    const pctEl = row?.querySelector<HTMLElement>(".sftp-queue-pct");
+    if (!fill || !pctEl) {
+      this.renderQueue();
+      return;
+    }
     const pct =
-      e.total > 0 ? Math.min(100, Math.round((e.transferred / e.total) * 100)) : 0;
-    this.setFill(pct);
-    if (this.progressPctEl) {
-      this.progressPctEl.textContent =
-        e.total > 0 ? `${pct}%` : formatSize(e.transferred);
+      item.total > 0 ? Math.min(100, Math.round((item.transferred / item.total) * 100)) : 0;
+    fill.style.width = `${pct}%`;
+    pctEl.textContent = item.total > 0 ? `${pct}%` : formatSize(item.transferred);
+  }
+
+  /** One transfer row. Built with DOM APIs (not innerHTML) so the remote-supplied
+   * name is inserted as text, never markup. */
+  private renderQueueRow(item: TransferItem): HTMLElement {
+    const row = document.createElement("div");
+    row.className = `sftp-queue-item is-${item.state}`;
+    row.dataset.txId = String(item.id);
+
+    const icon = document.createElement("span");
+    icon.className = "sftp-queue-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.innerHTML = item.direction === "upload" ? uploadIcon : downloadIcon;
+
+    const name = document.createElement("span");
+    name.className = "sftp-queue-name";
+    name.textContent = item.name;
+    name.title = item.name;
+
+    const detail = document.createElement("span");
+    detail.className = "sftp-queue-detail";
+    let cancelAction: "tx-cancel" | "tx-dismiss" | null = null;
+    switch (item.state) {
+      case "active": {
+        const pct =
+          item.total > 0 ? Math.min(100, Math.round((item.transferred / item.total) * 100)) : 0;
+        const track = document.createElement("span");
+        track.className = "sftp-queue-track";
+        const fill = document.createElement("span");
+        fill.className = "sftp-queue-fill";
+        fill.style.width = `${pct}%`;
+        track.appendChild(fill);
+        const pctEl = document.createElement("span");
+        pctEl.className = "sftp-queue-pct";
+        pctEl.textContent = item.total > 0 ? `${pct}%` : formatSize(item.transferred);
+        detail.append(track, pctEl);
+        cancelAction = "tx-cancel";
+        break;
+      }
+      case "queued":
+        detail.textContent = t("sftp.queue.queued");
+        cancelAction = "tx-cancel";
+        break;
+      case "done":
+        detail.textContent = `✓ ${t("sftp.progress.done")}`;
+        break;
+      case "failed":
+        detail.textContent = t("sftp.queue.failed");
+        cancelAction = "tx-dismiss";
+        break;
+      case "cancelled":
+        detail.textContent = t("sftp.transferCancelled");
+        cancelAction = "tx-dismiss";
+        break;
     }
-  }
 
-  /** Collapse the bar to a checkmark on completion, then auto-hide after ~2.5 s. */
-  private completeProgress(): void {
-    if (!this.progressEl) return;
-    this.clearHideTimer();
-    this.setFill(100);
-    this.progressEl.classList.add("active", "done");
-    if (this.progressIconEl) this.progressIconEl.textContent = "✓";
-    if (this.progressPctEl) this.progressPctEl.textContent = t("sftp.progress.done");
-    this.progressHideTimer = setTimeout(() => this.hideProgress(), 2500);
-  }
-
-  private hideProgress(): void {
-    this.clearHideTimer();
-    this.progressEl?.classList.remove("active", "done");
-  }
-
-  private clearHideTimer(): void {
-    if (this.progressHideTimer !== null) {
-      clearTimeout(this.progressHideTimer);
-      this.progressHideTimer = null;
+    row.append(icon, name, detail);
+    if (cancelAction) {
+      const label =
+        cancelAction === "tx-cancel" ? t("sftp.cancelTransfer") : t("common.close");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-icon btn-small sftp-queue-cancel";
+      btn.dataset.action = cancelAction;
+      btn.title = label;
+      btn.setAttribute("aria-label", label);
+      btn.textContent = "×"; // ×
+      row.appendChild(btn);
     }
-  }
-
-  private setFill(pct: number): void {
-    if (this.progressFillEl) this.progressFillEl.style.width = `${pct}%`;
-  }
-
-  private setProgressIcon(direction: "download" | "upload"): void {
-    if (this.progressIconEl) {
-      this.progressIconEl.innerHTML =
-        direction === "upload" ? uploadIcon : downloadIcon;
-    }
+    return row;
   }
 }
 

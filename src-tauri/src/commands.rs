@@ -1004,9 +1004,9 @@ pub async fn sftp_realpath(
 }
 
 /// Download a remote file to a local path chosen via the native save dialog.
-/// Streams the file over SFTP (emitting throttled `sftp_progress` events), then
-/// writes it locally on a blocking task (the local write is a synchronous
-/// syscall). Returns the byte count written.
+/// Streams the file chunk-by-chunk straight to local disk (emitting throttled
+/// `sftp_progress` events), never buffering the whole file — so an arbitrarily
+/// large file transfers in constant memory. Returns the byte count written.
 #[tauri::command]
 pub async fn sftp_download(
     app: AppHandle,
@@ -1016,20 +1016,16 @@ pub async fn sftp_download(
     local_path: String,
 ) -> Result<u64, AppError> {
     let progress = sftp_progress_emitter(app, device_id.clone(), "download");
-    let bytes = state
+    state
         .sftp_manager
-        .read_file(&device_id, &remote_path, &progress)
-        .await?;
-    let len = bytes.len() as u64;
-    tokio::task::spawn_blocking(move || std::fs::write(&local_path, &bytes))
+        .download_to_path(&device_id, &remote_path, Path::new(&local_path), &progress)
         .await
-        .map_err(|e| AppError::Io(format!("download write task failed: {e}")))??;
-    Ok(len)
 }
 
 /// Upload a local file (chosen via the native open dialog) to a remote path.
-/// Reads the local file on a blocking task, then streams it over SFTP (emitting
-/// throttled `sftp_progress` events). Returns the byte count uploaded.
+/// Streams the file chunk-by-chunk straight from local disk (emitting throttled
+/// `sftp_progress` events), never buffering the whole file. Returns the byte
+/// count uploaded.
 #[tauri::command]
 pub async fn sftp_upload(
     app: AppHandle,
@@ -1038,16 +1034,11 @@ pub async fn sftp_upload(
     local_path: String,
     remote_path: String,
 ) -> Result<u64, AppError> {
-    let bytes = tokio::task::spawn_blocking(move || std::fs::read(&local_path))
-        .await
-        .map_err(|e| AppError::Io(format!("upload read task failed: {e}")))??;
-    let len = bytes.len() as u64;
     let progress = sftp_progress_emitter(app, device_id.clone(), "upload");
     state
         .sftp_manager
-        .write_file(&device_id, &remote_path, &bytes, &progress)
-        .await?;
-    Ok(len)
+        .upload_from_path(&device_id, Path::new(&local_path), &remote_path, &progress)
+        .await
 }
 
 /// First of `<path>`, `<path> (2)`, `<path> (3)`, … that does not already exist —
