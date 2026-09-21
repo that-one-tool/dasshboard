@@ -1933,10 +1933,14 @@ body.sftp-resizing {
 	padding: 10px 16px;
 	border-bottom: 1px solid #3c3c3c;
 	flex: 0 0 auto;
+	/* Let the icon group drop below the path when the panel is narrow, so the
+	 * (now eight) toolbar buttons never clip. */
+	flex-wrap: wrap;
 }
 
 .sftp-path {
-	flex: 1 1 auto;
+	/* Take the full first row so the action group wraps beneath it, not mid-row. */
+	flex: 1 1 100%;
 	min-width: 0;
 	color: #9cdcfe;
 	font-family: "Cascadia Mono", Consolas, monospace;

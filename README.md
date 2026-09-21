@@ -82,10 +82,15 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   the terminal grid (toggle it from the header bar): pick a device from the
   panel's device dropdown to browse remote directories, download files to a local
   path and upload local files, plus make/rename/delete entries (deleting a folder
-  removes it and everything inside). Select multiple entries with the row
-  checkboxes (or select-all, shift-click for a range) and act on them in bulk:
-  **Download** the selected files into one folder, **Move** them with cut/paste
-  into another directory, or **Delete** them all at once. The toolbar path
+  removes it and everything inside). Whole **folders** transfer recursively too —
+  download a remote folder to a local directory, or use *Upload a folder here* to
+  push a local tree up — and when the destination already exists you choose once
+  per transfer whether to **overwrite**, **skip** (merge, keeping what's there),
+  or **keep both** (write under a fresh name). Select multiple entries with the
+  row checkboxes (or select-all, shift-click for a range) and act on them in
+  bulk: **Download** the selected files and folders into one destination folder,
+  **Move** them with cut/paste into another directory, or **Delete** them all at
+  once. The toolbar path
   is editable — type a path and press Enter to jump there (a file path opens its
   parent folder) — and a copy button copies the current remote path to the
   clipboard. Drag the divider to resize it, or collapse it to a rail to keep the

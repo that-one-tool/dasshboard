@@ -15,6 +15,10 @@ const h = vi.hoisted(() => ({
   saveResult: null as string | null,
   openResult: null as string | null,
   dirResult: null as string | null,
+  uploadDirResult: null as string | null,
+  localExists: false,
+  remoteExists: false,
+  conflictChoice: "overwrite" as "overwrite" | "skip" | "rename" | null,
   progressHandler: null as ((e: SftpProgressEvent) => void) | null,
 }));
 
@@ -35,6 +39,10 @@ vi.mock("../ipc", () => ({
   }),
   sftpDownload: vi.fn(async () => 123),
   sftpUpload: vi.fn(async () => 10),
+  sftpDownloadDir: vi.fn(async () => {}),
+  sftpUploadDir: vi.fn(async () => {}),
+  sftpLocalExists: vi.fn(async () => h.localExists),
+  sftpExists: vi.fn(async () => h.remoteExists),
   sftpMkdir: vi.fn(async () => {}),
   sftpRename: vi.fn(async () => {}),
   sftpRemove: vi.fn(async () => {}),
@@ -49,11 +57,13 @@ vi.mock("../ui/fileDialog", () => ({
   pickDownloadSavePath: vi.fn(async () => h.saveResult),
   pickUploadOpenPath: vi.fn(async () => h.openResult),
   pickDownloadDirPath: vi.fn(async () => h.dirResult),
+  pickUploadDirPath: vi.fn(async () => h.uploadDirResult),
 }));
 
 vi.mock("../ui/confirm", () => ({
   confirm: vi.fn(async () => true),
   prompt: vi.fn(async () => "newname"),
+  chooseConflict: vi.fn(async () => h.conflictChoice),
 }));
 
 vi.mock("@tauri-apps/api/path", () => ({
@@ -68,6 +78,8 @@ import {
   sftpRealpath,
   sftpDisconnect,
   sftpDownload,
+  sftpDownloadDir,
+  sftpUploadDir,
   sftpRemove,
   sftpRename,
   sftpCancelTransfer,
@@ -155,6 +167,10 @@ describe("SftpPanel", () => {
     h.saveResult = null;
     h.openResult = null;
     h.dirResult = null;
+    h.uploadDirResult = null;
+    h.localExists = false;
+    h.remoteExists = false;
+    h.conflictChoice = "overwrite";
     vi.clearAllMocks();
   });
 
@@ -580,18 +596,73 @@ describe("SftpPanel", () => {
     expect(sftpRemove).toHaveBeenCalledWith("a", "/home/j/readme.txt", false, false);
   });
 
-  it("bulk download saves selected files into a chosen folder and skips directories", async () => {
+  it("bulk download fetches files directly and folders recursively into the chosen folder", async () => {
     h.dirResult = "C:/dest";
     await setup();
     await browse();
-    check(0).click(); // sub (dir) — should be skipped
+    check(0).click(); // sub (dir) — recursive download
     check(1).click(); // readme.txt (file)
 
     q<HTMLButtonElement>('[data-action="bulk-download"]').click();
     await flush();
 
-    expect(sftpDownload).toHaveBeenCalledTimes(1);
     expect(sftpDownload).toHaveBeenCalledWith("a", "/home/j/readme.txt", "C:/dest/readme.txt");
+    expect(sftpDownloadDir).toHaveBeenCalledWith("a", "/home/j/sub", "C:/dest/sub", "overwrite");
+  });
+
+  it("per-row folder download recurses into a chosen destination", async () => {
+    h.dirResult = "C:/dest";
+    await setup();
+    await browse();
+
+    // The folder row's download button (first action button on the dir row).
+    document
+      .querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-actions .btn")
+      ?.click();
+    await flush();
+
+    expect(sftpDownloadDir).toHaveBeenCalledWith("a", "/home/j/sub", "C:/dest/sub", "overwrite");
+  });
+
+  it("Upload folder recurses a local folder into the current directory", async () => {
+    h.uploadDirResult = "C:/local/proj";
+    await setup();
+    await browse();
+
+    q<HTMLButtonElement>('.sftp-panel [data-action="upload-dir"]').click();
+    await flush();
+
+    expect(sftpUploadDir).toHaveBeenCalledWith("a", "C:/local/proj", "/home/j/proj", "overwrite");
+  });
+
+  it("prompts for a conflict policy when the destination already exists", async () => {
+    h.dirResult = "C:/dest";
+    h.localExists = true; // target already present
+    h.conflictChoice = "skip";
+    await setup();
+    await browse();
+
+    document
+      .querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-actions .btn")
+      ?.click();
+    await flush();
+
+    expect(sftpDownloadDir).toHaveBeenCalledWith("a", "/home/j/sub", "C:/dest/sub", "skip");
+  });
+
+  it("cancelling the conflict dialog aborts the transfer", async () => {
+    h.dirResult = "C:/dest";
+    h.localExists = true;
+    h.conflictChoice = null; // user cancelled
+    await setup();
+    await browse();
+
+    document
+      .querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-actions .btn")
+      ?.click();
+    await flush();
+
+    expect(sftpDownloadDir).not.toHaveBeenCalled();
   });
 
   it("cut then paste moves entries via server-side rename", async () => {

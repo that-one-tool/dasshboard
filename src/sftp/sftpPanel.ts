@@ -31,9 +31,14 @@ import {
   sftpRemove,
   sftpRename,
   sftpUpload,
+  sftpDownloadDir,
+  sftpUploadDir,
+  sftpLocalExists,
+  sftpExists,
   sftpCancelTransfer,
   onSftpProgress,
   type AppError,
+  type ConflictPolicy,
   type Device,
   type SftpEntry,
   type SftpPanelState,
@@ -45,8 +50,9 @@ import {
   pickDownloadSavePath,
   pickDownloadDirPath,
   pickUploadOpenPath,
+  pickUploadDirPath,
 } from "../ui/fileDialog";
-import { confirm, prompt } from "../ui/confirm";
+import { confirm, prompt, chooseConflict } from "../ui/confirm";
 import {
   trashIcon,
   pencilIcon,
@@ -56,6 +62,7 @@ import {
   arrowRightIcon,
   reloadIcon,
   uploadIcon,
+  uploadFolderIcon,
   downloadIcon,
   folderPlusIcon,
   chevronLeftIcon,
@@ -304,6 +311,7 @@ export class SftpPanel {
             <button type="button" class="btn btn-icon" data-action="up" title="${t("sftp.nav.up")}" aria-label="${t("sftp.nav.up")}">${arrowUpIcon}</button>
             <button type="button" class="btn btn-icon" data-action="refresh" title="${t("sftp.nav.refresh")}" aria-label="${t("sftp.nav.refresh")}">${reloadIcon}</button>
             <button type="button" class="btn btn-icon" data-action="upload" title="${t("sftp.nav.upload")}" aria-label="${t("sftp.nav.upload")}">${uploadIcon}</button>
+            <button type="button" class="btn btn-icon" data-action="upload-dir" title="${t("sftp.nav.uploadDir")}" aria-label="${t("sftp.nav.uploadDir")}">${uploadFolderIcon}</button>
             <button type="button" class="btn btn-icon" data-action="mkdir" title="${t("sftp.nav.mkdir")}" aria-label="${t("sftp.nav.mkdir")}">${folderPlusIcon}</button>
           </div>
         </div>
@@ -399,6 +407,9 @@ export class SftpPanel {
           break;
         case "upload":
           if (!this.busy) void this.handleUpload();
+          break;
+        case "upload-dir":
+          if (!this.busy) void this.handleUploadFolder();
           break;
         case "mkdir":
           if (!this.busy) void this.handleMkdir();
@@ -788,7 +799,92 @@ export class SftpPanel {
       await this.loadDir(this.cwd); // reflect the new file
     } catch (err) {
       this.handleTransferError(err as AppError);
+    } finally {
+      // Always clear busy: loadDir early-returns without clearing it if the
+      // device dropped between the upload and the reload.
       this.setBusy(false);
+    }
+  }
+
+  /** Recursively download a folder into a chosen local directory, resolving a
+   * name clash with a per-operation conflict policy. */
+  private async handleDownloadFolder(entry: SftpEntry): Promise<void> {
+    if (this.activeDeviceId === null) return;
+    this.clearHover();
+    const destParent = await pickDownloadDirPath();
+    if (destParent === null) return; // cancelled
+    const deviceId = this.activeDeviceId;
+    const remote = joinRemote(this.cwd, entry.name);
+    const target = await join(destParent, entry.name);
+    const policy = await this.resolvePolicy(
+      await sftpLocalExists(target),
+      t("sftp.conflict.message", { name: entry.name }),
+    );
+    if (policy === null) return; // cancelled the conflict dialog
+    this.setBusy(true);
+    this.setStatus(t("sftp.downloadingFolder", { name: entry.name }));
+    this.startProgress("download");
+    try {
+      await sftpDownloadDir(deviceId, remote, target, policy);
+      this.completeProgress();
+      this.options.onSuccess?.(t("sftp.downloadedFolderToast", { name: entry.name }));
+    } catch (err) {
+      this.handleTransferError(err as AppError);
+    } finally {
+      this.setBusy(false);
+    }
+  }
+
+  /** Recursively upload a chosen local folder into the current directory. */
+  private async handleUploadFolder(): Promise<void> {
+    if (this.activeDeviceId === null) return;
+    const localDir = await pickUploadDirPath();
+    if (localDir === null) return; // cancelled
+    const deviceId = this.activeDeviceId;
+    const name = await basename(localDir);
+    const target = joinRemote(this.cwd, name);
+    const policy = await this.resolvePolicy(
+      await sftpExists(deviceId, target),
+      t("sftp.conflict.message", { name }),
+    );
+    if (policy === null) return;
+    this.setBusy(true);
+    this.setStatus(t("sftp.uploadingFolder", { name }));
+    this.startProgress("upload");
+    try {
+      await sftpUploadDir(deviceId, localDir, target, policy);
+      this.completeProgress();
+      this.options.onSuccess?.(t("sftp.uploadedFolderToast", { name }));
+      await this.loadDir(this.cwd); // reflect the new folder
+    } catch (err) {
+      this.handleTransferError(err as AppError);
+    } finally {
+      // `finally` (not a catch-only clear): loadDir early-returns without
+      // clearing busy if the device dropped meanwhile, which would lock the UI.
+      this.setBusy(false);
+    }
+  }
+
+  /**
+   * Resolve the conflict policy for a transfer: `"overwrite"` when there is no
+   * clash, otherwise the user's choice from the conflict dialog (or `null` if
+   * they cancel). One choice applies to the whole operation.
+   */
+  private async resolvePolicy(conflict: boolean, message: string): Promise<ConflictPolicy | null> {
+    if (!conflict) return "overwrite";
+    return chooseConflict(message);
+  }
+
+  /** First `<path>` / `<path> (2)` / … that doesn't exist locally (for the
+   * per-file rename policy in a bulk download). */
+  private async freshLocalName(path: string): Promise<string> {
+    if (!(await sftpLocalExists(path))) return path;
+    let i = 2;
+    // eslint-disable-next-line no-constant-condition
+    for (;;) {
+      const candidate = `${path} (${i})`;
+      if (!(await sftpLocalExists(candidate))) return candidate;
+      i += 1;
     }
   }
 
@@ -1009,33 +1105,54 @@ export class SftpPanel {
     return this.currentEntries.filter((e) => this.selected.has(e.name));
   }
 
-  /** Download every selected file into one chosen local folder (directories are
-   * skipped — recursive folder download comes later). Sequential, with the
-   * shared progress bar per file. */
+  /** Download every selected entry into one chosen local folder — files
+   * directly, folders recursively — under a single conflict policy. Sequential,
+   * with the shared progress bar per file. */
   private async handleBulkDownload(): Promise<void> {
     if (this.activeDeviceId === null) return;
-    const files = this.selectedEntries().filter((e) => e.kind !== "dir");
-    if (files.length === 0) {
-      this.options.onError?.(validationError(t("sftp.bulk.noFiles")));
-      return;
-    }
+    const entries = this.selectedEntries();
+    if (entries.length === 0) return;
     this.clearHover();
-    const dir = await pickDownloadDirPath();
-    if (dir === null) return; // cancelled
+    const dest = await pickDownloadDirPath();
+    if (dest === null) return; // cancelled
     const deviceId = this.activeDeviceId;
     const srcDir = this.cwd;
+
+    // Resolve each target and detect a conflict up front, so the policy is asked
+    // once for the whole batch.
+    const targets: { entry: SftpEntry; target: string }[] = [];
+    let conflict = false;
+    for (const entry of entries) {
+      const target = await join(dest, entry.name);
+      targets.push({ entry, target });
+      if (!conflict && (await sftpLocalExists(target))) conflict = true;
+    }
+    const message =
+      entries.length === 1
+        ? t("sftp.conflict.message", { name: entries[0]?.name ?? "" })
+        : t("sftp.conflict.messageMany");
+    const policy = await this.resolvePolicy(conflict, message);
+    if (policy === null) return;
+
     this.setBusy(true);
     let done = 0;
     let firstError: AppError | null = null;
     let cancelled = false;
     try {
-      for (const file of files) {
-        const remote = joinRemote(srcDir, file.name);
-        const local = await join(dir, file.name);
-        this.setStatus(t("sftp.downloading", { name: file.name }));
-        this.startProgress("download");
+      for (const { entry, target } of targets) {
+        const remote = joinRemote(srcDir, entry.name);
         try {
-          await sftpDownload(deviceId, remote, local);
+          if (entry.kind === "dir") {
+            this.setStatus(t("sftp.downloadingFolder", { name: entry.name }));
+            this.startProgress("download");
+            await sftpDownloadDir(deviceId, remote, target, policy);
+          } else {
+            if (policy === "skip" && (await sftpLocalExists(target))) continue;
+            const local = policy === "rename" ? await this.freshLocalName(target) : target;
+            this.setStatus(t("sftp.downloading", { name: entry.name }));
+            this.startProgress("download");
+            await sftpDownload(deviceId, remote, local);
+          }
           done += 1;
         } catch (err) {
           const e = err as AppError;
@@ -1050,7 +1167,7 @@ export class SftpPanel {
       // A cancel already reported itself; don't also claim success.
       if (!cancelled) {
         this.completeProgress();
-        this.finishBulk(tp("sftp.downloadedFiles", done), done, files.length, firstError);
+        this.finishBulk(tp("sftp.downloadedFiles", done), done, targets.length, firstError);
       }
     } finally {
       this.setBusy(false);
@@ -1233,11 +1350,13 @@ export class SftpPanel {
 
     const actions = document.createElement("span");
     actions.className = "sftp-entry-actions";
-    if (!isDir) {
-      actions.appendChild(
-        this.iconButton(downloadIcon, t("sftp.entry.download"), () => void this.handleDownload(entry)),
-      );
-    }
+    // Both files and folders can be downloaded (a folder recurses).
+    actions.appendChild(
+      this.iconButton(downloadIcon, t("sftp.entry.download"), () => {
+        if (isDir) void this.handleDownloadFolder(entry);
+        else void this.handleDownload(entry);
+      }),
+    );
     actions.appendChild(
       this.iconButton(pencilIcon, t("sftp.entry.rename"), () => void this.handleRename(entry)),
     );

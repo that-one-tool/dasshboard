@@ -8,7 +8,7 @@
 //! them to `camelCase` on the wire by default (e.g. `device_id` here is
 //! invoked from the frontend as `{ deviceId: ... }`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -1048,6 +1048,110 @@ pub async fn sftp_upload(
         .write_file(&device_id, &remote_path, &bytes, &progress)
         .await?;
     Ok(len)
+}
+
+/// First of `<path>`, `<path> (2)`, `<path> (3)`, … that does not already exist —
+/// the rename-on-conflict target for a folder download. Runs on a blocking task.
+fn fresh_local_path(base: PathBuf) -> PathBuf {
+    if !base.exists() {
+        return base;
+    }
+    let s = base.to_string_lossy().into_owned();
+    let mut i = 2;
+    loop {
+        let candidate = PathBuf::from(format!("{s} ({i})"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        i += 1;
+    }
+}
+
+/// Recursively download a remote directory tree into a local directory.
+/// `local_path` is the intended target (destination parent + folder name); the
+/// `policy` ("overwrite" | "skip" | "rename") decides what happens when it (or a
+/// file inside it) already exists — overwrite replaces, skip merges, rename picks
+/// a fresh `<name> (N)` so nothing existing is touched. Emits throttled
+/// `sftp_progress` events per file.
+#[tauri::command]
+pub async fn sftp_download_dir(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_id: String,
+    remote_path: String,
+    local_path: String,
+    policy: String,
+) -> Result<(), AppError> {
+    let skip = policy == "skip";
+    let mut target = PathBuf::from(local_path);
+    if policy == "rename" {
+        let base = target.clone();
+        target = tokio::task::spawn_blocking(move || fresh_local_path(base))
+            .await
+            .map_err(|e| AppError::Io(format!("rename task failed: {e}")))?;
+    }
+    let progress = sftp_progress_emitter(app, device_id.clone(), "download");
+    state
+        .sftp_manager
+        .download_dir(&device_id, &remote_path, &target, skip, &progress)
+        .await
+}
+
+/// Recursively upload a local directory tree into the current remote directory.
+/// `remote_path` is the intended target; `policy` behaves as for
+/// [`sftp_download_dir`] but against the remote side.
+#[tauri::command]
+pub async fn sftp_upload_dir(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    device_id: String,
+    local_path: String,
+    remote_path: String,
+    policy: String,
+) -> Result<(), AppError> {
+    let skip = policy == "skip";
+    let mut target = remote_path;
+    if policy == "rename" {
+        let mut i = 2;
+        let mut candidate = target.clone();
+        while state
+            .sftp_manager
+            .remote_exists(&device_id, &candidate)
+            .await?
+        {
+            candidate = format!("{target} ({i})");
+            i += 1;
+        }
+        target = candidate;
+    }
+    // Ensure the top-level remote directory exists (benign if it already does for
+    // an overwrite/skip merge; a real failure surfaces on the first file upload).
+    let _ = state.sftp_manager.mkdir(&device_id, &target).await;
+    let progress = sftp_progress_emitter(app, device_id.clone(), "upload");
+    state
+        .sftp_manager
+        .upload_dir(&device_id, Path::new(&local_path), &target, skip, &progress)
+        .await
+}
+
+/// Whether a local path exists — the frontend checks this before a folder
+/// download to decide whether to prompt for a conflict policy.
+#[tauri::command]
+pub async fn sftp_local_exists(path: String) -> Result<bool, AppError> {
+    tokio::task::spawn_blocking(move || Path::new(&path).exists())
+        .await
+        .map_err(|e| AppError::Io(format!("stat task failed: {e}")))
+}
+
+/// Whether a remote path exists — the frontend checks this before a folder
+/// upload to decide whether to prompt for a conflict policy.
+#[tauri::command]
+pub async fn sftp_exists(
+    state: State<'_, AppState>,
+    device_id: String,
+    path: String,
+) -> Result<bool, AppError> {
+    state.sftp_manager.remote_exists(&device_id, &path).await
 }
 
 /// Request cancellation of the in-flight transfer for a device (if any). The

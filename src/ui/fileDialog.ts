@@ -93,3 +93,11 @@ export async function pickUploadOpenPath(): Promise<string | null> {
 export async function pickDownloadDirPath(): Promise<string | null> {
   return open({ directory: true, multiple: false });
 }
+
+/**
+ * Opens a native "choose folder" dialog to pick a local directory to upload
+ * recursively. Returns the chosen directory, or `null` if the user cancels.
+ */
+export async function pickUploadDirPath(): Promise<string | null> {
+  return open({ directory: true, multiple: false });
+}

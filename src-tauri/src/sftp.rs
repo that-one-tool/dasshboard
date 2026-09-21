@@ -26,6 +26,7 @@
 //! large files are not streamed in v1.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -364,53 +365,13 @@ impl SftpManager {
         on_progress: &(dyn Fn(u64, u64) + Send + Sync),
     ) -> Result<Vec<u8>, AppError> {
         let conn = self.conn_of(device_id)?;
-        let ctx = || format!("could not download {path}");
-
         // Register a cancel flag; the guard removes it on every exit path.
         let cancel = self.begin_transfer(device_id);
         let _guard = TransferGuard {
             manager: self,
             device_id: device_id.to_string(),
         };
-
-        let total = conn
-            .session
-            .metadata(path.to_string())
-            .await
-            .map_err(|e| sftp_err(&ctx(), e))?
-            .size
-            .unwrap_or(0);
-
-        let mut file = conn
-            .session
-            .open(path.to_string())
-            .await
-            .map_err(|e| sftp_err(&ctx(), e))?;
-
-        let mut buf = Vec::with_capacity(total as usize);
-        let mut chunk = vec![0u8; TRANSFER_CHUNK];
-        let mut transferred: u64 = 0;
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                let _ = file.close().await;
-                return Err(cancelled());
-            }
-            let n = file
-                .read(&mut chunk)
-                .await
-                .map_err(|e| sftp_err(&ctx(), e))?;
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..n]);
-            transferred += n as u64;
-            on_progress(transferred, total.max(transferred));
-        }
-        // Best-effort close; the buffer is already fully read. (The local file is
-        // only written by the caller after this returns Ok, so a cancel leaves no
-        // partial local file.)
-        let _ = file.close().await;
-        Ok(buf)
+        download_bytes(&conn, path, &cancel, on_progress).await
     }
 
     /// Upload bytes to a remote file (create/truncate), streaming the *network*
@@ -425,40 +386,80 @@ impl SftpManager {
         on_progress: &(dyn Fn(u64, u64) + Send + Sync),
     ) -> Result<(), AppError> {
         let conn = self.conn_of(device_id)?;
-        let ctx = || format!("could not upload to {path}");
-
         // Register a cancel flag; the guard removes it on every exit path.
         let cancel = self.begin_transfer(device_id);
         let _guard = TransferGuard {
             manager: self,
             device_id: device_id.to_string(),
         };
+        upload_bytes(&conn, path, data, &cancel, on_progress).await
+    }
 
-        let mut file = conn
-            .session
-            .create(path.to_string())
-            .await
-            .map_err(|e| sftp_err(&ctx(), e))?;
+    /// Recursively download a remote directory tree into `local_dir` (which the
+    /// caller has already created/renamed per the chosen conflict policy). With
+    /// `skip_existing`, local files that already exist are left untouched (a
+    /// merge); otherwise they are overwritten. One cancel flag covers the whole
+    /// walk. Symlinked directories are not descended (a symlink is treated as a
+    /// file), mirroring `remove_recursive`.
+    pub async fn download_dir(
+        &self,
+        device_id: &str,
+        remote_dir: &str,
+        local_dir: &Path,
+        skip_existing: bool,
+        on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<(), AppError> {
+        let conn = self.conn_of(device_id)?;
+        let cancel = self.begin_transfer(device_id);
+        let _guard = TransferGuard {
+            manager: self,
+            device_id: device_id.to_string(),
+        };
+        download_tree(
+            &conn,
+            remote_dir,
+            local_dir,
+            skip_existing,
+            &cancel,
+            on_progress,
+        )
+        .await
+    }
 
-        let total = data.len() as u64;
-        let mut transferred: u64 = 0;
-        for piece in data.chunks(TRANSFER_CHUNK) {
-            if cancel.load(Ordering::Relaxed) {
-                // Best-effort: close the handle and remove the partial remote file
-                // so a cancelled upload doesn't leave a truncated file behind.
-                let _ = file.close().await;
-                let _ = conn.session.remove_file(path.to_string()).await;
-                return Err(cancelled());
-            }
-            file.write_all(piece)
-                .await
-                .map_err(|e| sftp_err(&ctx(), e))?;
-            transferred += piece.len() as u64;
-            on_progress(transferred, total);
-        }
-        // `close` flushes and releases the handle; a write error here is fatal.
-        file.close().await.map_err(|e| sftp_err(&ctx(), e))?;
-        Ok(())
+    /// Recursively upload a local directory tree into `remote_dir` (already
+    /// created/renamed by the caller per policy). With `skip_existing`, remote
+    /// files that already exist are left untouched; otherwise overwritten. Local
+    /// symlinks are skipped. One cancel flag covers the whole walk.
+    pub async fn upload_dir(
+        &self,
+        device_id: &str,
+        local_dir: &Path,
+        remote_dir: &str,
+        skip_existing: bool,
+        on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<(), AppError> {
+        let conn = self.conn_of(device_id)?;
+        let cancel = self.begin_transfer(device_id);
+        let _guard = TransferGuard {
+            manager: self,
+            device_id: device_id.to_string(),
+        };
+        upload_tree(
+            &conn,
+            local_dir,
+            remote_dir,
+            skip_existing,
+            &cancel,
+            on_progress,
+        )
+        .await
+    }
+
+    /// Whether a remote path exists — used by the command layer to detect a
+    /// conflict before a transfer and to resolve a rename target.
+    pub async fn remote_exists(&self, device_id: &str, path: &str) -> Result<bool, AppError> {
+        let conn = self.conn_of(device_id)?;
+        Ok(conn.session.metadata(path.to_string()).await.is_ok())
     }
 
     /// Create a remote directory.
@@ -533,6 +534,23 @@ fn join_remote(parent: &str, name: &str) -> String {
     format!("{}/{}", parent.trim_end_matches('/'), name)
 }
 
+/// Whether a server-supplied directory-entry name is a single, ordinary path
+/// component that is safe to join onto a local path. Rejects empty, `.`, `..`,
+/// any name containing a path separator (`/`, or `\` on Windows), and absolute,
+/// rooted, drive- or UNC-prefixed names. This closes a path-traversal hole: a
+/// hostile or compromised SFTP server could otherwise return an entry named e.g.
+/// `../../.bashrc` or an absolute path and steer a folder download's local write
+/// **outside** the directory the user chose. Evaluated with the *local* OS's
+/// path rules, since that is where the bytes are written.
+fn is_safe_name(name: &str) -> bool {
+    use std::path::Component;
+    let mut components = Path::new(name).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(c)), None) => c == std::ffi::OsStr::new(name),
+        _ => false,
+    }
+}
+
 /// Depth-first recursive delete of a directory tree, boxed so the `async fn` can
 /// recurse. Deletes every child (recursing into real subdirectories, removing
 /// files and symlinks directly) before removing the now-empty directory itself.
@@ -568,6 +586,242 @@ fn remove_tree<'a>(
     })
 }
 
+/// Download one remote file into memory, chunked so `on_progress` can drive a
+/// bar and the shared `cancel` flag can abort between chunks. Factored out of
+/// [`SftpManager::read_file`] so the recursive [`download_tree`] can reuse it
+/// under a single per-operation cancel flag.
+async fn download_bytes(
+    conn: &Arc<SftpConn>,
+    path: &str,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<Vec<u8>, AppError> {
+    let ctx = || format!("could not download {path}");
+    let total = conn
+        .session
+        .metadata(path.to_string())
+        .await
+        .map_err(|e| sftp_err(&ctx(), e))?
+        .size
+        .unwrap_or(0);
+    let mut file = conn
+        .session
+        .open(path.to_string())
+        .await
+        .map_err(|e| sftp_err(&ctx(), e))?;
+    let mut buf = Vec::with_capacity(total as usize);
+    let mut chunk = vec![0u8; TRANSFER_CHUNK];
+    let mut transferred: u64 = 0;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = file.close().await;
+            return Err(cancelled());
+        }
+        let n = file
+            .read(&mut chunk)
+            .await
+            .map_err(|e| sftp_err(&ctx(), e))?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        transferred += n as u64;
+        on_progress(transferred, total.max(transferred));
+    }
+    let _ = file.close().await;
+    Ok(buf)
+}
+
+/// Upload bytes to one remote file (create/truncate), chunked with cancel
+/// support. Factored out of [`SftpManager::write_file`] for [`upload_tree`].
+async fn upload_bytes(
+    conn: &Arc<SftpConn>,
+    path: &str,
+    data: &[u8],
+    cancel: &Arc<AtomicBool>,
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<(), AppError> {
+    let ctx = || format!("could not upload to {path}");
+    let mut file = conn
+        .session
+        .create(path.to_string())
+        .await
+        .map_err(|e| sftp_err(&ctx(), e))?;
+    let total = data.len() as u64;
+    let mut transferred: u64 = 0;
+    for piece in data.chunks(TRANSFER_CHUNK) {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = file.close().await;
+            let _ = conn.session.remove_file(path.to_string()).await;
+            return Err(cancelled());
+        }
+        file.write_all(piece)
+            .await
+            .map_err(|e| sftp_err(&ctx(), e))?;
+        transferred += piece.len() as u64;
+        on_progress(transferred, total);
+    }
+    file.close().await.map_err(|e| sftp_err(&ctx(), e))?;
+    Ok(())
+}
+
+/// Recursively download `remote_dir` into `local_dir`, boxed so the `async fn`
+/// can recurse. Creates each local directory, then downloads files (skipping
+/// existing ones when `skip_existing`). Checks `cancel` before each entry.
+fn download_tree<'a>(
+    conn: &'a Arc<SftpConn>,
+    remote_dir: &'a str,
+    local_dir: &'a Path,
+    skip_existing: bool,
+    cancel: &'a Arc<AtomicBool>,
+    on_progress: &'a (dyn Fn(u64, u64) + Send + Sync),
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AppError>> + Send + 'a>> {
+    Box::pin(async move {
+        // Ensure the target directory exists (blocking FS off the async runtime).
+        let make = local_dir.to_path_buf();
+        let disp = local_dir.display().to_string();
+        tokio::task::spawn_blocking(move || std::fs::create_dir_all(&make))
+            .await
+            .map_err(|e| AppError::Io(format!("mkdir task failed: {e}")))?
+            .map_err(|e| AppError::Io(format!("could not create {disp}: {e}")))?;
+
+        let read_dir = conn
+            .session
+            .read_dir(remote_dir.to_string())
+            .await
+            .map_err(|e| sftp_err(&format!("could not list {remote_dir}"), e))?;
+        for entry in read_dir {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(cancelled());
+            }
+            let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            // Never let a server-chosen name escape the destination directory (a
+            // traversal like `../../x` or an absolute path). Fail closed.
+            if !is_safe_name(&name) {
+                return Err(AppError::Sftp(format!(
+                    "server returned an unsafe entry name {name:?} while downloading {remote_dir}"
+                )));
+            }
+            let remote_child = join_remote(remote_dir, &name);
+            let local_child = local_dir.join(&name);
+            if entry.file_type().is_dir() {
+                download_tree(
+                    conn,
+                    &remote_child,
+                    &local_child,
+                    skip_existing,
+                    cancel,
+                    on_progress,
+                )
+                .await?;
+            } else {
+                if skip_existing {
+                    let probe = local_child.clone();
+                    let exists = tokio::task::spawn_blocking(move || probe.exists())
+                        .await
+                        .map_err(|e| AppError::Io(format!("stat task failed: {e}")))?;
+                    if exists {
+                        continue;
+                    }
+                }
+                let bytes = download_bytes(conn, &remote_child, cancel, on_progress).await?;
+                let target = local_child.clone();
+                let disp = local_child.display().to_string();
+                tokio::task::spawn_blocking(move || std::fs::write(&target, &bytes))
+                    .await
+                    .map_err(|e| AppError::Io(format!("write task failed: {e}")))?
+                    .map_err(|e| AppError::Io(format!("could not write {disp}: {e}")))?;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// One local entry discovered while walking a directory to upload — a POSIX-style
+/// path relative to the upload root, with parents ordered before their children.
+struct LocalWalkEntry {
+    rel: String,
+    is_dir: bool,
+}
+
+/// Walk a local directory top-down (parents before children), collecting
+/// directories and regular files (symlinks are skipped so the upload can't
+/// follow a link out of the tree or into a cycle).
+fn walk_local(root: &Path) -> std::io::Result<Vec<LocalWalkEntry>> {
+    fn rec(dir: &Path, prefix: &str, out: &mut Vec<LocalWalkEntry>) -> std::io::Result<()> {
+        let mut names: Vec<_> = std::fs::read_dir(dir)?.collect::<Result<_, _>>()?;
+        names.sort_by_key(|e| e.file_name());
+        for e in names {
+            let file_type = e.file_type()?;
+            let name = e.file_name().to_string_lossy().into_owned();
+            let rel = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if file_type.is_dir() {
+                out.push(LocalWalkEntry {
+                    rel: rel.clone(),
+                    is_dir: true,
+                });
+                rec(&e.path(), &rel, out)?;
+            } else if file_type.is_file() {
+                out.push(LocalWalkEntry { rel, is_dir: false });
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    rec(root, "", &mut out)?;
+    Ok(out)
+}
+
+/// Recursively upload `local_dir` into `remote_dir`: create each remote
+/// subdirectory (ignoring an already-exists error), then upload files (skipping
+/// existing ones when `skip_existing`). Checks `cancel` before each entry.
+async fn upload_tree(
+    conn: &Arc<SftpConn>,
+    local_dir: &Path,
+    remote_dir: &str,
+    skip_existing: bool,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<(), AppError> {
+    let root = local_dir.to_path_buf();
+    let disp = local_dir.display().to_string();
+    let entries = tokio::task::spawn_blocking(move || walk_local(&root))
+        .await
+        .map_err(|e| AppError::Io(format!("upload walk task failed: {e}")))?
+        .map_err(|e| AppError::Io(format!("could not read {disp}: {e}")))?;
+
+    for entry in entries {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
+        let remote_child = join_remote(remote_dir, &entry.rel);
+        if entry.is_dir {
+            // Create the remote subdirectory; an already-exists error is benign
+            // (a real failure surfaces when a file upload into it fails).
+            let _ = conn.session.create_dir(remote_child).await;
+        } else {
+            if skip_existing && conn.session.metadata(remote_child.clone()).await.is_ok() {
+                continue;
+            }
+            let local_file = local_dir.join(&entry.rel);
+            let disp = local_file.display().to_string();
+            let bytes = tokio::task::spawn_blocking(move || std::fs::read(&local_file))
+                .await
+                .map_err(|e| AppError::Io(format!("upload read task failed: {e}")))?
+                .map_err(|e| AppError::Io(format!("could not read {disp}: {e}")))?;
+            upload_bytes(conn, &remote_child, &bytes, cancel, on_progress).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Map any `russh_sftp` error to a secret-free [`AppError::Sftp`] with context.
 /// Taken as `impl Display` so the exact error type never has to be named here.
 fn sftp_err(context: &str, err: impl std::fmt::Display) -> AppError {
@@ -589,5 +843,56 @@ struct TransferGuard<'a> {
 impl Drop for TransferGuard<'_> {
     fn drop(&mut self) {
         self.manager.end_transfer(&self.device_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_safe_name, join_remote};
+
+    #[test]
+    fn join_remote_keeps_a_single_root_slash() {
+        assert_eq!(join_remote("/", "child"), "/child");
+        assert_eq!(join_remote("/a", "b"), "/a/b");
+        assert_eq!(join_remote("/a/", "b"), "/a/b");
+    }
+
+    #[test]
+    fn is_safe_name_accepts_ordinary_names() {
+        for name in ["file.txt", "a folder", "weird-name_1", ".hidden", "résumé"] {
+            assert!(is_safe_name(name), "{name:?} should be safe");
+        }
+    }
+
+    #[test]
+    fn is_safe_name_rejects_traversal_and_rooted_names() {
+        // Empty, dot segments, and anything with a POSIX separator.
+        for name in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            "../evil",
+            "/etc/passwd",
+            "a/../b",
+            "/",
+        ] {
+            assert!(!is_safe_name(name), "{name:?} must be rejected");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn is_safe_name_rejects_windows_separators_and_prefixes() {
+        // On Windows, `\` is a separator and drive/UNC prefixes must be rejected.
+        for name in [
+            r"a\b",
+            r"..\evil",
+            r"C:\Windows\x",
+            r"\\host\share\x",
+            r"C:x",
+        ] {
+            assert!(!is_safe_name(name), "{name:?} must be rejected on Windows");
+        }
     }
 }

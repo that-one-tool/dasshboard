@@ -834,6 +834,43 @@ export async function sftpUpload(
   });
 }
 
+/** How a recursive folder transfer resolves a name that already exists at the
+ * destination (chosen once per operation): replace, merge-keeping-existing, or
+ * write under a fresh `<name> (N)`. */
+export type ConflictPolicy = "overwrite" | "skip" | "rename";
+
+/** Recursively downloads a remote directory tree into `localPath` (the target
+ * directory), applying `policy` to entries that already exist. */
+export async function sftpDownloadDir(
+  deviceId: string,
+  remotePath: string,
+  localPath: string,
+  policy: ConflictPolicy,
+): Promise<void> {
+  await invokeChecked<void>("sftp_download_dir", { deviceId, remotePath, localPath, policy });
+}
+
+/** Recursively uploads a local directory tree into `remotePath` (the target
+ * directory), applying `policy` to entries that already exist. */
+export async function sftpUploadDir(
+  deviceId: string,
+  localPath: string,
+  remotePath: string,
+  policy: ConflictPolicy,
+): Promise<void> {
+  await invokeChecked<void>("sftp_upload_dir", { deviceId, localPath, remotePath, policy });
+}
+
+/** Whether a local path exists (to decide whether to prompt for a conflict). */
+export async function sftpLocalExists(path: string): Promise<boolean> {
+  return invokeChecked<boolean>("sftp_local_exists", { path });
+}
+
+/** Whether a remote path exists (to decide whether to prompt for a conflict). */
+export async function sftpExists(deviceId: string, path: string): Promise<boolean> {
+  return invokeChecked<boolean>("sftp_exists", { deviceId, path });
+}
+
 /** Creates a remote directory. */
 export async function sftpMkdir(deviceId: string, path: string): Promise<void> {
   await invokeChecked<void>("sftp_mkdir", { deviceId, path });

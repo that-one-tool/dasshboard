@@ -134,6 +134,71 @@ export function prompt(
   });
 }
 
+/** The conflict resolutions a folder transfer can take, or `null` on cancel. */
+export type ConflictChoice = "overwrite" | "skip" | "rename";
+
+/**
+ * A three-way conflict dialog for a recursive transfer whose destination already
+ * exists: Overwrite / Skip existing / Keep both (rename), plus Cancel. Resolves
+ * the chosen policy, or `null` on cancel / overlay / Escape. One choice applies
+ * to the whole operation.
+ */
+export function chooseConflict(message: string): Promise<ConflictChoice | null> {
+  return new Promise((resolve) => {
+    const root = document.createElement("div");
+    root.className = "dialog confirm-dialog";
+    root.setAttribute("role", "dialog");
+    root.setAttribute("aria-modal", "true");
+    root.innerHTML = `
+      <div class="dialog-overlay"></div>
+      <div class="dialog-content confirm-content">
+        <div class="dialog-header"><h2 class="confirm-title"></h2></div>
+        <p class="confirm-message"></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" data-action="cancel"></button>
+          <button type="button" class="btn btn-secondary" data-action="skip"></button>
+          <button type="button" class="btn btn-secondary" data-action="rename"></button>
+          <button type="button" class="btn btn-primary" data-action="overwrite"></button>
+        </div>
+      </div>
+    `;
+    const set = (sel: string, text: string): void => {
+      const el = root.querySelector(sel);
+      if (el) el.textContent = text;
+    };
+    set(".confirm-title", t("sftp.conflict.title"));
+    set(".confirm-message", message);
+    set('[data-action="cancel"]', t("common.cancel"));
+    set('[data-action="skip"]', t("sftp.conflict.skip"));
+    set('[data-action="rename"]', t("sftp.conflict.rename"));
+    set('[data-action="overwrite"]', t("sftp.conflict.overwrite"));
+
+    const previouslyFocused = document.activeElement;
+    const finish = (result: ConflictChoice | null): void => {
+      document.removeEventListener("keydown", onKey, true);
+      root.remove();
+      restoreFocus(previouslyFocused);
+      resolve(result);
+    };
+    root.addEventListener("click", (e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      const action = target.dataset.action;
+      if (action === "overwrite" || action === "skip" || action === "rename") finish(action);
+      else if (action === "cancel" || target.classList.contains("dialog-overlay")) finish(null);
+    });
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(null);
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(root);
+    root.querySelector<HTMLButtonElement>('[data-action="overwrite"]')?.focus();
+  });
+}
+
 /** Restore focus to the element that had it before the dialog opened. */
 function restoreFocus(previous: Element | null): void {
   if (previous instanceof HTMLElement && previous.isConnected) previous.focus();

@@ -689,6 +689,88 @@ async fn remove_recursive_deletes_a_nested_tree() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upload_dir_then_download_dir_round_trips_a_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+
+    // Build a local source tree: top/a.txt, top/sub/b.txt.
+    let src = tempfile::tempdir().unwrap();
+    let top = src.path().join("top");
+    std::fs::create_dir_all(top.join("sub")).unwrap();
+    std::fs::write(top.join("a.txt"), b"aaa").unwrap();
+    std::fs::write(top.join("sub").join("b.txt"), b"bbb").unwrap();
+
+    // Upload it under /top (the command layer creates the top-level dir).
+    manager.mkdir("dev-1", "/top").await.unwrap();
+    manager
+        .upload_dir("dev-1", &top, "/top", false, &noop_progress())
+        .await
+        .unwrap();
+
+    // Remote now mirrors the tree.
+    let names: Vec<String> = manager
+        .list("dev-1", "/top")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(names, vec!["sub", "a.txt"]);
+
+    // Download it back into a fresh local directory and verify the bytes.
+    let dst = tempfile::tempdir().unwrap();
+    let out = dst.path().join("top");
+    manager
+        .download_dir("dev-1", "/top", &out, false, &noop_progress())
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"aaa");
+    assert_eq!(
+        std::fs::read(out.join("sub").join("b.txt")).unwrap(),
+        b"bbb"
+    );
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn download_dir_skip_existing_merges_without_overwriting() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+
+    // Remote tree: /top/a.txt = "remote-a", /top/c.txt = "remote-c".
+    manager.mkdir("dev-1", "/top").await.unwrap();
+    manager
+        .write_file("dev-1", "/top/a.txt", b"remote-a", &noop_progress())
+        .await
+        .unwrap();
+    manager
+        .write_file("dev-1", "/top/c.txt", b"remote-c", &noop_progress())
+        .await
+        .unwrap();
+
+    // Local target already has a.txt with different content.
+    let dst = tempfile::tempdir().unwrap();
+    let out = dst.path().join("top");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("a.txt"), b"local-a").unwrap();
+
+    // skip_existing = true: a.txt is preserved, c.txt is fetched.
+    manager
+        .download_dir("dev-1", "/top", &out, true, &noop_progress())
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"local-a");
+    assert_eq!(std::fs::read(out.join("c.txt")).unwrap(), b"remote-c");
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reading_a_missing_file_is_an_sftp_error() {
     let dir = tempfile::tempdir().unwrap();
     let (port, fp) = spawn_sftp_server().await;
