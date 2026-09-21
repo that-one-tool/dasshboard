@@ -71,6 +71,11 @@ pub struct SftpEntry {
     /// Last-modified time as a Unix timestamp (seconds), if the server reports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modified: Option<u64>,
+    /// The Unix permission bits (`0o7777` mask — the rwx/setuid/sticky bits, not
+    /// the file-type bits), if the server reports them. Drives the permissions
+    /// column + chmod dialog; `None` when the server omits mode (rare/non-POSIX).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
 }
 
 /// The connection-shaped parameters for an SFTP connect, built by the
@@ -337,6 +342,8 @@ impl SftpManager {
                     kind,
                     size: metadata.size.unwrap_or(0),
                     modified: metadata.mtime.map(u64::from),
+                    // Keep only the permission bits (drop the file-type bits).
+                    mode: metadata.permissions.map(|p| p & 0o7777),
                 }
             })
             .collect();
@@ -509,6 +516,22 @@ impl SftpManager {
     pub async fn remote_exists(&self, device_id: &str, path: &str) -> Result<bool, AppError> {
         let conn = self.conn_of(device_id)?;
         Ok(conn.session.metadata(path.to_string()).await.is_ok())
+    }
+
+    /// Change a remote entry's Unix permission bits (chmod). Only the low
+    /// `0o7777` bits (rwx + setuid/setgid/sticky) are sent; the server keeps the
+    /// entry's file-type bits. A no-op-shaped `SETSTAT` on a server without POSIX
+    /// permissions surfaces as an [`AppError::Sftp`].
+    pub async fn chmod(&self, device_id: &str, path: &str, mode: u32) -> Result<(), AppError> {
+        let conn = self.conn_of(device_id)?;
+        let attrs = russh_sftp::protocol::FileAttributes {
+            permissions: Some(mode & 0o7777),
+            ..Default::default()
+        };
+        conn.session
+            .set_metadata(path.to_string(), attrs)
+            .await
+            .map_err(|e| sftp_err(&format!("could not change permissions of {path}"), e))
     }
 
     /// Create a remote directory.

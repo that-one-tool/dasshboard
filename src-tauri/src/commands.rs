@@ -1197,6 +1197,49 @@ pub async fn sftp_remove(
     }
 }
 
+/// Change a remote entry's Unix permission bits (chmod). `mode` is the low
+/// `0o7777` bits; the server keeps the file-type bits.
+#[tauri::command]
+pub async fn sftp_chmod(
+    state: State<'_, AppState>,
+    device_id: String,
+    path: String,
+    mode: u32,
+) -> Result<(), AppError> {
+    state.sftp_manager.chmod(&device_id, &path, mode).await
+}
+
+/// The saved bookmark paths for a device (empty if none), so the panel can show
+/// its jump list on connect.
+#[tauri::command]
+pub fn sftp_bookmarks(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<Vec<String>, AppError> {
+    Ok(state.bookmark_store.list(&device_id))
+}
+
+/// Add a remote path to a device's bookmarks (idempotent). Returns the updated list.
+#[tauri::command]
+pub fn sftp_bookmark_add(
+    state: State<'_, AppState>,
+    device_id: String,
+    path: String,
+) -> Result<Vec<String>, AppError> {
+    state.bookmark_store.add(&device_id, &path)
+}
+
+/// Remove a remote path from a device's bookmarks (no-op if absent). Returns the
+/// updated list.
+#[tauri::command]
+pub fn sftp_bookmark_remove(
+    state: State<'_, AppState>,
+    device_id: String,
+    path: String,
+) -> Result<Vec<String>, AppError> {
+    state.bookmark_store.remove(&device_id, &path)
+}
+
 /* ============================================================================
  * Diagnostics
  * ============================================================================ */
@@ -1315,6 +1358,7 @@ mod tests {
             sftp_manager,
             serial_manager: Arc::new(SerialSessionManager::new()),
             local_shell_manager: Arc::new(crate::local_shell::LocalShellManager::new()),
+            bookmark_store: crate::bookmark_store::BookmarkStore::load(dir.to_path_buf()),
         }
     }
 
@@ -1339,6 +1383,7 @@ mod tests {
             sftp_manager,
             serial_manager: Arc::new(SerialSessionManager::new()),
             local_shell_manager: Arc::new(crate::local_shell::LocalShellManager::new()),
+            bookmark_store: crate::bookmark_store::BookmarkStore::load(dir.to_path_buf()),
         }
     }
 

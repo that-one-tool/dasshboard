@@ -52,6 +52,9 @@ struct FsState {
     dirs: HashSet<String>,
     /// Absolute file path → contents.
     files: HashMap<String, Vec<u8>>,
+    /// Absolute path → its `0o7777` permission bits, set by `SETSTAT` (chmod).
+    /// A path absent here reports the default mode (0o644 file / 0o755 dir).
+    modes: HashMap<String, u32>,
 }
 
 #[derive(Clone)]
@@ -105,18 +108,20 @@ fn base_name(path: &str) -> String {
     }
 }
 
-fn file_attrs(size: u64) -> FileAttributes {
+fn file_attrs(size: u64, mode: Option<u32>) -> FileAttributes {
     let mut a = FileAttributes {
         size: Some(size),
         ..Default::default()
     };
-    a.set_regular(true);
+    a.set_regular(true); // sets the REG type bit in `permissions`
+    a.permissions = Some(a.permissions.unwrap_or(0) | (mode.unwrap_or(0o644) & 0o7777));
     a
 }
 
-fn dir_attrs() -> FileAttributes {
+fn dir_attrs(mode: Option<u32>) -> FileAttributes {
     let mut a = FileAttributes::default();
     a.set_dir(true);
+    a.permissions = Some(a.permissions.unwrap_or(0) | (mode.unwrap_or(0o755) & 0o7777));
     a
 }
 
@@ -207,15 +212,16 @@ impl russh_sftp::server::Handler for SftpFsHandler {
     ) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
         let path = norm(&path);
         let fs = self.fs.lock();
+        let mode = fs.modes.get(&path).copied();
         if fs.dirs.contains(&path) {
             Ok(russh_sftp::protocol::Attrs {
                 id,
-                attrs: dir_attrs(),
+                attrs: dir_attrs(mode),
             })
         } else if let Some(bytes) = fs.files.get(&path) {
             Ok(russh_sftp::protocol::Attrs {
                 id,
-                attrs: file_attrs(bytes.len() as u64),
+                attrs: file_attrs(bytes.len() as u64, mode),
             })
         } else {
             Err(StatusCode::NoSuchFile)
@@ -232,12 +238,18 @@ impl russh_sftp::server::Handler for SftpFsHandler {
             let mut files = Vec::new();
             for dir in &fs.dirs {
                 if dir != &path && parent_of(dir) == path {
-                    files.push(File::new(base_name(dir), dir_attrs()));
+                    files.push(File::new(
+                        base_name(dir),
+                        dir_attrs(fs.modes.get(dir).copied()),
+                    ));
                 }
             }
             for (file, bytes) in &fs.files {
                 if parent_of(file) == path {
-                    files.push(File::new(base_name(file), file_attrs(bytes.len() as u64)));
+                    files.push(File::new(
+                        base_name(file),
+                        file_attrs(bytes.len() as u64, fs.modes.get(file).copied()),
+                    ));
                 }
             }
             files
@@ -362,6 +374,23 @@ impl russh_sftp::server::Handler for SftpFsHandler {
         let path = norm(&filename);
         if self.fs.lock().files.remove(&path).is_none() {
             return Err(StatusCode::NoSuchFile);
+        }
+        Ok(Self::ok(id))
+    }
+
+    async fn setstat(
+        &mut self,
+        id: u32,
+        path: String,
+        attrs: FileAttributes,
+    ) -> Result<Status, Self::Error> {
+        let path = norm(&path);
+        let mut fs = self.fs.lock();
+        if !fs.dirs.contains(&path) && !fs.files.contains_key(&path) {
+            return Err(StatusCode::NoSuchFile);
+        }
+        if let Some(perms) = attrs.permissions {
+            fs.modes.insert(path, perms & 0o7777);
         }
         Ok(Self::ok(id))
     }
@@ -694,6 +723,33 @@ async fn failed_upload_leaves_an_existing_remote_target_intact() {
         .await
         .unwrap();
     assert_eq!(got, b"original remote");
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_reports_mode_and_chmod_changes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+
+    manager
+        .write_file("dev-1", "/script.sh", b"#!/bin/sh\n", &noop_progress())
+        .await
+        .unwrap();
+
+    // The listing carries the mode (default 0o644 from the mock server).
+    let before = manager.list("dev-1", "/").await.unwrap();
+    let entry = before.iter().find(|e| e.name == "script.sh").unwrap();
+    assert_eq!(entry.mode, Some(0o644));
+
+    // chmod +x, then re-list: only the permission bits change.
+    manager.chmod("dev-1", "/script.sh", 0o755).await.unwrap();
+    let after = manager.list("dev-1", "/").await.unwrap();
+    let entry = after.iter().find(|e| e.name == "script.sh").unwrap();
+    assert_eq!(entry.mode, Some(0o755));
+    assert_eq!(entry.kind, "file");
 
     manager.disconnect("dev-1").await;
 }

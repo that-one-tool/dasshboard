@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { joinRemote, parentOf, formatSize, formatMtime } from "./sftpFormat";
+import {
+  joinRemote,
+  parentOf,
+  formatSize,
+  formatMtime,
+  formatMode,
+  modeToOctal,
+} from "./sftpFormat";
 
 describe("joinRemote", () => {
   it("joins under a normal directory", () => {
@@ -54,5 +61,31 @@ describe("formatMtime", () => {
   });
   it("returns empty when the server omitted the time", () => {
     expect(formatMtime(undefined)).toBe("");
+  });
+});
+
+describe("formatMode", () => {
+  it("renders permission bits as rwx triples", () => {
+    expect(formatMode(0o755)).toBe("rwxr-xr-x");
+    expect(formatMode(0o644)).toBe("rw-r--r--");
+    expect(formatMode(0o640)).toBe("rw-r-----");
+    expect(formatMode(0o000)).toBe("---------");
+    expect(formatMode(0o777)).toBe("rwxrwxrwx");
+  });
+  it("ignores the file-type/special bits above 0o777", () => {
+    // 0o41755 = a setuid dir; only the low rwx bits show here.
+    expect(formatMode(0o41755)).toBe("rwxr-xr-x");
+  });
+  it("returns empty when mode is absent", () => {
+    expect(formatMode(undefined)).toBe("");
+  });
+});
+
+describe("modeToOctal", () => {
+  it("renders a 3-digit octal string of the rwx bits", () => {
+    expect(modeToOctal(0o755)).toBe("755");
+    expect(modeToOctal(0o644)).toBe("644");
+    expect(modeToOctal(0o7)).toBe("007");
+    expect(modeToOctal(0o41755 & 0o777)).toBe("755");
   });
 });

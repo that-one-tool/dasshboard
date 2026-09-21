@@ -93,7 +93,13 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   once. Transfers run in a **background queue** — they stream one at a time while
   you keep browsing, each shown in a live list at the bottom of the panel with a
   progress bar and a cancel button (queue up several at once; cancel a queued or
-  in-flight one anytime). The toolbar path
+  in-flight one anytime). **Sort** the listing by name, size or modified date
+  (click a column header to toggle the direction; folders always stay grouped on
+  top) and **filter** the current folder as you type. **Bookmark** folders you
+  return to (the star in the toolbar) and jump back from the chip row — bookmarks
+  are saved per device across restarts. View and change an entry's Unix
+  **permissions** (chmod) from the lock button, ticking read/write/execute for
+  owner/group/other with a live octal readout. The toolbar path
   is editable — type a path and press Enter to jump there (a file path opens its
   parent folder) — and a copy button copies the current remote path to the
   clipboard. Drag the divider to resize it, or collapse it to a rail to keep the

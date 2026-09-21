@@ -2221,3 +2221,143 @@ body.sftp-resizing {
 .sftp-queue-cancel:hover {
 	color: #f48771;
 }
+
+/* Bookmarks chip row (below the toolbar; hidden when a device has none). */
+.sftp-bookmarks {
+	flex: 0 0 auto;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 6px 16px;
+	border-bottom: 1px solid #3c3c3c;
+}
+
+.sftp-bookmark {
+	display: inline-flex;
+	align-items: center;
+	background-color: #2a2d2e;
+	border: 1px solid #3c3c3c;
+	border-radius: 10px;
+	overflow: hidden;
+	max-width: 160px;
+}
+
+.sftp-bookmark.is-current {
+	border-color: #007acc;
+}
+
+.sftp-bookmark-go {
+	background: none;
+	border: none;
+	color: #cccccc;
+	font-size: 0.76rem;
+	padding: 2px 6px;
+	cursor: pointer;
+	max-width: 130px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.sftp-bookmark-go:hover {
+	color: #ffffff;
+}
+
+.sftp-bookmark-del {
+	background: none;
+	border: none;
+	color: #858585;
+	font-size: 0.9rem;
+	line-height: 1;
+	padding: 2px 6px 2px 2px;
+	cursor: pointer;
+}
+
+.sftp-bookmark-del:hover {
+	color: #f48771;
+}
+
+.sftp-bookmark-toggle.is-marked {
+	color: #e6c07b;
+}
+
+/* Filter box + sort headers, above the entry list. */
+.sftp-listhead {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 16px;
+	border-bottom: 1px solid #3c3c3c;
+}
+
+.sftp-filter {
+	flex: 1 1 auto;
+	min-width: 0;
+	background-color: #3c3c3c;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	color: #cccccc;
+	font-size: 0.8rem;
+	padding: 3px 8px;
+}
+
+.sftp-filter:focus {
+	outline: none;
+	border-color: #007acc;
+}
+
+.sftp-sortbtns {
+	flex: 0 0 auto;
+	display: flex;
+	gap: 2px;
+}
+
+.sftp-sortbtns .btn {
+	font-size: 0.72rem;
+	color: #858585;
+	padding: 2px 6px;
+}
+
+.sftp-sortbtns .btn.is-active {
+	color: #cccccc;
+	font-weight: 600;
+}
+
+/* chmod dialog: a small permission grid. */
+.perms-name {
+	color: #9cdcfe;
+	font-family: var(--mono-font, monospace);
+	word-break: break-all;
+	margin: 0 0 8px;
+}
+
+.perms-grid {
+	border-collapse: collapse;
+	margin: 0 auto 8px;
+}
+
+.perms-grid th,
+.perms-grid td {
+	padding: 4px 10px;
+	text-align: center;
+	font-weight: normal;
+}
+
+.perms-grid thead th {
+	color: #858585;
+	font-size: 0.78rem;
+}
+
+.perms-grid tbody th[scope="row"] {
+	text-align: right;
+	color: #cccccc;
+}
+
+.perms-octal {
+	text-align: center;
+	color: #858585;
+	font-family: var(--mono-font, monospace);
+	font-variant-numeric: tabular-nums;
+	margin: 0 0 4px;
+}

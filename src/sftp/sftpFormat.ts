@@ -45,6 +45,28 @@ export function formatSize(bytes: number): string {
 }
 
 /**
+ * Render Unix permission bits as the familiar 9-character `rwxr-xr-x` string
+ * (owner/group/other × read/write/execute). Special bits (setuid/setgid/sticky)
+ * are not shown here — the chmod dialog handles those via the octal value.
+ * `undefined` (server omitted mode) yields an empty string.
+ */
+export function formatMode(mode: number | undefined): string {
+  if (mode === undefined || !Number.isFinite(mode)) return "";
+  let out = "";
+  for (let shift = 6; shift >= 0; shift -= 3) {
+    const v = (mode >> shift) & 0b111;
+    out += (v & 0b100 ? "r" : "-") + (v & 0b010 ? "w" : "-") + (v & 0b001 ? "x" : "-");
+  }
+  return out;
+}
+
+/** Unix permission bits as a 3-digit octal string (e.g. `644`), masked to the
+ * rwx bits. Used as the chmod dialog's editable representation. */
+export function modeToOctal(mode: number): string {
+  return (mode & 0o777).toString(8).padStart(3, "0");
+}
+
+/**
  * Format a Unix-seconds modified time as a compact local `YYYY-MM-DD HH:MM`.
  * `undefined` (server omitted it) yields an empty string.
  */

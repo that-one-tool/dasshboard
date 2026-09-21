@@ -556,6 +556,7 @@ mod tests {
             sftp_manager,
             serial_manager: Arc::new(SerialSessionManager::new()),
             local_shell_manager: Arc::new(crate::local_shell::LocalShellManager::new()),
+            bookmark_store: crate::bookmark_store::BookmarkStore::load(dir.to_path_buf()),
         }
     }
 

@@ -765,6 +765,8 @@ export interface SftpEntry {
   size: number;
   /** Unix seconds; absent when the server omits it. */
   modified?: number;
+  /** Unix permission bits (`0o7777` mask); absent when the server omits mode. */
+  mode?: number;
 }
 
 /**
@@ -896,6 +898,27 @@ export async function sftpRemove(
   recursive = false,
 ): Promise<void> {
   await invokeChecked<void>("sftp_remove", { deviceId, path, isDir, recursive });
+}
+
+/** Changes a remote entry's Unix permission bits (chmod). `mode` is the low
+ * `0o7777` bits; the server keeps the file-type bits. */
+export async function sftpChmod(deviceId: string, path: string, mode: number): Promise<void> {
+  await invokeChecked<void>("sftp_chmod", { deviceId, path, mode });
+}
+
+/** The saved bookmark paths for a device (in saved order; empty if none). */
+export async function sftpBookmarks(deviceId: string): Promise<string[]> {
+  return invokeChecked<string[]>("sftp_bookmarks", { deviceId });
+}
+
+/** Adds a remote path to a device's bookmarks (idempotent). Returns the list. */
+export async function sftpBookmarkAdd(deviceId: string, path: string): Promise<string[]> {
+  return invokeChecked<string[]>("sftp_bookmark_add", { deviceId, path });
+}
+
+/** Removes a remote path from a device's bookmarks (no-op if absent). Returns the list. */
+export async function sftpBookmarkRemove(deviceId: string, path: string): Promise<string[]> {
+  return invokeChecked<string[]>("sftp_bookmark_remove", { deviceId, path });
 }
 
 /**

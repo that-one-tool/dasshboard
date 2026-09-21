@@ -36,6 +36,10 @@ import {
   sftpLocalExists,
   sftpExists,
   sftpCancelTransfer,
+  sftpChmod,
+  sftpBookmarks,
+  sftpBookmarkAdd,
+  sftpBookmarkRemove,
   onSftpProgress,
   type AppError,
   type ConflictPolicy,
@@ -51,7 +55,7 @@ import {
   pickUploadOpenPath,
   pickUploadDirPath,
 } from "../ui/fileDialog";
-import { confirm, prompt, chooseConflict } from "../ui/confirm";
+import { confirm, prompt, chooseConflict, choosePermissions } from "../ui/confirm";
 import {
   trashIcon,
   pencilIcon,
@@ -67,8 +71,11 @@ import {
   chevronLeftIcon,
   chevronRightIcon,
   disconnectIcon,
+  lockIcon,
+  bookmarkIcon,
+  bookmarkFilledIcon,
 } from "../ui/icons";
-import { joinRemote, parentOf, formatSize, formatMtime } from "./sftpFormat";
+import { joinRemote, parentOf, formatSize, formatMtime, formatMode } from "./sftpFormat";
 import { TransferQueue, type TransferItem } from "./transferQueue";
 import { basename, join } from "@tauri-apps/api/path";
 import { t, tp } from "../i18n";
@@ -124,6 +131,8 @@ export class SftpPanel {
   private connToggleEl: HTMLButtonElement | null = null;
   private pathEl: HTMLInputElement | null = null;
   private listEl: HTMLElement | null = null;
+  private filterEl: HTMLInputElement | null = null;
+  private bookmarksEl: HTMLElement | null = null;
   private bulkBarEl: HTMLElement | null = null;
   private selectAllEl: HTMLInputElement | null = null;
   private selCountEl: HTMLElement | null = null;
@@ -162,8 +171,18 @@ export class SftpPanel {
 
   /** The directory currently listed. */
   private cwd = "/";
-  /** The entries currently rendered (for select-all + shift-range + kind lookup). */
+  /** The full listing from the backend, before the filter/sort view is applied. */
+  private allEntries: SftpEntry[] = [];
+  /** The entries currently rendered (filtered + sorted view of `allEntries`) —
+   * mirrors DOM order for select-all + shift-range + kind lookup. */
   private currentEntries: SftpEntry[] = [];
+  /** Active sort column + direction (folders always stay grouped on top). */
+  private sortKey: "name" | "size" | "modified" = "name";
+  private sortDir: "asc" | "desc" = "asc";
+  /** Live name filter for the current directory (cleared on navigation). */
+  private filterText = "";
+  /** The connected device's saved bookmark paths (loaded on connect). */
+  private bookmarks: string[] = [];
   /** Names (cwd-relative) selected via the checkboxes; cleared on navigation. */
   private selected = new Set<string>();
   /** Row index of the last checkbox toggled, for shift-click range selection. */
@@ -321,6 +340,16 @@ export class SftpPanel {
             <button type="button" class="btn btn-icon" data-action="upload" title="${t("sftp.nav.upload")}" aria-label="${t("sftp.nav.upload")}">${uploadIcon}</button>
             <button type="button" class="btn btn-icon" data-action="upload-dir" title="${t("sftp.nav.uploadDir")}" aria-label="${t("sftp.nav.uploadDir")}">${uploadFolderIcon}</button>
             <button type="button" class="btn btn-icon" data-action="mkdir" title="${t("sftp.nav.mkdir")}" aria-label="${t("sftp.nav.mkdir")}">${folderPlusIcon}</button>
+            <button type="button" class="btn btn-icon sftp-bookmark-toggle" data-action="bookmark-toggle" title="${t("sftp.bookmark.add")}" aria-label="${t("sftp.bookmark.add")}">${bookmarkIcon}</button>
+          </div>
+        </div>
+        <div class="sftp-bookmarks" role="list" hidden></div>
+        <div class="sftp-listhead">
+          <input type="text" class="sftp-filter" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="${t("sftp.filter.aria")}" placeholder="${t("sftp.filter.placeholder")}" />
+          <div class="sftp-sortbtns" role="group" aria-label="${t("sftp.sort.aria")}">
+            <button type="button" class="btn btn-small" data-action="sort" data-sort="name">${t("sftp.sort.name")}</button>
+            <button type="button" class="btn btn-small" data-action="sort" data-sort="size">${t("sftp.sort.size")}</button>
+            <button type="button" class="btn btn-small" data-action="sort" data-sort="modified">${t("sftp.sort.modified")}</button>
           </div>
         </div>
         <div class="sftp-bulkbar" hidden>
@@ -347,6 +376,8 @@ export class SftpPanel {
     this.connToggleEl = panel.querySelector(".sftp-conn-toggle");
     this.pathEl = panel.querySelector(".sftp-path");
     this.listEl = panel.querySelector(".sftp-entries");
+    this.filterEl = panel.querySelector(".sftp-filter");
+    this.bookmarksEl = panel.querySelector(".sftp-bookmarks");
     this.bulkBarEl = panel.querySelector(".sftp-bulkbar");
     this.selectAllEl = panel.querySelector('[data-action="select-all"]');
     this.selCountEl = panel.querySelector(".sftp-sel-count");
@@ -370,6 +401,15 @@ export class SftpPanel {
     this.deviceSelectEl?.addEventListener("change", () => {
       const id = this.deviceSelectEl?.value ?? "";
       if (id) void this.selectDevice(id);
+    });
+
+    // Live directory filter — reorders the current listing without a round trip.
+    this.filterEl?.addEventListener("input", () => {
+      this.filterText = this.filterEl?.value ?? "";
+      // A changed filter changes the visible set, so drop the stale selection.
+      this.selected.clear();
+      this.lastClickedIndex = -1;
+      this.applyView();
     });
 
     panel.addEventListener("click", (e) => {
@@ -415,6 +455,24 @@ export class SftpPanel {
         case "mkdir":
           if (!this.busy) void this.handleMkdir();
           break;
+        case "sort": {
+          const key = target.closest<HTMLElement>("[data-sort]")?.dataset.sort;
+          if (key === "name" || key === "size" || key === "modified") this.setSort(key);
+          break;
+        }
+        case "bookmark-toggle":
+          if (!this.busy) void this.handleBookmarkToggle();
+          break;
+        case "bookmark-go": {
+          const path = target.closest<HTMLElement>("[data-path]")?.dataset.path;
+          if (path && !this.busy) void this.goTo(path);
+          break;
+        }
+        case "bookmark-del": {
+          const path = target.closest<HTMLElement>("[data-path]")?.dataset.path;
+          if (path) void this.handleBookmarkRemove(path);
+          break;
+        }
         case "tx-cancel": {
           const id = Number(target.closest<HTMLElement>("[data-tx-id]")?.dataset.txId);
           if (Number.isFinite(id)) this.queue.cancel(id);
@@ -565,6 +623,7 @@ export class SftpPanel {
       const startDir = await sftpConnect(deviceId);
       this.activeDeviceId = deviceId;
       this.updateConnDot();
+      await this.loadBookmarks(deviceId);
       await this.goTo(startDir);
     } catch (err) {
       this.activeDeviceId = null;
@@ -584,6 +643,9 @@ export class SftpPanel {
     const deviceId = this.activeDeviceId;
     this.activeDeviceId = null;
     this.moveClipboard = null; // a pending move is tied to this connection
+    this.bookmarks = []; // bookmarks are loaded per active device
+    this.renderBookmarks();
+    this.updateBookmarkButton();
     if (deviceId) {
       // Cancel + drop any transfers for this device — the connection is going
       // away, so nothing more can run against it.
@@ -661,6 +723,10 @@ export class SftpPanel {
    */
   private async loadDir(path: string): Promise<void> {
     if (this.activeDeviceId === null) return;
+    // Re-listing the same directory (Refresh, or an auto-refresh after a
+    // transfer) keeps any live filter; navigating to a different directory
+    // starts fresh.
+    const sameDir = path === this.cwd;
     // A new listing invalidates the selection (names are directory-relative).
     this.selected.clear();
     this.lastClickedIndex = -1;
@@ -668,13 +734,183 @@ export class SftpPanel {
     try {
       const entries = await sftpList(this.activeDeviceId, path);
       this.cwd = path;
+      this.allEntries = entries;
+      if (!sameDir) {
+        this.filterText = "";
+        if (this.filterEl) this.filterEl.value = "";
+      }
       this.syncPathInput();
-      this.renderEntries(entries);
-      this.setStatus(tp("sftp.count", entries.length));
+      this.applyView(); // renders + sets the count status
+      this.updateBookmarkButton();
     } catch (err) {
       this.options.onError?.(err as AppError);
     } finally {
       this.setBusy(false); // also reconciles Back/Forward enabled state
+    }
+  }
+
+  /** Compute the filtered + sorted view of `allEntries` and render it (folders
+   * stay grouped on top regardless of the sort key/direction). Also refreshes
+   * the sort-header indicators and the visible-count status. */
+  private applyView(): void {
+    const needle = this.filterText.trim().toLowerCase();
+    const filtered = needle
+      ? this.allEntries.filter((e) => e.name.toLowerCase().includes(needle))
+      : this.allEntries.slice();
+    filtered.sort((a, b) => this.compareEntries(a, b));
+    this.renderEntries(filtered);
+    this.updateSortHeaders();
+    this.setStatus(tp("sftp.count", filtered.length));
+  }
+
+  /** Ordering: folders before files always; then by the active key/direction,
+   * with a case-insensitive name tiebreak. */
+  private compareEntries(a: SftpEntry, b: SftpEntry): number {
+    const aDir = a.kind === "dir";
+    const bDir = b.kind === "dir";
+    if (aDir !== bDir) return aDir ? -1 : 1;
+    let cmp: number;
+    if (this.sortKey === "size") cmp = a.size - b.size;
+    else if (this.sortKey === "modified") cmp = (a.modified ?? 0) - (b.modified ?? 0);
+    else cmp = a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+    if (cmp === 0 && this.sortKey !== "name") {
+      cmp = a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+    }
+    return this.sortDir === "asc" ? cmp : -cmp;
+  }
+
+  /** Apply a sort column: clicking the active column flips direction, a new
+   * column selects it ascending. */
+  private setSort(key: "name" | "size" | "modified"): void {
+    if (this.sortKey === key) {
+      this.sortDir = this.sortDir === "asc" ? "desc" : "asc";
+    } else {
+      this.sortKey = key;
+      this.sortDir = "asc";
+    }
+    // Reordering invalidates the shift-click anchor (it's a positional index).
+    this.lastClickedIndex = -1;
+    this.applyView();
+  }
+
+  /** Reflect the active sort key + direction on the header buttons (an arrow on
+   * the active one; `aria-sort` for assistive tech). */
+  private updateSortHeaders(): void {
+    this.panel?.querySelectorAll<HTMLButtonElement>('[data-action="sort"]').forEach((btn) => {
+      const active = btn.dataset.sort === this.sortKey;
+      const arrow = active ? (this.sortDir === "asc" ? " ▲" : " ▼") : "";
+      const label = t(`sftp.sort.${btn.dataset.sort as "name" | "size" | "modified"}`);
+      btn.textContent = label + arrow;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-sort", active ? (this.sortDir === "asc" ? "ascending" : "descending") : "none");
+    });
+  }
+
+  /* ----- bookmarks -------------------------------------------------------- */
+
+  /** Load the connected device's bookmarks and render the chip row. Non-fatal:
+   * a failure just leaves the bar empty (bookmarks are a convenience). */
+  private async loadBookmarks(deviceId: string): Promise<void> {
+    try {
+      this.bookmarks = await sftpBookmarks(deviceId);
+    } catch {
+      this.bookmarks = [];
+    }
+    this.renderBookmarks();
+    this.updateBookmarkButton();
+  }
+
+  /** Render the bookmark chips (hidden when none). Built with DOM APIs — the
+   * paths are remote-supplied, so they go in as text, never markup. */
+  private renderBookmarks(): void {
+    const el = this.bookmarksEl;
+    if (!el) return;
+    el.replaceChildren();
+    if (this.activeDeviceId === null || this.bookmarks.length === 0) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    for (const path of this.bookmarks) {
+      const chip = document.createElement("span");
+      chip.className = "sftp-bookmark";
+      chip.setAttribute("role", "listitem");
+      if (path === this.cwd) chip.classList.add("is-current");
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "sftp-bookmark-go";
+      go.dataset.action = "bookmark-go";
+      go.dataset.path = path;
+      go.textContent = bookmarkLabel(path);
+      go.title = path;
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "sftp-bookmark-del";
+      del.dataset.action = "bookmark-del";
+      del.dataset.path = path;
+      del.title = t("sftp.bookmark.remove");
+      del.setAttribute("aria-label", t("sftp.bookmark.remove"));
+      del.textContent = "×";
+      chip.append(go, del);
+      el.appendChild(chip);
+    }
+  }
+
+  /** Swap the toolbar star between add/remove per whether cwd is bookmarked. */
+  private updateBookmarkButton(): void {
+    const btn = this.panel?.querySelector<HTMLElement>(".sftp-bookmark-toggle");
+    if (!btn) return;
+    const marked = this.activeDeviceId !== null && this.bookmarks.includes(this.cwd);
+    btn.innerHTML = marked ? bookmarkFilledIcon : bookmarkIcon;
+    const label = marked ? t("sftp.bookmark.remove") : t("sftp.bookmark.add");
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+    btn.classList.toggle("is-marked", marked);
+    // Keep the chip-row's current-directory highlight in sync.
+    this.renderBookmarks();
+  }
+
+  /** Bookmark (or un-bookmark) the current directory. */
+  private async handleBookmarkToggle(): Promise<void> {
+    if (this.activeDeviceId === null) return;
+    const deviceId = this.activeDeviceId;
+    try {
+      this.bookmarks = this.bookmarks.includes(this.cwd)
+        ? await sftpBookmarkRemove(deviceId, this.cwd)
+        : await sftpBookmarkAdd(deviceId, this.cwd);
+      this.updateBookmarkButton();
+    } catch (err) {
+      this.options.onError?.(err as AppError);
+    }
+  }
+
+  /** Remove a bookmark from its chip's × button. */
+  private async handleBookmarkRemove(path: string): Promise<void> {
+    if (this.activeDeviceId === null) return;
+    try {
+      this.bookmarks = await sftpBookmarkRemove(this.activeDeviceId, path);
+      this.updateBookmarkButton();
+    } catch (err) {
+      this.options.onError?.(err as AppError);
+    }
+  }
+
+  /* ----- permissions (chmod) --------------------------------------------- */
+
+  /** Open the chmod dialog for an entry and apply the chosen mode. */
+  private async handlePermissions(entry: SftpEntry): Promise<void> {
+    if (this.activeDeviceId === null) return;
+    this.clearHover();
+    const next = await choosePermissions(entry.name, entry.mode ?? 0);
+    if (next === null) return; // cancelled
+    const deviceId = this.activeDeviceId;
+    const path = joinRemote(this.cwd, entry.name);
+    try {
+      await sftpChmod(deviceId, path, next);
+      await this.loadDir(this.cwd);
+      this.options.onSuccess?.(t("sftp.perms.changed", { name: entry.name }));
+    } catch (err) {
+      this.options.onError?.(err as AppError);
     }
   }
 
@@ -1369,7 +1605,8 @@ export class SftpPanel {
     meta.className = "sftp-entry-meta";
     const size = isDir ? "" : formatSize(entry.size);
     const time = formatMtime(entry.modified);
-    meta.textContent = [size, time].filter(Boolean).join("  ·  ");
+    const perms = formatMode(entry.mode);
+    meta.textContent = [perms, size, time].filter(Boolean).join("  ·  ");
 
     const actions = document.createElement("span");
     actions.className = "sftp-entry-actions";
@@ -1383,6 +1620,17 @@ export class SftpPanel {
     actions.appendChild(
       this.iconButton(pencilIcon, t("sftp.entry.rename"), () => void this.handleRename(entry)),
     );
+    // chmod only for real files/dirs that report a mode: SETSTAT follows a
+    // symlink to its target (there is no LSETSTAT in SFTP v3), so offering it on
+    // a symlink row would silently rewrite the target's permissions; and a
+    // server that omits mode can't be chmod'd meaningfully.
+    if (entry.kind !== "symlink" && entry.mode !== undefined) {
+      actions.appendChild(
+        this.iconButton(lockIcon, t("sftp.entry.permissions"), () =>
+          void this.handlePermissions(entry),
+        ),
+      );
+    }
     actions.appendChild(
       this.iconButton(trashIcon, t("sftp.entry.delete"), () => void this.handleDelete(entry), true),
     );
@@ -1624,6 +1872,14 @@ export class SftpPanel {
  * quiet-skip paths in bulk operations (move-into-self, name collision, …). */
 function validationError(message: string): AppError {
   return { code: "Validation", message } as AppError;
+}
+
+/** The short label for a bookmark chip: the path's last segment (root ⇒ `/`). */
+function bookmarkLabel(path: string): string {
+  if (path === "/" || path === "") return "/";
+  const trimmed = path.endsWith("/") ? path.slice(0, -1) : path;
+  const idx = trimmed.lastIndexOf("/");
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
 }
 
 /** Constructs and initializes the Files (SFTP) panel. */

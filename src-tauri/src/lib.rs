@@ -4,6 +4,7 @@
 mod agent;
 mod agent_ident;
 mod atomic_file;
+mod bookmark_store;
 mod commands;
 mod config_watch;
 mod local_shell;
@@ -45,6 +46,7 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
+use bookmark_store::BookmarkStore;
 use known_hosts::KnownHostsStore;
 use local_shell::LocalShellManager;
 use profile_store::ProfileStore;
@@ -89,6 +91,8 @@ pub fn run() {
             // Per-instance open-tabs layout (Tabs milestone, Phase 3). Same
             // app-config dir; restored on launch, saved (debounced) on change.
             let workspace_store = WorkspaceStore::load(config_dir.clone());
+            // Per-device SFTP bookmarks (saved remote paths). Same app-config dir.
+            let bookmark_store = BookmarkStore::load(config_dir.clone());
             // Host-key TOFU store + SSH session manager (SPEC.md §3/§6). The
             // manager owns the known-hosts store (behind an `Arc`) so its
             // session tasks can consult/persist trust decisions.
@@ -121,6 +125,7 @@ pub fn run() {
                 sftp_manager,
                 serial_manager,
                 local_shell_manager,
+                bookmark_store,
             });
             // Watch the config dir so a change made by another running instance
             // (multi-instance sync) is picked up automatically: it emits a
@@ -215,6 +220,10 @@ pub fn run() {
             commands::sftp_mkdir,
             commands::sftp_rename,
             commands::sftp_remove,
+            commands::sftp_chmod,
+            commands::sftp_bookmarks,
+            commands::sftp_bookmark_add,
+            commands::sftp_bookmark_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

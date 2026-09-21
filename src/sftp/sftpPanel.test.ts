@@ -19,6 +19,8 @@ const h = vi.hoisted(() => ({
   localExists: false,
   remoteExists: false,
   conflictChoice: "overwrite" as "overwrite" | "skip" | "rename" | null,
+  permsChoice: null as number | null,
+  bookmarks: [] as string[],
   progressHandler: null as ((e: SftpProgressEvent) => void) | null,
 }));
 
@@ -46,6 +48,16 @@ vi.mock("../ipc", () => ({
   sftpMkdir: vi.fn(async () => {}),
   sftpRename: vi.fn(async () => {}),
   sftpRemove: vi.fn(async () => {}),
+  sftpChmod: vi.fn(async () => {}),
+  sftpBookmarks: vi.fn(async () => h.bookmarks),
+  sftpBookmarkAdd: vi.fn(async (_id: string, path: string) => {
+    if (!h.bookmarks.includes(path)) h.bookmarks = [...h.bookmarks, path];
+    return h.bookmarks;
+  }),
+  sftpBookmarkRemove: vi.fn(async (_id: string, path: string) => {
+    h.bookmarks = h.bookmarks.filter((p) => p !== path);
+    return h.bookmarks;
+  }),
   sftpCancelTransfer: vi.fn(async () => {}),
   onSftpProgress: vi.fn(async (handler: (e: SftpProgressEvent) => void) => {
     h.progressHandler = handler;
@@ -64,6 +76,7 @@ vi.mock("../ui/confirm", () => ({
   confirm: vi.fn(async () => true),
   prompt: vi.fn(async () => "newname"),
   chooseConflict: vi.fn(async () => h.conflictChoice),
+  choosePermissions: vi.fn(async () => h.permsChoice),
 }));
 
 vi.mock("@tauri-apps/api/path", () => ({
@@ -83,6 +96,9 @@ import {
   sftpRemove,
   sftpRename,
   sftpCancelTransfer,
+  sftpChmod,
+  sftpBookmarkAdd,
+  sftpBookmarkRemove,
 } from "../ipc";
 import type { AppError } from "../ipc";
 
@@ -173,6 +189,8 @@ describe("SftpPanel", () => {
     h.localExists = false;
     h.remoteExists = false;
     h.conflictChoice = "overwrite";
+    h.permsChoice = null;
+    h.bookmarks = [];
     vi.clearAllMocks();
   });
 
@@ -743,6 +761,103 @@ describe("SftpPanel", () => {
     document.querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")?.click();
     await flush();
     expect(checks().some((c) => c.checked)).toBe(false);
+  });
+
+  /* ----- sort / filter / bookmarks / permissions ------------------------- */
+
+  function entryNames(): (string | null)[] {
+    return [...document.querySelectorAll(".sftp-entry-name")].map((e) => e.textContent);
+  }
+
+  it("the filter narrows the visible entries by name", async () => {
+    h.listResult = [
+      { name: "alpha.txt", kind: "file", size: 1 },
+      { name: "beta.txt", kind: "file", size: 2 },
+      { name: "gamma.log", kind: "file", size: 3 },
+    ];
+    await setup();
+    await browse();
+    const filter = q<HTMLInputElement>(".sftp-filter");
+    filter.value = "beta";
+    filter.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    expect(entryNames()).toEqual(["beta.txt"]);
+  });
+
+  it("sorting by size toggles asc/desc, with folders staying on top", async () => {
+    h.listResult = [
+      { name: "big.bin", kind: "file", size: 300 },
+      { name: "small.bin", kind: "file", size: 10 },
+      { name: "zzz", kind: "dir", size: 0 },
+    ];
+    await setup();
+    await browse();
+    const sizeBtn = q<HTMLButtonElement>('[data-action="sort"][data-sort="size"]');
+    sizeBtn.click();
+    await flush();
+    expect(entryNames()).toEqual(["zzz", "small.bin", "big.bin"]); // asc, dir first
+    sizeBtn.click();
+    await flush();
+    expect(entryNames()).toEqual(["zzz", "big.bin", "small.bin"]); // desc, dir still first
+  });
+
+  it("shows the permission string in an entry's metadata", async () => {
+    h.listResult = [{ name: "f", kind: "file", size: 1, mode: 0o640 }];
+    await setup();
+    await browse();
+    expect(q(".sftp-entry-meta").textContent).toContain("rw-r-----");
+  });
+
+  it("the permissions dialog applies the chosen mode via chmod", async () => {
+    h.listResult = [{ name: "script.sh", kind: "file", size: 5, mode: 0o644 }];
+    h.permsChoice = 0o755;
+    await setup();
+    await browse();
+    q<HTMLButtonElement>('.sftp-entry.is-file [aria-label="Permissions"]').click();
+    await flush();
+    expect(sftpChmod).toHaveBeenCalledWith("a", "/home/j/script.sh", 0o755);
+  });
+
+  it("hides the permissions button on symlink rows (SETSTAT follows the link)", async () => {
+    h.listResult = [
+      { name: "link", kind: "symlink", size: 0, mode: 0o777 },
+      { name: "real", kind: "file", size: 1, mode: 0o644 },
+    ];
+    await setup();
+    await browse();
+    const symRow = q(".sftp-entry.is-symlink");
+    expect(symRow.querySelector('[aria-label="Permissions"]')).toBeNull();
+    // A real file still gets one.
+    expect(
+      document.querySelector('.sftp-entry.is-file [aria-label="Permissions"]'),
+    ).not.toBeNull();
+  });
+
+  it("bookmarking adds a chip; it navigates on click and is removed via ×", async () => {
+    await setup();
+    await browse(); // cwd = /home/j
+    q<HTMLButtonElement>(".sftp-bookmark-toggle").click();
+    await flush();
+    expect(sftpBookmarkAdd).toHaveBeenCalledWith("a", "/home/j");
+
+    const chip = q<HTMLButtonElement>(".sftp-bookmark-go");
+    expect(chip.dataset.path).toBe("/home/j");
+    chip.click();
+    await flush();
+    expect(sftpList).toHaveBeenLastCalledWith("a", "/home/j");
+
+    q<HTMLButtonElement>(".sftp-bookmark-del").click();
+    await flush();
+    expect(sftpBookmarkRemove).toHaveBeenCalledWith("a", "/home/j");
+    expect(document.querySelector(".sftp-bookmark")).toBeNull();
+  });
+
+  it("loads a device's existing bookmarks on connect", async () => {
+    h.bookmarks = ["/etc", "/var/log"];
+    await setup();
+    await browse();
+    const labels = [...document.querySelectorAll(".sftp-bookmark-go")].map((e) => e.textContent);
+    expect(labels).toEqual(["etc", "log"]);
   });
 
   /* ----- persistence ----------------------------------------------------- */

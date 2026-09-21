@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crate::bookmark_store::BookmarkStore;
 use crate::local_shell::LocalShellManager;
 use crate::profile_store::ProfileStore;
 use crate::secret::SecretStore;
@@ -52,4 +53,7 @@ pub struct AppState {
     /// the local-terminal analogue of `session_manager`. Routed by ownership like
     /// the serial manager.
     pub local_shell_manager: Arc<LocalShellManager>,
+    /// Per-device SFTP bookmarks (saved remote paths). Persisted to
+    /// `sftp_bookmarks.json`; a plain data store, not tied to a live connection.
+    pub bookmark_store: BookmarkStore,
 }
