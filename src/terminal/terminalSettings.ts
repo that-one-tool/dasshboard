@@ -40,16 +40,19 @@ export interface XtermTheme {
   cursor: string;
 }
 
+// Kept in lockstep with the CSS `--surface-0` / `--text-primary` / `--accent`
+// tokens (styles.css) so the terminal canvas never seams against the pane it
+// sits in, and the cursor picks up the app's indigo accent.
 const DARK: XtermTheme = {
-  background: "#1e1e1e",
-  foreground: "#d4d4d4",
-  cursor: "#d4d4d4",
+  background: "#0f1218",
+  foreground: "#dbe0ec",
+  cursor: "#7c88ff",
 };
 
 const LIGHT: XtermTheme = {
-  background: "#ffffff",
-  foreground: "#1e1e1e",
-  cursor: "#1e1e1e",
+  background: "#f4f6fa",
+  foreground: "#1c2130",
+  cursor: "#5058e6",
 };
 
 export function xtermThemeFor(theme: TerminalTheme): XtermTheme {

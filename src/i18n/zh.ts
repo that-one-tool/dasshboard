@@ -78,7 +78,7 @@ export const zh: Messages = {
 	"settings.fontFamily": "字体",
 	"settings.scrollback": "回滚缓冲",
 	"settings.scrollback.hint": "每个终端保留的历史行数（0–100000）。",
-	"settings.theme": "主题",
+	"settings.theme": "外观",
 	"settings.theme.dark": "深色",
 	"settings.theme.light": "浅色",
 	"settings.keepalive.interval": "保活间隔（秒）",

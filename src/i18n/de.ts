@@ -78,7 +78,7 @@ export const de: Messages = {
 	"settings.fontFamily": "Schriftart",
 	"settings.scrollback": "Verlaufspuffer",
 	"settings.scrollback.hint": "Pro Terminal gespeicherte Verlaufszeilen (0–100000).",
-	"settings.theme": "Design",
+	"settings.theme": "Erscheinungsbild",
 	"settings.theme.dark": "Dunkel",
 	"settings.theme.light": "Hell",
 	"settings.keepalive.interval": "Keepalive-Intervall (s)",

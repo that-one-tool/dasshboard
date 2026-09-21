@@ -78,7 +78,7 @@ export const fr: Messages = {
 	"settings.fontFamily": "Police",
 	"settings.scrollback": "Historique",
 	"settings.scrollback.hint": "Lignes d'historique conservées par terminal (0–100000).",
-	"settings.theme": "Thème",
+	"settings.theme": "Apparence",
 	"settings.theme.dark": "Sombre",
 	"settings.theme.light": "Clair",
 	"settings.keepalive.interval": "Intervalle keepalive (s)",

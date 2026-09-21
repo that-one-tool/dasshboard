@@ -78,7 +78,7 @@ export const ja: Messages = {
 	"settings.fontFamily": "フォント",
 	"settings.scrollback": "スクロールバック",
 	"settings.scrollback.hint": "端末ごとに保持する履歴行数（0〜100000）。",
-	"settings.theme": "テーマ",
+	"settings.theme": "外観",
 	"settings.theme.dark": "ダーク",
 	"settings.theme.light": "ライト",
 	"settings.keepalive.interval": "キープアライブ間隔（秒）",

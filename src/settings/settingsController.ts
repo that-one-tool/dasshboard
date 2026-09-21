@@ -75,6 +75,9 @@ export class SettingsController {
       this.settings = FALLBACK_SETTINGS;
       this.onError(errorMessage(err));
     }
+    // Apply the app-wide appearance (light/dark) before anything paints, so the
+    // chrome never flashes the wrong theme. Shares the terminal's theme setting.
+    this.applyAppTheme(this.settings.terminal.theme);
     // Resolve and apply the UI language before any other surface renders (this
     // runs first in `initApp`): a stored language wins, else the OS locale, else
     // English. `applyDomTranslations` translates the static `index.html` chrome;
@@ -97,6 +100,7 @@ export class SettingsController {
     try {
       const fresh = await getSettings();
       this.settings = fresh;
+      this.applyAppTheme(fresh.terminal.theme);
       this.applyTerminalSettings(fresh.terminal);
       this.onSftpSettingsChange?.(fresh.sftp);
       // Another instance may have changed the language; adopt it. `setLocale`
@@ -138,8 +142,18 @@ export class SettingsController {
 
   private async applyTerminal(terminal: TerminalSettings): Promise<void> {
     this.settings = { ...this.settings, terminal };
+    this.applyAppTheme(terminal.theme); // switch the chrome light/dark live
     this.applyTerminalSettings(terminal); // live to existing terminals
     await this.save();
+  }
+
+  /**
+   * Reflect the appearance choice onto the whole UI by toggling `data-theme` on
+   * <html> (the CSS token layer keys light overrides off it). The terminal theme
+   * and the chrome theme are one setting, so the app never looks half-lit.
+   */
+  private applyAppTheme(theme: TerminalSettings["theme"]): void {
+    document.documentElement.dataset.theme = theme === "light" ? "light" : "dark";
   }
 
   private async applySftp(sftp: SftpSettings): Promise<void> {

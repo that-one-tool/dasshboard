@@ -12,6 +12,19 @@
 	font-display: swap;
 }
 
+/* ============================================================================
+ * Design tokens
+ *
+ * Every surface, border, text tier, accent and status colour in the app resolves
+ * to a variable here — no component rule hardcodes a hex. Dark is the default on
+ * `:root`; the light theme redefines the same tokens under
+ * `:root[data-theme="light"]`. The whole-app theme is driven by the "Appearance"
+ * setting (shared with the terminal theme): main.ts sets `data-theme` on <html>.
+ *
+ * Scales: surfaces step 0 (page) → 3 (raised/hover); radius sm/md/lg + pill;
+ * one soft-shadow elevation scale. Accent is indigo — a deliberate move off the
+ * old VS Code blue so the app reads as its own product.
+ * ============================================================================ */
 :root {
 	color-scheme: dark;
 	font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
@@ -19,14 +32,130 @@
 	line-height: 1.4;
 	font-weight: 400;
 
-	color: #d4d4d4;
-	background-color: #1e1e1e;
+	/* Surfaces: cool slate, layered so cards and panes lift off the page. */
+	--surface-0: #0f1218;
+	--surface-1: #151a25;
+	--surface-2: #1c2130;
+	--surface-3: #262d40;
+
+	/* Borders: a hairline, plus a stronger step for hover / emphasis. */
+	--border: #262d3d;
+	--border-strong: #333c52;
+
+	/* Text tiers. `--text-bright` is for the few near-white emphases. */
+	--text-bright: #f4f6fb;
+	--text-primary: #dbe0ec;
+	--text-secondary: #aab1c2;
+	--text-muted: #7c8598;
+
+	/* Accent (indigo) + its interactive + soft/glow variants. */
+	--accent: #7c88ff;
+	--accent-hover: #929cff;
+	--on-accent: #0b0d16;
+	--accent-soft: rgba(124, 136, 255, 0.22);
+	--accent-soft-strong: rgba(124, 136, 255, 0.42);
+	--accent-halo: rgba(124, 136, 255, 0.28);
+	/* Monospace endpoints (hosts, paths) — a calmer blue than the indigo accent. */
+	--endpoint: #8fb4f6;
+
+	/* Status: connected / warning / error, each with a soft fill + on-soft text. */
+	--ok: #3fb950;
+	--ok-text: #7fd8a0;
+	--ok-soft: #123524;
+	--warn: #e0b25a;
+	--warn-hover: #f0d4a8;
+	--warn-text: #dccf7f;
+	--warn-strong: #c86a1a;
+	--warn-soft: #3d3417;
+	--danger: #f14c4c;
+	--danger-hover: #ff6b6b;
+	--danger-text: #f48771;
+	--danger-strong: #a11f1f;
+	--danger-strong-hover: #c62828;
+	--danger-soft: #451818;
+	--dot-idle: #565e72;
+
+	/* Scrims behind dialogs / pane overlays. */
+	--scrim: rgba(8, 10, 15, 0.66);
+	--overlay: rgba(15, 18, 24, 0.82);
+
+	/* Radius scale. */
+	--radius-sm: 6px;
+	--radius: 8px;
+	--radius-lg: 10px;
+	--radius-pill: 999px;
+
+	/* Spacing between grouped controls. `--gap-btn` is the one rhythm every
+	 * action/toolbar button group uses so spacing reads the same everywhere;
+	 * `--gap-lg` is only for dialog-footer CTAs (larger buttons). */
+	--gap-btn: 6px;
+	--gap-lg: 8px;
+
+	/* Soft elevation. */
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+	--shadow-md: 0 6px 20px rgba(0, 0, 0, 0.38);
+	--shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.5);
+
+	--mono-font: "Cascadia Mono", Consolas, monospace;
+
+	color: var(--text-primary);
+	background-color: var(--surface-0);
 
 	font-synthesis: none;
 	text-rendering: optimizeLegibility;
 	-webkit-font-smoothing: antialiased;
 	-moz-osx-font-smoothing: grayscale;
 	-webkit-text-size-adjust: 100%;
+}
+
+/* Light theme: same token names, redefined. Chrome and terminal switch together
+ * via the Appearance setting (main.ts toggles `data-theme` on <html>). */
+:root[data-theme="light"] {
+	color-scheme: light;
+
+	--surface-0: #f4f6fa;
+	--surface-1: #ffffff;
+	--surface-2: #eceff5;
+	--surface-3: #dfe4ee;
+
+	--border: #d8dce6;
+	--border-strong: #c2c8d6;
+
+	--text-bright: #0b0e16;
+	--text-primary: #1c2130;
+	--text-secondary: #4c5468;
+	--text-muted: #798194;
+
+	--accent: #5058e6;
+	--accent-hover: #4149d6;
+	--on-accent: #ffffff;
+	--accent-soft: rgba(80, 88, 230, 0.16);
+	--accent-soft-strong: rgba(80, 88, 230, 0.32);
+	--accent-halo: rgba(80, 88, 230, 0.22);
+	--endpoint: #2563c8;
+
+	--ok: #1a7f37;
+	--ok-text: #116329;
+	--ok-soft: #d8f0de;
+	--warn: #a9740f;
+	--warn-hover: #855b0d;
+	--warn-text: #6f5410;
+	--warn-strong: #b4611a;
+	--warn-soft: #f6e7c8;
+	--danger: #d1242f;
+	--danger-hover: #b81c26;
+	--danger-text: #b3401f;
+	--danger-strong: #c0392b;
+	--danger-strong-hover: #a02a20;
+	--danger-soft: #f7dcd9;
+	--dot-idle: #9aa2b3;
+
+	--scrim: rgba(30, 36, 48, 0.32);
+	--overlay: rgba(244, 246, 250, 0.82);
+
+	--shadow-sm: 0 1px 2px rgba(20, 26, 38, 0.08);
+	--shadow-md: 0 6px 20px rgba(20, 26, 38, 0.12);
+	--shadow-lg: 0 16px 40px rgba(20, 26, 38, 0.18);
 }
 
 *,
@@ -42,7 +171,7 @@ body {
 }
 
 body {
-	background-color: #1e1e1e;
+	background-color: var(--surface-0);
 }
 
 /* ============================================================================
@@ -61,7 +190,7 @@ body {
 .header-actions {
 	display: flex;
 	align-items: center;
-	gap: 8px;
+	gap: var(--gap-btn);
 	margin-left: auto;
 	/* Centred in the strip and nudged up so the icons don't crowd the tab-row
 	 * bottom border. */
@@ -96,11 +225,12 @@ body {
 .device-list,
 .profile-list,
 .tunnel-list {
-	background-color: #252526;
-	border: 1px solid #3c3c3c;
-	border-radius: 4px;
+	background-color: var(--surface-1);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
 	padding: 8px;
 	flex: 0 0 auto;
+	box-shadow: var(--shadow-sm);
 }
 
 .device-manager {
@@ -115,7 +245,7 @@ body {
 	align-items: center;
 	gap: 8px;
 	padding: 8px 4px;
-	border-bottom: 1px solid #3c3c3c;
+	border-bottom: 1px solid var(--border);
 }
 
 /* Shared section-title typography for the sidebar's Devices and Profiles
@@ -123,9 +253,11 @@ body {
 .device-list-header h2,
 .sidebar-section-title {
 	margin: 0;
-	font-size: 1rem;
+	font-size: 0.72rem;
 	font-weight: 600;
-	color: #d4d4d4;
+	letter-spacing: 0.07em;
+	text-transform: uppercase;
+	color: var(--text-muted);
 }
 
 .device-list-header h2 {
@@ -138,7 +270,7 @@ body {
  * the same distance below the header line in each section. */
 .section-actions {
 	display: flex;
-	gap: 6px;
+	gap: var(--gap-btn);
 	padding: 8px 4px 0;
 	margin-bottom: 8px;
 }
@@ -157,9 +289,9 @@ body {
 	justify-content: space-between;
 	gap: 8px;
 	padding: 8px;
-	background-color: #1e1e1e;
-	border: 1px solid #3c3c3c;
-	border-radius: 3px;
+	background-color: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
 	font-size: 0.9rem;
 }
 
@@ -173,7 +305,7 @@ body {
 
 .device-name {
 	font-weight: 500;
-	color: #fff;
+	color: var(--text-bright);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -181,7 +313,7 @@ body {
 
 .device-host {
 	font-size: 0.8rem;
-	color: #9cdcfe;
+	color: var(--endpoint);
 	font-family: "Cascadia Mono", Consolas, monospace;
 	white-space: nowrap;
 	overflow: hidden;
@@ -190,7 +322,7 @@ body {
 
 .device-actions {
 	display: flex;
-	gap: 4px;
+	gap: var(--gap-btn);
 	flex: 0 0 auto;
 }
 
@@ -204,15 +336,15 @@ body {
 	box-sizing: border-box;
 	padding: 6px 8px;
 	font-size: 0.85rem;
-	background-color: #3c3c3c;
-	color: #ddd;
-	border: 1px solid #555;
-	border-radius: 4px;
+	background-color: var(--surface-2);
+	color: var(--text-secondary);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius);
 }
 
 .device-search:focus {
 	outline: none;
-	border-color: #007acc;
+	border-color: var(--accent);
 }
 
 /* Tag group header in the grouped device list. */
@@ -222,7 +354,7 @@ body {
 	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 0.05em;
-	color: #858585;
+	color: var(--text-muted);
 }
 
 .device-group + .device-group {
@@ -240,16 +372,16 @@ body {
 .device-tag {
 	font-size: 0.7rem;
 	padding: 1px 6px;
-	border-radius: 8px;
-	background-color: #37373d;
-	color: #cccccc;
-	border: 1px solid #4a4a52;
+	border-radius: var(--radius-pill);
+	background-color: var(--surface-3);
+	color: var(--text-secondary);
+	border: 1px solid var(--border-strong);
 }
 
 .empty-state {
 	padding: 16px 8px;
 	text-align: center;
-	color: #858585;
+	color: var(--text-muted);
 	font-size: 0.9rem;
 }
 
@@ -294,12 +426,12 @@ body {
 	margin: 0 1px;
 	cursor: col-resize;
 	background-color: transparent;
-	border-radius: 3px;
+	border-radius: var(--radius-sm);
 }
 
 .sftp-splitter:hover,
 .sftp-splitter.dragging {
-	background-color: rgba(0, 122, 204, 0.4);
+	background-color: var(--accent-soft-strong);
 }
 
 /* The docked Files (SFTP) panel: a full-height bordered column that stacks its
@@ -312,10 +444,11 @@ body {
 	flex-direction: column;
 	min-height: 0;
 	width: 360px;
-	background-color: #1e1e1e;
-	border: 1px solid #3c3c3c;
-	border-radius: 4px;
+	background-color: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
 	overflow: hidden;
+	box-shadow: var(--shadow-sm);
 }
 
 /* `display: flex` above beats the `[hidden]` UA rule, so hide explicitly (same
@@ -358,7 +491,7 @@ body {
 	gap: 2px;
 	flex: 0 0 auto;
 	padding: 0 2px;
-	border-bottom: 1px solid #333;
+	border-bottom: 1px solid var(--border);
 }
 
 /* Only the tabs scroll when they overflow; the `+` button and the mounted
@@ -384,9 +517,9 @@ body {
 	max-width: 220px;
 	border: 1px solid transparent;
 	border-bottom: none;
-	border-radius: 7px 7px 0 0;
+	border-radius: var(--radius) var(--radius) 0 0;
 	background: transparent;
-	color: #9d9d9d;
+	color: var(--text-secondary);
 	font-size: 0.83rem;
 	cursor: pointer;
 	white-space: nowrap;
@@ -396,19 +529,19 @@ body {
 }
 
 .tab:hover {
-	background: #2a2a2b;
-	color: #d4d4d4;
+	background: var(--surface-2);
+	color: var(--text-primary);
 }
 
 /* Active tab: filled with the workspace colour, outlined on three sides, and
  * capped by a 2px accent bar drawn as an inset shadow (no layout shift and no
  * vertical overflow, so the tab row never grows a scrollbar). */
 .tab.tab-active {
-	background: #1e1e1e;
-	color: #fff;
-	border-color: #333;
+	background: var(--surface-0);
+	color: var(--text-bright);
+	border-color: var(--border);
 	font-weight: 500;
-	box-shadow: inset 0 2px 0 #007acc;
+	box-shadow: inset 0 2px 0 var(--accent);
 }
 
 .tab-name {
@@ -420,10 +553,10 @@ body {
 /* Inline rename field (double-click a tab), sized to sit in place of the name. */
 .tab-rename-input {
 	font: inherit;
-	color: #fff;
-	background: #111;
-	border: 1px solid #007acc;
-	border-radius: 4px;
+	color: var(--text-bright);
+	background: var(--surface-0);
+	border: 1px solid var(--accent);
+	border-radius: var(--radius);
 	padding: 1px 5px;
 	width: 12ch;
 	min-width: 0;
@@ -441,12 +574,12 @@ body {
 }
 
 .tab-badge {
-	background: #3794ff;
-	box-shadow: 0 0 0 2px rgba(55, 148, 255, 0.18);
+	background: var(--accent);
+	box-shadow: 0 0 0 2px var(--accent-halo);
 }
 
 .tab-dirty-dot {
-	background: #e0913a;
+	background: var(--warn);
 	box-shadow: 0 0 0 2px rgba(224, 145, 58, 0.2);
 }
 
@@ -461,7 +594,7 @@ body {
 	height: 17px;
 	margin-right: -2px;
 	border: none;
-	border-radius: 4px;
+	border-radius: var(--radius);
 	background: transparent;
 	color: inherit;
 	cursor: pointer;
@@ -478,7 +611,7 @@ body {
 
 .tab-close:hover {
 	opacity: 1;
-	background: rgba(255, 255, 255, 0.14);
+	background: var(--surface-3);
 }
 
 /* "New tab" button: a quiet ghost icon that echoes the tab hover treatment. */
@@ -493,9 +626,9 @@ body {
 	margin-left: 2px;
 	padding: 0;
 	border: none;
-	border-radius: 6px;
+	border-radius: var(--radius-sm);
 	background: transparent;
-	color: #9d9d9d;
+	color: var(--text-secondary);
 	cursor: pointer;
 	transition:
 		background 150ms ease,
@@ -503,8 +636,8 @@ body {
 }
 
 .tab-new-btn:hover {
-	background: #2a2a2b;
-	color: #d4d4d4;
+	background: var(--surface-2);
+	color: var(--text-primary);
 }
 
 .tab-stack {
@@ -542,13 +675,13 @@ body {
 .grid-toolbar {
 	display: flex;
 	align-items: center;
-	gap: 6px;
+	gap: var(--gap-btn);
 	flex: 0 0 auto;
 	flex-wrap: wrap;
 }
 
 .grid-toolbar-label {
-	color: #858585;
+	color: var(--text-muted);
 	font-size: 0.85rem;
 	margin-right: 4px;
 }
@@ -558,9 +691,9 @@ body {
 }
 
 .grid-preset-btn.grid-preset-active {
-	background-color: #007acc;
-	border-color: #007acc;
-	color: #fff;
+	background-color: var(--accent);
+	border-color: var(--accent);
+	color: var(--on-accent);
 }
 
 /* Broadcast toggle: pushed to the far right of the toolbar. Its active state
@@ -571,14 +704,14 @@ body {
 }
 
 .grid-broadcast-btn.grid-broadcast-active {
-	background-color: #c86a1a;
-	border-color: #c86a1a;
+	background-color: var(--warn-strong);
+	border-color: var(--warn-strong);
 	color: #fff;
 }
 
 /* While broadcasting, ring every pane so it's obvious input goes everywhere. */
 .grid-broadcasting .pane {
-	box-shadow: 0 0 0 1px #c86a1a inset;
+	box-shadow: 0 0 0 1px var(--warn-strong) inset;
 }
 
 .grid-container {
@@ -598,8 +731,8 @@ body {
 }
 
 .grid-cell-focused .pane {
-	border-color: #007acc;
-	box-shadow: 0 0 0 1px #007acc inset;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent) inset;
 }
 
 /* Splitters are absolutely positioned over the grid at track boundaries so they
@@ -627,7 +760,7 @@ body {
 }
 
 .grid-splitter:hover {
-	background-color: rgba(0, 122, 204, 0.4);
+	background-color: var(--accent-soft-strong);
 }
 
 /* Keep the resize cursor and suppress text selection for the whole drag. */
@@ -646,7 +779,7 @@ body.grid-dragging-row * {
 .confirm-message {
 	margin: 0;
 	padding: 16px;
-	color: #c4c4c4;
+	color: var(--text-secondary);
 	font-size: 0.9rem;
 }
 
@@ -660,10 +793,11 @@ body.grid-dragging-row * {
 	min-width: 0;
 	display: flex;
 	flex-direction: column;
-	background-color: #1e1e1e;
-	border: 1px solid #3c3c3c;
-	border-radius: 4px;
+	background-color: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
 	overflow: hidden;
+	box-shadow: var(--shadow-sm);
 }
 
 .pane-header {
@@ -671,18 +805,18 @@ body.grid-dragging-row * {
 	align-items: center;
 	gap: 8px;
 	padding: 6px 8px;
-	background-color: #252526;
-	border-bottom: 1px solid #3c3c3c;
+	background-color: var(--surface-1);
+	border-bottom: 1px solid var(--border);
 }
 
 .pane-device-select {
 	flex: 0 1 320px;
 	min-width: 0;
 	padding: 5px 8px;
-	background-color: #3c3c3c;
-	color: #d4d4d4;
-	border: 1px solid #3c3c3c;
-	border-radius: 3px;
+	background-color: var(--surface-2);
+	color: var(--text-primary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
 	font-family: inherit;
 	font-size: 0.9rem;
 }
@@ -692,21 +826,21 @@ body.grid-dragging-row * {
 	height: 10px;
 	border-radius: 50%;
 	flex: 0 0 auto;
-	background-color: #6a6a6a;
+	background-color: var(--dot-idle);
 }
 
 .pane-status-idle {
-	background-color: #6a6a6a;
+	background-color: var(--dot-idle);
 }
 .pane-status-connecting {
-	background-color: #d7b32c;
+	background-color: var(--warn);
 }
 .pane-status-connected {
-	background-color: #3fb950;
+	background-color: var(--ok);
 }
 .pane-status-disconnected,
 .pane-status-error {
-	background-color: #f14c4c;
+	background-color: var(--danger);
 }
 
 .pane-body {
@@ -728,7 +862,7 @@ body.grid-dragging-row * {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background-color: rgba(30, 30, 30, 0.82);
+	background-color: var(--overlay);
 	z-index: 5;
 }
 
@@ -745,15 +879,15 @@ body.grid-dragging-row * {
 .overlay-title {
 	font-size: 1.05rem;
 	font-weight: 600;
-	color: #d4d4d4;
+	color: var(--text-primary);
 }
 
 .pane-overlay.overlay-error .overlay-title {
-	color: #f14c4c;
+	color: var(--danger);
 }
 
 .overlay-detail {
-	color: #a0a0a0;
+	color: var(--text-secondary);
 	font-size: 0.9rem;
 	word-break: break-word;
 }
@@ -761,8 +895,8 @@ body.grid-dragging-row * {
 .overlay-spinner {
 	width: 28px;
 	height: 28px;
-	border: 3px solid #3c3c3c;
-	border-top-color: #007acc;
+	border: 3px solid var(--border);
+	border-top-color: var(--accent);
 	border-radius: 50%;
 	animation: spin 0.8s linear infinite;
 }
@@ -779,7 +913,7 @@ body.grid-dragging-row * {
 }
 
 .hostkey-lead {
-	color: #c4c4c4;
+	color: var(--text-secondary);
 	font-size: 0.9rem;
 	line-height: 1.45;
 	margin: 0;
@@ -800,7 +934,7 @@ body.grid-dragging-row * {
 
 .hostkey-facts dt {
 	flex: 0 0 90px;
-	color: #858585;
+	color: var(--text-muted);
 	font-size: 0.85rem;
 }
 
@@ -808,16 +942,16 @@ body.grid-dragging-row * {
 	margin: 0;
 	font-family: "Cascadia Mono", Consolas, monospace;
 	font-size: 0.85rem;
-	color: #d4d4d4;
+	color: var(--text-primary);
 	word-break: break-all;
 }
 
 .hostkey-content.hostkey-danger {
-	border: 1px solid #f14c4c;
+	border: 1px solid var(--danger);
 }
 
 .hostkey-content.hostkey-danger .hostkey-heading {
-	color: #f14c4c;
+	color: var(--danger);
 }
 
 /* ============================================================================
@@ -826,10 +960,10 @@ body.grid-dragging-row * {
 
 .btn {
 	padding: 6px 12px;
-	border: 1px solid #3c3c3c;
-	border-radius: 3px;
-	background-color: #3c3c3c;
-	color: #d4d4d4;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background-color: var(--surface-2);
+	color: var(--text-primary);
 	font-size: 0.9rem;
 	font-family: inherit;
 	cursor: pointer;
@@ -838,12 +972,12 @@ body.grid-dragging-row * {
 }
 
 .btn:hover:not(:disabled) {
-	background-color: #4c4c4c;
-	border-color: #4c4c4c;
+	background-color: var(--surface-3);
+	border-color: var(--surface-3);
 }
 
 .btn:active:not(:disabled) {
-	background-color: #5c5c5c;
+	background-color: var(--surface-3);
 }
 
 .btn:disabled {
@@ -852,32 +986,34 @@ body.grid-dragging-row * {
 }
 
 .btn-primary {
-	background-color: #007acc;
-	border-color: #007acc;
+	background-color: var(--accent);
+	border-color: var(--accent);
+	color: var(--on-accent);
+	font-weight: 500;
 }
 
 .btn-primary:hover:not(:disabled) {
-	background-color: #1084d7;
-	border-color: #1084d7;
+	background-color: var(--accent-hover);
+	border-color: var(--accent-hover);
 }
 
 .btn-secondary {
-	background-color: #3c3c3c;
-	border-color: #3c3c3c;
+	background-color: var(--surface-2);
+	border-color: var(--border);
 }
 
 /* Destructive actions (Delete, session teardown). Placed after `.btn` and using
  * `:not(:disabled)` on hover — like `.btn-primary` — so the red actually wins
  * the cascade over the base `.btn` background. */
 .btn-danger {
-	background-color: #a11f1f;
-	border-color: #a11f1f;
+	background-color: var(--danger-strong);
+	border-color: var(--danger-strong);
 	color: #fff;
 }
 
 .btn-danger:hover:not(:disabled) {
-	background-color: #c62828;
-	border-color: #c62828;
+	background-color: var(--danger-strong-hover);
+	border-color: var(--danger-strong-hover);
 }
 
 .btn-small {
@@ -948,22 +1084,22 @@ body.grid-dragging-row * {
 	left: 0;
 	right: 0;
 	bottom: 0;
-	background-color: rgba(0, 0, 0, 0.7);
+	background-color: var(--scrim);
 	cursor: pointer;
 }
 
 .dialog-content {
 	position: relative;
-	background-color: #252526;
-	border: 1px solid #3c3c3c;
-	border-radius: 4px;
+	background-color: var(--surface-1);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
 	padding: 0;
 	max-width: 500px;
 	width: 90%;
 	max-height: 90vh;
 	display: flex;
 	flex-direction: column;
-	box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+	box-shadow: var(--shadow-lg);
 }
 
 .dialog-header {
@@ -971,7 +1107,7 @@ body.grid-dragging-row * {
 	justify-content: space-between;
 	align-items: center;
 	padding: 16px;
-	border-bottom: 1px solid #3c3c3c;
+	border-bottom: 1px solid var(--border);
 	flex: 0 0 auto;
 }
 
@@ -984,7 +1120,7 @@ body.grid-dragging-row * {
 .dialog-close-btn {
 	background: none;
 	border: none;
-	color: #d4d4d4;
+	color: var(--text-primary);
 	font-size: 1.5rem;
 	cursor: pointer;
 	padding: 0;
@@ -997,7 +1133,7 @@ body.grid-dragging-row * {
 }
 
 .dialog-close-btn:hover {
-	color: #fff;
+	color: var(--text-bright);
 }
 
 .device-form {
@@ -1038,17 +1174,17 @@ body.grid-dragging-row * {
 .form-group label {
 	font-size: 0.9rem;
 	font-weight: 500;
-	color: #d4d4d4;
+	color: var(--text-primary);
 }
 
 .form-group input[type="text"],
 .form-group input[type="password"],
 .form-group input[type="number"] {
 	padding: 8px 10px;
-	border: 1px solid #3c3c3c;
-	border-radius: 3px;
-	background-color: #1e1e1e;
-	color: #d4d4d4;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background-color: var(--surface-0);
+	color: var(--text-primary);
 	font-size: 0.9rem;
 	font-family: inherit;
 	transition: border-color 150ms ease-in-out;
@@ -1056,12 +1192,12 @@ body.grid-dragging-row * {
 
 .form-group input:focus {
 	outline: none;
-	border-color: #007acc;
-	box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
+	border-color: var(--accent);
+	box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .form-group input::placeholder {
-	color: #858585;
+	color: var(--text-muted);
 }
 
 .form-fieldset {
@@ -1077,7 +1213,7 @@ body.grid-dragging-row * {
 	padding: 0;
 	font-size: 0.9rem;
 	font-weight: 500;
-	color: #d4d4d4;
+	color: var(--text-primary);
 	margin-bottom: 8px;
 }
 
@@ -1112,9 +1248,9 @@ body.grid-dragging-row * {
 	flex-direction: column;
 	gap: 12px;
 	padding: 10px 12px;
-	background-color: #1e1e1e;
-	border: 1px solid #3c3c3c;
-	border-radius: 3px;
+	background-color: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
 }
 
 .auth-method-hidden {
@@ -1144,7 +1280,7 @@ body.grid-dragging-row * {
 
 .error-text {
 	font-size: 0.8rem;
-	color: #f48771;
+	color: var(--danger-text);
 	/* Collapse to nothing when empty so five fields don't reserve ~5 blank lines
    * (which forced the editor to scroll); it grows only when an error is shown. */
 	min-height: 0;
@@ -1162,10 +1298,10 @@ body.grid-dragging-row * {
  * `.device-form`); it overrides the horizontal inset below. */
 .form-actions {
 	display: flex;
-	gap: 8px;
+	gap: var(--gap-lg);
 	justify-content: flex-end;
 	padding: 12px 16px;
-	border-top: 1px solid #3c3c3c;
+	border-top: 1px solid var(--border);
 	flex: 0 0 auto;
 }
 
@@ -1193,23 +1329,23 @@ body.grid-dragging-row * {
 
 .toast {
 	padding: 12px 16px;
-	border-radius: 4px;
+	border-radius: var(--radius);
 	font-size: 0.9rem;
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+	box-shadow: var(--shadow-md);
 	animation: slideIn 200ms ease-out;
 	pointer-events: auto;
 }
 
 .toast-error {
-	background-color: #c23030;
+	background-color: var(--danger);
 	color: #fff;
-	border: 1px solid #d75c5c;
+	border: 1px solid var(--danger);
 }
 
 .toast-success {
-	background-color: #007acc;
-	color: #fff;
-	border: 1px solid #1084d7;
+	background-color: var(--accent);
+	color: var(--on-accent);
+	border: 1px solid var(--accent-hover);
 }
 
 @keyframes slideIn {
@@ -1237,12 +1373,12 @@ body.grid-dragging-row * {
 }
 
 ::-webkit-scrollbar-thumb {
-	background-color: #464647;
-	border-radius: 5px;
+	background-color: var(--border-strong);
+	border-radius: var(--radius-sm);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-	background-color: #5c5c5c;
+	background-color: var(--surface-3);
 }
 
 /* ============================================================================
@@ -1258,18 +1394,18 @@ body.grid-dragging-row * {
 	justify-content: space-between;
 	gap: 8px;
 	padding: 8px 4px;
-	border-bottom: 1px solid #3c3c3c;
+	border-bottom: 1px solid var(--border);
 }
 
 .profile-header-actions {
 	display: flex;
-	gap: 4px;
+	gap: var(--gap-btn);
 	flex: 0 0 auto;
 }
 
 .sidebar-empty {
 	font-size: 12px;
-	color: #808080;
+	color: var(--text-muted);
 	margin: 4px 0;
 }
 
@@ -1281,29 +1417,29 @@ body.grid-dragging-row * {
 	justify-content: space-between;
 	gap: 8px;
 	padding: 8px;
-	background-color: #1e1e1e;
-	border: 1px solid #3c3c3c;
-	border-radius: 3px;
+	background-color: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
 	margin-bottom: 6px;
 	font-size: 0.9rem;
 }
 
 .profile-item-loaded {
-	border-color: #007acc;
+	border-color: var(--accent);
 }
 
 /* Status dot to the left of the current profile's name: green normally, gold
  * when its workspace has unsaved changes (toggled via `.dirty` in JS). Only
  * rendered on the loaded item. */
 .profile-status-dot {
-	color: #4ec94e;
+	color: var(--ok);
 	font-size: 18px;
 	line-height: 1;
 	flex: 0 0 auto;
 }
 
 .profile-status-dot.dirty {
-	color: #e2c08d;
+	color: var(--warn);
 }
 
 .profile-name {
@@ -1312,7 +1448,7 @@ body.grid-dragging-row * {
 	gap: 6px;
 	background: none;
 	border: none;
-	color: #fff;
+	color: var(--text-bright);
 	cursor: pointer;
 	text-align: left;
 	padding: 0;
@@ -1329,23 +1465,23 @@ body.grid-dragging-row * {
 }
 
 .profile-name:hover {
-	color: #ffffff;
+	color: var(--text-bright);
 }
 
 .profile-item-actions {
 	display: flex;
-	gap: 4px;
+	gap: var(--gap-btn);
 	flex: 0 0 auto;
 }
 
 /* Filled "default" star gets the gold tint the old inline marker used, so the
  * default profile stays visually obvious at a glance. */
 .btn-star-active {
-	color: #e2c08d;
+	color: var(--warn);
 }
 
 .btn-star-active:hover:not(:disabled) {
-	color: #f0d4a8;
+	color: var(--warn-hover);
 }
 
 /* Prompt dialog (Save As / Rename) reuses the shared .dialog styling. The body
@@ -1356,17 +1492,17 @@ body.grid-dragging-row * {
 	box-sizing: border-box;
 	padding: 8px;
 	margin: 16px 16px 12px;
-	background-color: #1e1e1e;
-	border: 1px solid #3c3c3c;
-	border-radius: 4px;
-	color: #d4d4d4;
+	background-color: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	color: var(--text-primary);
 	font-size: 14px;
 }
 
 .prompt-input:focus {
 	outline: none;
-	border-color: #007acc;
-	box-shadow: 0 0 0 1px #007acc inset;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent) inset;
 }
 
 /* ============================================================================
@@ -1381,21 +1517,21 @@ body.grid-dragging-row * {
 	align-items: center;
 	justify-content: center;
 	background: none;
-	border: 1px solid #3c3c3c;
-	border-radius: 4px;
-	color: #d4d4d4;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	color: var(--text-primary);
 	line-height: 0;
 	padding: 5px;
 	cursor: pointer;
 }
 
 .icon-btn:hover {
-	background-color: #3c3c3c;
-	color: #fff;
+	background-color: var(--surface-2);
+	color: var(--text-bright);
 }
 
 .icon-btn:focus-visible {
-	outline: 2px solid #0e639c;
+	outline: 2px solid var(--accent);
 	outline-offset: 1px;
 }
 
@@ -1420,24 +1556,24 @@ body.grid-dragging-row * {
 
 .settings-content .form-field > span {
 	font-size: 12px;
-	color: #9d9d9d;
+	color: var(--text-secondary);
 }
 
 .settings-content input,
 .settings-content select {
 	padding: 8px;
-	background-color: #1e1e1e;
-	border: 1px solid #3c3c3c;
-	border-radius: 4px;
-	color: #d4d4d4;
+	background-color: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	color: var(--text-primary);
 	font-size: 14px;
 }
 
 .settings-content input:focus,
 .settings-content select:focus {
 	outline: none;
-	border-color: #007acc;
-	box-shadow: 0 0 0 1px #007acc inset;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent) inset;
 }
 
 /* Auto-reconnect checkbox in the device editor (Phase 5) */
@@ -1460,12 +1596,12 @@ body.grid-dragging-row * {
 	margin-top: 4px;
 	font-size: 12px;
 	line-height: 1.4;
-	color: #858585;
+	color: var(--text-muted);
 }
 
 /* A hint that flags a problem (e.g. no local SSH agent detected). */
 .form-hint-warn {
-	color: #e5c07b;
+	color: var(--warn);
 }
 
 /* ============================================================================
@@ -1493,7 +1629,7 @@ body.grid-dragging-row * {
 
 .about-tagline {
 	margin: 6px 0 18px;
-	color: #9d9d9d;
+	color: var(--text-secondary);
 	font-size: 13px;
 }
 
@@ -1501,14 +1637,14 @@ body.grid-dragging-row * {
 	margin: 0;
 	font-family: "Cascadia Mono", Consolas, monospace;
 	font-size: 14px;
-	color: #9cdcfe;
+	color: var(--endpoint);
 }
 
 .about-built,
 .about-license,
 .about-source {
 	margin: 8px 0 0;
-	color: #9d9d9d;
+	color: var(--text-secondary);
 	font-size: 12px;
 }
 
@@ -1521,7 +1657,7 @@ body.grid-dragging-row * {
 }
 
 .known-hosts-lead {
-	color: #c4c4c4;
+	color: var(--text-secondary);
 	font-size: 0.9rem;
 	line-height: 1.45;
 	margin: 0;
@@ -1540,7 +1676,7 @@ body.grid-dragging-row * {
 }
 
 .known-hosts-empty {
-	color: #858585;
+	color: var(--text-muted);
 	font-size: 0.9rem;
 	padding: 12px 0;
 }
@@ -1550,9 +1686,9 @@ body.grid-dragging-row * {
 	align-items: center;
 	gap: 12px;
 	padding: 8px 10px;
-	background-color: #1e1e1e;
-	border: 1px solid #3c3c3c;
-	border-radius: 4px;
+	background-color: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
 }
 
 .known-hosts-info {
@@ -1564,13 +1700,13 @@ body.grid-dragging-row * {
 }
 
 .known-hosts-id {
-	color: #d4d4d4;
+	color: var(--text-primary);
 	font-size: 0.9rem;
 	font-weight: 600;
 }
 
 .known-hosts-fp {
-	color: #858585;
+	color: var(--text-muted);
 	font-family: "Cascadia Mono", Consolas, monospace;
 	font-size: 0.8rem;
 	word-break: break-all;
@@ -1589,8 +1725,8 @@ body.grid-dragging-row * {
 .forwards-section {
 	margin: 0;
 	padding: 10px;
-	border: 1px solid #3c3c3c;
-	border-radius: 4px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
 }
 
 .forwards-header {
@@ -1602,7 +1738,7 @@ body.grid-dragging-row * {
 }
 
 .forwards-title {
-	color: #d4d4d4;
+	color: var(--text-primary);
 	font-size: 0.85rem;
 	font-weight: 600;
 }
@@ -1618,37 +1754,37 @@ body.grid-dragging-row * {
 .forward-row input {
 	min-width: 0;
 	padding: 4px 6px;
-	border: 1px solid #3c3c3c;
-	border-radius: 3px;
-	background-color: #1e1e1e;
-	color: #d4d4d4;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background-color: var(--surface-0);
+	color: var(--text-primary);
 	font-size: 0.8rem;
 }
 
 .forward-arrow {
-	color: #858585;
+	color: var(--text-muted);
 	text-align: center;
 }
 
 .forward-remove {
-	border: 1px solid #3c3c3c;
-	border-radius: 3px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
 	background: none;
-	color: #d4d4d4;
+	color: var(--text-primary);
 	cursor: pointer;
 	line-height: 1;
 	padding: 2px 8px;
 }
 
 .forward-remove:hover {
-	background-color: #a11f1f;
-	border-color: #a11f1f;
+	background-color: var(--danger-strong);
+	border-color: var(--danger-strong);
 	color: #fff;
 }
 
 .forward-row .error-text {
 	grid-column: 1 / -1;
-	color: #f48771;
+	color: var(--danger-text);
 	font-size: 0.75rem;
 }
 
@@ -1662,16 +1798,16 @@ body.grid-dragging-row * {
 }
 
 .tunnels-empty {
-	color: #858585;
+	color: var(--text-muted);
 	font-size: 0.85rem;
 	padding: 8px 4px 0;
 }
 
 .tunnel-card {
-	border: 1px solid #3c3c3c;
-	border-radius: 3px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
 	padding: 8px;
-	background-color: #1e1e1e;
+	background-color: var(--surface-0);
 }
 
 .tunnel-card-header {
@@ -1682,7 +1818,7 @@ body.grid-dragging-row * {
 
 .tunnel-card-name {
 	flex: 1 1 auto;
-	color: #d4d4d4;
+	color: var(--text-primary);
 	font-weight: 600;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -1693,24 +1829,24 @@ body.grid-dragging-row * {
 	flex: 0 0 auto;
 	font-size: 0.72rem;
 	padding: 2px 8px;
-	border-radius: 10px;
-	background-color: #3c3c3c;
-	color: #d4d4d4;
+	border-radius: var(--radius-pill);
+	background-color: var(--surface-2);
+	color: var(--text-primary);
 }
 
 .tunnel-chip.is-listening {
-	background-color: #1a4d2e;
-	color: #7fd8a0;
+	background-color: var(--ok-soft);
+	color: var(--ok-text);
 }
 
 .tunnel-chip.is-connecting {
-	background-color: #4d431a;
-	color: #dccf7f;
+	background-color: var(--warn-soft);
+	color: var(--warn-text);
 }
 
 .tunnel-chip.is-error {
-	background-color: #5a1d1d;
-	color: #f48771;
+	background-color: var(--danger-soft);
+	color: var(--danger-text);
 }
 
 .tunnel-forwards {
@@ -1728,7 +1864,7 @@ body.grid-dragging-row * {
 
 .tunnel-forward-endpoint {
 	flex: 1 1 auto;
-	color: #9cdcfe;
+	color: var(--endpoint);
 	font-family: "Cascadia Mono", Consolas, monospace;
 	font-size: 0.78rem;
 	overflow: hidden;
@@ -1737,13 +1873,13 @@ body.grid-dragging-row * {
 }
 
 .tunnel-forward.is-unbound .tunnel-forward-endpoint {
-	color: #858585;
+	color: var(--text-muted);
 	text-decoration: line-through;
 }
 
 .tunnel-forward-warn {
 	flex: 0 0 auto;
-	color: #f48771;
+	color: var(--danger-text);
 	font-size: 0.72rem;
 }
 
@@ -1765,7 +1901,7 @@ body.grid-dragging-row * {
 	appearance: none;
 	-webkit-appearance: none;
 	-moz-appearance: none;
-	/* Inline SVG chevron (stroke #d4d4d4) — reads on both #1e1e1e and #3c3c3c. */
+	/* Inline SVG chevron (stroke var(--text-primary)) — reads on both var(--surface-0) and var(--border). */
 	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4.5l4 4 4-4' fill='none' stroke='%23d4d4d4' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 	background-repeat: no-repeat;
 	background-position: right 10px center;
@@ -1780,10 +1916,10 @@ body.grid-dragging-row * {
 	padding-top: 8px;
 	padding-bottom: 8px;
 	padding-left: 10px;
-	border: 1px solid #3c3c3c;
-	border-radius: 3px;
-	background-color: #1e1e1e;
-	color: #d4d4d4;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background-color: var(--surface-0);
+	color: var(--text-primary);
 	font-size: 0.9rem;
 	font-family: inherit;
 	transition: border-color 150ms ease-in-out;
@@ -1791,8 +1927,8 @@ body.grid-dragging-row * {
 
 .form-group select:focus {
 	outline: none;
-	border-color: #007acc;
-	box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
+	border-color: var(--accent);
+	box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 /* Remove the native focus ring on options list where supported. */
@@ -1804,7 +1940,7 @@ body.grid-dragging-row * {
 
 /* Empty/placeholder text inside the entry list (empty dir, disconnected). */
 .sftp-empty {
-	color: #858585;
+	color: var(--text-muted);
 	font-size: 0.85rem;
 	padding: 8px 4px 0;
 }
@@ -1838,7 +1974,7 @@ body.grid-dragging-row * {
 	align-items: center;
 	gap: 6px;
 	padding: 8px 10px;
-	border-bottom: 1px solid #3c3c3c;
+	border-bottom: 1px solid var(--border);
 	flex: 0 0 auto;
 }
 
@@ -1846,16 +1982,16 @@ body.grid-dragging-row * {
 	flex: 0 0 auto;
 	font-weight: 600;
 	font-size: 0.9rem;
-	color: #d4d4d4;
+	color: var(--text-primary);
 }
 
 .sftp-device-select {
 	flex: 1 1 auto;
 	min-width: 0;
-	background: #2d2d2d;
-	color: #d4d4d4;
-	border: 1px solid #3c3c3c;
-	border-radius: 4px;
+	background: var(--surface-2);
+	color: var(--text-primary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
 	padding: 4px 6px;
 	font: inherit;
 	font-size: 0.85rem;
@@ -1863,13 +1999,13 @@ body.grid-dragging-row * {
 
 .sftp-device-select:focus {
 	outline: none;
-	border-color: #0e639c;
+	border-color: var(--accent);
 }
 
 .sftp-panel-header-actions {
 	flex: 0 0 auto;
 	display: flex;
-	gap: 2px;
+	gap: var(--gap-btn);
 }
 
 .sftp-panel-header-actions .btn-icon,
@@ -1877,25 +2013,25 @@ body.grid-dragging-row * {
 	width: 28px;
 	height: 28px;
 	padding: 0;
-	color: #d4d4d4;
+	color: var(--text-primary);
 }
 
 /* Connect/disconnect toggle: red while connected (click = drop the live
  * connection), green while disconnected (click = connect the selected device). */
 .sftp-conn-toggle.is-connected {
-	color: #f14c4c;
+	color: var(--danger);
 }
 
 .sftp-conn-toggle.is-connected:hover:not(:disabled) {
-	color: #ff6b6b;
+	color: var(--danger-hover);
 }
 
 .sftp-conn-toggle.is-disconnected {
-	color: #3fb950;
+	color: var(--ok);
 }
 
 .sftp-conn-toggle.is-disconnected:hover:not(:disabled) {
-	color: #56d364;
+	color: var(--ok);
 }
 
 /* Connection indicator dot: grey when disconnected, green when live. */
@@ -1903,12 +2039,12 @@ body.grid-dragging-row * {
 	width: 9px;
 	height: 9px;
 	border-radius: 50%;
-	background-color: #6a6a6a;
+	background-color: var(--dot-idle);
 	flex: 0 0 auto;
 }
 
 .sftp-conn-dot.connected {
-	background-color: #3fb950;
+	background-color: var(--ok);
 }
 
 /* Not-connected placeholder inside the entry area (Connect/Reconnect prompt). */
@@ -1931,7 +2067,7 @@ body.sftp-resizing {
 	align-items: center;
 	gap: 8px;
 	padding: 10px 16px;
-	border-bottom: 1px solid #3c3c3c;
+	border-bottom: 1px solid var(--border);
 	flex: 0 0 auto;
 	/* Let the icon group drop below the path when the panel is narrow, so the
 	 * (now eight) toolbar buttons never clip. */
@@ -1942,20 +2078,20 @@ body.sftp-resizing {
 	/* Take the full first row so the action group wraps beneath it, not mid-row. */
 	flex: 1 1 100%;
 	min-width: 0;
-	color: #9cdcfe;
+	color: var(--endpoint);
 	font-family: "Cascadia Mono", Consolas, monospace;
 	font-size: 0.8rem;
 	text-align: left;
-	background: #1e1e1e;
-	border: 1px solid #3c3c3c;
-	border-radius: 4px;
+	background: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
 	padding: 5px 8px;
 	text-overflow: ellipsis;
 }
 
 .sftp-path:focus {
 	outline: none;
-	border-color: #0e639c;
+	border-color: var(--accent);
 }
 
 .sftp-path:read-only {
@@ -1966,14 +2102,14 @@ body.sftp-resizing {
 .sftp-toolbar-actions {
 	flex: 0 0 auto;
 	display: flex;
-	gap: 4px;
+	gap: var(--gap-btn);
 }
 
 .sftp-toolbar-actions .btn-icon {
 	width: 30px;
 	height: 30px;
 	padding: 0;
-	color: #d4d4d4;
+	color: var(--text-primary);
 }
 
 .sftp-toolbar-actions .btn-icon:disabled {
@@ -1995,7 +2131,7 @@ body.sftp-resizing {
 	justify-content: space-between;
 	gap: 8px;
 	padding: 6px 12px;
-	border-bottom: 1px solid #3c3c3c;
+	border-bottom: 1px solid var(--border);
 	flex: 0 0 auto;
 }
 
@@ -2003,7 +2139,7 @@ body.sftp-resizing {
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	color: #b0b0b0;
+	color: var(--text-secondary);
 	font-size: 0.8rem;
 	cursor: pointer;
 	min-width: 0;
@@ -2014,7 +2150,7 @@ body.sftp-resizing {
 
 .sftp-bulk-actions {
 	display: flex;
-	gap: 4px;
+	gap: var(--gap-btn);
 	flex: 0 0 auto;
 }
 
@@ -2041,11 +2177,11 @@ body.sftp-resizing {
 	align-items: center;
 	gap: 8px;
 	padding: 5px 6px;
-	border-radius: 3px;
+	border-radius: var(--radius-sm);
 }
 
 .sftp-entry:hover {
-	background-color: #2a2d2e;
+	background-color: var(--surface-2);
 }
 
 .sftp-entry-icon {
@@ -2057,7 +2193,7 @@ body.sftp-resizing {
 	flex: 1 1 auto;
 	background: none;
 	border: none;
-	color: #d4d4d4;
+	color: var(--text-primary);
 	font: inherit;
 	text-align: left;
 	cursor: pointer;
@@ -2068,7 +2204,7 @@ body.sftp-resizing {
 }
 
 .sftp-entry.is-dir .sftp-entry-name {
-	color: #9cdcfe;
+	color: var(--endpoint);
 	font-weight: 600;
 }
 
@@ -2078,7 +2214,7 @@ body.sftp-resizing {
 
 .sftp-entry-meta {
 	flex: 0 0 auto;
-	color: #858585;
+	color: var(--text-muted);
 	font-size: 0.75rem;
 	white-space: nowrap;
 }
@@ -2102,8 +2238,8 @@ body.sftp-resizing {
 .sftp-status {
 	flex: 0 0 auto;
 	padding: 8px 16px;
-	border-top: 1px solid #3c3c3c;
-	color: #858585;
+	border-top: 1px solid var(--border);
+	color: var(--text-muted);
 	font-size: 0.8rem;
 	min-height: 1.2em;
 }
@@ -2116,7 +2252,7 @@ body.sftp-resizing {
 	max-height: 30%;
 	overflow-y: auto;
 	padding: 6px 16px 8px;
-	border-top: 1px solid #3c3c3c;
+	border-top: 1px solid var(--border);
 }
 
 .sftp-queue-head {
@@ -2131,7 +2267,7 @@ body.sftp-resizing {
 	font-size: 0.72rem;
 	text-transform: uppercase;
 	letter-spacing: 0.04em;
-	color: #858585;
+	color: var(--text-muted);
 }
 
 .sftp-queue-list {
@@ -2150,7 +2286,7 @@ body.sftp-resizing {
 	flex: 0 0 auto;
 	display: inline-flex;
 	align-items: center;
-	color: #9cdcfe;
+	color: var(--endpoint);
 }
 
 .sftp-queue-icon svg {
@@ -2174,7 +2310,7 @@ body.sftp-resizing {
 	align-items: center;
 	gap: 6px;
 	font-size: 0.76rem;
-	color: #858585;
+	color: var(--text-muted);
 	font-variant-numeric: tabular-nums;
 }
 
@@ -2182,8 +2318,8 @@ body.sftp-resizing {
 	display: inline-block;
 	width: 90px;
 	height: 6px;
-	background-color: #3c3c3c;
-	border-radius: 3px;
+	background-color: var(--surface-2);
+	border-radius: var(--radius-sm);
 	overflow: hidden;
 }
 
@@ -2191,7 +2327,7 @@ body.sftp-resizing {
 	display: block;
 	height: 100%;
 	width: 0;
-	background-color: #007acc;
+	background-color: var(--accent);
 	transition: width 120ms linear;
 }
 
@@ -2201,11 +2337,11 @@ body.sftp-resizing {
 }
 
 .sftp-queue-item.is-done .sftp-queue-detail {
-	color: #7fd8a0;
+	color: var(--ok-text);
 }
 
 .sftp-queue-item.is-failed .sftp-queue-detail {
-	color: #f48771;
+	color: var(--danger-text);
 }
 
 .sftp-queue-cancel {
@@ -2215,11 +2351,11 @@ body.sftp-resizing {
 	padding: 0;
 	font-size: 1.05rem;
 	line-height: 1;
-	color: #858585;
+	color: var(--text-muted);
 }
 
 .sftp-queue-cancel:hover {
-	color: #f48771;
+	color: var(--danger-text);
 }
 
 /* Bookmarks chip row (below the toolbar; hidden when a device has none). */
@@ -2229,27 +2365,27 @@ body.sftp-resizing {
 	flex-wrap: wrap;
 	gap: 6px;
 	padding: 6px 16px;
-	border-bottom: 1px solid #3c3c3c;
+	border-bottom: 1px solid var(--border);
 }
 
 .sftp-bookmark {
 	display: inline-flex;
 	align-items: center;
-	background-color: #2a2d2e;
-	border: 1px solid #3c3c3c;
-	border-radius: 10px;
+	background-color: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-pill);
 	overflow: hidden;
 	max-width: 160px;
 }
 
 .sftp-bookmark.is-current {
-	border-color: #007acc;
+	border-color: var(--accent);
 }
 
 .sftp-bookmark-go {
 	background: none;
 	border: none;
-	color: #cccccc;
+	color: var(--text-secondary);
 	font-size: 0.76rem;
 	padding: 2px 6px;
 	cursor: pointer;
@@ -2260,13 +2396,13 @@ body.sftp-resizing {
 }
 
 .sftp-bookmark-go:hover {
-	color: #ffffff;
+	color: var(--text-bright);
 }
 
 .sftp-bookmark-del {
 	background: none;
 	border: none;
-	color: #858585;
+	color: var(--text-muted);
 	font-size: 0.9rem;
 	line-height: 1;
 	padding: 2px 6px 2px 2px;
@@ -2274,11 +2410,11 @@ body.sftp-resizing {
 }
 
 .sftp-bookmark-del:hover {
-	color: #f48771;
+	color: var(--danger-text);
 }
 
 .sftp-bookmark-toggle.is-marked {
-	color: #e6c07b;
+	color: var(--warn);
 }
 
 /* Filter box + sort headers, above the entry list. */
@@ -2288,45 +2424,45 @@ body.sftp-resizing {
 	align-items: center;
 	gap: 8px;
 	padding: 4px 16px;
-	border-bottom: 1px solid #3c3c3c;
+	border-bottom: 1px solid var(--border);
 }
 
 .sftp-filter {
 	flex: 1 1 auto;
 	min-width: 0;
-	background-color: #3c3c3c;
+	background-color: var(--surface-2);
 	border: 1px solid transparent;
-	border-radius: 4px;
-	color: #cccccc;
+	border-radius: var(--radius);
+	color: var(--text-secondary);
 	font-size: 0.8rem;
 	padding: 3px 8px;
 }
 
 .sftp-filter:focus {
 	outline: none;
-	border-color: #007acc;
+	border-color: var(--accent);
 }
 
 .sftp-sortbtns {
 	flex: 0 0 auto;
 	display: flex;
-	gap: 2px;
+	gap: var(--gap-btn);
 }
 
 .sftp-sortbtns .btn {
 	font-size: 0.72rem;
-	color: #858585;
+	color: var(--text-muted);
 	padding: 2px 6px;
 }
 
 .sftp-sortbtns .btn.is-active {
-	color: #cccccc;
+	color: var(--text-secondary);
 	font-weight: 600;
 }
 
 /* chmod dialog: a small permission grid. */
 .perms-name {
-	color: #9cdcfe;
+	color: var(--endpoint);
 	font-family: var(--mono-font, monospace);
 	word-break: break-all;
 	margin: 0 0 8px;
@@ -2345,19 +2481,52 @@ body.sftp-resizing {
 }
 
 .perms-grid thead th {
-	color: #858585;
+	color: var(--text-muted);
 	font-size: 0.78rem;
 }
 
 .perms-grid tbody th[scope="row"] {
 	text-align: right;
-	color: #cccccc;
+	color: var(--text-secondary);
 }
 
 .perms-octal {
 	text-align: center;
-	color: #858585;
+	color: var(--text-muted);
 	font-family: var(--mono-font, monospace);
 	font-variant-numeric: tabular-nums;
 	margin: 0 0 4px;
+}
+
+/* ============================================================================
+ * Cross-cutting polish (redesign)
+ * ============================================================================ */
+
+/* One consistent, visible keyboard-focus ring across every interactive control.
+ * `:focus-visible` keeps it to keyboard users; mouse clicks stay clean. */
+.btn:focus-visible,
+.btn-icon:focus-visible,
+.tab:focus-visible,
+.tab-new-btn:focus-visible,
+.device-search:focus-visible,
+.sftp-filter:focus-visible,
+.profile-name:focus-visible,
+.sftp-entry-name:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+/* Selectable list rows: a quiet hover so the sidebar feels responsive. */
+.device-item:hover,
+.profile-item:hover {
+	border-color: var(--border-strong);
+	background-color: var(--surface-2);
+}
+
+/* Light theme needs a dark-stroked select chevron (the default one is tuned for
+ * dark surfaces). Same inline SVG, stroke swapped to the primary text colour. */
+:root[data-theme="light"] .form-group select,
+:root[data-theme="light"] .settings-content select,
+:root[data-theme="light"] .pane-device-select {
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4.5l4 4 4-4' fill='none' stroke='%231c2130' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }

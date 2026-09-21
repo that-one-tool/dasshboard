@@ -84,7 +84,7 @@ export const en = {
 	"settings.fontFamily": "Font family",
 	"settings.scrollback": "Scrollback",
 	"settings.scrollback.hint": "Lines of history kept per terminal (0–100000).",
-	"settings.theme": "Theme",
+	"settings.theme": "Appearance",
 	"settings.theme.dark": "Dark",
 	"settings.theme.light": "Light",
 	"settings.keepalive.interval": "Keepalive interval (s)",

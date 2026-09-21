@@ -9,13 +9,13 @@ import {
 describe("xtermThemeFor", () => {
   it("maps dark to a dark background", () => {
     const t = xtermThemeFor("dark");
-    expect(t.background).toBe("#1e1e1e");
-    expect(t.foreground).toBe("#d4d4d4");
+    expect(t.background).toBe("#0f1218");
+    expect(t.foreground).toBe("#dbe0ec");
   });
   it("maps light to a light background", () => {
     const t = xtermThemeFor("light");
-    expect(t.background).toBe("#ffffff");
-    expect(t.foreground).toBe("#1e1e1e");
+    expect(t.background).toBe("#f4f6fa");
+    expect(t.foreground).toBe("#1c2130");
   });
 });
 
