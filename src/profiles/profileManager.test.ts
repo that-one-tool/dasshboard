@@ -426,6 +426,22 @@ describe("ProfileManager import/export", () => {
     return mgr;
   }
 
+  it("puts Export/Import in the header beside Save/Save As as icon buttons", async () => {
+    await initManager();
+    expect(document.querySelector(".section-actions")).toBeNull();
+    const actions = document.querySelectorAll<HTMLButtonElement>(".profile-header-actions .btn");
+    expect(actions).toHaveLength(4);
+    expect(actions[0]!.classList.contains("profile-export-btn")).toBe(true);
+    expect(actions[1]!.classList.contains("profile-import-btn")).toBe(true);
+    for (const btn of actions) {
+      expect(btn.classList.contains("btn-icon")).toBe(true);
+      expect(btn.querySelector("svg")).not.toBeNull();
+      expect(btn.textContent!.trim()).toBe("");
+      expect(btn.title).not.toBe("");
+      expect(btn.getAttribute("aria-label")).not.toBe("");
+    }
+  });
+
   it("Export click picks a save path then calls exportProfiles with it", async () => {
     saveMock.mockResolvedValue("C:/out/dasshboard-profiles.json");
     vi.mocked(exportProfiles).mockResolvedValue(1);

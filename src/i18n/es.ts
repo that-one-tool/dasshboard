@@ -98,7 +98,7 @@ export const es: Messages = {
 	"about.unavailable": "Versión no disponible",
 
 	/* -- devices sidebar + dialog ------------------------------------------- */
-	"devices.title": "Hosts/Dispositivos",
+	"devices.title": "Dispositivos",
 	"devices.add.title": "Añadir dispositivo",
 	"devices.export.title": "Exportar dispositivos a un archivo JSON",
 	"devices.import.title": "Importar dispositivos desde un archivo JSON",
@@ -259,7 +259,6 @@ export const es: Messages = {
 	"tunnels.status.stopped": "Detenido",
 	"tunnels.start": "Iniciar",
 	"tunnels.stop": "Detener",
-	"tunnels.copy": "Copiar",
 	"tunnels.copy.title": "Copiar la dirección:puerto local",
 	"tunnels.copied": "Copiado al portapapeles",
 	"tunnels.portInUse": "puerto en uso",

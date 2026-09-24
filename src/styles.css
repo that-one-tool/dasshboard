@@ -264,30 +264,18 @@ body {
 	flex: 1 1 auto;
 }
 
-/* Small actions row under a sidebar section header (Export / Import). Shared by
- * the Devices and Profiles sections so the two stay symmetric; both use
- * `.btn-small`. The 8px top/bottom spacing matches on both sides so the row sits
- * the same distance below the header line in each section. */
-.section-actions {
-	display: flex;
-	gap: var(--gap-btn);
-	padding: 8px 4px 0;
-	margin-bottom: 8px;
-}
-
 .device-list-items {
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
+	gap: 4px;
 	flex: 1 1 auto;
 	overflow-y: auto;
 }
 
 .device-item {
 	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 8px;
+	flex-direction: column;
+	gap: 4px;
 	padding: 8px;
 	background-color: var(--surface-0);
 	border: 1px solid var(--border);
@@ -295,15 +283,19 @@ body {
 	font-size: 0.9rem;
 }
 
-.device-info {
+/* Two rows per tile: name + actions, then endpoint + tag chips. The left
+ * element shrinks (ellipsis) so the right-hand one never wraps off the tile. */
+.device-row {
 	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	flex: 1 1 auto;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
 	min-width: 0;
 }
 
 .device-name {
+	flex: 1 1 auto;
+	min-width: 0;
 	font-weight: 500;
 	color: var(--text-bright);
 	white-space: nowrap;
@@ -312,7 +304,9 @@ body {
 }
 
 .device-host {
-	font-size: 0.8rem;
+	flex: 1 1 auto;
+	min-width: 0;
+	font-size: 0.72rem;
 	color: var(--endpoint);
 	font-family: "Cascadia Mono", Consolas, monospace;
 	white-space: nowrap;
@@ -328,7 +322,7 @@ body {
 
 /* Sidebar search box (feature #3). */
 .device-search-wrap {
-	padding: 0 4px 8px;
+	padding: 8px 4px;
 }
 
 .device-search {
@@ -349,7 +343,7 @@ body {
 
 /* Tag group header in the grouped device list. */
 .device-group-header {
-	padding: 6px 4px 2px;
+	padding: 6px 4px 0;
 	font-size: 0.7rem;
 	font-weight: 600;
 	text-transform: uppercase;
@@ -357,16 +351,24 @@ body {
 	color: var(--text-muted);
 }
 
+.device-group {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
 .device-group + .device-group {
 	margin-top: 4px;
 }
 
-/* Per-device tag chips shown under the endpoint. */
+/* Per-device tag chips, right-aligned on the endpoint row. */
 .device-tags {
 	display: flex;
 	flex-wrap: wrap;
+	justify-content: flex-end;
 	gap: 4px;
-	margin-top: 4px;
+	flex: 0 0 auto;
+	max-width: 60%;
 }
 
 .device-tag {
@@ -1036,17 +1038,6 @@ body.grid-dragging-row * {
 	display: block;
 }
 
-.device-add-btn {
-	width: 32px;
-	height: 32px;
-	padding: 0;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	font-size: 1.2rem;
-	font-weight: bold;
-}
-
 .btn-test-connection {
 	flex: 0 0 auto;
 }
@@ -1385,19 +1376,21 @@ body.grid-dragging-row * {
  * Profiles (Phase 4): sidebar list + toolbar bar with dirty dot
  * ========================================================================== */
 
-/* Mirrors `.device-list-header`: padded, underlined section title. Now a flex
- * row so the Save / Save As actions sit on the right of the title (they moved
- * here from the old standalone profile bar to save vertical space). */
+/* Mirrors `.device-list-header`: padded, underlined section title. A flex row
+ * so the Export / Import / Save / Save As actions sit on the right of the title
+ * (like the Devices header). */
 .sidebar-section-title {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	gap: 8px;
 	padding: 8px 4px;
+	margin-bottom: 8px;
 	border-bottom: 1px solid var(--border);
 }
 
-.profile-header-actions {
+.profile-header-actions,
+.device-header-actions {
 	display: flex;
 	gap: var(--gap-btn);
 	flex: 0 0 auto;
@@ -1409,8 +1402,8 @@ body.grid-dragging-row * {
 	margin: 4px 0;
 }
 
-/* Laid out exactly like `.device-item` — name on the left, icon actions on the
- * right at the same level — so the two sidebar sections read identically. */
+/* Laid out like a `.device-item`'s top row — name on the left, icon actions on
+ * the right at the same level — so the two sidebar sections read identically. */
 .profile-item {
 	display: flex;
 	align-items: center;
@@ -1808,6 +1801,7 @@ body.grid-dragging-row * {
 	border-radius: var(--radius-sm);
 	padding: 8px;
 	background-color: var(--surface-0);
+	font-size: 0.9rem;
 }
 
 .tunnel-card-header {
@@ -1818,35 +1812,36 @@ body.grid-dragging-row * {
 
 .tunnel-card-name {
 	flex: 1 1 auto;
-	color: var(--text-primary);
-	font-weight: 600;
+	color: var(--text-bright);
+	font-weight: 500;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-.tunnel-chip {
+/* Status as a wifi glyph (crossed out when stopped), colored per state. */
+.tunnel-status {
 	flex: 0 0 auto;
-	font-size: 0.72rem;
-	padding: 2px 8px;
-	border-radius: var(--radius-pill);
-	background-color: var(--surface-2);
-	color: var(--text-primary);
+	display: inline-flex;
+	color: var(--text-muted);
 }
 
-.tunnel-chip.is-listening {
-	background-color: var(--ok-soft);
+.tunnel-status.is-listening {
 	color: var(--ok-text);
 }
 
-.tunnel-chip.is-connecting {
-	background-color: var(--warn-soft);
+.tunnel-status.is-connecting {
 	color: var(--warn-text);
 }
 
-.tunnel-chip.is-error {
-	background-color: var(--danger-soft);
+.tunnel-status.is-error {
 	color: var(--danger-text);
+}
+
+/* Match the 14px glyphs of the device tiles' icon buttons. */
+.tunnel-card .btn-icon svg {
+	width: 14px;
+	height: 14px;
 }
 
 .tunnel-forwards {
@@ -1866,7 +1861,7 @@ body.grid-dragging-row * {
 	flex: 1 1 auto;
 	color: var(--endpoint);
 	font-family: "Cascadia Mono", Consolas, monospace;
-	font-size: 0.78rem;
+	font-size: 0.72rem;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;

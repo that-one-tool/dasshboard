@@ -15,45 +15,54 @@
  */
 
 import { t } from "../i18n";
+import { exportFileIcon, exportIcon, importFileIcon, importIcon, plusIcon } from "../ui/icons";
 
 export function deviceManagerMarkup(): string {
   return `
       <div class="device-manager">
         <div class="device-list-header">
           <h2>${t("devices.title")}</h2>
-          <button class="btn btn-primary device-add-btn" title="${t("devices.add.title")}">
-            +
-          </button>
-        </div>
-        <div class="section-actions">
-          <button
-            class="btn btn-small device-export-btn"
-            data-action="export"
-            title="${t("devices.export.title")}"
-          >
-            ${t("common.export")}
-          </button>
-          <button
-            class="btn btn-small device-import-btn"
-            data-action="import"
-            title="${t("devices.import.title")}"
-          >
-            ${t("common.import")}
-          </button>
-          <button
-            class="btn btn-small device-import-ssh-btn"
-            data-action="import-ssh-config"
-            title="${t("devices.importSsh.title")}"
-          >
-            ${t("devices.importSsh")}
-          </button>
-          <button
-            class="btn btn-small device-export-ssh-btn"
-            data-action="export-ssh-config"
-            title="${t("devices.exportSsh.title")}"
-          >
-            ${t("devices.exportSsh")}
-          </button>
+          <div class="device-header-actions">
+            <button
+              class="btn btn-icon device-export-btn"
+              data-action="export"
+              title="${t("devices.export.title")}"
+              aria-label="${t("common.export")}"
+            >
+              ${exportIcon}
+            </button>
+            <button
+              class="btn btn-icon device-import-btn"
+              data-action="import"
+              title="${t("devices.import.title")}"
+              aria-label="${t("common.import")}"
+            >
+              ${importIcon}
+            </button>
+            <button
+              class="btn btn-icon device-import-ssh-btn"
+              data-action="import-ssh-config"
+              title="${t("devices.importSsh.title")}"
+              aria-label="${t("devices.importSsh")}"
+            >
+              ${importFileIcon}
+            </button>
+            <button
+              class="btn btn-icon device-export-ssh-btn"
+              data-action="export-ssh-config"
+              title="${t("devices.exportSsh.title")}"
+              aria-label="${t("devices.exportSsh")}"
+            >
+              ${exportFileIcon}
+            </button>
+            <button
+              class="btn btn-icon btn-primary device-add-btn"
+              title="${t("devices.add.title")}"
+              aria-label="${t("devices.add.title")}"
+            >
+              ${plusIcon}
+            </button>
+          </div>
         </div>
         <div class="device-search-wrap">
           <input

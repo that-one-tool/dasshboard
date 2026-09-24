@@ -1,7 +1,7 @@
 /**
  * The Tunnels sidebar card (SPEC tunnels §6): a section under Devices listing
  * every SSH device that has port forwards with a Start/Stop control, a live
- * status chip, and per-forward `local → remote` rows (with copy-endpoint). It is
+ * status icon, and per-forward `local → remote` rows (with copy-endpoint). It is
  * intentionally separate from the terminal grid — a tunnel has no terminal and
  * is long-lived — so `grid.ts` / `pane.ts` are untouched.
  *
@@ -24,6 +24,7 @@ import {
 } from "../ipc";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { t } from "../i18n";
+import { copyIcon, playIcon, stopIcon, wifiIcon, wifiOffIcon } from "../ui/icons";
 
 /** Per-device tunnel state the panel tracks between renders. */
 interface DeviceTunnelState {
@@ -279,22 +280,23 @@ export class TunnelsPanel {
     title.className = "tunnel-card-name";
     title.textContent = device.name;
 
-    const chip = document.createElement("span");
-    chip.className = `tunnel-chip is-${status}`;
-    chip.textContent = statusLabel(status);
-
-    const action = document.createElement("button");
-    action.type = "button";
-    action.className = running ? "btn btn-danger btn-small" : "btn btn-primary btn-small";
-    action.textContent = running ? t("tunnels.stop") : t("tunnels.start");
-    action.addEventListener("click", () => {
-      void (running ? this.handleStop(device.id) : this.handleStart(device.id));
-    });
-
-    header.append(title, chip, action);
+    header.append(title, statusIconEl(status), this.renderAction(device, running));
     card.appendChild(header);
     card.appendChild(this.renderForwards(device, state));
     return card;
+  }
+
+  /** The Start (play) / Stop (stop) icon button for a device's tunnel. */
+  private renderAction(device: SshDevice, running: boolean): HTMLButtonElement {
+    const action = iconButton(
+      running ? "btn-danger" : "btn-primary",
+      running ? stopIcon : playIcon,
+      running ? t("tunnels.stop") : t("tunnels.start"),
+    );
+    action.addEventListener("click", () => {
+      void (running ? this.handleStop(device.id) : this.handleStart(device.id));
+    });
+    return action;
   }
 
   /**
@@ -327,11 +329,7 @@ export class TunnelsPanel {
       endpoint.className = "tunnel-forward-endpoint";
       endpoint.textContent = row.text;
 
-      const copy = document.createElement("button");
-      copy.type = "button";
-      copy.className = "btn btn-secondary btn-small tunnel-copy";
-      copy.textContent = t("tunnels.copy");
-      copy.title = t("tunnels.copy.title");
+      const copy = iconButton("btn-secondary tunnel-copy", copyIcon, t("tunnels.copy.title"));
       copy.addEventListener("click", () => {
         // Copy just the local `addr:port` (before the arrow) — what a DB client needs.
         void this.copyEndpoint(row.text.split(" → ")[0] ?? row.text);
@@ -348,6 +346,34 @@ export class TunnelsPanel {
     }
     return list;
   }
+}
+
+/**
+ * The tunnel's status as an icon: wifi while listening or connecting (colored
+ * per state by CSS), crossed-out wifi otherwise. The label stays available as
+ * a tooltip and to assistive tech.
+ */
+function statusIconEl(status: TunnelStatus | "stopped"): HTMLElement {
+  const active = status === "listening" || status === "connecting";
+  const label = statusLabel(status);
+  const el = document.createElement("span");
+  el.className = `tunnel-status is-${status}`;
+  el.setAttribute("role", "img");
+  el.setAttribute("aria-label", label);
+  el.title = label;
+  el.innerHTML = active ? wifiIcon : wifiOffIcon;
+  return el;
+}
+
+/** An icon-only button; `label` becomes its tooltip and accessible name. */
+function iconButton(variant: string, icon: string, label: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `btn btn-icon ${variant}`;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.innerHTML = icon;
+  return button;
 }
 
 /** Constructs and initializes the Tunnels panel. */

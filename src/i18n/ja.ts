@@ -99,7 +99,7 @@ export const ja: Messages = {
 	"about.unavailable": "バージョンを取得できません",
 
 	/* -- devices sidebar + dialog ------------------------------------------- */
-	"devices.title": "ホスト/デバイス",
+	"devices.title": "デバイス",
 	"devices.add.title": "デバイスを追加",
 	"devices.export.title": "デバイスを JSON ファイルにエクスポート",
 	"devices.import.title": "JSON ファイルからデバイスをインポート",
@@ -259,7 +259,6 @@ export const ja: Messages = {
 	"tunnels.status.stopped": "停止",
 	"tunnels.start": "開始",
 	"tunnels.stop": "停止",
-	"tunnels.copy": "コピー",
 	"tunnels.copy.title": "ローカルのアドレス:ポートをコピー",
 	"tunnels.copied": "クリップボードにコピーしました",
 	"tunnels.portInUse": "ポート使用中",

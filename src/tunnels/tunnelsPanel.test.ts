@@ -150,13 +150,37 @@ describe("TunnelsPanel", () => {
       ],
     });
 
-    expect(document.querySelector(".tunnel-chip")!.textContent).toBe("Listening");
+    const status = document.querySelector<HTMLElement>(".tunnel-status")!;
+    expect(status.classList.contains("is-listening")).toBe(true);
+    expect(status.getAttribute("aria-label")).toBe("Listening");
     const action = document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!;
-    expect(action.textContent).toBe("Stop");
+    expect(action.getAttribute("aria-label")).toBe("Stop");
 
     action.click();
     await flush();
     expect(stopTunnel).toHaveBeenCalledWith("t1");
+  });
+
+  it("shows a stopped tunnel as an icon status and icon-only buttons", async () => {
+    const panel = new TunnelsPanel();
+    await panel.init();
+
+    const status = document.querySelector<HTMLElement>(".tunnel-status")!;
+    expect(status.classList.contains("is-stopped")).toBe(true);
+    expect(status.getAttribute("aria-label")).toBe("Stopped");
+    expect(status.title).toBe("Stopped");
+    expect(status.querySelector("svg")).not.toBeNull();
+
+    const start = document.querySelector<HTMLButtonElement>(".tunnel-card-header .btn")!;
+    expect(start.classList.contains("btn-icon")).toBe(true);
+    expect(start.getAttribute("aria-label")).toBe("Start");
+    expect(start.title).toBe("Start");
+    expect(start.textContent!.trim()).toBe("");
+
+    const copy = document.querySelector<HTMLButtonElement>(".tunnel-forward .tunnel-copy")!;
+    expect(copy.classList.contains("btn-icon")).toBe(true);
+    expect(copy.getAttribute("aria-label")).toBe("Copy the local address:port");
+    expect(copy.textContent!.trim()).toBe("");
   });
 
   it("marks a forward whose port is in use", async () => {

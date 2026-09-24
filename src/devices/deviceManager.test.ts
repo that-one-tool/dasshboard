@@ -637,6 +637,18 @@ describe("device search + tag grouping", () => {
     expect(chips).toContain("db");
   });
 
+  it("puts actions beside the name and tag chips beside the endpoint", async () => {
+    const container = await setup();
+    const item = container.querySelector<HTMLElement>(".device-item")!;
+    const rows = item.querySelectorAll(".device-row");
+    expect(rows.length).toBe(2);
+    const [top, bottom] = Array.from(rows) as [Element, Element];
+    expect(top.querySelector(".device-name")).not.toBeNull();
+    expect(top.querySelector(".device-actions")).not.toBeNull();
+    expect(bottom.querySelector(".device-host")).not.toBeNull();
+    expect(bottom.querySelector(".device-tags")).not.toBeNull();
+  });
+
   it("filters the list live as the search box changes", async () => {
     const container = await setup();
     const search = q<HTMLInputElement>(container, ".device-search");

@@ -28,7 +28,10 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
       PTY right in the grid, with an optional shell path (blank = OS default) and
       startup directory (blank = home). No host/auth and **no** secret.
     - **Tags & search** — tag devices and filter the address book by name, host or
-      tag to find a device fast in a long list.
+      tag to find a device fast in a long list. Each device tile shows its tags as
+      chips beside its host:port.
+    - **Import / export** — the Devices section header holds icon buttons (with
+      tooltips) for the four transfers below, next to the add button.
     - **Import / export `~/.ssh/config`** — pull your existing OpenSSH hosts straight
       into the address book (`Host`/`HostName`/`Port`/`User`/`IdentityFile`; a host
       with an identity file becomes key auth, others password auth), and write your
@@ -75,8 +78,9 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   forwards (`ssh -L`): the app binds `127.0.0.1:<localPort>` locally and tunnels
   each connection to `remoteHost:remotePort` as reached from the SSH server, so a
   local client (e.g. a database GUI) can reach a remote service over SSH.
-  Start/stop per device from the **Tunnels** sidebar card with live status, copy
-  the local endpoint with a click, and optionally auto-start a device's tunnel on
+  Start/stop per device from the **Tunnels** sidebar card with a live status icon
+  (green wifi when listening, amber while connecting, crossed out when stopped),
+  copy the local endpoint with a click, and optionally auto-start a device's tunnel on
   app launch. Forwards bind loopback only.
 - **SFTP file browser** — a persistent, resizable **Files** panel docked beside
   the terminal grid (toggle it from the header bar): pick a device from the
@@ -116,8 +120,8 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
   an interrupted or cancelled transfer removes its partial file.
 - **Layout profiles** — save a workspace (grid + device assignments), set a
   default, and have it restore and auto-connect every pane on launch. Load a
-  profile into the current tab, or open it in a new tab. Save / Save As sit in
-  the Profiles panel header, and the currently-loaded profile is marked in the
+  profile into the current tab, or open it in a new tab. Export / Import and
+  Save / Save As sit in the Profiles panel header, and the currently-loaded profile is marked in the
   list with a status dot (green, or gold when it has unsaved changes).
 - **Host-key TOFU** — trust-on-first-use prompts with a prominent warning when a
   previously-trusted key changes (possible MITM).

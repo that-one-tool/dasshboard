@@ -7,10 +7,36 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { pencilIcon, trashIcon, starFillIcon, starIcon } from "./icons";
+import {
+  pencilIcon,
+  trashIcon,
+  starFillIcon,
+  starIcon,
+  playIcon,
+  stopIcon,
+  wifiIcon,
+  wifiOffIcon,
+  exportIcon,
+  importIcon,
+  exportFileIcon,
+  importFileIcon,
+} from "./icons";
 
 describe("icons", () => {
-  const icons = { pencilIcon, trashIcon, starFillIcon, starIcon };
+  const icons = {
+    pencilIcon,
+    trashIcon,
+    starFillIcon,
+    starIcon,
+    playIcon,
+    stopIcon,
+    wifiIcon,
+    wifiOffIcon,
+    exportIcon,
+    importIcon,
+    exportFileIcon,
+    importFileIcon,
+  };
 
   for (const [name, svg] of Object.entries(icons)) {
     it(`${name} is a non-empty, well-formed <svg> string`, () => {

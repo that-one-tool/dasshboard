@@ -566,7 +566,7 @@ export class DeviceManagerImpl {
     `;
   }
 
-  /** One device row: name, endpoint, tag chips, and edit/delete actions. */
+  /** One device tile: name + edit/delete actions, then endpoint + tag chips. */
   private deviceItemHtml(device: Device): string {
     const chips =
       device.tags.length > 0
@@ -576,11 +576,20 @@ export class DeviceManagerImpl {
         : "";
     return `
       <div class="device-item">
-        <div class="device-info">
+        <div class="device-row">
           <div class="device-name">${escapeHtml(device.name)}</div>
+          ${this.deviceActionsHtml(device)}
+        </div>
+        <div class="device-row">
           <div class="device-host">${escapeHtml(deviceEndpoint(device))}</div>
           ${chips}
         </div>
+      </div>
+    `;
+  }
+
+  private deviceActionsHtml(device: Device): string {
+    return `
         <div class="device-actions">
           <button
             class="btn btn-icon btn-edit"
@@ -599,7 +608,6 @@ export class DeviceManagerImpl {
             ${trashIcon}
           </button>
         </div>
-      </div>
     `;
   }
 

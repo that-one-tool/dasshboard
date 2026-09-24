@@ -99,7 +99,7 @@ export const zh: Messages = {
 	"about.unavailable": "版本不可用",
 
 	/* -- devices sidebar + dialog ------------------------------------------- */
-	"devices.title": "主机/设备",
+	"devices.title": "设备",
 	"devices.add.title": "添加设备",
 	"devices.export.title": "将设备导出为 JSON 文件",
 	"devices.import.title": "从 JSON 文件导入设备",
@@ -258,7 +258,6 @@ export const zh: Messages = {
 	"tunnels.status.stopped": "已停止",
 	"tunnels.start": "启动",
 	"tunnels.stop": "停止",
-	"tunnels.copy": "复制",
 	"tunnels.copy.title": "复制本地地址:端口",
 	"tunnels.copied": "已复制到剪贴板",
 	"tunnels.portInUse": "端口被占用",

@@ -105,7 +105,7 @@ export const en = {
 	"about.unavailable": "Version unavailable",
 
 	/* -- devices sidebar + dialog (devices/*) ------------------------------- */
-	"devices.title": "Hosts/Devices",
+	"devices.title": "Devices",
 	"devices.add.title": "Add device",
 	"devices.export.title": "Export devices to a JSON file",
 	"devices.import.title": "Import devices from a JSON file",
@@ -265,7 +265,6 @@ export const en = {
 	"tunnels.status.stopped": "Stopped",
 	"tunnels.start": "Start",
 	"tunnels.stop": "Stop",
-	"tunnels.copy": "Copy",
 	"tunnels.copy.title": "Copy the local address:port",
 	"tunnels.copied": "Copied to clipboard",
 	"tunnels.portInUse": "port in use",

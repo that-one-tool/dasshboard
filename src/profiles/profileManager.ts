@@ -27,6 +27,8 @@ import {
   plusIcon,
   saveIcon,
   saveAsIcon,
+  exportIcon,
+  importIcon,
 } from "../ui/icons";
 import { t, tp } from "../i18n";
 
@@ -203,17 +205,15 @@ export class ProfileManager {
       <div class="sidebar-section-title">
         <span class="sidebar-section-title-text">${t("profiles.title")}</span>
         <div class="profile-header-actions">
+          <button type="button" class="btn btn-icon profile-export-btn"
+            title="${t("profiles.export.title")}" aria-label="${t("common.export")}">${exportIcon}</button>
+          <button type="button" class="btn btn-icon profile-import-btn"
+            title="${t("profiles.import.title")}" aria-label="${t("common.import")}">${importIcon}</button>
           <button type="button" class="btn btn-icon" data-action="save"
             title="${t("profiles.bar.save")}" aria-label="${t("profiles.bar.save")}">${saveIcon}</button>
           <button type="button" class="btn btn-icon" data-action="save-as"
             title="${t("profiles.bar.saveAs")}" aria-label="${t("profiles.bar.saveAs")}">${saveAsIcon}</button>
         </div>
-      </div>
-      <div class="section-actions">
-        <button type="button" class="btn btn-small profile-export-btn"
-          title="${t("profiles.export.title")}">${t("common.export")}</button>
-        <button type="button" class="btn btn-small profile-import-btn"
-          title="${t("profiles.import.title")}">${t("common.import")}</button>
       </div>
     `;
     list

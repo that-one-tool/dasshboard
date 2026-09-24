@@ -51,6 +51,20 @@ describe("deviceManagerMarkup", () => {
     });
   }
 
+  it("puts add + import/export in the header as same-size icon buttons", () => {
+    expect(root.querySelector(".section-actions")).toBeNull();
+    const actions = root.querySelectorAll<HTMLButtonElement>(".device-list-header .btn");
+    expect(actions).toHaveLength(5);
+    expect(actions[4]!.classList.contains("device-add-btn")).toBe(true);
+    for (const btn of actions) {
+      expect(btn.classList.contains("btn-icon")).toBe(true);
+      expect(btn.querySelector("svg")).not.toBeNull();
+      expect(btn.textContent!.trim()).toBe("");
+      expect(btn.title).not.toBe("");
+      expect(btn.getAttribute("aria-label")).not.toBe("");
+    }
+  });
+
   it("hides the serial field group by default", () => {
     expect(
       root.querySelector("#serial-fields")?.classList.contains("device-kind-hidden"),
