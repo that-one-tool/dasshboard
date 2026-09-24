@@ -12,6 +12,19 @@
 	font-display: swap;
 }
 
+/* Bundled UI font: Inter (variable weight, Latin subset — covers every shipped
+ * Latin-script locale; CJK falls back per glyph to the OS font). Bundled because
+ * the CSP forbids remote fonts and Inter is rarely installed, which silently
+ * dropped the UI to Arial. Licensed under the SIL OFL; see
+ * assets/fonts/LICENSE-Inter.txt. */
+@font-face {
+	font-family: "Inter";
+	src: url("./assets/fonts/InterVariable-latin.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}
+
 /* ============================================================================
  * Design tokens
  *
@@ -21,80 +34,88 @@
  * `:root[data-theme="light"]`. The whole-app theme is driven by the "Appearance"
  * setting (shared with the terminal theme): main.ts sets `data-theme` on <html>.
  *
- * Scales: surfaces step 0 (page) → 3 (raised/hover); radius sm/md/lg + pill;
- * one soft-shadow elevation scale. Accent is indigo — a deliberate move off the
- * old VS Code blue so the app reads as its own product.
+ * Scales: surfaces step 0 (page) → 1 (cards, sidebar) → 2 (soft fill: hover,
+ * secondary buttons, tracks) → 3 (pressed); radius sm/md/lg + pill. The look is
+ * flat: neutral greys, near-invisible hairlines instead of shadows, and one
+ * saturated royal-blue accent kept for the few things that matter.
  * ============================================================================ */
 :root {
 	color-scheme: dark;
-	font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+	font-family: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
 	font-size: 16px;
 	line-height: 1.4;
 	font-weight: 400;
 
-	/* Surfaces: cool slate, layered so cards and panes lift off the page. */
-	--surface-0: #0f1218;
-	--surface-1: #151a25;
-	--surface-2: #1c2130;
-	--surface-3: #262d40;
+	/* Surfaces: neutral charcoal. Cards and the sidebar sit on `--surface-1`. */
+	--surface-0: #0d0e11;
+	--surface-1: #15171b;
+	--surface-2: #1d2025;
+	--surface-3: #272a31;
 
 	/* Borders: a hairline, plus a stronger step for hover / emphasis. */
-	--border: #262d3d;
-	--border-strong: #333c52;
+	--border: #22252b;
+	--border-strong: #2e3239;
 
 	/* Text tiers. `--text-bright` is for the few near-white emphases. */
-	--text-bright: #f4f6fb;
-	--text-primary: #dbe0ec;
-	--text-secondary: #aab1c2;
-	--text-muted: #7c8598;
+	--text-bright: #f4f5f7;
+	--text-primary: #e3e5ea;
+	--text-secondary: #a2a8b3;
+	--text-muted: #737985;
 
-	/* Accent (indigo) + its interactive + soft/glow variants. */
-	--accent: #7c88ff;
-	--accent-hover: #929cff;
-	--on-accent: #0b0d16;
-	--accent-soft: rgba(124, 136, 255, 0.22);
-	--accent-soft-strong: rgba(124, 136, 255, 0.42);
-	--accent-halo: rgba(124, 136, 255, 0.28);
-	/* Monospace endpoints (hosts, paths) — a calmer blue than the indigo accent. */
-	--endpoint: #8fb4f6;
+	/* Accent (royal blue) + its interactive + soft/glow variants. */
+	--accent: #4d7cff;
+	--accent-hover: #6690ff;
+	--on-accent: #ffffff;
+	--accent-soft: rgba(77, 124, 255, 0.14);
+	--accent-soft-strong: rgba(77, 124, 255, 0.28);
+	--accent-halo: rgba(77, 124, 255, 0.24);
+	/* Monospace endpoints (hosts, paths) — quiet secondary text, not a colour. */
+	--endpoint: #a2a8b3;
+	/* Lucide chevron-down for custom <select>s, stroked in `--text-secondary`
+	 * (a data URI can't use currentColor, so each theme bakes its own). */
+	--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a2a8b3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 
 	/* Status: connected / warning / error, each with a soft fill + on-soft text. */
-	--ok: #3fb950;
-	--ok-text: #7fd8a0;
-	--ok-soft: #123524;
-	--warn: #e0b25a;
-	--warn-hover: #f0d4a8;
-	--warn-text: #dccf7f;
-	--warn-strong: #c86a1a;
-	--warn-soft: #3d3417;
-	--danger: #f14c4c;
-	--danger-hover: #ff6b6b;
-	--danger-text: #f48771;
-	--danger-strong: #a11f1f;
-	--danger-strong-hover: #c62828;
-	--danger-soft: #451818;
-	--dot-idle: #565e72;
+	--ok: #2fbf71;
+	--ok-text: #5fd896;
+	--ok-soft: rgba(47, 191, 113, 0.14);
+	--warn: #f0b43c;
+	--warn-hover: #f6cc75;
+	--warn-text: #f3c463;
+	--warn-strong: #d9781f;
+	--warn-soft: rgba(240, 180, 60, 0.14);
+	--danger: #f0565b;
+	--danger-hover: #ff7479;
+	--danger-text: #f7878a;
+	--danger-strong: #d93a40;
+	--danger-strong-hover: #e5484d;
+	--danger-soft: rgba(240, 86, 91, 0.14);
+	--dot-idle: #4a4f59;
 
 	/* Scrims behind dialogs / pane overlays. */
-	--scrim: rgba(8, 10, 15, 0.66);
-	--overlay: rgba(15, 18, 24, 0.82);
+	--scrim: rgba(5, 6, 8, 0.66);
+	--overlay: rgba(21, 23, 27, 0.86);
 
 	/* Radius scale. */
-	--radius-sm: 6px;
-	--radius: 8px;
-	--radius-lg: 10px;
+	--radius-sm: 8px;
+	--radius: 10px;
+	--radius-lg: 14px;
 	--radius-pill: 999px;
 
 	/* Spacing between grouped controls. `--gap-btn` is the one rhythm every
 	 * action/toolbar button group uses so spacing reads the same everywhere;
-	 * `--gap-lg` is only for dialog-footer CTAs (larger buttons). */
+	 * `--gap-lg` is only for dialog-footer CTAs (larger buttons). `--gutter` is
+	 * the outer spacing between the app's major cards. */
 	--gap-btn: 6px;
 	--gap-lg: 8px;
+	--gutter: 12px;
 
-	/* Soft elevation. */
-	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-	--shadow-md: 0 6px 20px rgba(0, 0, 0, 0.38);
-	--shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.5);
+	/* Elevation: flat by default; `--shadow-raised` lifts the active chip in a
+	 * segmented track; md/lg are for floating layers (toasts, dialogs). */
+	--shadow-sm: none;
+	--shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.5);
+	--shadow-md: 0 8px 24px rgba(0, 0, 0, 0.4);
+	--shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.55);
 
 	--mono-font: "Cascadia Mono", Consolas, monospace;
 
@@ -113,49 +134,51 @@
 :root[data-theme="light"] {
 	color-scheme: light;
 
-	--surface-0: #f4f6fa;
+	--surface-0: #f5f6f8;
 	--surface-1: #ffffff;
-	--surface-2: #eceff5;
-	--surface-3: #dfe4ee;
+	--surface-2: #f1f3f6;
+	--surface-3: #e6e9ee;
 
-	--border: #d8dce6;
-	--border-strong: #c2c8d6;
+	--border: #eceef2;
+	--border-strong: #dde1e7;
 
-	--text-bright: #0b0e16;
-	--text-primary: #1c2130;
-	--text-secondary: #4c5468;
-	--text-muted: #798194;
+	--text-bright: #101217;
+	--text-primary: #23272f;
+	--text-secondary: #5d6472;
+	--text-muted: #8b919c;
 
-	--accent: #5058e6;
-	--accent-hover: #4149d6;
+	--accent: #1f5eff;
+	--accent-hover: #1a50e0;
 	--on-accent: #ffffff;
-	--accent-soft: rgba(80, 88, 230, 0.16);
-	--accent-soft-strong: rgba(80, 88, 230, 0.32);
-	--accent-halo: rgba(80, 88, 230, 0.22);
-	--endpoint: #2563c8;
+	--accent-soft: rgba(31, 94, 255, 0.09);
+	--accent-soft-strong: rgba(31, 94, 255, 0.2);
+	--accent-halo: rgba(31, 94, 255, 0.18);
+	--endpoint: #5d6472;
+	--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235d6472' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 
-	--ok: #1a7f37;
-	--ok-text: #116329;
-	--ok-soft: #d8f0de;
-	--warn: #a9740f;
-	--warn-hover: #855b0d;
-	--warn-text: #6f5410;
-	--warn-strong: #b4611a;
-	--warn-soft: #f6e7c8;
-	--danger: #d1242f;
-	--danger-hover: #b81c26;
-	--danger-text: #b3401f;
-	--danger-strong: #c0392b;
-	--danger-strong-hover: #a02a20;
-	--danger-soft: #f7dcd9;
-	--dot-idle: #9aa2b3;
+	--ok: #12a150;
+	--ok-text: #0c7f3e;
+	--ok-soft: #e6f7ed;
+	--warn: #e59a0b;
+	--warn-hover: #c7860a;
+	--warn-text: #8a5d06;
+	--warn-strong: #d9781f;
+	--warn-soft: #fdf3de;
+	--danger: #e5484d;
+	--danger-hover: #d13b40;
+	--danger-text: #c9363b;
+	--danger-strong: #e5484d;
+	--danger-strong-hover: #d13b40;
+	--danger-soft: #fdecec;
+	--dot-idle: #c3c8d0;
 
-	--scrim: rgba(30, 36, 48, 0.32);
-	--overlay: rgba(244, 246, 250, 0.82);
+	--scrim: rgba(16, 18, 23, 0.32);
+	--overlay: rgba(255, 255, 255, 0.86);
 
-	--shadow-sm: 0 1px 2px rgba(20, 26, 38, 0.08);
-	--shadow-md: 0 6px 20px rgba(20, 26, 38, 0.12);
-	--shadow-lg: 0 16px 40px rgba(20, 26, 38, 0.18);
+	--shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
+	--shadow-raised: 0 1px 3px rgba(16, 24, 40, 0.1);
+	--shadow-md: 0 8px 24px rgba(16, 24, 40, 0.1);
+	--shadow-lg: 0 20px 48px rgba(16, 24, 40, 0.16);
 }
 
 *,
@@ -192,10 +215,7 @@ body {
 	align-items: center;
 	gap: var(--gap-btn);
 	margin-left: auto;
-	/* Centred in the strip and nudged up so the icons don't crowd the tab-row
-	 * bottom border. */
 	align-self: center;
-	margin-bottom: 4px;
 	flex: 0 0 auto;
 }
 
@@ -203,34 +223,31 @@ body {
 	display: flex;
 	flex: 1 1 auto;
 	min-height: 0;
-	gap: 8px;
-	padding: 8px;
 }
 
 /* ============================================================================
  * Sidebar (device list)
  * ============================================================================ */
 
-/* The sidebar is a transparent container; Devices and Profiles are each their
- * own boxed section (Phase 6). */
+/* The sidebar is one flush, full-height column divided from the workspace by a
+ * hairline; Profiles / Devices / Tunnels are unboxed sections separated only by
+ * spacing and their small uppercase titles. */
 .sidebar {
 	display: flex;
 	flex-direction: column;
-	width: 320px;
-	gap: 8px;
+	width: 300px;
+	gap: 20px;
+	padding: 14px 12px;
 	overflow-y: auto;
 	flex: 0 0 auto;
+	background-color: var(--surface-1);
+	border-right: 1px solid var(--border);
 }
 
 .device-list,
 .profile-list,
 .tunnel-list {
-	background-color: var(--surface-1);
-	border: 1px solid var(--border);
-	border-radius: var(--radius-lg);
-	padding: 8px;
 	flex: 0 0 auto;
-	box-shadow: var(--shadow-sm);
 }
 
 .device-manager {
@@ -244,8 +261,7 @@ body {
 	justify-content: space-between;
 	align-items: center;
 	gap: 8px;
-	padding: 8px 4px;
-	border-bottom: 1px solid var(--border);
+	padding: 0 4px 0 8px;
 }
 
 /* Shared section-title typography for the sidebar's Devices and Profiles
@@ -253,9 +269,9 @@ body {
 .device-list-header h2,
 .sidebar-section-title {
 	margin: 0;
-	font-size: 0.72rem;
+	font-size: 0.68rem;
 	font-weight: 600;
-	letter-spacing: 0.07em;
+	letter-spacing: 0.08em;
 	text-transform: uppercase;
 	color: var(--text-muted);
 }
@@ -267,20 +283,24 @@ body {
 .device-list-items {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
+	gap: 2px;
 	flex: 1 1 auto;
 	overflow-y: auto;
 }
 
+/* Borderless rows; hover lays a soft grey pill behind the row. */
 .device-item {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
-	padding: 8px;
-	background-color: var(--surface-0);
-	border: 1px solid var(--border);
-	border-radius: var(--radius-sm);
+	gap: 3px;
+	padding: 7px 8px;
+	border-radius: var(--radius);
 	font-size: 0.9rem;
+	transition: background-color 120ms ease;
+}
+
+.device-item:hover {
+	background-color: var(--surface-2);
 }
 
 /* Two rows per tile: name + actions, then endpoint + tag chips. The left
@@ -322,28 +342,35 @@ body {
 
 /* Sidebar search box (feature #3). */
 .device-search-wrap {
-	padding: 8px 4px;
+	padding: 8px 0 6px;
 }
 
 .device-search {
 	width: 100%;
 	box-sizing: border-box;
-	padding: 6px 8px;
+	padding: 8px 12px;
+	font-family: inherit;
 	font-size: 0.85rem;
 	background-color: var(--surface-2);
-	color: var(--text-secondary);
-	border: 1px solid var(--border-strong);
+	color: var(--text-primary);
+	border: 1px solid transparent;
 	border-radius: var(--radius);
+}
+
+.device-search::placeholder {
+	color: var(--text-muted);
 }
 
 .device-search:focus {
 	outline: none;
+	background-color: var(--surface-1);
 	border-color: var(--accent);
+	box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 /* Tag group header in the grouped device list. */
 .device-group-header {
-	padding: 6px 4px 0;
+	padding: 6px 8px 0;
 	font-size: 0.7rem;
 	font-weight: 600;
 	text-transform: uppercase;
@@ -371,13 +398,14 @@ body {
 	max-width: 60%;
 }
 
+/* Tinted, borderless chip. */
 .device-tag {
-	font-size: 0.7rem;
-	padding: 1px 6px;
+	font-size: 0.68rem;
+	font-weight: 500;
+	padding: 2px 8px;
 	border-radius: var(--radius-pill);
-	background-color: var(--surface-3);
-	color: var(--text-secondary);
-	border: 1px solid var(--border-strong);
+	background-color: var(--accent-soft);
+	color: var(--accent);
 }
 
 .empty-state {
@@ -396,7 +424,8 @@ body {
 	flex-direction: column;
 	flex: 1 1 auto;
 	min-width: 0;
-	gap: 8px;
+	gap: var(--gutter);
+	padding: var(--gutter);
 }
 
 .pane-root {
@@ -425,7 +454,7 @@ body {
 .sftp-splitter {
 	flex: 0 0 auto;
 	width: 6px;
-	margin: 0 1px;
+	margin: 0 3px;
 	cursor: col-resize;
 	background-color: transparent;
 	border-radius: var(--radius-sm);
@@ -446,7 +475,7 @@ body {
 	flex-direction: column;
 	min-height: 0;
 	width: 360px;
-	background-color: var(--surface-0);
+	background-color: var(--surface-1);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-lg);
 	overflow: hidden;
@@ -480,30 +509,35 @@ body {
 
 .tab-root {
 	flex-direction: column;
-	gap: 6px;
+	gap: var(--gutter);
 }
 
-/* The strip reads as a browser-style tab bar: a full-width baseline that the
- * active tab connects into (its bottom edge overlaps the line and its
- * content-coloured fill hides that segment, so it looks joined to the workspace
- * below). */
+/* The strip is the app's header bar: a white card holding the tabs (as a
+ * segmented pill track), the `+` button and the app-action buttons. */
 .tab-strip {
 	display: flex;
-	align-items: stretch;
-	gap: 2px;
+	align-items: center;
+	gap: 8px;
 	flex: 0 0 auto;
-	padding: 0 2px;
-	border-bottom: 1px solid var(--border);
+	padding: 6px 8px 6px 6px;
+	background-color: var(--surface-1);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-sm);
 }
 
 /* Only the tabs scroll when they overflow; the `+` button and the mounted
- * app-action buttons after it stay pinned at the right. */
+ * app-action buttons after it stay pinned at the right. The grey track is what
+ * makes the tabs read as one segmented control. */
 .tab-strip-tabs {
 	display: flex;
 	align-items: stretch;
 	gap: 2px;
+	padding: 3px;
 	min-width: 0;
 	flex: 0 1 auto;
+	background-color: var(--surface-2);
+	border-radius: var(--radius);
 	overflow-x: auto;
 	overflow-y: hidden; /* stop overflow-x:auto from forcing a vertical scrollbar */
 	scrollbar-width: thin;
@@ -514,12 +548,11 @@ body {
 	display: inline-flex;
 	align-items: center;
 	gap: 7px;
-	padding: 6px 9px;
+	padding: 6px 12px;
 	min-width: 92px;
 	max-width: 220px;
-	border: 1px solid transparent;
-	border-bottom: none;
-	border-radius: var(--radius) var(--radius) 0 0;
+	border: none;
+	border-radius: var(--radius-sm);
 	background: transparent;
 	color: var(--text-secondary);
 	font-size: 0.83rem;
@@ -531,19 +564,15 @@ body {
 }
 
 .tab:hover {
-	background: var(--surface-2);
 	color: var(--text-primary);
 }
 
-/* Active tab: filled with the workspace colour, outlined on three sides, and
- * capped by a 2px accent bar drawn as an inset shadow (no layout shift and no
- * vertical overflow, so the tab row never grows a scrollbar). */
+/* Active tab: a raised card-coloured chip inside the grey track. */
 .tab.tab-active {
-	background: var(--surface-0);
+	background: var(--surface-1);
 	color: var(--text-bright);
-	border-color: var(--border);
-	font-weight: 500;
-	box-shadow: inset 0 2px 0 var(--accent);
+	font-weight: 600;
+	box-shadow: var(--shadow-raised);
 }
 
 .tab-name {
@@ -556,9 +585,9 @@ body {
 .tab-rename-input {
 	font: inherit;
 	color: var(--text-bright);
-	background: var(--surface-0);
+	background: var(--surface-1);
 	border: 1px solid var(--accent);
-	border-radius: var(--radius);
+	border-radius: var(--radius-sm);
 	padding: 1px 5px;
 	width: 12ch;
 	min-width: 0;
@@ -582,7 +611,7 @@ body {
 
 .tab-dirty-dot {
 	background: var(--warn);
-	box-shadow: 0 0 0 2px rgba(224, 145, 58, 0.2);
+	box-shadow: 0 0 0 2px var(--warn-soft);
 }
 
 /* Close affordance: reserves its slot always (no width shift), but only fades in
@@ -594,9 +623,9 @@ body {
 	padding: 0;
 	width: 17px;
 	height: 17px;
-	margin-right: -2px;
+	margin-right: -4px;
 	border: none;
-	border-radius: var(--radius);
+	border-radius: var(--radius-pill);
 	background: transparent;
 	color: inherit;
 	cursor: pointer;
@@ -604,6 +633,12 @@ body {
 	transition:
 		opacity 120ms ease,
 		background 120ms ease;
+}
+
+/* The shared 16px close glyph is scaled down to sit inside the small slot. */
+.tab-close svg {
+	width: 14px;
+	height: 14px;
 }
 
 .tab:hover .tab-close,
@@ -623,9 +658,8 @@ body {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 26px;
-	height: 26px;
-	margin-left: 2px;
+	width: 30px;
+	height: 30px;
 	padding: 0;
 	border: none;
 	border-radius: var(--radius-sm);
@@ -669,7 +703,7 @@ body {
 .grid-root {
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
+	gap: 10px;
 	width: 100%;
 	min-height: 0;
 }
@@ -684,18 +718,25 @@ body {
 
 .grid-toolbar-label {
 	color: var(--text-muted);
-	font-size: 0.85rem;
-	margin-right: 4px;
+	font-size: 0.84rem;
+	margin: 0 4px 0 2px;
 }
 
 .grid-preset-btn {
 	font-family: "Cascadia Mono", Consolas, monospace;
 }
 
-.grid-preset-btn.grid-preset-active {
-	background-color: var(--accent);
-	border-color: var(--accent);
-	color: var(--on-accent);
+/* Scoped to the toolbar so it outranks the later base `.btn` fill. */
+.grid-toolbar .grid-preset-btn {
+	background-color: transparent;
+	color: var(--text-secondary);
+}
+
+.grid-toolbar .grid-preset-btn.grid-preset-active,
+.grid-toolbar .grid-preset-btn.grid-preset-active:hover:not(:disabled) {
+	background-color: var(--accent-soft);
+	color: var(--accent);
+	font-weight: 600;
 }
 
 /* Broadcast toggle: pushed to the far right of the toolbar. Its active state
@@ -703,6 +744,13 @@ body {
  * keystrokes to every pane at once is a mode the user should notice is on. */
 .grid-broadcast-btn {
 	margin-left: auto;
+}
+
+/* It sits on the page background, where the soft fill would vanish, so it
+ * takes the card look instead (scoped to outrank the later base `.btn`). */
+.grid-toolbar .grid-broadcast-btn:not(.grid-broadcast-active) {
+	background-color: var(--surface-1);
+	border-color: var(--border);
 }
 
 .grid-broadcast-btn.grid-broadcast-active {
@@ -713,7 +761,8 @@ body {
 
 /* While broadcasting, ring every pane so it's obvious input goes everywhere. */
 .grid-broadcasting .pane {
-	box-shadow: 0 0 0 1px var(--warn-strong) inset;
+	border-color: var(--warn-strong);
+	box-shadow: 0 0 0 3px var(--warn-soft);
 }
 
 .grid-container {
@@ -734,7 +783,7 @@ body {
 
 .grid-cell-focused .pane {
 	border-color: var(--accent);
-	box-shadow: 0 0 0 1px var(--accent) inset;
+	box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 /* Splitters are absolutely positioned over the grid at track boundaries so they
@@ -795,19 +844,22 @@ body.grid-dragging-row * {
 	min-width: 0;
 	display: flex;
 	flex-direction: column;
-	background-color: var(--surface-0);
+	container: pane / inline-size;
+	background-color: var(--surface-1);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-lg);
 	overflow: hidden;
 	box-shadow: var(--shadow-sm);
+	transition:
+		border-color 150ms ease,
+		box-shadow 150ms ease;
 }
 
 .pane-header {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 6px 8px;
-	background-color: var(--surface-1);
+	padding: 8px 10px;
 	border-bottom: 1px solid var(--border);
 }
 
@@ -823,38 +875,73 @@ body.grid-dragging-row * {
 	font-size: 0.9rem;
 }
 
-.pane-status-dot {
-	width: 10px;
-	height: 10px;
-	border-radius: 50%;
+/* Status chip, pinned to the right of the pane header: a tinted pill whose
+ * fill, text and dot all come from the state's status tokens. */
+.pane-status {
+	--chip-bg: var(--surface-2);
+	--chip-fg: var(--text-muted);
+	--chip-dot: var(--dot-idle);
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
 	flex: 0 0 auto;
-	background-color: var(--dot-idle);
+	margin-left: auto;
+	padding: 3px 10px;
+	border-radius: var(--radius-pill);
+	background-color: var(--chip-bg);
+	color: var(--chip-fg);
+	font-size: 0.72rem;
+	font-weight: 500;
+	white-space: nowrap;
 }
 
-.pane-status-idle {
-	background-color: var(--dot-idle);
+.pane-status-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex: 0 0 auto;
+	background-color: var(--chip-dot);
 }
+
+/* In a narrow pane the device picker and Connect button need the room, so the
+ * chip collapses to its dot (the state stays readable via its tooltip). */
+@container pane (max-width: 380px) {
+	.pane-status {
+		padding: 6px;
+	}
+
+	.pane-status-label {
+		display: none;
+	}
+}
+
 .pane-status-connecting {
-	background-color: var(--warn);
+	--chip-bg: var(--warn-soft);
+	--chip-fg: var(--warn-text);
+	--chip-dot: var(--warn);
 }
 .pane-status-connected {
-	background-color: var(--ok);
+	--chip-bg: var(--ok-soft);
+	--chip-fg: var(--ok-text);
+	--chip-dot: var(--ok);
 }
 .pane-status-disconnected,
 .pane-status-error {
-	background-color: var(--danger);
+	--chip-bg: var(--danger-soft);
+	--chip-fg: var(--danger-text);
+	--chip-dot: var(--danger);
 }
 
 .pane-body {
 	position: relative;
 	flex: 1 1 auto;
 	min-height: 0;
-	padding: 4px;
+	padding: 6px 4px 4px 8px;
 }
 
 .pane-terminal {
 	position: absolute;
-	inset: 4px;
+	inset: 6px 4px 4px 8px;
 	overflow: hidden;
 }
 
@@ -961,12 +1048,13 @@ body.grid-dragging-row * {
  * ============================================================================ */
 
 .btn {
-	padding: 6px 12px;
-	border: 1px solid var(--border);
+	padding: 7px 14px;
+	border: 1px solid transparent;
 	border-radius: var(--radius-sm);
 	background-color: var(--surface-2);
 	color: var(--text-primary);
-	font-size: 0.9rem;
+	font-size: 0.88rem;
+	font-weight: 500;
 	font-family: inherit;
 	cursor: pointer;
 	transition: all 150ms ease-in-out;
@@ -975,7 +1063,11 @@ body.grid-dragging-row * {
 
 .btn:hover:not(:disabled) {
 	background-color: var(--surface-3);
-	border-color: var(--surface-3);
+}
+
+.btn:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
 }
 
 .btn:active:not(:disabled) {
@@ -991,7 +1083,7 @@ body.grid-dragging-row * {
 	background-color: var(--accent);
 	border-color: var(--accent);
 	color: var(--on-accent);
-	font-weight: 500;
+	font-weight: 600;
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -1001,7 +1093,6 @@ body.grid-dragging-row * {
 
 .btn-secondary {
 	background-color: var(--surface-2);
-	border-color: var(--border);
 }
 
 /* Destructive actions (Delete, session teardown). Placed after `.btn` and using
@@ -1019,7 +1110,7 @@ body.grid-dragging-row * {
 }
 
 .btn-small {
-	padding: 4px 8px;
+	padding: 4px 9px;
 	font-size: 0.8rem;
 }
 
@@ -1036,6 +1127,29 @@ body.grid-dragging-row * {
 
 .btn-icon svg {
 	display: block;
+}
+
+/* In the sidebar, secondary icon actions are ghosts so rows stay quiet; only the
+ * primary (add / start) keeps its fill. Destructive ones tint red on hover. */
+.sidebar .btn-icon:not(.btn-primary) {
+	background-color: transparent;
+	border-color: transparent;
+	color: var(--text-secondary);
+}
+
+.sidebar .btn-icon:not(.btn-primary):hover:not(:disabled) {
+	background-color: var(--surface-3);
+	color: var(--text-bright);
+}
+
+.sidebar .btn-icon.btn-danger:hover:not(:disabled) {
+	background-color: var(--danger-soft);
+	color: var(--danger);
+}
+
+.sidebar .btn-icon.btn-star-active,
+.sidebar .btn-icon.btn-star-active:hover:not(:disabled) {
+	color: var(--warn);
 }
 
 .btn-test-connection {
@@ -1097,7 +1211,7 @@ body.grid-dragging-row * {
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
-	padding: 16px;
+	padding: 16px 20px;
 	border-bottom: 1px solid var(--border);
 	flex: 0 0 auto;
 }
@@ -1105,13 +1219,16 @@ body.grid-dragging-row * {
 .dialog-header h2 {
 	margin: 0;
 	font-size: 1.1rem;
+	font-weight: 600;
+	color: var(--text-bright);
 	flex: 1 1 auto;
 }
 
 .dialog-close-btn {
 	background: none;
 	border: none;
-	color: var(--text-primary);
+	border-radius: var(--radius-pill);
+	color: var(--text-secondary);
 	font-size: 1.5rem;
 	cursor: pointer;
 	padding: 0;
@@ -1124,6 +1241,7 @@ body.grid-dragging-row * {
 }
 
 .dialog-close-btn:hover {
+	background-color: var(--surface-2);
 	color: var(--text-bright);
 }
 
@@ -1171,20 +1289,22 @@ body.grid-dragging-row * {
 .form-group input[type="text"],
 .form-group input[type="password"],
 .form-group input[type="number"] {
-	padding: 8px 10px;
-	border: 1px solid var(--border);
+	padding: 8px 12px;
+	border: 1px solid var(--border-strong);
 	border-radius: var(--radius-sm);
-	background-color: var(--surface-0);
+	background-color: var(--surface-1);
 	color: var(--text-primary);
 	font-size: 0.9rem;
 	font-family: inherit;
-	transition: border-color 150ms ease-in-out;
+	transition:
+		border-color 150ms ease-in-out,
+		box-shadow 150ms ease-in-out;
 }
 
 .form-group input:focus {
 	outline: none;
 	border-color: var(--accent);
-	box-shadow: 0 0 0 2px var(--accent-soft);
+	box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .form-group input::placeholder {
@@ -1238,10 +1358,9 @@ body.grid-dragging-row * {
 	display: flex;
 	flex-direction: column;
 	gap: 12px;
-	padding: 10px 12px;
-	background-color: var(--surface-0);
-	border: 1px solid var(--border);
-	border-radius: var(--radius-sm);
+	padding: 12px;
+	background-color: var(--surface-2);
+	border-radius: var(--radius);
 }
 
 .auth-method-hidden {
@@ -1330,13 +1449,11 @@ body.grid-dragging-row * {
 .toast-error {
 	background-color: var(--danger);
 	color: #fff;
-	border: 1px solid var(--danger);
 }
 
 .toast-success {
-	background-color: var(--accent);
-	color: var(--on-accent);
-	border: 1px solid var(--accent-hover);
+	background-color: var(--text-bright);
+	color: var(--surface-1);
 }
 
 @keyframes slideIn {
@@ -1365,7 +1482,9 @@ body.grid-dragging-row * {
 
 ::-webkit-scrollbar-thumb {
 	background-color: var(--border-strong);
-	border-radius: var(--radius-sm);
+	border: 2px solid transparent;
+	background-clip: padding-box;
+	border-radius: var(--radius-pill);
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -1384,9 +1503,8 @@ body.grid-dragging-row * {
 	align-items: center;
 	justify-content: space-between;
 	gap: 8px;
-	padding: 8px 4px;
-	margin-bottom: 8px;
-	border-bottom: 1px solid var(--border);
+	padding: 0 4px 0 8px;
+	margin-bottom: 6px;
 }
 
 .profile-header-actions,
@@ -1399,7 +1517,7 @@ body.grid-dragging-row * {
 .sidebar-empty {
 	font-size: 12px;
 	color: var(--text-muted);
-	margin: 4px 0;
+	margin: 4px 8px;
 }
 
 /* Laid out like a `.device-item`'s top row — name on the left, icon actions on
@@ -1409,16 +1527,15 @@ body.grid-dragging-row * {
 	align-items: center;
 	justify-content: space-between;
 	gap: 8px;
-	padding: 8px;
-	background-color: var(--surface-0);
-	border: 1px solid var(--border);
-	border-radius: var(--radius-sm);
-	margin-bottom: 6px;
+	padding: 7px 8px;
+	border-radius: var(--radius);
+	margin-bottom: 2px;
 	font-size: 0.9rem;
+	transition: background-color 120ms ease;
 }
 
 .profile-item-loaded {
-	border-color: var(--accent);
+	background-color: var(--surface-2);
 }
 
 /* Status dot to the left of the current profile's name: green normally, gold
@@ -1426,7 +1543,7 @@ body.grid-dragging-row * {
  * rendered on the loaded item. */
 .profile-status-dot {
 	color: var(--ok);
-	font-size: 18px;
+	font-size: 16px;
 	line-height: 1;
 	flex: 0 0 auto;
 }
@@ -1485,17 +1602,18 @@ body.grid-dragging-row * {
 	box-sizing: border-box;
 	padding: 8px;
 	margin: 16px 16px 12px;
-	background-color: var(--surface-0);
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
+	background-color: var(--surface-1);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
 	color: var(--text-primary);
+	font-family: inherit;
 	font-size: 14px;
 }
 
 .prompt-input:focus {
 	outline: none;
 	border-color: var(--accent);
-	box-shadow: 0 0 0 1px var(--accent) inset;
+	box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 /* ============================================================================
@@ -1509,13 +1627,18 @@ body.grid-dragging-row * {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
+	width: 32px;
+	height: 32px;
 	background: none;
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
-	color: var(--text-primary);
+	border: none;
+	border-radius: var(--radius-pill);
+	color: var(--text-secondary);
 	line-height: 0;
-	padding: 5px;
+	padding: 0;
 	cursor: pointer;
+	transition:
+		background-color 120ms ease,
+		color 120ms ease;
 }
 
 .icon-btn:hover {
@@ -1787,20 +1910,19 @@ body.grid-dragging-row * {
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
-	padding-top: 8px;
+	padding-top: 6px;
 }
 
 .tunnels-empty {
 	color: var(--text-muted);
 	font-size: 0.85rem;
-	padding: 8px 4px 0;
+	padding: 0 8px;
 }
 
 .tunnel-card {
-	border: 1px solid var(--border);
-	border-radius: var(--radius-sm);
-	padding: 8px;
-	background-color: var(--surface-0);
+	border-radius: var(--radius);
+	padding: 8px 10px;
+	background-color: var(--surface-2);
 	font-size: 0.9rem;
 }
 
@@ -1838,10 +1960,10 @@ body.grid-dragging-row * {
 	color: var(--danger-text);
 }
 
-/* Match the 14px glyphs of the device tiles' icon buttons. */
+/* Match the 16px glyphs of the device tiles' icon buttons. */
 .tunnel-card .btn-icon svg {
-	width: 14px;
-	height: 14px;
+	width: 16px;
+	height: 16px;
 }
 
 .tunnel-forwards {
@@ -1892,16 +2014,16 @@ body.grid-dragging-row * {
 
 .form-group select,
 .settings-content select,
-.pane-device-select {
+.pane-device-select,
+.sftp-device-select {
 	appearance: none;
 	-webkit-appearance: none;
 	-moz-appearance: none;
-	/* Inline SVG chevron (stroke var(--text-primary)) — reads on both var(--surface-0) and var(--border). */
-	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4.5l4 4 4-4' fill='none' stroke='%23d4d4d4' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+	background-image: var(--select-chevron);
 	background-repeat: no-repeat;
 	background-position: right 10px center;
-	background-size: 12px;
-	padding-right: 30px;
+	background-size: 16px;
+	padding-right: 32px;
 	cursor: pointer;
 }
 
@@ -1983,11 +2105,11 @@ body.grid-dragging-row * {
 .sftp-device-select {
 	flex: 1 1 auto;
 	min-width: 0;
-	background: var(--surface-2);
+	background-color: var(--surface-2);
 	color: var(--text-primary);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
-	padding: 4px 6px;
+	padding: 4px 32px 4px 8px;
 	font: inherit;
 	font-size: 0.85rem;
 }
@@ -2516,12 +2638,4 @@ body.sftp-resizing {
 .profile-item:hover {
 	border-color: var(--border-strong);
 	background-color: var(--surface-2);
-}
-
-/* Light theme needs a dark-stroked select chevron (the default one is tuned for
- * dark surfaces). Same inline SVG, stroke swapped to the primary text colour. */
-:root[data-theme="light"] .form-group select,
-:root[data-theme="light"] .settings-content select,
-:root[data-theme="light"] .pane-device-select {
-	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4.5l4 4 4-4' fill='none' stroke='%231c2130' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }

@@ -40,6 +40,7 @@ import { isMultilinePaste, pasteConfirmMessage } from "./paste";
 import { confirm } from "../ui/confirm";
 import { requireEl } from "../ui/dom";
 import { t } from "../i18n";
+import type { MessageKey } from "../i18n/en";
 import { deviceEndpoint } from "../devices/deviceEndpoint";
 
 // Re-exported so callers already importing it from this module keep working;
@@ -75,6 +76,16 @@ export interface TerminalPaneOptions {
    */
   onInput?: (data: string) => void;
 }
+
+type PaneStatus = SessionStatus | "idle";
+
+const STATUS_LABEL_KEYS: Record<PaneStatus, MessageKey> = {
+  idle: "pane.status.idle",
+  connecting: "pane.status.connecting",
+  connected: "pane.status.connected",
+  disconnected: "pane.status.disconnected",
+  error: "pane.status.error",
+};
 
 export class TerminalPane {
   private root: HTMLElement;
@@ -112,6 +123,8 @@ export class TerminalPane {
   // time an overlay is displayed so `retranslate()` can rebuild it in the new
   // language (the overlay's own text goes through `t()` inside the thunk).
   private overlayRenderer: () => void = () => this.hideOverlay();
+  // Kept so `retranslate()` can relabel the header status chip.
+  private paneStatus: PaneStatus = "idle";
 
   constructor(root: HTMLElement, options: TerminalPaneOptions = {}) {
     this.root = root;
@@ -219,12 +232,15 @@ export class TerminalPane {
     this.root.innerHTML = `
       <div class="pane">
         <div class="pane-header">
-          <span class="pane-status-dot pane-status-idle" aria-hidden="true"></span>
           <select class="pane-device-select" aria-label="${t("pane.deviceSelect.aria")}"></select>
           <button type="button" class="btn btn-primary pane-connect">${t("pane.connect")}</button>
           <button type="button" class="btn btn-secondary pane-disconnect" hidden>
             ${t("pane.disconnect")}
           </button>
+          <span class="pane-status">
+            <span class="pane-status-dot" aria-hidden="true"></span>
+            <span class="pane-status-label"></span>
+          </span>
         </div>
         <div class="pane-body">
           <div class="pane-terminal"></div>
@@ -244,6 +260,7 @@ export class TerminalPane {
         </div>
       </div>
     `;
+    this.renderStatus();
 
     requireEl<HTMLButtonElement>(this.root, ".pane-connect").addEventListener(
       "click",
@@ -302,9 +319,17 @@ export class TerminalPane {
     this.updateHeaderTooltip();
   }
 
-  private setStatusDot(status: SessionStatus | "idle"): void {
-    const dot = requireEl<HTMLElement>(this.root, ".pane-status-dot");
-    dot.className = `pane-status-dot pane-status-${status}`;
+  private setStatus(status: PaneStatus): void {
+    this.paneStatus = status;
+    this.renderStatus();
+  }
+
+  private renderStatus(): void {
+    const chip = requireEl<HTMLElement>(this.root, ".pane-status");
+    chip.className = `pane-status pane-status-${this.paneStatus}`;
+    const label = t(STATUS_LABEL_KEYS[this.paneStatus]);
+    requireEl<HTMLElement>(chip, ".pane-status-label").textContent = label;
+    chip.title = label;
   }
 
   private async startSession(fromReconnect = false): Promise<void> {
@@ -322,7 +347,7 @@ export class TerminalPane {
 
       // Immediate feedback before the backend's own `connecting` event arrives.
       this.applyStatus("connecting");
-      this.setStatusDot("connecting");
+      this.setStatus("connecting");
 
       await this.establishConnection(deviceId, terminal);
     } finally {
@@ -463,7 +488,7 @@ export class TerminalPane {
   }
 
   private applyStatus(status: SessionStatus, message?: string): void {
-    this.setStatusDot(status);
+    this.setStatus(status);
 
     if (status === "connecting") {
       this.applyConnectingStatus(status, message);
@@ -588,7 +613,7 @@ export class TerminalPane {
   }
 
   private renderReconnectOverlay(): void {
-    this.setStatusDot("connecting");
+    this.setStatus("connecting");
     const { overlay, spinner, title, detail, retry, cancel } = this.overlayEls();
 
     overlay.classList.remove("dialog-hidden");
@@ -605,7 +630,7 @@ export class TerminalPane {
     this.overlayRenderer = () => this.hideOverlay();
     const overlay = this.root.querySelector<HTMLElement>(".pane-overlay");
     overlay?.classList.add("dialog-hidden");
-    this.setStatusDot("idle");
+    this.setStatus("idle");
   }
 
   /**
@@ -636,6 +661,7 @@ export class TerminalPane {
     const select = this.root.querySelector<HTMLSelectElement>(".pane-device-select");
     select?.setAttribute("aria-label", t("pane.deviceSelect.aria"));
     this.renderDeviceOptions();
+    this.renderStatus();
     this.overlayRenderer();
   }
 

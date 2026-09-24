@@ -59,6 +59,7 @@ vi.mock("../ipc", () => ({
 import { TerminalPane, deviceEndpoint, deviceOptionLabel } from "./pane";
 import { connect, disconnect, listDevices, writeStdin } from "../ipc";
 import type { Device } from "../ipc";
+import { setLocale } from "../i18n";
 
 const readText = vi.fn(async () => "PASTED");
 
@@ -632,9 +633,60 @@ describe("TerminalPane referential cleanup (Phase 4)", () => {
     expect(pane.hasLiveSession()).toBe(false);
     expect(vi.mocked(disconnect)).toHaveBeenCalledWith(h.sessionId);
 
-    const dot = q<HTMLElement>(root, ".pane-status-dot");
-    expect(dot.className).toContain("pane-status-idle");
+    const chip = q<HTMLElement>(root, ".pane-status");
+    expect(chip.className).toContain("pane-status-idle");
     const overlay = q<HTMLElement>(root, ".pane-overlay");
     expect(overlay.classList.contains("dialog-hidden")).toBe(true);
+  });
+});
+
+describe("TerminalPane status chip", () => {
+  beforeEach(() => {
+    h.statusHandler = null;
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  afterEach(() => setLocale("en"));
+
+  async function connectedPane(): Promise<{ root: HTMLElement; pane: TerminalPane }> {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+    await (pane as unknown as { startSession(): Promise<void> }).startSession();
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    return { root, pane };
+  }
+
+  it("starts idle, labelled Idle", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    await new TerminalPane(root).init();
+
+    const chip = q<HTMLElement>(root, ".pane-status");
+    expect(chip.classList.contains("pane-status-idle")).toBe(true);
+    expect(q<HTMLElement>(chip, ".pane-status-label").textContent).toBe("Idle");
+    // The tooltip keeps the state readable when a narrow pane hides the label.
+    expect(chip.title).toBe("Idle");
+  });
+
+  it("follows the session into Connected, then Disconnected", async () => {
+    const { root } = await connectedPane();
+    const chip = q<HTMLElement>(root, ".pane-status");
+    expect(chip.classList.contains("pane-status-connected")).toBe(true);
+    expect(q<HTMLElement>(chip, ".pane-status-label").textContent).toBe("Connected");
+
+    h.statusHandler?.({ sessionId: h.sessionId, status: "disconnected" });
+    expect(chip.classList.contains("pane-status-disconnected")).toBe(true);
+    expect(q<HTMLElement>(chip, ".pane-status-label").textContent).toBe("Disconnected");
+  });
+
+  it("relabels in the new language on retranslate", async () => {
+    const { root, pane } = await connectedPane();
+
+    setLocale("fr");
+    pane.retranslate();
+
+    expect(q<HTMLElement>(root, ".pane-status-label").textContent).toBe("Connecté");
   });
 });

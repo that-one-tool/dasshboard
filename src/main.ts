@@ -25,7 +25,7 @@ import { helpIcon, reloadIcon, lockIcon, gearIcon, filesIcon } from "./ui/icons"
 import { applyDomTranslations, onLocaleChange, t } from "./i18n";
 
 /** Injects the SVG glyph into each header action button (kept in one place so
- * the icons stay consistent with the app's Bootstrap-Icons set). A missing
+ * the icons stay consistent with the app's Lucide icon set). A missing
  * button is skipped — the markup is static, so this only no-ops in tests. */
 function initHeaderIcons(): void {
 	const icons: Array<[string, string]> = [

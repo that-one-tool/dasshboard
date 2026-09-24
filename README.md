@@ -134,10 +134,14 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
 - **Configurable SSH keepalive** — set the keepalive interval and the number of
   unanswered pings tolerated before a dead connection is dropped (which then
   feeds auto-reconnect); applies to shells, tunnels and SFTP. `0` disables it.
-- **Polished dark & light UI** — a cohesive, professional interface built on a
-  single design-token system (layered surfaces, an indigo accent, consistent
-  radii and elevation). The **Appearance** setting switches the whole app —
-  chrome and terminals together — between dark and light, live.
+- **Polished dark & light UI** — a clean, flat interface built on a single
+  design-token system: neutral surfaces, hairline borders, one royal-blue
+  accent, rounded cards, a full-height sidebar and pill-style workspace tabs,
+  set in the bundled Inter typeface (SIL OFL) with bold, rounded Lucide icons
+  (ISC). Each pane's header shows a colour-coded status chip (Idle /
+  Connecting / Connected / Disconnected / Error) that shrinks to a dot in
+  narrow panes. The **Appearance** setting switches the whole app — chrome and
+  terminals together — between dark and light, live.
 - **Terminal settings** — font size/family, appearance (dark/light), and
   scrollback buffer size, applied live to every terminal and persisted.
 - **Localized UI** — the interface ships in **English, French, Spanish, German,
