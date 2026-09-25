@@ -1,10 +1,14 @@
 name: CI
 
-# Runs the full check gate on every pull request (any target branch), so changes
-# are tested before merge — not only on the push-to-main pre-release run in
-# release.yml. Both workflows call the same reusable `check.yml`, so PR CI and the
-# pre-release gate can never diverge. No release is ever cut from here (the
-# reusable gate's `release` output is unused on pull_request events).
+# Runs on every pull request (any target branch), so changes are tested before
+# merge. Each app's check gate runs only when its files changed:
+#   - desktop -> the reusable desktop-check.yml (shared with desktop-release.yml,
+#     so PR CI and the pre-release gate can never diverge)
+#   - site    -> the reusable site-check.yml (shared with site-deploy.yml)
+# No workflow-level `paths:` filter: a skipped workflow would leave a required
+# status check "pending" forever. Instead `ci-ok` always runs and is the single
+# required check; it passes when every job succeeded or was skipped. No release
+# is ever cut from here.
 
 on:
     pull_request:
@@ -14,5 +18,49 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
-    check:
-        uses: ./.github/workflows/check.yml
+    changes:
+        runs-on: ubuntu-22.04
+        permissions:
+            pull-requests: read # paths-filter lists the PR's changed files
+        outputs:
+            desktop: ${{ steps.filter.outputs.desktop }}
+            site: ${{ steps.filter.outputs.site }}
+        steps:
+            - uses: dorny/paths-filter@v3
+              id: filter
+              with:
+                  filters: |
+                      desktop:
+                        - "apps/desktop/**"
+                        - ".github/workflows/ci.yml"
+                        - ".github/workflows/desktop-*.yml"
+                        - ".github/scripts/**"
+                      site:
+                        - "apps/website/**"
+                        - "apps/desktop/src-tauri/tauri.conf.json"
+                        - ".github/workflows/ci.yml"
+                        - ".github/workflows/site-*.yml"
+
+    desktop:
+        needs: changes
+        if: ${{ needs.changes.outputs.desktop == 'true' }}
+        uses: ./.github/workflows/desktop-check.yml
+
+    site:
+        needs: changes
+        if: ${{ needs.changes.outputs.site == 'true' }}
+        uses: ./.github/workflows/site-check.yml
+
+    # The required status check. `always()` so it reports even when a suite was
+    # skipped by the path filter (skipped = fine) or failed (fails this job).
+    ci-ok:
+        needs: [changes, desktop, site]
+        if: ${{ always() }}
+        runs-on: ubuntu-22.04
+        steps:
+            - name: every suite passed or was skipped
+              if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+              run: |
+                  echo "::error::A CI job failed or was cancelled: ${{ toJSON(needs) }}"
+                  exit 1
+            - run: echo "CI ok"

@@ -1,0 +1,44 @@
+name: site-check
+
+# Reusable website gate: `npm run check` in apps/website (astro check, the
+# Vitest suite, astro build). Called by ci.yml (on pull requests touching the
+# site) and site-deploy.yml (which also uploads the built site as the Pages
+# artifact), so PR CI and the deployed build can never drift apart.
+
+on:
+    workflow_call:
+        inputs:
+            upload-pages-artifact:
+                description: "Upload apps/website/dist as the GitHub Pages artifact."
+                type: boolean
+                default: false
+
+env:
+    ASTRO_TELEMETRY_DISABLED: "1"
+
+jobs:
+    check:
+        runs-on: ubuntu-22.04
+        defaults:
+            run:
+                working-directory: apps/website
+        steps:
+            # Full repo checkout: the build reads the desktop version from
+            # apps/desktop/src-tauri/tauri.conf.json.
+            - uses: actions/checkout@v5
+
+            - uses: actions/setup-node@v5
+              with:
+                  node-version: "24"
+
+            - name: install npm dependencies
+              run: npm ci
+
+            - name: check (astro check, Vitest, build)
+              run: npm run check
+
+            - name: upload Pages artifact
+              if: ${{ inputs.upload-pages-artifact }}
+              uses: actions/upload-pages-artifact@v4
+              with:
+                  path: apps/website/dist

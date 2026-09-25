@@ -13,7 +13,10 @@ dist-ssr
 *.local
 
 # Rust build output (src-tauri/.gitignore also covers this from inside src-tauri)
-src-tauri/target
+apps/desktop/src-tauri/target
+
+# Astro generated types/cache
+.astro
 
 # Editor directories and files
 .vscode/*

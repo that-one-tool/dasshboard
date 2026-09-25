@@ -5,7 +5,7 @@ name: check
 # `npm run check` (still the local gate), split into steps so each suite reports
 # its own status and the Rust results get a summary card alongside Vitest's.
 #
-# Called by both `ci.yml` (on every pull request) and `release.yml` (on push to
+# Called by both `ci.yml` (on every pull request) and `desktop-release.yml` (on push to
 # main, where its `release` output gates the release chain). Kept in one place so
 # PR CI and the pre-release gate can never drift apart.
 
@@ -19,11 +19,20 @@ on:
 jobs:
     check:
         runs-on: ubuntu-22.04
-        # Whether this push should cut a release (consumed by release.yml).
+        # Whether this push should cut a release (consumed by desktop-release.yml).
         outputs:
             release: ${{ steps.gate.outputs.release }}
+        # The desktop app lives in apps/desktop (monorepo); cargo steps override
+        # this with apps/desktop/src-tauri.
+        defaults:
+            run:
+                working-directory: apps/desktop
         steps:
             - uses: actions/checkout@v5
+
+            - name: release gate tests
+              working-directory: .
+              run: bash .github/scripts/release-gate.test.sh
 
             - uses: actions/setup-node@v5
               with:
@@ -35,11 +44,14 @@ jobs:
                   toolchain: stable
                   components: rustfmt, clippy
                   cache: true
+                  # The Cargo workspace isn't at the repo root, so point the
+                  # cache at it or every run misses.
+                  cache-workspaces: "apps/desktop/src-tauri -> target"
 
             # Same Tauri Linux prerequisites the build job installs — cargo test
             # and clippy compile the app, which links against WebKitGTK et al.
-            # (see release.yml's build job for why the dl.google.com apt source is
-            # removed).
+            # (see desktop-release.yml's build job for why the dl.google.com apt
+            # source is removed).
             - name: install Linux dependencies
               run: |
                   sudo grep -rlZ 'dl\.google\.com' /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -0 -r rm -f
@@ -62,14 +74,14 @@ jobs:
               run: npx vitest run
 
             - name: rustfmt --check
-              working-directory: src-tauri
+              working-directory: apps/desktop/src-tauri
               run: cargo fmt --check
 
             # Capture cargo test's output so the next step can summarize it.
             # `--no-fail-fast` runs every suite (so the report is complete) while
             # still exiting non-zero on any failure, keeping the gate strict.
             - name: backend tests (cargo test)
-              working-directory: src-tauri
+              working-directory: apps/desktop/src-tauri
               shell: bash
               env:
                   CARGO_TERM_COLOR: never
@@ -82,7 +94,7 @@ jobs:
             # even when a test failed above (the job still fails via that step).
             - name: Cargo test report
               if: always()
-              working-directory: src-tauri
+              working-directory: apps/desktop/src-tauri
               shell: bash
               run: |
                   # Aggregate the per-binary "test result:" lines. Base the
@@ -122,30 +134,23 @@ jobs:
                   } >> "$GITHUB_STEP_SUMMARY"
 
             - name: clippy (-D warnings)
-              working-directory: src-tauri
+              working-directory: apps/desktop/src-tauri
               run: cargo clippy --all-targets -- -D warnings
 
-            # Decide whether this push should cut a release, following Conventional
-            # Commits: release on feat / fix / perf (optionally scoped), on any
-            # breaking change (`type!:`), and on the manual `Release vX.Y.Z`
-            # version-bump commits — matched case-insensitively against the commit
-            # header. Everything else (chore, docs, ci, refactor, style, test, and
-            # merge commits) is still fully tested but skips the release chain. A
-            # shell step is used because GitHub `if:` expressions can't lowercase
-            # or regex-match. Runs only if the gate above passed, so a failing
-            # check never releases. On a pull_request there is no `head_commit`, so
-            # this yields `false` — CI runs, no release.
+            # Decide whether this push should cut a release. The Conventional
+            # Commits rules (feat / fix / perf, breaking changes, `Release vX.Y.Z`;
+            # never the `(site)` scope) live in .github/scripts/release-gate.sh,
+            # unit-tested by the "release gate tests" step above. Runs only if the
+            # gate above passed, so a failing check never releases. On a
+            # pull_request there is no `head_commit`, so this yields `false` — CI
+            # runs, no release.
             - name: decide whether to release
               id: gate
+              working-directory: .
               env:
                   HEAD_MSG: ${{ github.event.head_commit.message }}
               shell: bash
               run: |
-                  header=${HEAD_MSG%%$'\n'*}
-                  if printf '%s' "$header" | grep -qiE '^([a-z]+(\([^)]+\))?!:|(feat|fix|perf)(\([^)]+\))?:|Release v[0-9])'; then
-                    echo "release=true" >> "$GITHUB_OUTPUT"
-                    echo "Releasable commit — release chain will run: $header"
-                  else
-                    echo "release=false" >> "$GITHUB_OUTPUT"
-                    echo "Not a releasable commit — release chain skipped: $header"
-                  fi
+                  release=$(bash .github/scripts/release-gate.sh "$HEAD_MSG")
+                  echo "release=$release" >> "$GITHUB_OUTPUT"
+                  echo "release=$release for: ${HEAD_MSG%%$'\n'*}"

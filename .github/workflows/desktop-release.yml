@@ -10,10 +10,17 @@ name: release
 #   TAURI_SIGNING_PRIVATE_KEY          - updater signing private key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD - password for the private key above
 
+# Only desktop-app changes start this workflow: website-only pushes
+# (apps/website/**) never reach the release chain. The commit-scope rule in
+# .github/scripts/release-gate.sh is the second guard for mixed commits.
 on:
     push:
         branches:
             - main
+        paths:
+            - "apps/desktop/**"
+            - ".github/workflows/desktop-*.yml"
+            - ".github/scripts/**"
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,12 +32,12 @@ env:
 jobs:
     # The full check gate (typecheck, Vitest, cargo fmt/test/clippy) plus the
     # Conventional-Commit release decision live in the reusable
-    # ./.github/workflows/check.yml, shared with ci.yml so PR CI and this
+    # ./.github/workflows/desktop-check.yml, shared with ci.yml so PR CI and this
     # pre-release run stay identical. Runs on every push to main; its `release`
     # output tells check-versions (and the rest of the chain) whether to cut a
     # release.
     check:
-        uses: ./.github/workflows/check.yml
+        uses: ./.github/workflows/desktop-check.yml
 
     # CrabNebula/Tauri read the release version from src-tauri/tauri.conf.json
     # (Cargo.toml as its own fallback) — never from package.json. Fail fast if
@@ -48,9 +55,9 @@ jobs:
             - uses: actions/checkout@v5
             - name: verify package.json, tauri.conf.json, and Cargo.toml versions match
               run: |
-                  PKG_VERSION=$(jq -r .version package.json)
-                  TAURI_VERSION=$(jq -r .version src-tauri/tauri.conf.json)
-                  CARGO_VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+                  PKG_VERSION=$(jq -r .version apps/desktop/package.json)
+                  TAURI_VERSION=$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)
+                  CARGO_VERSION=$(grep -m1 '^version' apps/desktop/src-tauri/Cargo.toml | sed -E 's/version = "(.*)"/\1/')
                   echo "package.json: $PKG_VERSION"
                   echo "tauri.conf.json: $TAURI_VERSION"
                   echo "Cargo.toml: $CARGO_VERSION"
@@ -69,6 +76,7 @@ jobs:
               with:
                   command: release draft ${{ env.CN_APPLICATION }} --framework tauri
                   api-key: ${{ secrets.CN_API_KEY }}
+                  working-directory: apps/desktop
 
     build-and-upload:
         needs: draft
@@ -91,6 +99,7 @@ jobs:
               with:
                   toolchain: stable
                   cache: true
+                  cache-workspaces: "apps/desktop/src-tauri -> target"
 
             # Tauri's official Linux prerequisites for building + bundling
             # (deb/rpm bundling itself is pure-Rust, no extra system tool needed).
@@ -112,9 +121,11 @@ jobs:
                   sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
             - name: install npm dependencies
+              working-directory: apps/desktop
               run: npm ci
 
             - name: build Tauri app
+              working-directory: apps/desktop
               run: npm exec tauri build
               env:
                   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -125,6 +136,7 @@ jobs:
               with:
                   command: release upload ${{ env.CN_APPLICATION }} --framework tauri
                   api-key: ${{ secrets.CN_API_KEY }}
+                  working-directory: apps/desktop
 
     publish:
         needs: build-and-upload
@@ -136,6 +148,7 @@ jobs:
               with:
                   command: release publish ${{ env.CN_APPLICATION }} --framework tauri
                   api-key: ${{ secrets.CN_API_KEY }}
+                  working-directory: apps/desktop
 
     # Only after the CrabNebula publish succeeds: tag the released commit and cut
     # the matching GitHub release. Idempotent — every push to main runs this, but
@@ -155,7 +168,7 @@ jobs:
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
-                  VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+                  VERSION=$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)
                   TAG="v${VERSION}"
                   if gh release view "$TAG" >/dev/null 2>&1; then
                     echo "Release $TAG already exists — nothing to do."

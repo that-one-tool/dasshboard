@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Connection lines: spokes + ring (drawn behind the nodes) -->
+  <g fill="none" stroke="#2c395b" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M256 66 L437 197 L368 410 L144 410 L75 197 Z"/>
+    <line x1="256" y1="256" x2="256" y2="66"/>
+    <line x1="256" y1="256" x2="437" y2="197"/>
+    <line x1="256" y1="256" x2="368" y2="410"/>
+    <line x1="256" y1="256" x2="144" y2="410"/>
+    <line x1="256" y1="256" x2="75" y2="197"/>
+  </g>
+  <!-- Nodes: red fill, dark-blue outline -->
+  <g fill="#ba3d41" stroke="#2c395b" stroke-width="16">
+    <circle cx="256" cy="66" r="40"/>
+    <circle cx="437" cy="197" r="40"/>
+    <circle cx="368" cy="410" r="40"/>
+    <circle cx="144" cy="410" r="40"/>
+    <circle cx="75" cy="197" r="40"/>
+    <circle cx="256" cy="256" r="50"/>
+  </g>
+</svg>

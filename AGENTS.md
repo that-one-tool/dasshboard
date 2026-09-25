@@ -6,7 +6,28 @@ Vite/vanilla-TypeScript frontend, terminals rendered with xterm.js.
 
 See `README.md` for features, prerequisites, and data-file layout.
 
-## Stack & layout
+## Monorepo
+
+- `apps/desktop/` — the Tauri desktop app (everything under "Stack & layout"
+  below is relative to it). Own `package.json` + lockfile.
+- `apps/website/` — the product website: Astro, fully static, deployed to GitHub
+  Pages at `https://that-one-tool.github.io/dasshboard/` (`base: "/dasshboard"`).
+  Own `package.json` + lockfile. `src/lib/appVersion.ts` reads the desktop
+  version from `../desktop/src-tauri/tauri.conf.json` at build time; the site
+  otherwise imports nothing from the desktop app (tokens/font/icon are copies).
+- Root `package.json` holds convenience scripts only (no dependencies).
+- CI (`.github/workflows/`):
+  - `ci.yml` — pull requests; path-filters to `desktop-check.yml` and/or
+    `site-check.yml`; `ci-ok` always runs and is the single required check.
+  - `desktop-release.yml` — push to `main` under `apps/desktop/**`; release
+    decision in `.github/scripts/release-gate.sh` (tested by
+    `release-gate.test.sh`).
+  - `site-deploy.yml` — push to `main` under `apps/website/**`, or after a
+    successful desktop `release` run; deploys to GitHub Pages.
+- Commit scopes: `(site)` for website changes — it never cuts a desktop
+  release; `(desktop)`, unscoped, or any other scope for the desktop app.
+
+## Stack & layout (`apps/desktop/`)
 
 - `src/` — frontend (TypeScript, no framework):
   - `grid.ts` / `gridModel.ts` — multi-pane grid layout
@@ -50,6 +71,9 @@ See `README.md` for features, prerequisites, and data-file layout.
 
 ## Commands
 
+From the repo root (each delegates to the app's own `package.json`; inside
+`apps/desktop/` or `apps/website/` the same script names work directly):
+
 ```sh
 npm run dev          # vite dev server only
 npm run tauri dev    # full app, hot-reload
@@ -57,12 +81,16 @@ npm run check        # the full gate — run before considering any task done:
                       # tsc --noEmit && vitest run && cargo fmt --check &&
                       # cargo test && cargo clippy --all-targets -- -D warnings
 npm test             # vitest only
+npm run site:dev     # website dev server (http://localhost:4321/dasshboard/)
+npm run site:check   # website gate: astro check && vitest run && astro build
+npm run check:all    # both gates
 ```
 
 ## Working rules
 
 - **TDD**: write/adjust the failing test first, then make it pass.
-- Run `npm run check` after every change; fix failures before moving on or
+- Run `npm run check` after every desktop change (`npm run site:check` after
+  every website change, `npm run check:all` when both are touched); fix failures before moving on or
   calling a task complete.
 - Never commit or push — the user reviews and commits all code themselves.
 - Make minimal, scoped changes. Don't refactor or touch files outside the
@@ -87,3 +115,4 @@ npm test             # vitest only
 - Host keys are trust-on-first-use; a changed key must raise a loud warning
   and require explicit accept before connecting.
 - Keep the Tauri CSP strict; load no remote content.
+- The website also loads no remote content (fonts and images are bundled).
