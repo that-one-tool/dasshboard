@@ -4,8 +4,14 @@
     {
       "name": "vite-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": ["--prefix", "apps/desktop", "run", "dev"],
       "port": 1420
+    },
+    {
+      "name": "site-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "apps/website", "run", "dev"],
+      "port": 4321
     }
   ]
 }

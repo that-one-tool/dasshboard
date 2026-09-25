@@ -1,0 +1,13 @@
+{
+	"name": "dasshboard-monorepo",
+	"private": true,
+	"scripts": {
+		"dev": "npm --prefix apps/desktop run dev",
+		"tauri": "npm --prefix apps/desktop run tauri --",
+		"test": "npm --prefix apps/desktop test",
+		"check": "npm --prefix apps/desktop run check",
+		"site:dev": "npm --prefix apps/website run dev",
+		"site:check": "npm --prefix apps/website run check",
+		"check:all": "npm run check && npm run site:check"
+	}
+}

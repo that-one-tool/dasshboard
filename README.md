@@ -1,7 +1,7 @@
 <h1 style="text-align:center;">DaSSHboard</h1>
 
 <p style="text-align:center;">
-<img src="./app-icon.svg" style="width:128px;height:128px;"/>
+<img src="./apps/desktop/app-icon.svg" style="width:128px;height:128px;"/>
 </p>
 
 <p style="text-align:center;">
@@ -155,22 +155,43 @@ frontend rendering terminals with [xterm.js](https://xtermjs.org/).
 
 ## Download
 
-App is published through CrabNebula Cloud. You can easily find the latest release for Windows and Linux on the [App's page](https://web.crabnebula.cloud/that-one-tool/dasshboard/releases/).
+App is published through CrabNebula Cloud. You can easily find the latest release for Windows and Linux on the [App's page](https://web.crabnebula.cloud/that-one-tool/dasshboard/releases/),
+or from the [website](https://that-one-tool.github.io/dasshboard/).
 
 ## Build from source
 
 ```sh
+npm --prefix apps/desktop ci
 npm run tauri build
 ```
 
-Produces installers under `src-tauri/target/release/bundle/`, for whichever
+Produces installers under `apps/desktop/src-tauri/target/release/bundle/`, for whichever
 platform you build on: on Windows, an NSIS `.exe` and an MSI
 (`bundle/nsis/`, `bundle/msi/`); on Linux, a `.deb` and an RPM
 (`bundle/deb/`, `bundle/rpm/`). Building requires the Tauri bundling toolchain
-for your target (see the prerequisites link above) and the same `npm install`
-step from "Run (development)".
+for your target (see the prerequisites link above).
 
 ## Developping
+
+### Repository layout
+
+This is a monorepo with two independently built and deployed apps:
+
+- `apps/desktop/` — the Tauri desktop app (frontend `src/`, Rust backend
+  `src-tauri/`). Released to CrabNebula Cloud by `desktop-release.yml`.
+- `apps/website/` — the product website ([Astro](https://astro.build/)), deployed
+  to GitHub Pages by `site-deploy.yml`. See [apps/website/README.md](apps/website/README.md).
+
+Each app has its own `package.json` and lockfile. The root `package.json` only
+holds convenience scripts that delegate to them (`npm run tauri dev`,
+`npm run check`, `npm run site:dev`, `npm run site:check`, `npm run check:all`).
+
+**Commit scopes.** Commits follow Conventional Commits; the scope routes them:
+`feat(site): …` / `fix(site): …` are website changes and never cut a desktop
+release, while `feat(desktop): …`, unscoped `feat: …`, and any other scope are
+desktop changes. On top of that, path filters keep each app's workflows to its
+own directory, and on pull requests the always-running `CI / ci-ok` job reports
+the combined result.
 
 ### Prerequisites
 
@@ -187,7 +208,7 @@ with the `prebuilt-nasm` feature.
 ### Run (development)
 
 ```sh
-npm install
+npm --prefix apps/desktop ci
 npm run tauri dev
 ```
 
@@ -201,6 +222,9 @@ This starts the Vite dev server and launches the app with hot-reload.
 ```sh
 npm run check
 ```
+
+`npm run site:check` runs the website's gate (`astro check`, its Vitest suite,
+and a production build); `npm run check:all` runs both.
 
 The Rust SSH integration tests run entirely in-process against a throwaway
 `russh` server — no Docker or external SSH daemon needed.
@@ -240,6 +264,8 @@ devices have no secret**, so nothing is ever written to the keychain for them.
 - The Tauri Content-Security-Policy is kept strict; no remote content is loaded.
 
 ## Project layout
+
+Desktop app paths below are relative to `apps/desktop/`.
 
 - `src/` — frontend (TypeScript): `grid.ts`/`gridModel.ts` (multi-pane grid),
   `terminal/` (pane, overlay, reconnect, settings), `devices/` (CRUD + the

@@ -1,0 +1,56 @@
+name: site-deploy
+
+# Build and deploy the website (apps/website) to GitHub Pages:
+# https://that-one-tool.github.io/dasshboard/
+#
+# Triggers:
+#   - a push to main touching the site (desktop-only pushes never redeploy it);
+#   - a successful desktop `release` run, so the version and download links
+#     shown on the site refresh only after the new installers are published,
+#     never on the version-bump push itself (the site reads the version from
+#     apps/desktop/src-tauri/tauri.conf.json). Release runs that cut no release
+#     just redeploy identical content;
+#   - manually.
+#
+# Requires Settings -> Pages -> Source: "GitHub Actions".
+
+on:
+    push:
+        branches:
+            - main
+        paths:
+            - "apps/website/**"
+            - ".github/workflows/site-*.yml"
+    workflow_run:
+        workflows: [release]
+        types: [completed]
+        branches: [main]
+    workflow_dispatch:
+
+# One deployment at a time; never cancel one mid-flight (a half-finished Pages
+# deployment is worse than a queued one).
+concurrency:
+    group: pages
+    cancel-in-progress: false
+
+jobs:
+    build:
+        # A release run that failed (or skipped publishing) has nothing new to show.
+        if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+        uses: ./.github/workflows/site-check.yml
+        with:
+            upload-pages-artifact: true
+
+    deploy:
+        needs: build
+        runs-on: ubuntu-22.04
+        permissions:
+            pages: write # deploy to Pages
+            id-token: write # verify the deployment originates from this repo
+        environment:
+            name: github-pages
+            url: ${{ steps.deployment.outputs.page_url }}
+        steps:
+            - name: deploy to GitHub Pages
+              id: deployment
+              uses: actions/deploy-pages@v4
