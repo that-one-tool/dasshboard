@@ -17,8 +17,12 @@ const features = [
 		body: "One address book for SSH hosts, serial/COM ports and local PowerShell, bash or zsh sessions, with tags and instant search.",
 	},
 	{
-		title: "Secrets stay in your keychain",
-		body: "Passwords and key passphrases live only in the OS keychain — never in a config file, never exported. SSH agent and hardware-token auth store no secret at all.",
+		title: "Local-only by design",
+		body: "No account, no cloud, no telemetry. The app only connects to the hosts you open; your devices, profiles and settings are plain files on your machine.",
+	},
+	{
+		title: "Secrets & host keys, guarded",
+		body: "Passwords and passphrases live only in the OS keychain, never in a file or export. Host keys are pinned on first connect; a changed key needs your explicit approval.",
 	},
 	{
 		title: "Tunnels & jump hosts",
@@ -31,10 +35,6 @@ const features = [
 	{
 		title: "One-click workspaces",
 		body: "Save a layout as a profile, set a default, and reload the whole workspace — every pane reconnected — with a single click.",
-	},
-	{
-		title: "Host-key trust on first use",
-		body: "New host keys are pinned on first connect; a changed key raises a loud warning and needs your explicit approval.",
 	},
 	{
 		title: "Made to live in",
@@ -76,6 +76,9 @@ const panes = [
 				<p class="lede">
 					Save your devices once, arrange live terminals in a grid, and reload the whole workspace
 					with a click.
+				</p>
+				<p class="local-note">
+					No account, no cloud, no telemetry — nothing is sent anywhere but the hosts you connect to.
 				</p>
 				<div class="actions">
 					<a class="btn btn-primary" href={download.installersUrl}>Download v{download.version}</a>
@@ -121,8 +124,7 @@ const panes = [
 				<div class="download-copy">
 					<h2>Download DaSSHboard {download.version}</h2>
 					<p>
-						Installers for Windows (MSI and setup .exe) and Linux (.deb and .rpm), with built-in
-						signed updates.
+						Installers for Windows (MSI and setup .exe) and Linux (.deb and .rpm).
 					</p>
 				</div>
 				<div class="actions">
@@ -204,9 +206,15 @@ const panes = [
 	}
 
 	.lede {
-		margin: 0 0 28px;
+		margin: 0 0 12px;
 		font-size: 1.15rem;
 		color: var(--text-secondary);
+	}
+
+	.local-note {
+		margin: 0 0 28px;
+		font-weight: 600;
+		color: var(--text-primary);
 	}
 
 	.actions {

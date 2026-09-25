@@ -28,6 +28,8 @@
 
 ## Security
 
+- Local-only: no account, no cloud, no telemetry. The app connects only to the
+  hosts you open, and all your data stays on your machine.
 - Passwords and passphrases live only in the OS keychain, never in config files
   or exports.
 - Host keys are trusted on first use; a changed key blocks the connection until
