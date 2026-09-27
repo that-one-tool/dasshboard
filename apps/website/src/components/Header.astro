@@ -1,0 +1,107 @@
+---
+import appIcon from "../assets/app-icon.svg";
+import LanguagePicker from "./LanguagePicker.astro";
+import { localePath, type Locale } from "../i18n/locales";
+import type { SiteMessages } from "../i18n/en";
+
+interface Props {
+	locale: Locale;
+	t: SiteMessages;
+	repoUrl: string;
+}
+
+const { locale, t, repoUrl } = Astro.props;
+const sectionLinks = [
+	{ href: "#features", label: t.nav.features },
+	{ href: "#how-it-works", label: t.nav.howItWorks },
+	{ href: "#security", label: t.nav.security },
+	{ href: "#faq", label: t.nav.faq },
+];
+---
+
+<header class="topbar">
+	<div class="container topbar-inner">
+		<a class="brand" href={localePath(locale, import.meta.env.BASE_URL)}>
+			<img class="brand-icon" src={appIcon.src} alt="" />
+			DaSSHboard
+		</a>
+		<nav class="topnav" aria-label={t.nav.sections}>
+			{sectionLinks.map((link) => <a class="section-link" href={link.href}>{link.label}</a>)}
+			<a class="download-link" href="#download">{t.nav.download}</a>
+			<a class="github-link" href={repoUrl}>{t.nav.github}</a>
+			<LanguagePicker locale={locale} label={t.nav.language} />
+		</nav>
+	</div>
+</header>
+
+<style>
+	/* Sticky rather than fixed, so the bar keeps its place in the flow and never
+	 * overlaps the hero; anchor targets clear it via html's scroll-padding-top. */
+	.topbar {
+		position: sticky;
+		top: 0;
+		z-index: 10;
+		border-bottom: 1px solid var(--border);
+		background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+		backdrop-filter: blur(0.75rem);
+	}
+
+	.topbar-inner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		height: var(--topbar-height);
+	}
+
+	.brand {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.625rem;
+		font-weight: 700;
+		color: var(--text-bright);
+	}
+
+	/* Logo size lives here, in rem, rather than as px <img> attributes. */
+	.brand-icon {
+		width: 1.75rem;
+		height: 1.75rem;
+	}
+
+	.topnav {
+		display: flex;
+		align-items: center;
+		gap: 1.25rem;
+		font-size: 0.95rem;
+	}
+
+	.topnav > a {
+		color: var(--text-secondary);
+		white-space: nowrap;
+	}
+
+	.topnav > a:hover {
+		color: var(--text-bright);
+	}
+
+	.topnav > .download-link {
+		color: var(--accent);
+		font-weight: 600;
+	}
+
+	@media (max-width: 60em) {
+		.section-link {
+			display: none;
+		}
+	}
+
+	@media (max-width: 30em) {
+		.topnav {
+			gap: 0.875rem;
+		}
+
+		.github-link {
+			display: none;
+		}
+	}
+</style>

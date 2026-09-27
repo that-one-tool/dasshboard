@@ -1,0 +1,49 @@
+---
+import type { SiteMessages } from "../i18n/en";
+
+interface Props {
+	t: SiteMessages;
+}
+
+const { t } = Astro.props;
+---
+
+<section id="security" class="section band">
+	<div class="container">
+		<h2 class="section-title">{t.security.title}</h2>
+		<p class="section-lede">{t.security.lede}</p>
+		<div class="security-grid">
+			{
+				t.security.items.map((item) => (
+					<article class="card">
+						<svg class="shield" viewBox="0 0 24 24" aria-hidden="true">
+							<path d="M12 3l7 3v5.5c0 4.3-2.9 8.1-7 9.5-4.1-1.4-7-5.2-7-9.5V6l7-3z" />
+							<path d="M8.8 12.2l2.2 2.2 4.2-4.4" />
+						</svg>
+						<h3>{item.title}</h3>
+						<p>{item.body}</p>
+					</article>
+				))
+			}
+		</div>
+	</div>
+</section>
+
+<style>
+	.security-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
+		gap: 1rem;
+	}
+
+	.shield {
+		width: 1.75rem;
+		height: 1.75rem;
+		margin-bottom: 0.625rem;
+		fill: none;
+		stroke: var(--accent);
+		stroke-width: 1.8;
+		stroke-linecap: round;
+		stroke-linejoin: round;
+	}
+</style>

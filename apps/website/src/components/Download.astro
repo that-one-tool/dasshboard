@@ -1,0 +1,164 @@
+---
+import appIcon from "../assets/app-icon.svg";
+import { format } from "../i18n/locales";
+import type { SiteMessages } from "../i18n/en";
+import type { DownloadInfo } from "../lib/downloads";
+
+interface Props {
+	t: SiteMessages;
+	download: DownloadInfo;
+}
+
+const { t, download } = Astro.props;
+---
+
+<section id="download" class="section container">
+	<div class="download-card">
+		<img class="download-icon" src={appIcon.src} alt="" />
+		<div class="download-copy">
+			<h2>{format(t.download.title, { version: download.version })}</h2>
+			<p>{t.download.body}</p>
+		</div>
+		<div class="actions">
+			<a class="btn btn-primary" href={download.installersUrl}>{t.download.installers}</a>
+			<a class="btn" href={download.releaseNotesUrl}>{t.download.releaseNotes}</a>
+		</div>
+	</div>
+
+	<h3 class="platforms-title">{t.download.platformsTitle}</h3>
+	<div class="table-wrap">
+		<table class="platforms">
+			<thead>
+				<tr>
+					<th scope="col">{t.download.columns.platform}</th>
+					<th scope="col">{t.download.columns.packages}</th>
+					<th scope="col">{t.download.columns.updates}</th>
+				</tr>
+			</thead>
+			<tbody>
+				{
+					t.download.rows.map((row) => (
+						<tr>
+							<th scope="row">{row.platform}</th>
+							<td data-label={t.download.columns.packages}>{row.packages}</td>
+							<td data-label={t.download.columns.updates}>{row.updates}</td>
+						</tr>
+					))
+				}
+			</tbody>
+		</table>
+	</div>
+</section>
+
+<style>
+	.download-card {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 1.5rem;
+		padding: 1.75rem;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-lg);
+		background: var(--surface-1);
+	}
+
+	.download-icon {
+		width: 4rem;
+		height: 4rem;
+	}
+
+	.download-copy {
+		flex: 1 1 17.5rem;
+	}
+
+	.download-copy h2 {
+		margin: 0 0 0.375rem;
+		font-size: 1.4rem;
+		color: var(--text-bright);
+	}
+
+	.download-copy p {
+		margin: 0;
+		color: var(--text-secondary);
+	}
+
+	.platforms-title {
+		margin: 2.5rem 0 1rem;
+		font-size: 1.1rem;
+		color: var(--text-bright);
+	}
+
+	.table-wrap {
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		overflow: hidden;
+	}
+
+	.platforms {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.95rem;
+	}
+
+	.platforms th,
+	.platforms td {
+		padding: 0.75rem 1rem;
+		text-align: left;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.platforms tbody tr:last-child > * {
+		border-bottom: none;
+	}
+
+	.platforms thead th {
+		font-size: 0.8rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		background: var(--surface-1);
+	}
+
+	.platforms tbody th {
+		color: var(--text-bright);
+	}
+
+	.platforms td {
+		color: var(--text-secondary);
+	}
+
+	/* On a phone each row becomes a small labelled block instead of three
+	 * squeezed columns. */
+	@media (max-width: 40em) {
+		.platforms thead {
+			display: none;
+		}
+
+		.platforms tr,
+		.platforms th,
+		.platforms td {
+			display: block;
+		}
+
+		.platforms tbody tr {
+			padding: 0.75rem 1rem;
+			border-bottom: 1px solid var(--border);
+		}
+
+		.platforms tbody tr:last-child {
+			border-bottom: none;
+		}
+
+		.platforms th,
+		.platforms td {
+			padding: 0.15rem 0;
+			border-bottom: none;
+		}
+
+		.platforms td::before {
+			content: attr(data-label) " · ";
+			color: var(--text-muted);
+		}
+	}
+</style>

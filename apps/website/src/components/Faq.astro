@@ -1,0 +1,75 @@
+---
+import type { SiteMessages } from "../i18n/en";
+
+interface Props {
+	t: SiteMessages;
+}
+
+const { t } = Astro.props;
+---
+
+<section id="faq" class="section container">
+	<h2 class="section-title">{t.faq.title}</h2>
+	<div class="faq-list">
+		{
+			t.faq.items.map((item) => (
+				<details class="faq-item">
+					<summary>{item.question}</summary>
+					<p>{item.answer}</p>
+				</details>
+			))
+		}
+	</div>
+</section>
+
+<style>
+	.faq-list {
+		display: grid;
+		gap: 0.625rem;
+	}
+
+	.faq-item {
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		background: var(--surface-1);
+	}
+
+	.faq-item[open] {
+		border-color: var(--border-strong);
+	}
+
+	summary {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 1rem 1.25rem;
+		font-weight: 600;
+		color: var(--text-bright);
+		cursor: pointer;
+		list-style: none;
+	}
+
+	summary::-webkit-details-marker {
+		display: none;
+	}
+
+	summary::after {
+		content: "+";
+		flex: none;
+		font-size: 1.25rem;
+		font-weight: 400;
+		line-height: 1;
+		color: var(--text-muted);
+	}
+
+	.faq-item[open] summary::after {
+		content: "−";
+	}
+
+	.faq-item p {
+		margin: 0;
+		padding: 0 1.25rem 1.125rem;
+		color: var(--text-secondary);
+	}
+</style>

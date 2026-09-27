@@ -1,0 +1,49 @@
+---
+import MockPane from "./MockPane.astro";
+
+const tabs = ["prod", "staging", "lab"];
+const panes = [
+	{ host: "web-01", lines: ["$ tail -f access.log"] },
+	{ host: "web-02", lines: ["$ htop"] },
+	{ host: "web-03", lines: ["$ df -h /"] },
+	{ host: "db-primary", lines: ["$ psql -c '\\l'"] },
+	{ host: "cache-01", lines: ["$ redis-cli ping", "PONG"] },
+	{ host: "COM3 · 9600", lines: ["switch#"] },
+];
+---
+
+<div class="tabs">
+	{tabs.map((tab, index) => <span class:list={["tab", { active: index === 0 }]}>{tab}</span>)}
+</div>
+<div class="grid">
+	{panes.map((pane) => <MockPane host={pane.host} lines={pane.lines} compact />)}
+</div>
+
+<style>
+	.tabs {
+		display: flex;
+		gap: 0.375rem;
+		padding: 0.5rem 0.5rem 0;
+		font-size: 0.75rem;
+	}
+
+	.tab {
+		padding: 0.2rem 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+	}
+
+	.tab.active {
+		border-color: var(--accent);
+		color: var(--text-bright);
+		background: var(--accent-soft);
+	}
+
+	.grid {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 0.375rem;
+		padding: 0.5rem;
+	}
+</style>

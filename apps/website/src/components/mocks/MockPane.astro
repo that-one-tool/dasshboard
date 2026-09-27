@@ -1,0 +1,62 @@
+---
+interface Props {
+	host: string;
+	lines: string[];
+	highlighted?: boolean;
+	compact?: boolean;
+}
+
+const { host, lines, highlighted = false, compact = false } = Astro.props;
+---
+
+<div class:list={["mock-pane", { highlighted, compact }]}>
+	<div class="mock-host">
+		<i class="dot"></i>
+		{host}
+	</div>
+	{lines.map((line) => <div class="mock-line">{line}</div>)}
+</div>
+
+<style>
+	.mock-pane {
+		min-height: 6.875rem;
+		padding: 0.625rem 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		font-family: var(--mono-font);
+		font-size: 0.78rem;
+		color: var(--text-secondary);
+		background: var(--surface-0);
+		overflow: hidden;
+	}
+
+	.mock-pane.compact {
+		min-height: 4.5rem;
+		padding: 0.5rem 0.625rem;
+		font-size: 0.7rem;
+	}
+
+	.mock-pane.highlighted {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 1px var(--accent-soft);
+	}
+
+	.mock-host {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		margin-bottom: 0.5rem;
+		color: var(--text-primary);
+	}
+
+	.dot {
+		width: 0.4375rem;
+		height: 0.4375rem;
+		border-radius: 50%;
+		background: var(--ok);
+	}
+
+	.mock-line {
+		white-space: pre;
+	}
+</style>

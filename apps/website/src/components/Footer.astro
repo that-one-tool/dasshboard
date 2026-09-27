@@ -1,0 +1,37 @@
+---
+import type { SiteMessages } from "../i18n/en";
+
+interface Props {
+	t: SiteMessages;
+	repoUrl: string;
+}
+
+const { t, repoUrl } = Astro.props;
+---
+
+<footer class="footer container">
+	<span>{t.footer.builtWith}</span>
+	<span class="footer-links">
+		<a href={`${repoUrl}/blob/main/LICENSE`}>{t.footer.license}</a>
+		<a href={repoUrl}>{t.footer.source}</a>
+	</span>
+</footer>
+
+<style>
+	.footer {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		gap: 0.75rem;
+		padding-top: 1.5rem;
+		padding-bottom: 2rem;
+		border-top: 1px solid var(--border);
+		font-size: 0.9rem;
+		color: var(--text-muted);
+	}
+
+	.footer-links {
+		display: flex;
+		gap: 1.25rem;
+	}
+</style>

@@ -1,0 +1,81 @@
+---
+import Screenshot from "./Screenshot.astro";
+import HeroMock from "./mocks/HeroMock.astro";
+import { format } from "../i18n/locales";
+import type { SiteMessages } from "../i18n/en";
+import type { DownloadInfo } from "../lib/downloads";
+
+interface Props {
+	t: SiteMessages;
+	download: DownloadInfo;
+	repoUrl: string;
+}
+
+const { t, download, repoUrl } = Astro.props;
+const vars = { version: download.version };
+---
+
+<section class="hero container">
+	<div class="hero-copy">
+		<p class="eyebrow">{format(t.hero.eyebrow, vars)}</p>
+		<h1>{t.hero.title}</h1>
+		<p class="lede">{t.hero.lede}</p>
+		<p class="local-note">{t.hero.localNote}</p>
+		<div class="actions">
+			<a class="btn btn-primary" href={download.installersUrl}>{format(t.hero.download, vars)}</a>
+			<a class="btn" href={repoUrl}>{t.hero.github}</a>
+		</div>
+	</div>
+	<Screenshot shot="hero" alt={t.hero.shotAlt}><HeroMock /></Screenshot>
+</section>
+
+<style>
+	.hero {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 3rem;
+		align-items: center;
+		padding-top: 4.5rem;
+		padding-bottom: 4.5rem;
+	}
+
+	.eyebrow {
+		display: inline-block;
+		margin: 0 0 1rem;
+		padding: 0.25rem 0.75rem;
+		border-radius: var(--radius-pill);
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--accent);
+		background: var(--accent-soft);
+	}
+
+	h1 {
+		margin: 0 0 1rem;
+		font-size: clamp(2.2rem, 5vw, 3.2rem);
+		line-height: 1.1;
+		letter-spacing: -0.02em;
+		color: var(--text-bright);
+	}
+
+	.lede {
+		margin: 0 0 0.75rem;
+		font-size: 1.15rem;
+		color: var(--text-secondary);
+	}
+
+	.local-note {
+		margin: 0 0 1.75rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+
+	@media (max-width: 51.25em) {
+		.hero {
+			grid-template-columns: 1fr;
+			gap: 2.25rem;
+			padding-top: 3rem;
+			padding-bottom: 3rem;
+		}
+	}
+</style>

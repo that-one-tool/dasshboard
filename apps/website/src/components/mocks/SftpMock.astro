@@ -1,0 +1,113 @@
+---
+const entries = [
+	{ name: "releases/", size: "", folder: true },
+	{ name: "static/", size: "", folder: true },
+	{ name: "app.conf", size: "2.1 KB", folder: false },
+	{ name: "docker-compose.yml", size: "1.4 KB", folder: false },
+	{ name: "backup-0925.sql.gz", size: "184 MB", folder: false },
+];
+---
+
+<div class="sftp">
+	<div class="path">web-01:/srv/app</div>
+	<ul class="entries">
+		{
+			entries.map((entry) => (
+				<li class:list={["entry", { folder: entry.folder }]}>
+					<i class="kind" />
+					<span class="name">{entry.name}</span>
+					<span class="size">{entry.size}</span>
+				</li>
+			))
+		}
+	</ul>
+	<div class="transfer">
+		<div class="transfer-row">
+			<span>↑ release-1.21.0.tar.gz</span>
+			<span>68%</span>
+		</div>
+		<div class="bar"><div class="fill"></div></div>
+	</div>
+</div>
+
+<style>
+	.sftp {
+		padding: 0.75rem;
+		font-family: var(--mono-font);
+		font-size: 0.78rem;
+		color: var(--text-secondary);
+	}
+
+	.path {
+		margin-bottom: 0.5rem;
+		padding: 0.35rem 0.6rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-primary);
+		background: var(--surface-0);
+	}
+
+	.entries {
+		margin: 0 0 0.75rem;
+		padding: 0;
+		list-style: none;
+	}
+
+	.entry {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.3rem 0.4rem;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.entry.folder .name {
+		color: var(--text-bright);
+	}
+
+	.kind {
+		width: 0.75rem;
+		height: 0.6rem;
+		border-radius: 0.1rem;
+		background: var(--border-strong);
+	}
+
+	.entry.folder .kind {
+		background: var(--accent);
+	}
+
+	.name {
+		flex: 1;
+	}
+
+	.size {
+		color: var(--text-muted);
+	}
+
+	.transfer {
+		padding: 0.5rem 0.6rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface-0);
+	}
+
+	.transfer-row {
+		display: flex;
+		justify-content: space-between;
+		margin-bottom: 0.4rem;
+		color: var(--text-primary);
+	}
+
+	.bar {
+		height: 0.35rem;
+		border-radius: var(--radius-pill);
+		background: var(--surface-2);
+		overflow: hidden;
+	}
+
+	.fill {
+		width: 68%;
+		height: 100%;
+		background: var(--accent);
+	}
+</style>

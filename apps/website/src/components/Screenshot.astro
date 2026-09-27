@@ -1,0 +1,66 @@
+---
+import { Image } from "astro:assets";
+import { findScreenshot, responsiveWidths, type ScreenshotSlot } from "../lib/screenshots";
+
+interface Props {
+	shot: ScreenshotSlot;
+	alt: string;
+}
+
+const { shot, alt } = Astro.props;
+const modules = import.meta.glob<{ default: ImageMetadata }>("../assets/screenshots/*.{png,jpg,jpeg,webp,avif}", {
+	eager: true,
+});
+const image = findScreenshot(shot, modules);
+---
+
+{
+	image ? (
+		<Image
+			class="shot-image"
+			src={image}
+			alt={alt}
+			widths={responsiveWidths(image.width)}
+			sizes="(max-width: 51.25em) 100vw, 36em"
+		/>
+	) : (
+		<div class="shot-mock" role="img" aria-label={alt}>
+			<div class="shot-bar">
+				<span />
+				<span />
+				<span />
+			</div>
+			<slot />
+		</div>
+	)
+}
+
+<style>
+	.shot-image,
+	.shot-mock {
+		display: block;
+		width: 100%;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-lg);
+		background: var(--surface-1);
+		overflow: hidden;
+	}
+
+	.shot-image {
+		height: auto;
+	}
+
+	.shot-bar {
+		display: flex;
+		gap: 0.375rem;
+		padding: 0.625rem 0.75rem;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.shot-bar span {
+		width: 0.625rem;
+		height: 0.625rem;
+		border-radius: 50%;
+		background: var(--border-strong);
+	}
+</style>

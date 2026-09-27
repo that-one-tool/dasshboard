@@ -1,0 +1,39 @@
+---
+import Layout from "../layouts/Layout.astro";
+import Header from "./Header.astro";
+import Hero from "./Hero.astro";
+import Features from "./Features.astro";
+import HowItWorks from "./HowItWorks.astro";
+import Tour from "./Tour.astro";
+import Security from "./Security.astro";
+import Download from "./Download.astro";
+import Faq from "./Faq.astro";
+import Footer from "./Footer.astro";
+import { messagesFor } from "../i18n";
+import type { Locale } from "../i18n/locales";
+import { readAppVersion } from "../lib/appVersion";
+import { downloadInfo } from "../lib/downloads";
+
+interface Props {
+	locale: Locale;
+}
+
+const { locale } = Astro.props;
+const t = messagesFor(locale);
+const download = downloadInfo(readAppVersion());
+const repoUrl = "https://github.com/that-one-tool/dasshboard";
+---
+
+<Layout title={t.meta.title} description={t.meta.description} locale={locale}>
+	<Header locale={locale} t={t} repoUrl={repoUrl} />
+	<main>
+		<Hero t={t} download={download} repoUrl={repoUrl} />
+		<Features t={t} />
+		<HowItWorks t={t} />
+		<Tour t={t} />
+		<Security t={t} />
+		<Download t={t} download={download} />
+		<Faq t={t} />
+	</main>
+	<Footer t={t} repoUrl={repoUrl} />
+</Layout>

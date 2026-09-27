@@ -1,0 +1,23 @@
+---
+import MockPane from "./MockPane.astro";
+
+const panes = [
+	{ host: "web-01", lines: ["$ uptime", " 21:04  up 41 days,  load: 0.12"] },
+	{ host: "db-primary", lines: ["$ systemctl is-active postgresql", "active"] },
+	{ host: "COM3 · 115200", lines: ["router> show version", "IOS 17.9.4a"] },
+	{ host: "local · pwsh", lines: ["PS> git status", "nothing to commit"] },
+];
+---
+
+<div class="mock-grid">
+	{panes.map((pane) => <MockPane host={pane.host} lines={pane.lines} />)}
+</div>
+
+<style>
+	.mock-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.5rem;
+		padding: 0.5rem;
+	}
+</style>

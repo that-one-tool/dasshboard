@@ -18,6 +18,12 @@ files, releasing),
   Own `package.json` + lockfile. `src/lib/appVersion.ts` reads the desktop
   version from `../desktop/src-tauri/tauri.conf.json` at build time; the site
   otherwise imports nothing from the desktop app (tokens/font/icon are copies).
+  One page per desktop locale (`pages/index.astro` = en, `pages/[locale]/` =
+  the rest) rendered by `components/HomePage.astro` from one component per
+  section; copy lives in `src/i18n/` (`en.ts` is the source of truth,
+  `i18n.test.ts` enforces identical structure). `components/Screenshot.astro`
+  shows `src/assets/screenshots/<slot>.*` when present, else the slot's CSS
+  mockup from `components/mocks/`.
 - Root `package.json` holds convenience scripts only (no dependencies).
 - CI (`.github/workflows/`):
     - `ci.yml` — pull requests; path-filters to `desktop-check.yml` and/or

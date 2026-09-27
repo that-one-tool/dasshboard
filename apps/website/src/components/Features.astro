@@ -1,0 +1,31 @@
+---
+import type { SiteMessages } from "../i18n/en";
+
+interface Props {
+	t: SiteMessages;
+}
+
+const { t } = Astro.props;
+---
+
+<section id="features" class="section container">
+	<h2 class="section-title">{t.features.title}</h2>
+	<div class="feature-grid">
+		{
+			t.features.items.map((feature) => (
+				<article class="card">
+					<h3>{feature.title}</h3>
+					<p>{feature.body}</p>
+				</article>
+			))
+		}
+	</div>
+</section>
+
+<style>
+	.feature-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
+		gap: 1rem;
+	}
+</style>

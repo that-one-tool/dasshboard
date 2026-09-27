@@ -1,0 +1,135 @@
+---
+const hops = ["laptop", "bastion", "db-primary"];
+const forwards = [
+	{ device: "db-primary", route: "localhost:5432 → 127.0.0.1:5432", up: true },
+	{ device: "monitoring", route: "localhost:3000 → 10.0.4.12:3000", up: true },
+	{ device: "cache-01", route: "localhost:6379 → 127.0.0.1:6379", up: false },
+];
+---
+
+<div class="tunnels">
+	<div class="hops">
+		{
+			hops.map((hop, index) => (
+				<>
+					{index > 0 && <span class="arrow">→</span>}
+					<span class="hop">{hop}</span>
+				</>
+			))
+		}
+	</div>
+	<ul class="forwards">
+		{
+			forwards.map((forward) => (
+				<li class="forward">
+					<i class:list={["status", { up: forward.up }]} />
+					<div>
+						<div class="device">{forward.device}</div>
+						<div class="route">{forward.route}</div>
+					</div>
+					<span class:list={["toggle", { up: forward.up }]}>
+						<i />
+					</span>
+				</li>
+			))
+		}
+	</ul>
+</div>
+
+<style>
+	.tunnels {
+		padding: 0.75rem;
+		font-family: var(--mono-font);
+		font-size: 0.78rem;
+		color: var(--text-secondary);
+	}
+
+	.hops {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.4rem;
+		margin-bottom: 0.75rem;
+	}
+
+	.hop {
+		padding: 0.2rem 0.55rem;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-pill);
+		color: var(--text-primary);
+	}
+
+	.hop:last-child {
+		border-color: var(--accent);
+		background: var(--accent-soft);
+	}
+
+	.arrow {
+		color: var(--text-muted);
+	}
+
+	.forwards {
+		display: grid;
+		gap: 0.4rem;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.forward {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.5rem 0.6rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface-0);
+	}
+
+	.forward > div {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.device {
+		color: var(--text-bright);
+	}
+
+	.route {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.status {
+		width: 0.5rem;
+		height: 0.5rem;
+		border-radius: 50%;
+		background: var(--text-muted);
+	}
+
+	.status.up {
+		background: var(--ok);
+	}
+
+	.toggle {
+		display: flex;
+		width: 1.75rem;
+		height: 1rem;
+		padding: 0.125rem;
+		border-radius: var(--radius-pill);
+		background: var(--border-strong);
+	}
+
+	.toggle.up {
+		justify-content: flex-end;
+		background: var(--accent);
+	}
+
+	.toggle i {
+		width: 0.75rem;
+		height: 0.75rem;
+		border-radius: 50%;
+		background: var(--on-accent);
+	}
+</style>

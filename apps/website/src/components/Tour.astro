@@ -1,0 +1,119 @@
+---
+import Screenshot from "./Screenshot.astro";
+import GridMock from "./mocks/GridMock.astro";
+import SftpMock from "./mocks/SftpMock.astro";
+import TunnelsMock from "./mocks/TunnelsMock.astro";
+import BroadcastMock from "./mocks/BroadcastMock.astro";
+import type { SiteMessages } from "../i18n/en";
+
+interface Props {
+	t: SiteMessages;
+}
+
+const { t } = Astro.props;
+const stops = [
+	{ shot: "grid", copy: t.tour.items.grid, Mock: GridMock },
+	{ shot: "sftp", copy: t.tour.items.sftp, Mock: SftpMock },
+	{ shot: "tunnels", copy: t.tour.items.tunnels, Mock: TunnelsMock },
+	{ shot: "broadcast", copy: t.tour.items.broadcast, Mock: BroadcastMock },
+] as const;
+---
+
+<section id="tour" class="section container">
+	<h2 class="section-title">{t.tour.title}</h2>
+	<p class="section-lede">{t.tour.lede}</p>
+	<div class="stops">
+		{
+			stops.map(({ shot, copy, Mock }) => (
+				<article class="stop">
+					<div class="stop-copy">
+						<h3>{copy.title}</h3>
+						<p>{copy.body}</p>
+						<ul class="points">
+							{copy.points.map((point) => (
+								<li>{point}</li>
+							))}
+						</ul>
+					</div>
+					<div class="stop-visual">
+						<Screenshot shot={shot} alt={copy.alt}>
+							<Mock />
+						</Screenshot>
+					</div>
+				</article>
+			))
+		}
+	</div>
+</section>
+
+<style>
+	.stops {
+		display: grid;
+		gap: 4rem;
+	}
+
+	.stop {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 3rem;
+		align-items: center;
+	}
+
+	/* Alternate the visual's side so the tour reads as a zigzag. */
+	.stop:nth-child(even) .stop-visual {
+		order: -1;
+	}
+
+	.stop h3 {
+		margin: 0 0 0.75rem;
+		font-size: 1.35rem;
+		letter-spacing: -0.01em;
+		color: var(--text-bright);
+	}
+
+	.stop p {
+		margin: 0 0 1rem;
+		color: var(--text-secondary);
+	}
+
+	.points {
+		display: grid;
+		gap: 0.45rem;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.points li {
+		position: relative;
+		padding-left: 1.5rem;
+		color: var(--text-primary);
+	}
+
+	.points li::before {
+		content: "";
+		position: absolute;
+		top: 0.45em;
+		left: 0.2rem;
+		width: 0.55rem;
+		height: 0.3rem;
+		border-bottom: 2px solid var(--accent);
+		border-left: 2px solid var(--accent);
+		transform: rotate(-45deg);
+	}
+
+	@media (max-width: 51.25em) {
+		.stops {
+			gap: 3rem;
+		}
+
+		.stop {
+			grid-template-columns: 1fr;
+			gap: 1.5rem;
+		}
+
+		.stop:nth-child(even) .stop-visual {
+			order: 0;
+		}
+	}
+</style>

@@ -1,0 +1,126 @@
+---
+import { HTML_LANG, LOCALE_NAMES, SUPPORTED_LOCALES, localePath, type Locale } from "../i18n/locales";
+
+interface Props {
+	locale: Locale;
+	label: string;
+}
+
+const { locale, label } = Astro.props;
+---
+
+<details class="lang-picker">
+	<summary class="lang-summary">
+		<svg class="lang-icon" viewBox="0 0 24 24" aria-hidden="true">
+			<circle cx="12" cy="12" r="9"></circle>
+			<path d="M3 12h18M12 3c2.5 2.7 3.7 5.7 3.7 9s-1.2 6.3-3.7 9c-2.5-2.7-3.7-5.7-3.7-9S9.5 5.7 12 3z"></path>
+		</svg>
+		<span class="visually-hidden">{label}:</span>
+		<span>{LOCALE_NAMES[locale]}</span>
+	</summary>
+	<ul class="lang-menu">
+		{
+			SUPPORTED_LOCALES.map((option) => (
+				<li>
+					<a
+						href={localePath(option, import.meta.env.BASE_URL)}
+						hreflang={HTML_LANG[option]}
+						lang={HTML_LANG[option]}
+						aria-current={option === locale ? "page" : undefined}
+					>
+						{LOCALE_NAMES[option]}
+					</a>
+				</li>
+			))
+		}
+	</ul>
+</details>
+
+<script>
+	// A bare <details> stays open until its summary is clicked again; close it on
+	// an outside click or Escape like any other menu.
+	const pickers = document.querySelectorAll<HTMLDetailsElement>(".lang-picker");
+
+	document.addEventListener("click", (event) => {
+		pickers.forEach((picker) => {
+			if (!picker.contains(event.target as Node)) picker.open = false;
+		});
+	});
+
+	document.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape") return;
+		pickers.forEach((picker) => {
+			if (picker.open) picker.querySelector("summary")?.focus();
+			picker.open = false;
+		});
+	});
+</script>
+
+<style>
+	.lang-picker {
+		position: relative;
+	}
+
+	.lang-summary {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.35rem 0.65rem;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-sm);
+		font-size: 0.9rem;
+		color: var(--text-secondary);
+		cursor: pointer;
+		list-style: none;
+	}
+
+	.lang-summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.lang-summary:hover,
+	.lang-picker[open] .lang-summary {
+		color: var(--text-bright);
+		border-color: var(--text-muted);
+	}
+
+	.lang-icon {
+		width: 1rem;
+		height: 1rem;
+		fill: none;
+		stroke: currentColor;
+		stroke-width: 1.6;
+	}
+
+	.lang-menu {
+		position: absolute;
+		top: calc(100% + 0.4rem);
+		right: 0;
+		z-index: 1;
+		min-width: 10rem;
+		margin: 0;
+		padding: 0.35rem;
+		list-style: none;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius);
+		background: var(--surface-1);
+		box-shadow: 0 0.75rem 2rem rgba(0, 0, 0, 0.25);
+	}
+
+	.lang-menu a {
+		display: block;
+		padding: 0.4rem 0.7rem;
+		border-radius: var(--radius-sm);
+		color: var(--text-primary);
+	}
+
+	.lang-menu a:hover {
+		color: var(--text-bright);
+		background: var(--surface-2);
+	}
+
+	.lang-menu a[aria-current="page"] {
+		color: var(--accent);
+		font-weight: 600;
+	}
+</style>
