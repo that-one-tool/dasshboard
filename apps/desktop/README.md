@@ -78,10 +78,10 @@ The app stores its data in the Tauri app-config directory
 | ---------------------- | ------------------------------------------------------------------------- |
 | `devices.json`         | Saved devices (never secrets)                                             |
 | `profiles.json`        | Layout profiles and the default profile id                                |
-| `settings.json`        | Terminal appearance, language, keepalive, SFTP idle timeout, last profile |
+| `settings.json`        | Terminal appearance, language, keepalive, SFTP idle timeout, last profile, update check on launch |
 | `known_hosts.json`     | Trusted host keys (TOFU)                                                  |
 | `sftp_bookmarks.json`  | SFTP bookmarks for each device                                            |
-| `workspace_state.json` | Open tabs, per instance (not synced between running instances)            |
+| `workspace_state.json` | Open tabs, Files panel and side-menu widths, per instance (not synced)   |
 
 When another running instance changes `devices.json`, `profiles.json`,
 `settings.json` or `known_hosts.json`, a file watcher reloads them. Passwords and passphrases are stored only in the OS keychain, under the
@@ -96,3 +96,14 @@ is a `feat`, `fix` or `perf`, a breaking change, or a `Release vX.Y.Z` commit.
 `.github/scripts/release-gate.sh` makes that decision. Before a release, bump
 the version in `package.json`, `src-tauri/tauri.conf.json` and
 `src-tauri/Cargo.toml`. CI fails if the three don't match.
+
+CI signs the updater artifacts with `TAURI_SIGNING_PRIVATE_KEY`, and
+CrabNebula serves them at the `plugins.updater` endpoints in `tauri.conf.json`.
+The first endpoint asks for the installed bundle type (so an MSI install gets
+the MSI); the second is the fallback for bundles CrabNebula has no entry for.
+`requireSignedVersion` makes the app reject a signature that doesn't carry the
+release version, which `@tauri-apps/cli` writes from 2.11.5 on, so keep the CLI
+at 2.11.5 or later. The app checks for updates only on demand (About) or at
+startup when the user opts in. The NSIS/MSI installers and the Linux AppImage
+install updates in place; `.deb`/`.rpm` installs only get a link to the
+download page.

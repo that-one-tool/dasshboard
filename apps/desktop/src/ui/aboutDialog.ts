@@ -11,10 +11,13 @@
 import { ping } from "../ipc";
 import { formatPingMessage } from "../version";
 import { t } from "../i18n";
+import type { UpdateController } from "../updates/updateController";
+import { mountUpdateSection } from "../updates/updateSection";
 
 /** Open the About dialog. Returns immediately; the version fills in when the
- * `ping` round trip resolves. */
-export function openAboutDialog(): void {
+ * `ping` round trip resolves. With `updates`, it also hosts the Check for
+ * updates block. */
+export function openAboutDialog(updates?: UpdateController): void {
 	const root = document.createElement("div");
 	root.className = "dialog about-dialog";
 	root.setAttribute("role", "dialog");
@@ -29,6 +32,7 @@ export function openAboutDialog(): void {
       <p class="about-built">${t("about.built")}</p>
       <p class="about-license">${t("about.license")}</p>
       <p class="about-source">${t("about.source")}</p>
+      <div class="about-update-slot"></div>
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" data-action="close">${t("common.close")}</button>
       </div>
@@ -40,12 +44,16 @@ export function openAboutDialog(): void {
 	const tagline = root.querySelector<HTMLElement>(".about-tagline");
 	if (tagline) tagline.textContent = t("about.tagline");
 
+	const updateSlot = root.querySelector<HTMLElement>(".about-update-slot");
+	const unmountUpdates = updates && updateSlot ? mountUpdateSection(updateSlot, updates) : undefined;
+
 	const versionEl = root.querySelector<HTMLElement>(".about-version");
 	const closeBtn = root.querySelector<HTMLButtonElement>('[data-action="close"]');
 
 	const previouslyFocused = document.activeElement;
 	const close = (): void => {
 		document.removeEventListener("keydown", onKey, true);
+		unmountUpdates?.();
 		root.remove();
 		if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) {
 			previouslyFocused.focus();

@@ -31,6 +31,7 @@ use crate::settings::Settings;
 use crate::sftp::{SftpEntry, SftpParams, SftpSink};
 use crate::state::AppState;
 use crate::tunnel::{ForwardStatus, TunnelInfo, TunnelParams, TunnelSink, TunnelStatus};
+use crate::updater::{self, PendingUpdate, UpdateInfo};
 use crate::workspace::WorkspaceState;
 
 fn list_devices_impl(state: &AppState) -> Vec<Device> {
@@ -285,6 +286,41 @@ pub fn save_workspace_state(
 #[tauri::command]
 pub fn reload_config(state: State<'_, AppState>) {
     reload_config_impl(&state);
+}
+
+/* ============================================================================
+ * App updates (see `updater.rs`)
+ * ============================================================================ */
+
+/// Checks the update server for a newer release (user-initiated or opted-in
+/// launch check only). `None` when up to date.
+#[tauri::command]
+pub async fn check_update(
+    app: AppHandle,
+    pending: State<'_, PendingUpdate>,
+) -> Result<Option<UpdateInfo>, AppError> {
+    updater::check(&app, &pending).await
+}
+
+/// Downloads and verifies the update the user confirmed (`version`), without
+/// touching live sessions, so a failure is harmless and retryable.
+#[tauri::command]
+pub async fn download_update(
+    pending: State<'_, PendingUpdate>,
+    version: String,
+) -> Result<(), AppError> {
+    updater::download(&pending, &version).await
+}
+
+/// Installs the downloaded update (`version`), closing live sessions first,
+/// then restarts the app.
+#[tauri::command]
+pub async fn install_update(
+    app: AppHandle,
+    pending: State<'_, PendingUpdate>,
+    version: String,
+) -> Result<(), AppError> {
+    updater::install(&app, &pending, &version).await
 }
 
 /* ============================================================================

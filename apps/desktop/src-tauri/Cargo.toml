@@ -1,6 +1,6 @@
 [package]
 name = "dasshboard"
-version = "1.20.0"
+version = "1.21.0"
 description = "Multi-pane SSH & serial terminal dashboard with SFTP file transfer"
 authors = ["That one tool"]
 edition = "2021"
@@ -59,6 +59,10 @@ uuid = { version = "1.24.0", features = ["v4", "serde"] }
 # Typed error enums for AppError (used starting Phase 1).
 thiserror = "2.0.18"
 tauri-plugin-window-state = "=2.4.1"
+# In-app updates (see `updater.rs`): checks the CrabNebula endpoint in
+# tauri.conf.json only when the user asks or opted in. Pinned exactly like the
+# other plugins.
+tauri-plugin-updater = "=2.12.0"
 # Filesystem watcher on the app-config dir (multi-instance config sync — see
 # `config_watch.rs`). Uses the OS-native backend (ReadDirectoryChangesW on
 # Windows, inotify/fsevent elsewhere) via `recommended_watcher`; we drive our

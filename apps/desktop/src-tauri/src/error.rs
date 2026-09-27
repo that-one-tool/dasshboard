@@ -51,6 +51,10 @@ pub enum AppError {
     /// (a status line, not an error toast).
     #[error("{0}")]
     Cancelled(String),
+    /// Checking for, downloading, or installing an app update failed (update
+    /// server unreachable, bad signature, installer error).
+    #[error("{0}")]
+    Update(String),
 }
 
 impl AppError {
@@ -67,6 +71,7 @@ impl AppError {
             AppError::TunnelBind(_) => "TunnelBind",
             AppError::Sftp(_) => "Sftp",
             AppError::Cancelled(_) => "Cancelled",
+            AppError::Update(_) => "Update",
         }
     }
 }
@@ -136,6 +141,7 @@ mod tests {
             (AppError::TunnelBind("x".into()), "TunnelBind"),
             (AppError::Sftp("x".into()), "Sftp"),
             (AppError::Cancelled("x".into()), "Cancelled"),
+            (AppError::Update("x".into()), "Update"),
         ];
         for (err, expected_code) in cases {
             assert_eq!(err.code(), expected_code);

@@ -27,6 +27,9 @@
         <button type="button" id="settings-btn" class="icon-btn"
           data-i18n-title="header.settings.title" data-i18n-aria="header.settings.aria"
           title="Settings" aria-label="Settings"></button>
+        <button type="button" id="theme-btn" class="icon-btn"
+          data-i18n-title="header.theme.toLight" data-i18n-aria="header.theme.toLight"
+          title="Switch to light theme" aria-label="Switch to light theme"></button>
         <button type="button" id="help-btn" class="icon-btn"
           data-i18n-title="header.help.title" data-i18n-aria="header.help.aria"
           title="About DaSSHboard" aria-label="About DaSSHboard"></button>
@@ -38,6 +41,9 @@
           <div class="device-list"></div>
           <div class="tunnel-list"></div>
         </aside>
+        <!-- Resize handle for the left menu (wired by layout/sidebarResize). -->
+        <div class="sidebar-splitter splitter" role="separator" aria-orientation="vertical"
+          tabindex="0" data-i18n-aria="layout.resizeSidebar" aria-label="Resize the side menu"></div>
 
         <main class="main-content">
           <!-- Horizontal workspace row: the tabbed terminal grid on the left, an
@@ -47,7 +53,9 @@
           <div class="workspace-row">
             <div id="pane-root" class="pane-root"
               data-i18n-aria="header.paneRoot.aria" aria-label="SSH terminal"></div>
-            <div class="sftp-splitter" role="separator" aria-orientation="vertical" hidden></div>
+            <div class="sftp-splitter splitter" role="separator" aria-orientation="vertical"
+              tabindex="0" data-i18n-aria="layout.resizeFiles" aria-label="Resize the Files panel"
+              hidden></div>
             <aside class="sftp-panel" hidden></aside>
           </div>
         </main>

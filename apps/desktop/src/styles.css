@@ -210,6 +210,12 @@ body {
 /* The app-action buttons (reload / trusted-hosts / settings / help). There is no
  * separate app header any more — the TabManager mounts this group at the right
  * end of the tab-strip row, where `margin-left:auto` pins it past the tabs. */
+/* Hidden until TabManager mounts it into the tab strip; `display: flex` below
+ * would otherwise beat the `[hidden]` UA rule and flash it at first paint. */
+.header-actions[hidden] {
+	display: none;
+}
+
 .header-actions {
 	display: flex;
 	align-items: center;
@@ -235,7 +241,10 @@ body {
 .sidebar {
 	display: flex;
 	flex-direction: column;
-	width: 300px;
+	/* Default and floor (SIDEBAR_MIN_REM in layout/sidebarResize.ts); a resized
+	 * width is set inline. The floor always wins, even on narrow windows. */
+	width: 20rem;
+	min-width: 20rem;
 	gap: 20px;
 	padding: 14px 12px;
 	overflow-y: auto;
@@ -451,18 +460,34 @@ body {
 
 /* Vertical drag handle between the grid and the SFTP panel (6px hit area, like
  * the grid's own splitters). Hidden until the panel is open. */
-.sftp-splitter {
+/* Resize handles (ui/splitter.ts): the left menu's and the Files panel's. */
+.splitter {
 	flex: 0 0 auto;
-	width: 6px;
-	margin: 0 3px;
+	width: 0.375rem;
 	cursor: col-resize;
 	background-color: transparent;
 	border-radius: var(--radius-sm);
 }
 
-.sftp-splitter:hover,
-.sftp-splitter.dragging {
+.splitter:hover,
+.splitter.dragging {
 	background-color: var(--accent-soft-strong);
+}
+
+.splitter:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: -1px;
+}
+
+.sftp-splitter {
+	margin: 0 3px;
+}
+
+/* Overlaps the menu's right edge (net zero width), so the handle adds no gap. */
+.sidebar-splitter {
+	position: relative;
+	z-index: 1;
+	margin-left: -0.375rem;
 }
 
 /* The docked Files (SFTP) panel: a full-height bordered column that stacks its
@@ -474,7 +499,15 @@ body {
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
-	width: 360px;
+	width: 22.5rem;
+	/* Room for the toolbar's nine icon buttons (MIN_PANEL_REM in sftpPanel.ts).
+	 * `min-width` beats the `max-width` below, so on a very narrow window the
+	 * toolbar stays whole and the grid gives way. */
+	min-width: 22rem;
+	/* Beats the inline (dragged) width, so shrinking the window can never
+	 * squeeze the terminal grid below 24rem (MIN_GRID_REM, the drag clamp's same
+	 * floor: room for the tab strip's buttons and one tab). */
+	max-width: calc(100% - 24rem);
 	background-color: var(--surface-1);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-lg);
@@ -482,18 +515,21 @@ body {
 	box-shadow: var(--shadow-sm);
 }
 
-/* `display: flex` above beats the `[hidden]` UA rule, so hide explicitly (same
- * for the splitter, which is hidden alongside the panel). */
+/* A `display: flex` rule beats the `[hidden]` UA rule, so hide explicitly: the
+ * panel, its splitter, and the rows the panel toggles (bookmarks when there are
+ * none, the bulk bar while disconnected) — otherwise they leave an empty strip. */
 .sftp-panel[hidden],
-.sftp-splitter[hidden] {
+.sftp-splitter[hidden],
+.sftp-bookmarks[hidden],
+.sftp-bulkbar[hidden] {
 	display: none;
 }
 
 /* Collapsed rail: a thin strip showing only the expand affordance + a
  * connection dot, keeping the SSH session alive while set aside. */
 .sftp-panel.sftp-collapsed {
-	width: 40px;
-	min-width: 40px;
+	width: 2.5rem;
+	min-width: 2.5rem;
 }
 
 .sftp-panel.sftp-collapsed > .sftp-panel-body {
@@ -549,8 +585,8 @@ body {
 	align-items: center;
 	gap: 7px;
 	padding: 6px 12px;
-	min-width: 92px;
-	max-width: 220px;
+	min-width: 5.75rem;
+	max-width: 13.75rem;
 	border: none;
 	border-radius: var(--radius-sm);
 	background: transparent;
@@ -598,8 +634,8 @@ body {
  * the `hidden` attribute. */
 .tab-badge,
 .tab-dirty-dot {
-	width: 7px;
-	height: 7px;
+	width: 0.4375rem;
+	height: 0.4375rem;
 	border-radius: 50%;
 	flex: 0 0 auto;
 }
@@ -621,8 +657,8 @@ body {
 	align-items: center;
 	justify-content: center;
 	padding: 0;
-	width: 17px;
-	height: 17px;
+	width: 1.0625rem;
+	height: 1.0625rem;
 	margin-right: -4px;
 	border: none;
 	border-radius: var(--radius-pill);
@@ -637,8 +673,8 @@ body {
 
 /* The shared 16px close glyph is scaled down to sit inside the small slot. */
 .tab-close svg {
-	width: 14px;
-	height: 14px;
+	width: 0.875rem;
+	height: 0.875rem;
 }
 
 .tab:hover .tab-close,
@@ -658,8 +694,8 @@ body {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 30px;
-	height: 30px;
+	width: 1.875rem;
+	height: 1.875rem;
 	padding: 0;
 	border: none;
 	border-radius: var(--radius-sm);
@@ -797,7 +833,7 @@ body {
 .grid-splitter-col {
 	top: 0;
 	bottom: 0;
-	width: 6px;
+	width: 0.375rem;
 	transform: translateX(-3px);
 	cursor: col-resize;
 }
@@ -805,7 +841,7 @@ body {
 .grid-splitter-row {
 	left: 0;
 	right: 0;
-	height: 6px;
+	height: 0.375rem;
 	transform: translateY(-3px);
 	cursor: row-resize;
 }
@@ -864,7 +900,7 @@ body.grid-dragging-row * {
 }
 
 .pane-device-select {
-	flex: 0 1 320px;
+	flex: 0 1 20rem;
 	min-width: 0;
 	padding: 5px 8px;
 	background-color: var(--surface-2);
@@ -896,8 +932,8 @@ body.grid-dragging-row * {
 }
 
 .pane-status-dot {
-	width: 6px;
-	height: 6px;
+	width: 0.375rem;
+	height: 0.375rem;
 	border-radius: 50%;
 	flex: 0 0 auto;
 	background-color: var(--chip-dot);
@@ -905,7 +941,7 @@ body.grid-dragging-row * {
 
 /* In a narrow pane the device picker and Connect button need the room, so the
  * chip collapses to its dot (the state stays readable via its tooltip). */
-@container pane (max-width: 380px) {
+@container pane (max-width: 23.75rem) {
 	.pane-status {
 		padding: 6px;
 	}
@@ -982,8 +1018,8 @@ body.grid-dragging-row * {
 }
 
 .overlay-spinner {
-	width: 28px;
-	height: 28px;
+	width: 1.75rem;
+	height: 1.75rem;
 	border: 3px solid var(--border);
 	border-top-color: var(--accent);
 	border-radius: 50%;
@@ -998,7 +1034,7 @@ body.grid-dragging-row * {
 
 /* Host-key trust dialog */
 .hostkey-content {
-	max-width: 560px;
+	max-width: 35rem;
 }
 
 .hostkey-lead {
@@ -1022,7 +1058,7 @@ body.grid-dragging-row * {
 }
 
 .hostkey-facts dt {
-	flex: 0 0 90px;
+	flex: 0 0 5.625rem;
 	color: var(--text-muted);
 	font-size: 0.85rem;
 }
@@ -1129,6 +1165,12 @@ body.grid-dragging-row * {
 	display: block;
 }
 
+/* `display: inline-flex` above beats the `[hidden]` UA rule; icon buttons that
+ * toggle (e.g. a pane's connect / disconnect pair) must still disappear. */
+.btn-icon[hidden] {
+	display: none;
+}
+
 /* In the sidebar, secondary icon actions are ghosts so rows stay quiet; only the
  * primary (add / start) keeps its fill. Destructive ones tint red on hover. */
 .sidebar .btn-icon:not(.btn-primary) {
@@ -1199,7 +1241,7 @@ body.grid-dragging-row * {
 	border: 1px solid var(--border);
 	border-radius: var(--radius-lg);
 	padding: 0;
-	max-width: 500px;
+	max-width: 31.25rem;
 	width: 90%;
 	max-height: 90vh;
 	display: flex;
@@ -1232,8 +1274,8 @@ body.grid-dragging-row * {
 	font-size: 1.5rem;
 	cursor: pointer;
 	padding: 0;
-	width: 32px;
-	height: 32px;
+	width: 2rem;
+	height: 2rem;
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -1472,8 +1514,8 @@ body.grid-dragging-row * {
  * ============================================================================ */
 
 ::-webkit-scrollbar {
-	width: 10px;
-	height: 10px;
+	width: 0.625rem;
+	height: 0.625rem;
 }
 
 ::-webkit-scrollbar-track {
@@ -1598,7 +1640,7 @@ body.grid-dragging-row * {
  * isn't in a padded wrapper, so inset the input and actions directly (matches
  * `.settings-content` / `.confirm-content` — Phase 6). */
 .prompt-input {
-	width: calc(100% - 32px);
+	width: calc(100% - 2rem);
 	box-sizing: border-box;
 	padding: 8px;
 	margin: 16px 16px 12px;
@@ -1620,6 +1662,20 @@ body.grid-dragging-row * {
  * Settings (Phase 5): header button + terminal-settings dialog
  * ========================================================================== */
 
+/* Icon glyphs (ui/icons.ts) carry no size attributes: they are sized here, in
+ * rem, so they scale with the text. Contextual rules (e.g. `.btn-icon svg`)
+ * are more specific and still override these. */
+.icon {
+	width: 1rem;
+	height: 1rem;
+	flex: 0 0 auto;
+}
+
+.icon-lg {
+	width: 1.125rem;
+	height: 1.125rem;
+}
+
 /* Header action buttons (help / reload / trusted-hosts / settings). Square-ish
  * icon buttons carrying an inline SVG glyph via `currentColor`, so the icon
  * takes the button's text color and brightens on hover. */
@@ -1627,8 +1683,8 @@ body.grid-dragging-row * {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 32px;
-	height: 32px;
+	width: 2rem;
+	height: 2rem;
 	background: none;
 	border: none;
 	border-radius: var(--radius-pill);
@@ -1653,6 +1709,94 @@ body.grid-dragging-row * {
 
 .icon-btn svg {
 	display: block;
+}
+
+/* A found app update badges the About (help) button with an accent dot. */
+.icon-btn.has-update {
+	position: relative;
+}
+
+.icon-btn.has-update::after {
+	content: "";
+	position: absolute;
+	top: 5px;
+	right: 5px;
+	width: 0.4375rem;
+	height: 0.4375rem;
+	border-radius: 50%;
+	background: var(--accent);
+}
+
+/* Wider than the default dialog, so the field hints wrap less. */
+.settings-content {
+	max-width: 40rem;
+}
+
+/* General / Connections tabs: the same segmented pill track as the workspace
+ * tabs, fixed above the scrolling fields. */
+.settings-tabs {
+	display: flex;
+	align-self: flex-start;
+	gap: 2px;
+	flex: 0 0 auto;
+	margin: 12px 16px 0;
+	padding: 3px;
+	background-color: var(--surface-2);
+	border-radius: var(--radius);
+}
+
+.settings-tab {
+	padding: 6px 14px;
+	border: none;
+	border-radius: var(--radius-sm);
+	background: transparent;
+	color: var(--text-secondary);
+	font-family: inherit;
+	font-size: 0.83rem;
+	cursor: pointer;
+	transition:
+		background 150ms ease,
+		color 150ms ease;
+}
+
+.settings-tab:hover {
+	color: var(--text-primary);
+}
+
+.settings-tab[aria-selected="true"] {
+	background: var(--surface-1);
+	color: var(--text-bright);
+	font-weight: 600;
+	box-shadow: var(--shadow-raised);
+}
+
+.settings-tab:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+/* The fields scroll between the fixed header and footer, only once they
+ * outgrow the dialog's own cap (`.dialog-content` max-height: 90vh). Without
+ * `min-height: 0` the flex item refuses to shrink and spills out of the card. */
+.settings-body {
+	display: grid;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	padding-bottom: 1rem;
+}
+
+/* Both tab panels share one grid cell, so the body is always as tall as the
+ * tallest tab and switching tabs never resizes the dialog. The inactive panel
+ * keeps its space but is invisible (which also takes it out of the tab order
+ * and the accessibility tree). */
+.settings-panel {
+	grid-area: 1 / 1;
+}
+
+.settings-panel[hidden] {
+	display: block;
+	visibility: hidden;
 }
 
 /* The settings body isn't wrapped in a padded form like the device editor, so
@@ -1692,6 +1836,27 @@ body.grid-dragging-row * {
 	box-shadow: 0 0 0 1px var(--accent) inset;
 }
 
+/* A checkbox row (the launch update check): inset like the fields above, and
+ * exempt from the text-input chrome the rules above would give its box. */
+.settings-content .form-group-checkbox {
+	margin-bottom: 12px;
+	padding: 0 16px;
+}
+
+.settings-content input[type="checkbox"] {
+	padding: 0;
+	border: none;
+	background: none;
+	box-shadow: none;
+}
+
+/* The text-input focus style above is removed for the checkbox, so give it its
+ * own keyboard focus ring. */
+.settings-content input[type="checkbox"]:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
 /* Auto-reconnect checkbox in the device editor (Phase 5) */
 .form-group-checkbox label {
 	display: flex;
@@ -1707,6 +1872,12 @@ body.grid-dragging-row * {
 }
 
 /* Muted helper text under a form control (e.g. the agent-forwarding hint). */
+/* `display: block` below would beat the `[hidden]` UA rule (e.g. the "no SSH
+ * agent detected" warning, toggled via `hidden`). */
+.form-hint[hidden] {
+	display: none;
+}
+
 .form-hint {
 	display: block;
 	margin-top: 4px;
@@ -1725,7 +1896,7 @@ body.grid-dragging-row * {
  * ============================================================================ */
 
 .known-hosts-content {
-	max-width: 620px;
+	max-width: 38.75rem;
 }
 
 /* ============================================================================
@@ -1733,7 +1904,7 @@ body.grid-dragging-row * {
  * ============================================================================ */
 
 .about-content {
-	max-width: 420px;
+	max-width: 26.25rem;
 	padding: 24px;
 	text-align: center;
 }
@@ -1764,6 +1935,41 @@ body.grid-dragging-row * {
 	font-size: 12px;
 }
 
+.about-update {
+	margin-top: 18px;
+	padding-top: 16px;
+	border-top: 1px solid var(--border);
+}
+
+.about-update-status {
+	margin: 0 0 10px;
+	font-size: 13px;
+}
+
+.about-update-status:empty {
+	display: none;
+}
+
+.about-update-notes {
+	margin: 0 0 12px;
+	max-height: 7.5rem;
+	overflow-y: auto;
+	white-space: pre-line;
+	text-align: left;
+	color: var(--text-secondary);
+	font-size: 12px;
+}
+
+.about-update-actions {
+	display: flex;
+	justify-content: center;
+	gap: 8px;
+}
+
+.about-update-actions a.btn {
+	text-decoration: none;
+}
+
 /* The About dialog has no header bar, so its footer shouldn't carry the top
  * border the shared `.form-actions` rule adds; center the Close button instead. */
 .about-content .form-actions {
@@ -1784,7 +1990,7 @@ body.grid-dragging-row * {
 	list-style: none;
 	margin: 0;
 	padding: 0 16px 16px;
-	max-height: 320px;
+	max-height: 20rem;
 	overflow-y: auto;
 	display: flex;
 	flex-direction: column;
@@ -1962,8 +2168,8 @@ body.grid-dragging-row * {
 
 /* Match the 16px glyphs of the device tiles' icon buttons. */
 .tunnel-card .btn-icon svg {
-	width: 16px;
-	height: 16px;
+	width: 1rem;
+	height: 1rem;
 }
 
 .tunnel-forwards {
@@ -2127,14 +2333,28 @@ body.grid-dragging-row * {
 
 .sftp-panel-header-actions .btn-icon,
 .sftp-rail .btn-icon {
-	width: 28px;
-	height: 28px;
+	width: 1.75rem;
+	height: 1.75rem;
 	padding: 0;
 	color: var(--text-primary);
 }
 
 /* Connect/disconnect toggle: red while connected (click = drop the live
  * connection), green while disconnected (click = connect the selected device). */
+/* The terminal pane's connect / disconnect icon buttons share the Files
+ * panel's colour language: green plug to connect, red to disconnect. */
+.pane-connect {
+	color: var(--ok);
+}
+
+.pane-disconnect {
+	color: var(--danger);
+}
+
+.pane-disconnect:hover:not(:disabled) {
+	color: var(--danger-hover);
+}
+
 .sftp-conn-toggle.is-connected {
 	color: var(--danger);
 }
@@ -2153,8 +2373,8 @@ body.grid-dragging-row * {
 
 /* Connection indicator dot: grey when disconnected, green when live. */
 .sftp-conn-dot {
-	width: 9px;
-	height: 9px;
+	width: 0.5625rem;
+	height: 0.5625rem;
 	border-radius: 50%;
 	background-color: var(--dot-idle);
 	flex: 0 0 auto;
@@ -2174,7 +2394,7 @@ body.grid-dragging-row * {
 }
 
 /* Keep the col-resize cursor + suppress selection for the whole splitter drag. */
-body.sftp-resizing {
+body.splitter-resizing {
 	cursor: col-resize;
 	user-select: none;
 }
@@ -2223,8 +2443,8 @@ body.sftp-resizing {
 }
 
 .sftp-toolbar-actions .btn-icon {
-	width: 30px;
-	height: 30px;
+	width: 1.875rem;
+	height: 1.875rem;
 	padding: 0;
 	color: var(--text-primary);
 }
@@ -2236,8 +2456,8 @@ body.sftp-resizing {
 
 /* Normalize every toolbar glyph to one size (icons ship at 16/18px intrinsic). */
 .sftp-toolbar-actions .btn-icon svg {
-	width: 16px;
-	height: 16px;
+	width: 1rem;
+	height: 1rem;
 }
 
 /* Bulk-action bar between the toolbar and the entry list: select-all + count on
@@ -2407,8 +2627,8 @@ body.sftp-resizing {
 }
 
 .sftp-queue-icon svg {
-	width: 14px;
-	height: 14px;
+	width: 0.875rem;
+	height: 0.875rem;
 	display: block;
 }
 
@@ -2433,8 +2653,8 @@ body.sftp-resizing {
 
 .sftp-queue-track {
 	display: inline-block;
-	width: 90px;
-	height: 6px;
+	width: 5.625rem;
+	height: 0.375rem;
 	background-color: var(--surface-2);
 	border-radius: var(--radius-sm);
 	overflow: hidden;
@@ -2449,7 +2669,7 @@ body.sftp-resizing {
 }
 
 .sftp-queue-pct {
-	min-width: 40px;
+	min-width: 2.5rem;
 	text-align: right;
 }
 
@@ -2463,8 +2683,8 @@ body.sftp-resizing {
 
 .sftp-queue-cancel {
 	flex: 0 0 auto;
-	width: 22px;
-	height: 22px;
+	width: 1.375rem;
+	height: 1.375rem;
 	padding: 0;
 	font-size: 1.05rem;
 	line-height: 1;
@@ -2492,7 +2712,7 @@ body.sftp-resizing {
 	border: 1px solid var(--border);
 	border-radius: var(--radius-pill);
 	overflow: hidden;
-	max-width: 160px;
+	max-width: 10rem;
 }
 
 .sftp-bookmark.is-current {
@@ -2506,7 +2726,7 @@ body.sftp-resizing {
 	font-size: 0.76rem;
 	padding: 2px 6px;
 	cursor: pointer;
-	max-width: 130px;
+	max-width: 8.125rem;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;

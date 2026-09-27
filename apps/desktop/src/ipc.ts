@@ -168,7 +168,8 @@ export type ErrorCode =
   | "HostKeyRejected"
   | "TunnelBind"
   | "Sftp"
-  | "Cancelled";
+  | "Cancelled"
+  | "Update";
 
 export interface AppError {
   code: ErrorCode;
@@ -589,6 +590,8 @@ export interface WorkspaceState {
   activeIndex: number;
   /** The Files panel's UI state, or absent/undefined before it has been used. */
   sftp?: SftpPanelState;
+  /** The left menu's width in px, or absent while the CSS default applies. */
+  sidebarWidth?: number;
 }
 
 /** The saved workspace, or an empty one (no tabs) on first launch / corrupt file. */
@@ -647,6 +650,46 @@ export interface Settings {
   keepalive: KeepaliveSettings;
   /** SFTP file-browser behavior (idle-disconnect timeout). */
   sftp: SftpSettings;
+  /** Update-check behavior (launch check is opt-in). */
+  updates: UpdateSettings;
+}
+
+/** Mirrors the backend `UpdateSettings`. */
+export interface UpdateSettings {
+  /** Check for a new version once at app start; off by default. */
+  checkOnLaunch: boolean;
+}
+
+/* ----------------------------------------------------------------------------
+ * App updates (backend `updater.rs`)
+ * -------------------------------------------------------------------------- */
+
+/** Mirrors the backend `UpdateInfo`: a newer release found by `checkUpdate`. */
+export interface UpdateInfo {
+  version: string;
+  /** Release notes, when the release carries any. */
+  notes: string | null;
+  /** Whether this build can install the update itself (Windows, Linux
+   * AppImage); `false` for a .deb/.rpm install, which links to the download
+   * page instead. */
+  canInstall: boolean;
+}
+
+/** Asks the update server for a newer release; `null` when up to date. */
+export async function checkUpdate(): Promise<UpdateInfo | null> {
+  return invokeChecked<UpdateInfo | null>("check_update");
+}
+
+/** Downloads and signature-verifies the confirmed release (`version` guards
+ * against a re-check swapping it); live sessions are untouched. */
+export async function downloadUpdate(version: string): Promise<void> {
+  await invokeChecked<void>("download_update", { version });
+}
+
+/** Installs the downloaded release, closing live sessions first, then restarts
+ * the app (on success this promise never settles). */
+export async function installUpdate(version: string): Promise<void> {
+  await invokeChecked<void>("install_update", { version });
 }
 
 /** Current app settings (SPEC §5). */

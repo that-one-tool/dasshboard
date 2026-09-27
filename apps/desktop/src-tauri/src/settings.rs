@@ -120,6 +120,15 @@ impl Default for SftpSettings {
     }
 }
 
+/// Update-check behavior. Off by default: the app contacts the update server
+/// only when the user asks (About → Check for updates) or opts in here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSettings {
+    /// Check for a new version once, at app start.
+    pub check_on_launch: bool,
+}
+
 impl Default for TerminalSettings {
     fn default() -> Self {
         TerminalSettings {
@@ -160,6 +169,10 @@ pub struct Settings {
     /// before this group existed still loads.
     #[serde(default)]
     pub sftp: SftpSettings,
+    /// Update-check behavior. `#[serde(default)]` so a `settings.json` written
+    /// before this group existed still loads (with the launch check off).
+    #[serde(default)]
+    pub updates: UpdateSettings,
 }
 
 fn default_version() -> u32 {
@@ -175,6 +188,7 @@ impl Default for Settings {
             language: None,
             keepalive: KeepaliveSettings::default(),
             sftp: SftpSettings::default(),
+            updates: UpdateSettings::default(),
         }
     }
 }
@@ -549,6 +563,36 @@ mod tests {
         assert!(value.get("lastProfileId").is_some()); // present as null
         assert!(value.get("language").is_some()); // present as null
         assert!(value["language"].is_null());
+    }
+
+    #[test]
+    fn update_check_on_launch_is_off_by_default_and_round_trips() {
+        let dir = tempdir().unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        assert!(!store.get().updates.check_on_launch);
+
+        let mut s = store.get();
+        s.updates.check_on_launch = true;
+        store.save(s).unwrap();
+
+        let reloaded = SettingsStore::load(dir.path().to_path_buf());
+        assert!(reloaded.get().updates.check_on_launch);
+        let value = serde_json::to_value(reloaded.get()).unwrap();
+        assert_eq!(value["updates"]["checkOnLaunch"], true);
+    }
+
+    #[test]
+    fn deserializes_older_file_missing_updates_group() {
+        // A settings.json written before `updates` existed must still load,
+        // with the launch check off (the app never contacts a server unasked).
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(SETTINGS_FILE),
+            r#"{ "version": 1, "terminal": { "fontSize": 14, "fontFamily": "Consolas", "theme": "dark" } }"#,
+        )
+        .unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        assert_eq!(store.get().updates, UpdateSettings::default());
     }
 
     #[test]

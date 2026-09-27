@@ -59,6 +59,8 @@ export interface TabManagerOptions {
    * {@link scheduleSave}.
    */
   getSftpState?: () => SftpPanelState | undefined;
+  /** The left menu's width to persist (undefined while it has its default). */
+  getSidebarWidth?: () => number | undefined;
   /**
    * The app-action buttons (reload / trusted-hosts / settings / help), mounted
    * into the right side of the tab-strip row so the app has no separate header.
@@ -368,6 +370,7 @@ export class TabManager {
       }),
       activeIndex: Math.max(0, this.activeIndex),
       sftp: this.options.getSftpState?.(),
+      sidebarWidth: this.options.getSidebarWidth?.(),
     };
   }
 

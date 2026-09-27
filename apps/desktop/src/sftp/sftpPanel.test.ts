@@ -28,6 +28,7 @@ vi.mock("../ipc", () => ({
   listDevices: vi.fn(async () => h.devices),
   sftpConnect: vi.fn(async () => "/home/j"),
   sftpDisconnect: vi.fn(async () => {}),
+  sftpConnectedDevices: vi.fn(async () => ["a"]),
   sftpList: vi.fn(async () => h.listResult),
   sftpRealpath: vi.fn(async (_id: string, p: string) => {
     // Minimal POSIX canonicalize: collapse "." and ".." segments.
@@ -90,6 +91,7 @@ import {
   sftpList,
   sftpRealpath,
   sftpDisconnect,
+  sftpConnectedDevices,
   sftpDownload,
   sftpDownloadDir,
   sftpUploadDir,
@@ -534,6 +536,29 @@ describe("SftpPanel", () => {
     expect(sftpConnect).toHaveBeenLastCalledWith("b");
   });
 
+  it("resync drops to disconnected when the backend no longer holds the connection", async () => {
+    await setup();
+    await browse();
+    vi.mocked(sftpConnectedDevices).mockResolvedValueOnce([]);
+
+    await activePanel.resyncConnection();
+
+    const toggle = q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]');
+    expect(toggle.classList.contains("is-disconnected")).toBe(true);
+  });
+
+  it("resync keeps a connection the backend still holds", async () => {
+    await setup();
+    await browse();
+    vi.mocked(sftpConnectedDevices).mockResolvedValueOnce(["a"]);
+
+    await activePanel.resyncConnection();
+
+    const toggle = q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]');
+    expect(toggle.classList.contains("is-connected")).toBe(true);
+    expect(sftpDisconnect).not.toHaveBeenCalled();
+  });
+
   it("the toggle disconnects (red→green) but keeps the panel open", async () => {
     await setup();
     await browse();
@@ -907,7 +932,20 @@ describe("SftpPanel", () => {
     const panel = await setup({
       initialState: { open: true, collapsed: false, width: 10, deviceId: null },
     });
-    expect(panel.layoutState()?.width).toBe(260);
+    // 22rem: the toolbar's nine icon buttons fit on one row.
+    expect(panel.layoutState()?.width).toBe(352);
+  });
+
+  it("scales its width bounds with the root font size (rem, not fixed px)", async () => {
+    document.documentElement.style.fontSize = "20px";
+    try {
+      const panel = await setup({
+        initialState: { open: true, collapsed: false, width: 10, deviceId: null },
+      });
+      expect(panel.layoutState()?.width).toBe(440); // 22rem × 20px
+    } finally {
+      document.documentElement.style.fontSize = "";
+    }
   });
 
   it("a zero idle timeout never auto-disconnects", async () => {

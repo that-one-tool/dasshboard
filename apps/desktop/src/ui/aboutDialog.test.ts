@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { formatPingMessage } from "../version";
+import type { UpdateController } from "../updates/updateController";
 
 const { pingMock } = vi.hoisted(() => ({ pingMock: vi.fn() }));
 vi.mock("../ipc", () => ({ ping: (...args: unknown[]) => pingMock(...args) }));
@@ -53,6 +54,27 @@ describe("openAboutDialog", () => {
     expect(dialog()?.querySelector(".about-version")?.textContent).toBe(
       "Version unavailable",
     );
+  });
+
+  it("mounts the update section when given a controller and unmounts it on close", () => {
+    const unsubscribe = vi.fn();
+    const updates = {
+      available: vi.fn(() => null),
+      isInstalling: vi.fn(() => false),
+      subscribe: vi.fn(() => unsubscribe),
+      check: vi.fn(),
+      install: vi.fn(),
+    } as unknown as UpdateController;
+    openAboutDialog(updates);
+    expect(dialog()?.querySelector('[data-update="check"]')).toBeInstanceOf(HTMLElement);
+
+    dialog()?.querySelector<HTMLButtonElement>('[data-action="close"]')?.click();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("has no update section without a controller", () => {
+    openAboutDialog();
+    expect(dialog()?.querySelector('[data-update="check"]')).toBeNull();
   });
 
   it("closes on the Close button", () => {

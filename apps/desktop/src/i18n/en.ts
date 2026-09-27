@@ -24,8 +24,13 @@ export const en = {
 	"header.files.aria": "Toggle the Files panel",
 	"header.settings.title": "Settings",
 	"header.settings.aria": "Settings",
+	"header.theme.toLight": "Switch to light theme",
+	"header.theme.toDark": "Switch to dark theme",
 	"header.help.title": "About DaSSHboard",
 	"header.help.aria": "About DaSSHboard",
+	"header.help.updateAvailable": "About DaSSHboard (update available)",
+	"layout.resizeSidebar": "Resize the side menu",
+	"layout.resizeFiles": "Resize the Files panel",
 	"header.paneRoot.aria": "SSH terminal",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -85,13 +90,12 @@ export const en = {
 
 	/* -- settings dialog (settings/settingsController.ts) ------------------- */
 	"settings.title": "Settings",
+	"settings.tab.general": "General",
+	"settings.tab.connections": "Connections",
 	"settings.fontSize": "Font size",
 	"settings.fontFamily": "Font family",
 	"settings.scrollback": "Scrollback",
 	"settings.scrollback.hint": "Lines of history kept per terminal (0–100000).",
-	"settings.theme": "Appearance",
-	"settings.theme.dark": "Dark",
-	"settings.theme.light": "Light",
 	"settings.keepalive.interval": "Keepalive interval (s)",
 	"settings.keepalive.interval.hint": "Seconds between keepalive pings; 0 disables it.",
 	"settings.keepalive.countMax": "Keepalive retries",
@@ -100,6 +104,8 @@ export const en = {
 	"settings.sftp.idleDisconnect.hint": "Disconnect a collapsed Files panel after this many minutes idle; 0 keeps it open.",
 	"settings.language": "Language",
 	"settings.language.system": "System default",
+	"settings.updates.checkOnLaunch": "Check for updates at startup",
+	"settings.updates.checkOnLaunch.hint": "Contacts the update server once per launch. When off, DaSSHboard only checks when you click Check for updates in About.",
 
 	/* -- about dialog (ui/aboutDialog.ts) ----------------------------------- */
 	"about.tagline": "Multi-pane SSH & serial terminal dashboard with SFTP file transfer",
@@ -108,6 +114,21 @@ export const en = {
 	"about.license": "That One Tool - 2026 - MIT license",
 	"about.source": '<a href="https://github.com/that-one-tool/dasshboard" target="_blank">https://github.com/that-one-tool/dasshboard</a>',
 	"about.unavailable": "Version unavailable",
+
+	/* -- app updates (updates/*) ------------------------------------------- */
+	"updates.check": "Check for updates",
+	"updates.checking": "Checking for updates…",
+	"updates.upToDate": "You're up to date.",
+	"updates.available": "Version {version} is available.",
+	"updates.notifyOnly": "This installation can't update itself; download the new version from the website.",
+	"updates.install": "Install & restart",
+	"updates.download": "Download",
+	"updates.installing": "Downloading and installing…",
+	"updates.checkFailed": "Couldn't check for updates: {message}",
+	"updates.failed": "Update failed: {message}",
+	"updates.confirm.title": "Install update",
+	"updates.confirm.message": "Install version {version} now? DaSSHboard will close to install it, ending every open session, including those in other DaSSHboard windows. Your tabs are restored on the next launch.",
+	"updates.toast": "DaSSHboard {version} is available; open About to update.",
 
 	/* -- devices sidebar + dialog (devices/*) ------------------------------- */
 	"devices.title": "Devices",

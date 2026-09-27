@@ -19,6 +19,9 @@ import { initHostKeyDialog } from "./terminal/hostKeyDialog";
 import { initTunnelsPanel } from "./tunnels/tunnelsPanel";
 import { initSftpPanel } from "./sftp/sftpPanel";
 import { openAboutDialog } from "./ui/aboutDialog";
+import { UpdateController } from "./updates/updateController";
+import { applyUpdateBadge } from "./updates/updateBadge";
+import { initSidebarResize } from "./layout/sidebarResize";
 import { openKnownHostsDialog } from "./settings/knownHostsDialog";
 import { showToast } from "./ui/toast";
 import { helpIcon, reloadIcon, lockIcon, gearIcon, filesIcon } from "./ui/icons";
@@ -56,9 +59,25 @@ async function initApp(): Promise<void> {
 	// dialog directly (help/about and trusted-hosts). Reload and settings are
 	// wired further down, next to the state they act on.
 	initHeaderIcons();
+	// App updates: About hosts the manual check; a found release badges its button.
+	// Before installing (which restarts the app), save the tab layout now rather
+	// than trusting the debounced save to land first. `tabs` is built below.
+	const updates = new UpdateController({
+		beforeInstall: () => saveWorkspaceState(tabs.serialize()),
+		onInstallError: (message) => {
+			showToast(t("updates.failed", { message }), "error");
+			// On Windows sessions close before the install; if it then failed,
+			// the Files panel must stop showing a connection that is gone.
+			void sftpPanel.resyncConnection();
+		},
+	});
+	const helpBtn = document.querySelector<HTMLButtonElement>("#help-btn");
+	updates.subscribe(() => {
+		if (helpBtn) applyUpdateBadge(helpBtn, updates.available() !== null);
+	});
 	document
 		.querySelector<HTMLButtonElement>("#help-btn")
-		?.addEventListener("click", () => openAboutDialog());
+		?.addEventListener("click", () => openAboutDialog(updates));
 	document
 		.querySelector<HTMLButtonElement>("#trusted-hosts-btn")
 		?.addEventListener("click", () =>
@@ -91,6 +110,7 @@ async function initApp(): Promise<void> {
 	// Late-bound bridges to collaborators built after the tabs/settings (below).
 	let notifySftpIdleChange = (): void => {};
 	let sftpLayoutState = (): SftpPanelState | undefined => undefined;
+	let sidebarWidth = (): number | undefined => undefined;
 	const tabs = new TabManager(paneRoot, {
 		grid: {
 			onError: (message) => showToast(t("error.prefix", { message }), "error"),
@@ -107,6 +127,8 @@ async function initApp(): Promise<void> {
 			),
 		// The SFTP panel shares this file; contribute its state into each save.
 		getSftpState: () => sftpLayoutState(),
+		// …and the resized left menu's width.
+		getSidebarWidth: () => sidebarWidth(),
 		// The app-action buttons move into the tab-strip row (no separate header).
 		headerActions: document.querySelector<HTMLElement>(".header-actions"),
 	});
@@ -137,6 +159,21 @@ async function initApp(): Promise<void> {
 	}
 	const workspaceRestored = restoredWorkspace.tabs.length > 0;
 	await tabs.init(workspaceRestored ? restoredWorkspace : undefined);
+
+	// Resizable left menu: its width is per-window state, restored with the tabs.
+	const sidebarEl = document.querySelector<HTMLElement>(".sidebar");
+	const sidebarHandle = document.querySelector<HTMLElement>(".sidebar-splitter");
+	if (sidebarEl && sidebarHandle) {
+		const sidebar = initSidebarResize({
+			sidebar: sidebarEl,
+			handle: sidebarHandle,
+			paneRoot,
+			initialWidth: restoredWorkspace.sidebarWidth,
+			onLayoutChange: () => tabs.activeGrid().refit(),
+			onPersist: () => tabs.scheduleSave(),
+		});
+		sidebarWidth = () => sidebar.persistedWidth();
+	}
 
 	// Profiles (Phase 4): the sidebar list + toolbar Save/Save As with a
 	// dirty-state dot. `init()` loads the start profile — default if set, else
@@ -263,5 +300,11 @@ async function initApp(): Promise<void> {
 		deviceManager?.retranslate();
 		tunnelsPanel.retranslate();
 		sftpPanel.retranslate();
+	});
+
+	// Opt-in update check, last so it never delays startup. Off by default: the
+	// app contacts no server unless the user asked for it.
+	void updates.maybeCheckOnLaunch(settings.checkUpdatesOnLaunch()).then((info) => {
+		if (info) showToast(t("updates.toast", { version: info.version }), "success");
 	});
 }

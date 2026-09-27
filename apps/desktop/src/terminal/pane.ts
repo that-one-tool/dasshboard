@@ -39,6 +39,7 @@ import {
 import { isMultilinePaste, pasteConfirmMessage } from "./paste";
 import { confirm } from "../ui/confirm";
 import { requireEl } from "../ui/dom";
+import { disconnectIcon } from "../ui/icons";
 import { t } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { deviceEndpoint } from "../devices/deviceEndpoint";
@@ -233,10 +234,10 @@ export class TerminalPane {
       <div class="pane">
         <div class="pane-header">
           <select class="pane-device-select" aria-label="${t("pane.deviceSelect.aria")}"></select>
-          <button type="button" class="btn btn-primary pane-connect">${t("pane.connect")}</button>
-          <button type="button" class="btn btn-secondary pane-disconnect" hidden>
-            ${t("pane.disconnect")}
-          </button>
+          <button type="button" class="btn btn-icon pane-connect"
+            title="${t("pane.connect")}" aria-label="${t("pane.connect")}">${disconnectIcon}</button>
+          <button type="button" class="btn btn-icon pane-disconnect" hidden
+            title="${t("pane.disconnect")}" aria-label="${t("pane.disconnect")}">${disconnectIcon}</button>
           <span class="pane-status">
             <span class="pane-status-dot" aria-hidden="true"></span>
             <span class="pane-status-label"></span>
@@ -650,10 +651,11 @@ export class TerminalPane {
    * whatever overlay is currently displayed. The terminal itself is untouched.
    */
   retranslate(): void {
+    // Icon buttons: relabel the tooltip + accessible name, never the content.
     const connect = this.root.querySelector<HTMLButtonElement>(".pane-connect");
-    if (connect) connect.textContent = t("pane.connect");
+    if (connect) setIconLabel(connect, t("pane.connect"));
     const disconnect = this.root.querySelector<HTMLButtonElement>(".pane-disconnect");
-    if (disconnect) disconnect.textContent = t("pane.disconnect");
+    if (disconnect) setIconLabel(disconnect, t("pane.disconnect"));
     const retry = this.root.querySelector<HTMLButtonElement>(".overlay-retry");
     if (retry) retry.textContent = t("pane.retry");
     const cancel = this.root.querySelector<HTMLButtonElement>(".overlay-cancel");
@@ -863,4 +865,10 @@ function errorMessage(err: unknown): string {
     if (typeof m === "string") return m;
   }
   return String(err);
+}
+
+/** Sets an icon-only button's tooltip and accessible name together. */
+function setIconLabel(button: HTMLButtonElement, label: string): void {
+  button.title = label;
+  button.setAttribute("aria-label", label);
 }

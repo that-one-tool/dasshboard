@@ -18,8 +18,13 @@ export const ja: Messages = {
 	"header.files.aria": "ファイルパネルを切り替え",
 	"header.settings.title": "設定",
 	"header.settings.aria": "設定",
+	"header.theme.toLight": "ライトテーマに切り替え",
+	"header.theme.toDark": "ダークテーマに切り替え",
 	"header.help.title": "DaSSHboard について",
 	"header.help.aria": "DaSSHboard について",
+	"header.help.updateAvailable": "DaSSHboard について（更新があります）",
+	"layout.resizeSidebar": "サイドメニューのサイズを変更",
+	"layout.resizeFiles": "ファイルパネルのサイズを変更",
 	"header.paneRoot.aria": "SSH ターミナル",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -79,13 +84,12 @@ export const ja: Messages = {
 
 	/* -- settings dialog ---------------------------------------------------- */
 	"settings.title": "設定",
+	"settings.tab.general": "一般",
+	"settings.tab.connections": "接続",
 	"settings.fontSize": "フォントサイズ",
 	"settings.fontFamily": "フォント",
 	"settings.scrollback": "スクロールバック",
 	"settings.scrollback.hint": "端末ごとに保持する履歴行数（0〜100000）。",
-	"settings.theme": "外観",
-	"settings.theme.dark": "ダーク",
-	"settings.theme.light": "ライト",
 	"settings.keepalive.interval": "キープアライブ間隔（秒）",
 	"settings.keepalive.interval.hint": "キープアライブ送信の間隔（秒）。0 で無効。",
 	"settings.keepalive.countMax": "キープアライブ再試行回数",
@@ -94,6 +98,8 @@ export const ja: Messages = {
 	"settings.sftp.idleDisconnect.hint": "折りたたんだファイルパネルがこの分数アイドル状態になると切断します。0 で切断しません。",
 	"settings.language": "言語",
 	"settings.language.system": "システムの言語",
+	"settings.updates.checkOnLaunch": "起動時に更新を確認",
+	"settings.updates.checkOnLaunch.hint": "起動ごとに一度だけ更新サーバーに接続します。オフの場合、DaSSHboard は「DaSSHboard について」で「更新を確認」をクリックしたときだけ確認します。",
 
 	/* -- about dialog ------------------------------------------------------- */
 	"about.tagline": "SFTP ファイル転送に対応したマルチペインの SSH・シリアルターミナルダッシュボード",
@@ -102,6 +108,21 @@ export const ja: Messages = {
 	"about.license": "That One Tool - 2026 - MIT ライセンス",
 	"about.source": '<a href="https://github.com/that-one-tool/dasshboard" target="_blank">https://github.com/that-one-tool/dasshboard</a>',
 	"about.unavailable": "バージョンを取得できません",
+
+	/* -- app updates (updates/*) ------------------------------------------- */
+	"updates.check": "更新を確認",
+	"updates.checking": "更新を確認しています…",
+	"updates.upToDate": "最新の状態です。",
+	"updates.available": "バージョン {version} が利用可能です。",
+	"updates.notifyOnly": "このインストールは自動更新できません。Web サイトから新しいバージョンをダウンロードしてください。",
+	"updates.install": "インストールして再起動",
+	"updates.download": "ダウンロード",
+	"updates.installing": "ダウンロードしてインストールしています…",
+	"updates.checkFailed": "更新を確認できませんでした: {message}",
+	"updates.failed": "更新に失敗しました: {message}",
+	"updates.confirm.title": "更新をインストール",
+	"updates.confirm.message": "バージョン {version} を今すぐインストールしますか？インストールのため DaSSHboard が終了し、他の DaSSHboard ウィンドウのものも含め、開いているセッションはすべて閉じられます。タブは次回の起動時に復元されます。",
+	"updates.toast": "DaSSHboard {version} が利用可能です。「DaSSHboard について」を開いて更新してください。",
 
 	/* -- devices sidebar + dialog ------------------------------------------- */
 	"devices.title": "デバイス",

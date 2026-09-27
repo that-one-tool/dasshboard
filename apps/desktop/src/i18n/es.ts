@@ -17,8 +17,13 @@ export const es: Messages = {
 	"header.files.aria": "Alternar el panel de Archivos",
 	"header.settings.title": "Ajustes",
 	"header.settings.aria": "Ajustes",
+	"header.theme.toLight": "Cambiar al tema claro",
+	"header.theme.toDark": "Cambiar al tema oscuro",
 	"header.help.title": "Acerca de DaSSHboard",
 	"header.help.aria": "Acerca de DaSSHboard",
+	"header.help.updateAvailable": "Acerca de DaSSHboard (actualización disponible)",
+	"layout.resizeSidebar": "Cambiar el tamaño del menú lateral",
+	"layout.resizeFiles": "Cambiar el tamaño del panel de Archivos",
 	"header.paneRoot.aria": "Terminal SSH",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -78,13 +83,12 @@ export const es: Messages = {
 
 	/* -- settings dialog ---------------------------------------------------- */
 	"settings.title": "Ajustes",
+	"settings.tab.general": "General",
+	"settings.tab.connections": "Conexiones",
 	"settings.fontSize": "Tamaño de fuente",
 	"settings.fontFamily": "Fuente",
 	"settings.scrollback": "Historial",
 	"settings.scrollback.hint": "Líneas de historial guardadas por terminal (0–100000).",
-	"settings.theme": "Apariencia",
-	"settings.theme.dark": "Oscuro",
-	"settings.theme.light": "Claro",
 	"settings.keepalive.interval": "Intervalo de keepalive (s)",
 	"settings.keepalive.interval.hint": "Segundos entre pings de keepalive; 0 lo desactiva.",
 	"settings.keepalive.countMax": "Reintentos de keepalive",
@@ -93,6 +97,8 @@ export const es: Messages = {
 	"settings.sftp.idleDisconnect.hint": "Desconecta un panel de Archivos contraído tras estos minutos de inactividad; 0 lo mantiene abierto.",
 	"settings.language": "Idioma",
 	"settings.language.system": "Idioma del sistema",
+	"settings.updates.checkOnLaunch": "Buscar actualizaciones al iniciar",
+	"settings.updates.checkOnLaunch.hint": "Contacta con el servidor de actualizaciones una vez por inicio. Si está desactivado, DaSSHboard solo comprueba cuando pulsas Buscar actualizaciones en Acerca de.",
 
 	/* -- about dialog ------------------------------------------------------- */
 	"about.tagline": "Panel de terminales SSH y serie multipanel con transferencia de archivos SFTP",
@@ -101,6 +107,21 @@ export const es: Messages = {
 	"about.license": "That One Tool - 2026 - Licencia MIT",
 	"about.source": '<a href="https://github.com/that-one-tool/dasshboard" target="_blank">https://github.com/that-one-tool/dasshboard</a>',
 	"about.unavailable": "Versión no disponible",
+
+	/* -- app updates (updates/*) ------------------------------------------- */
+	"updates.check": "Buscar actualizaciones",
+	"updates.checking": "Buscando actualizaciones…",
+	"updates.upToDate": "Estás al día.",
+	"updates.available": "La versión {version} está disponible.",
+	"updates.notifyOnly": "Esta instalación no puede actualizarse sola; descarga la nueva versión desde el sitio web.",
+	"updates.install": "Instalar y reiniciar",
+	"updates.download": "Descargar",
+	"updates.installing": "Descargando e instalando…",
+	"updates.checkFailed": "No se pudieron buscar actualizaciones: {message}",
+	"updates.failed": "La actualización falló: {message}",
+	"updates.confirm.title": "Instalar actualización",
+	"updates.confirm.message": "¿Instalar la versión {version} ahora? DaSSHboard se cerrará para instalarla y terminará todas las sesiones abiertas, incluidas las de otras ventanas de DaSSHboard. Tus pestañas se restaurarán en el próximo inicio.",
+	"updates.toast": "DaSSHboard {version} está disponible; abre Acerca de para actualizar.",
 
 	/* -- devices sidebar + dialog ------------------------------------------- */
 	"devices.title": "Dispositivos",

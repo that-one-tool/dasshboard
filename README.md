@@ -13,8 +13,8 @@
 
 - **Devices** — SSH (password, key file or SSH agent / hardware token), serial/COM
   ports, and local shells. Tags, search, and import/export (JSON or `~/.ssh/config`).
-- **Grid & tabs** — split each tab into up to 3×2 resizable panes; tabs and
-  layouts are restored on launch.
+- **Grid & tabs** — split each tab into up to 3×2 resizable panes, and resize the
+  side menu and Files panel; tabs and layouts are restored on launch.
 - **Profiles** — save a workspace and set a default that reconnects every pane
   on launch.
 - **SSH extras** — jump hosts (`-J`), agent forwarding (`-A`), local port
@@ -23,13 +23,17 @@
   bulk actions, bookmarks and chmod.
 - **Commands on connect** — a per-device snippet typed in as soon as the shell opens.
 - **Broadcast input** — type into several panes at once.
-- **Dark & light themes**, configurable terminal font and scrollback.
+- **Dark & light themes** with a one-click toggle in the top bar, configurable
+  terminal font and scrollback.
 - **7 languages** — English, French, Spanish, German, Portuguese, Chinese, Japanese.
+- **Signed updates** — check from About (or opt in to a check at startup), then
+  Install & restart on Windows and the Linux AppImage.
 
 ## Security
 
 - Local-only: no account, no cloud, no telemetry. The app connects only to the
-  hosts you open, and all your data stays on your machine.
+  hosts you open, and all your data stays on your machine. It contacts the
+  update server only when you check for updates, or at startup if you opt in.
 - Passwords and passphrases live only in the OS keychain, never in config files
   or exports.
 - Host keys are trusted on first use; a changed key blocks the connection until

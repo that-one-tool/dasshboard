@@ -21,3 +21,14 @@ export function requireEl<E extends Element>(
   if (!el) throw new Error(`Expected element not found: ${selector}`);
   return el;
 }
+
+/** The browser default root font size, used when none can be read. */
+const DEFAULT_ROOT_FONT_PX = 16;
+
+/** Converts rem to px at the current root font size, for sizes that must be
+ * set or compared in px from script (e.g. a drag clamp) yet should scale with
+ * text size like the rest of the rem-based layout. */
+export function remToPx(rem: number): number {
+  const root = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+  return rem * (root || DEFAULT_ROOT_FONT_PX);
+}

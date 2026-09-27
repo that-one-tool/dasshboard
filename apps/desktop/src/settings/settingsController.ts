@@ -17,10 +17,13 @@ import {
   type TerminalSettings,
 } from "../ipc";
 import { DEFAULT_TERMINAL_SETTINGS } from "../terminal/terminalSettings";
+import { renderThemeToggle } from "./themeToggle";
+import { wireSettingsTabs } from "./settingsTabs";
 import {
   SUPPORTED_LOCALES,
   applyDomTranslations,
   localeName,
+  onLocaleChange,
   resolveLocale,
   setLocale,
   t,
@@ -53,6 +56,7 @@ const FALLBACK_SETTINGS: Settings = {
   language: null,
   keepalive: { ...DEFAULT_KEEPALIVE_SETTINGS },
   sftp: { ...DEFAULT_SFTP_SETTINGS },
+  updates: { checkOnLaunch: false },
 };
 
 export class SettingsController {
@@ -87,6 +91,9 @@ export class SettingsController {
     document
       .querySelector<HTMLButtonElement>("#settings-btn")
       ?.addEventListener("click", () => this.openDialog());
+    document
+      .querySelector<HTMLButtonElement>("#theme-btn")
+      ?.addEventListener("click", () => void this.toggleTheme());
   }
 
   /**
@@ -123,6 +130,11 @@ export class SettingsController {
     return this.settings.sftp;
   }
 
+  /** Whether the user opted in to an update check at app start. */
+  checkUpdatesOnLaunch(): boolean {
+    return this.settings.updates.checkOnLaunch;
+  }
+
   /** The persisted id of the last-used profile, if any (for app-start restore). */
   lastProfileId(): string | null {
     return this.settings.lastProfileId;
@@ -154,6 +166,14 @@ export class SettingsController {
    */
   private applyAppTheme(theme: TerminalSettings["theme"]): void {
     document.documentElement.dataset.theme = theme === "light" ? "light" : "dark";
+    const toggle = document.querySelector<HTMLElement>("#theme-btn");
+    if (toggle) renderThemeToggle(toggle, theme);
+  }
+
+  /** The header toggle: flip dark ⇄ light, live and persisted. */
+  private async toggleTheme(): Promise<void> {
+    const theme = this.settings.terminal.theme === "dark" ? "light" : "dark";
+    await this.applyTerminal({ ...this.settings.terminal, theme });
   }
 
   private async applySftp(sftp: SftpSettings): Promise<void> {
@@ -186,6 +206,17 @@ export class SettingsController {
     }
   }
 
+  /** Reflects and persists the opt-in launch update check. */
+  private wireUpdateCheckbox(root: HTMLElement): void {
+    const box = root.querySelector<HTMLInputElement>(".settings-check-updates");
+    if (!box) return;
+    box.checked = this.settings.updates.checkOnLaunch;
+    box.addEventListener("change", () => {
+      this.settings = { ...this.settings, updates: { checkOnLaunch: box.checked } };
+      void this.save();
+    });
+  }
+
   /* ---------------------------------------------------------------------- */
 
   private openDialog(): void {
@@ -193,7 +224,7 @@ export class SettingsController {
     // The language <select>: a "System default" option (value "") that clears
     // the stored language back to OS-follow, then one option per shipped locale.
     const languageOptions = [
-      `<option value="">${t("settings.language.system")}</option>`,
+      `<option value="" data-i18n="settings.language.system">${t("settings.language.system")}</option>`,
       ...SUPPORTED_LOCALES.map(
         (loc) => `<option value="${loc}">${localeName(loc)}</option>`,
       ),
@@ -202,51 +233,71 @@ export class SettingsController {
     root.className = "dialog settings-dialog";
     root.setAttribute("role", "dialog");
     root.setAttribute("aria-modal", "true");
+    root.setAttribute("aria-labelledby", "settings-title");
     root.innerHTML = `
       <div class="dialog-overlay"></div>
       <div class="dialog-content settings-content">
-        <div class="dialog-header"><h2>${t("settings.title")}</h2></div>
-        <label class="form-field">
-          <span>${t("settings.language")}</span>
-          <select class="settings-language">${languageOptions}</select>
-        </label>
-        <label class="form-field">
-          <span>${t("settings.fontSize")}</span>
-          <input type="number" class="settings-font-size" min="6" max="40" step="1" />
-        </label>
-        <label class="form-field">
-          <span>${t("settings.fontFamily")}</span>
-          <input type="text" class="settings-font-family" />
-        </label>
-        <label class="form-field">
-          <span>${t("settings.scrollback")}</span>
-          <input type="number" class="settings-scrollback" min="0" max="100000" step="100" />
-          <small class="form-hint">${t("settings.scrollback.hint")}</small>
-        </label>
-        <label class="form-field">
-          <span>${t("settings.theme")}</span>
-          <select class="settings-theme">
-            <option value="dark">${t("settings.theme.dark")}</option>
-            <option value="light">${t("settings.theme.light")}</option>
-          </select>
-        </label>
-        <label class="form-field">
-          <span>${t("settings.keepalive.interval")}</span>
-          <input type="number" class="settings-keepalive-interval" min="0" max="3600" step="5" />
-          <small class="form-hint">${t("settings.keepalive.interval.hint")}</small>
-        </label>
-        <label class="form-field">
-          <span>${t("settings.keepalive.countMax")}</span>
-          <input type="number" class="settings-keepalive-count" min="1" max="10" step="1" />
-          <small class="form-hint">${t("settings.keepalive.countMax.hint")}</small>
-        </label>
-        <label class="form-field">
-          <span>${t("settings.sftp.idleDisconnect")}</span>
-          <input type="number" class="settings-sftp-idle" min="0" max="1440" step="1" />
-          <small class="form-hint">${t("settings.sftp.idleDisconnect.hint")}</small>
-        </label>
+        <div class="dialog-header"><h2 id="settings-title" data-i18n="settings.title">${t("settings.title")}</h2></div>
+        <div class="settings-tabs" role="tablist"
+          data-i18n-aria="settings.title" aria-label="${t("settings.title")}">
+          <button type="button" class="settings-tab" role="tab" id="settings-tab-general"
+            data-tab="general" aria-controls="settings-panel-general" aria-selected="true"
+            data-i18n="settings.tab.general" tabindex="0">${t("settings.tab.general")}</button>
+          <button type="button" class="settings-tab" role="tab" id="settings-tab-connections"
+            data-tab="connections" aria-controls="settings-panel-connections" aria-selected="false"
+            data-i18n="settings.tab.connections" tabindex="-1">${t("settings.tab.connections")}</button>
+        </div>
+        <div class="settings-body">
+          <div class="settings-panel" role="tabpanel" id="settings-panel-general"
+            data-panel="general" aria-labelledby="settings-tab-general">
+            <label class="form-field">
+              <span data-i18n="settings.language">${t("settings.language")}</span>
+              <select class="settings-language">${languageOptions}</select>
+            </label>
+            <label class="form-field">
+              <span data-i18n="settings.fontFamily">${t("settings.fontFamily")}</span>
+              <input type="text" class="settings-font-family" />
+            </label>
+            <label class="form-field">
+              <span data-i18n="settings.fontSize">${t("settings.fontSize")}</span>
+              <input type="number" class="settings-font-size" min="6" max="40" step="1" />
+            </label>
+            <label class="form-field">
+              <span data-i18n="settings.scrollback">${t("settings.scrollback")}</span>
+              <input type="number" class="settings-scrollback" min="0" max="100000" step="100" />
+              <small class="form-hint" data-i18n="settings.scrollback.hint">${t("settings.scrollback.hint")}</small>
+            </label>
+            <div class="form-group form-group-checkbox">
+              <label>
+                <input type="checkbox" class="settings-check-updates"
+                  aria-describedby="settings-check-updates-hint" />
+                <span data-i18n="settings.updates.checkOnLaunch">${t("settings.updates.checkOnLaunch")}</span>
+              </label>
+              <small class="form-hint" id="settings-check-updates-hint"
+              data-i18n="settings.updates.checkOnLaunch.hint">${t("settings.updates.checkOnLaunch.hint")}</small>
+            </div>
+          </div>
+          <div class="settings-panel" role="tabpanel" id="settings-panel-connections"
+            data-panel="connections" aria-labelledby="settings-tab-connections" hidden>
+            <label class="form-field">
+              <span data-i18n="settings.keepalive.interval">${t("settings.keepalive.interval")}</span>
+              <input type="number" class="settings-keepalive-interval" min="0" max="3600" step="5" />
+              <small class="form-hint" data-i18n="settings.keepalive.interval.hint">${t("settings.keepalive.interval.hint")}</small>
+            </label>
+            <label class="form-field">
+              <span data-i18n="settings.keepalive.countMax">${t("settings.keepalive.countMax")}</span>
+              <input type="number" class="settings-keepalive-count" min="1" max="10" step="1" />
+              <small class="form-hint" data-i18n="settings.keepalive.countMax.hint">${t("settings.keepalive.countMax.hint")}</small>
+            </label>
+            <label class="form-field">
+              <span data-i18n="settings.sftp.idleDisconnect">${t("settings.sftp.idleDisconnect")}</span>
+              <input type="number" class="settings-sftp-idle" min="0" max="1440" step="1" />
+              <small class="form-hint" data-i18n="settings.sftp.idleDisconnect.hint">${t("settings.sftp.idleDisconnect.hint")}</small>
+            </label>
+          </div>
+        </div>
         <div class="form-actions">
-          <button type="button" class="btn btn-secondary" data-action="close">${t("common.close")}</button>
+          <button type="button" class="btn btn-secondary" data-action="close" data-i18n="common.close">${t("common.close")}</button>
         </div>
       </div>
     `;
@@ -254,7 +305,6 @@ export class SettingsController {
     const fontSize = root.querySelector<HTMLInputElement>(".settings-font-size");
     const fontFamily = root.querySelector<HTMLInputElement>(".settings-font-family");
     const scrollback = root.querySelector<HTMLInputElement>(".settings-scrollback");
-    const theme = root.querySelector<HTMLSelectElement>(".settings-theme");
     const keepaliveInterval = root.querySelector<HTMLInputElement>(
       ".settings-keepalive-interval",
     );
@@ -266,7 +316,6 @@ export class SettingsController {
     if (fontSize) fontSize.value = String(term.fontSize);
     if (fontFamily) fontFamily.value = term.fontFamily;
     if (scrollback) scrollback.value = String(term.scrollback);
-    if (theme) theme.value = term.theme;
     if (keepaliveInterval) keepaliveInterval.value = String(this.settings.keepalive.intervalSecs);
     if (keepaliveCount) keepaliveCount.value = String(this.settings.keepalive.countMax);
     if (sftpIdle) sftpIdle.value = String(this.settings.sftp.idleDisconnectMins);
@@ -288,7 +337,7 @@ export class SettingsController {
         scrollback: Number.isNaN(parsedScrollback)
           ? this.settings.terminal.scrollback
           : parsedScrollback,
-        theme: theme?.value === "light" ? "light" : "dark",
+        theme: this.settings.terminal.theme,
       };
       await this.applyTerminal(next);
       // Reflect the backend-sanitized values (e.g. a clamped font size/scrollback).
@@ -299,7 +348,6 @@ export class SettingsController {
     fontSize?.addEventListener("change", onApply);
     fontFamily?.addEventListener("change", onApply);
     scrollback?.addEventListener("change", onApply);
-    theme?.addEventListener("change", onApply);
 
     // Keepalive doesn't affect live terminals (it applies to connections opened
     // afterwards), so it only needs to be persisted. A non-numeric field keeps
@@ -337,8 +385,15 @@ export class SettingsController {
     };
     sftpIdle?.addEventListener("change", () => void applySftp());
 
+    this.wireUpdateCheckbox(root);
+    wireSettingsTabs(root);
+
+    // Re-translate the open dialog the moment the language changes (its
+    // strings carry `data-i18n` keys), rather than only on the next open.
+    const stopRetranslating = onLocaleChange(() => applyDomTranslations(root));
     const previouslyFocused = document.activeElement;
     const close = (): void => {
+      stopRetranslating();
       root.remove();
       if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) {
         previouslyFocused.focus();
@@ -356,7 +411,7 @@ export class SettingsController {
       if (e.key === "Escape") close();
     });
     document.body.appendChild(root);
-    fontSize?.focus();
+    language?.focus();
   }
 }
 

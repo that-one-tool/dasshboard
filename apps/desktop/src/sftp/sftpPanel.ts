@@ -24,6 +24,7 @@ import {
   listDevices,
   sftpConnect,
   sftpDisconnect,
+  sftpConnectedDevices,
   sftpDownload,
   sftpList,
   sftpMkdir,
@@ -79,6 +80,8 @@ import { joinRemote, parentOf, formatSize, formatMtime, formatMode } from "./sft
 import { TransferQueue, type TransferItem } from "./transferQueue";
 import { basename, join } from "@tauri-apps/api/path";
 import { t, tp } from "../i18n";
+import { remToPx } from "../ui/dom";
+import { MIN_GRID_REM, wireSplitter, type WidthBounds } from "../ui/splitter";
 
 export interface SftpPanelOptions {
   onError?: (error: AppError) => void;
@@ -110,15 +113,16 @@ export function browsableDevices(devices: Device[]): SshDevice[] {
   return devices.filter((d): d is SshDevice => d.kind === "ssh");
 }
 
-/** Panel width bounds (px). The upper bound is also clamped to a fraction of the
- * workspace at drag time so the grid never disappears. */
-const MIN_PANEL_WIDTH = 260;
-const DEFAULT_PANEL_WIDTH = 360;
+/** Panel width bounds, in rem so they scale with the root font size like the
+ * rest of the layout. The panel's own width is user state (dragged, persisted)
+ * and so is kept in px. */
+/** The toolbar's nine icon buttons on one row: 9 × 1.875rem + 8 gaps + padding
+ * + border = 22rem. Mirrored by `.sftp-panel { min-width }` in styles.css. */
+const MIN_PANEL_REM = 22;
+const DEFAULT_PANEL_REM = 22.5;
 /** Absolute upper bound for a restored width (the live drag re-clamps against
  * the workspace row so the grid never disappears). */
-const MAX_PANEL_WIDTH = 2000;
-/** The grid keeps at least this much of the workspace row when dragging. */
-const MIN_GRID_WIDTH = 240;
+const MAX_PANEL_REM = 125;
 
 export class SftpPanel {
   private devices: Device[] = [];
@@ -167,7 +171,7 @@ export class SftpPanel {
    * restored state), gating whether its state is persisted at all. */
   private everOpened = false;
   /** Current panel width in px (persisted by the caller via `layoutState`). */
-  private width = DEFAULT_PANEL_WIDTH;
+  private width = remToPx(DEFAULT_PANEL_REM);
 
   /** The directory currently listed. */
   private cwd = "/";
@@ -199,11 +203,11 @@ export class SftpPanel {
   /** True while a connect/list/transfer is in flight (disables the toolbar). */
   private busy = false;
 
-  /** Splitter drag state; non-null only while the handle is held. */
-  private drag: { startX: number; startWidth: number } | null = null;
   /** The splitter lives outside the panel's replaced innerHTML, so its listener
    * survives a `buildPanel()` rebuild — wire it exactly once. */
   private splitterWired = false;
+  /** Re-syncs the splitter's ARIA width values (set once wired). */
+  private syncSplitterAria = (): void => {};
 
   constructor(private readonly options: SftpPanelOptions = {}) {
     this.panel = document.querySelector<HTMLElement>(".sftp-panel");
@@ -232,7 +236,7 @@ export class SftpPanel {
   private applyInitialState(): void {
     const s = this.options.initialState;
     if (!s) return;
-    this.width = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, s.width));
+    this.width = Math.min(remToPx(MAX_PANEL_REM), Math.max(remToPx(MIN_PANEL_REM), s.width));
     const known = s.deviceId && browsableDevices(this.devices).some((d) => d.id === s.deviceId);
     this.selectedDeviceId = known ? s.deviceId : null;
     if (!s.open) return;
@@ -270,6 +274,18 @@ export class SftpPanel {
     if (this.activeDeviceId && !this.devices.some((d) => d.id === this.activeDeviceId)) {
       await this.handleDisconnect();
     }
+  }
+
+  /**
+   * Drop to the disconnected state if the backend no longer holds this panel's
+   * connection — e.g. an update install closed every session and then failed.
+   * A failed lookup keeps the current state.
+   */
+  async resyncConnection(): Promise<void> {
+    const deviceId = this.activeDeviceId;
+    if (!deviceId) return;
+    const live = await sftpConnectedDevices().catch(() => [deviceId]);
+    if (!live.includes(deviceId)) await this.handleDisconnect();
   }
 
   /**
@@ -590,9 +606,10 @@ export class SftpPanel {
     panel.hidden = !this.panelOpen;
     panel.classList.toggle("sftp-collapsed", this.collapsed);
     // Clear the inline width while collapsed so the `.sftp-collapsed` rail width
-    // (40px) applies; an inline width would otherwise override it.
+    // (2.5rem) applies; an inline width would otherwise override it.
     panel.style.width = this.collapsed ? "" : `${this.width}px`;
     if (this.splitter) this.splitter.hidden = !this.panelOpen || this.collapsed;
+    this.syncSplitterAria();
     this.updateConnDot();
     const btn = document.querySelector<HTMLButtonElement>("#sftp-btn");
     btn?.setAttribute("aria-pressed", String(this.panelOpen));
@@ -1664,38 +1681,31 @@ export class SftpPanel {
     const splitter = this.splitter;
     if (!splitter || this.splitterWired) return;
     this.splitterWired = true;
-    splitter.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      this.drag = { startX: e.clientX, startWidth: this.width };
-      splitter.classList.add("dragging");
-      document.body.classList.add("sftp-resizing");
-      window.addEventListener("mousemove", this.onDragMove);
-      window.addEventListener("mouseup", this.onDragEnd);
+    this.syncSplitterAria = wireSplitter(splitter, {
+      side: "end",
+      // The rendered width: CSS `max-width` can show the panel narrower than
+      // the stored width, and a drag must start from what the user sees.
+      currentWidth: () => this.panel?.getBoundingClientRect().width || this.width,
+      bounds: () => this.widthBounds(),
+      defaultWidth: () => remToPx(DEFAULT_PANEL_REM),
+      onResize: (width) => {
+        this.width = width;
+        if (this.panel) this.panel.style.width = `${width}px`;
+        this.options.onLayoutChange?.();
+      },
+      onCommit: () => this.persist(), // save once per drag / key step, not per move
     });
   }
 
-  /** Dragging left (toward the grid) widens the right-docked panel. Clamped to
-   * `[MIN_PANEL_WIDTH, workspace − MIN_GRID_WIDTH]`. */
-  private onDragMove = (e: MouseEvent): void => {
-    if (!this.drag || !this.panel) return;
-    const rowWidth =
-      this.panel.parentElement?.getBoundingClientRect().width ?? this.width + MIN_GRID_WIDTH;
-    const max = Math.max(MIN_PANEL_WIDTH, rowWidth - MIN_GRID_WIDTH);
-    const next = this.drag.startWidth + (this.drag.startX - e.clientX);
-    this.width = Math.min(max, Math.max(MIN_PANEL_WIDTH, next));
-    this.panel.style.width = `${this.width}px`;
-    this.options.onLayoutChange?.();
-  };
-
-  private onDragEnd = (): void => {
-    this.drag = null;
-    this.splitter?.classList.remove("dragging");
-    document.body.classList.remove("sftp-resizing");
-    window.removeEventListener("mousemove", this.onDragMove);
-    window.removeEventListener("mouseup", this.onDragEnd);
-    this.options.onLayoutChange?.();
-    this.persist(); // save the new width once, at drag end
-  };
+  /** `[MIN_PANEL_REM, workspace − splitter − MIN_GRID_REM]`: the grid keeps its floor. */
+  private widthBounds(): WidthBounds {
+    const row = this.panel?.parentElement?.getBoundingClientRect().width ?? 0;
+    const handle = this.splitter?.getBoundingClientRect().width ?? 0;
+    return {
+      min: remToPx(MIN_PANEL_REM),
+      max: row - handle - remToPx(MIN_GRID_REM),
+    };
+  }
 
   /* ----- small view helpers ---------------------------------------------- */
 

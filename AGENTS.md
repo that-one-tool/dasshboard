@@ -44,11 +44,18 @@ files, releasing),
     - `tabs/` — tab strip + per-tab workspaces (every tab's `Grid` stays alive;
       hidden tabs keep their sessions running and refit on activation)
     - `profiles/` — workspace/profile persistence
-    - `settings/` — app settings controller, known-hosts dialog
+    - `settings/` — app settings controller (dialog with General / Connections
+      tabs via `settingsTabs`), the header dark/light toggle (`themeToggle`),
+      known-hosts dialog
+    - `updates/` — update controller (check/confirm/install), the update
+      block in the About dialog, and the About-button badge
     - `i18n/` — dependency-free `t`/`tp` runtime + one message table per locale;
       `en.ts` is the source of truth and types the keys
+    - `layout/` — the resizable left menu (`sidebarResize`; width persisted per
+      window in `workspace_state.json`)
     - `ui/` — confirm dialogs, file dialog, icons, toast notifications (`toast.ts`),
-      shared DOM helpers (`dom.ts`)
+      shared DOM helpers (`dom.ts`), the resize handle shared by the left menu and
+      the Files panel (`splitter.ts`: drag, arrow keys, double-click reset)
     - `ipc.ts` — typed `invoke` wrappers; every payload type here must mirror the
       matching Rust `serde` struct (camelCase on the wire)
 - `src-tauri/src/` — backend (Rust):
@@ -84,6 +91,12 @@ files, releasing),
       blocking reader/writer to the async sink with reader/writer threads + a
       control task
     - `transfer.rs` — devices/profiles import-export
+    - `updater.rs` — in-app updates via `tauri-plugin-updater` (CrabNebula
+      endpoints): check → download → install, each naming the confirmed
+      version; runs only on user request or opt-in launch check; self-install
+      for NSIS/MSI + AppImage (keyed on the bundle type), notify-only for
+      `.deb`/`.rpm`; the install closes live sessions first
+      (`AppState::shutdown_live_sessions`, shared with app close)
     - `state.rs` — `AppState` (managed Tauri state), `error.rs` — `AppError`
 - `src-tauri/tests/` — `ssh_it.rs`, `sftp_it.rs`: integration tests against an
   in-process throwaway `russh` server, no Docker/external daemon needed
@@ -118,6 +131,12 @@ npm run check:all    # both gates
   ask rather than guess. If two approaches are both reasonable, present both
   and let the user pick.
 - Keep functions small, single-purpose, cyclomatic complexity < 4.
+- Keep the UI responsive (desktop app and website): never hardcode a px
+  width/height (CSS `width`, `height`, `min-*`/`max-*`, `flex-basis`, grid
+  tracks, `<img>`/SVG size attributes). Use rem for component sizes, em in media
+  queries, and %/vw/vh with `min()`/`clamp()` for layout; in the desktop app size
+  icons with the `.icon` / `.icon-lg` classes, and when script must work in px,
+  derive it with `remToPx` (`ui/dom.ts`).
 - Let names carry meaning; add comments only when the _why_ isn't obvious from
   the code (a constraint, a workaround, a non-obvious invariant).
 - Give each new `.ts` module a colocated `*.test.ts`. Existing exceptions:

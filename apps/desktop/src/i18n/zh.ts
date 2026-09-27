@@ -18,8 +18,13 @@ export const zh: Messages = {
 	"header.files.aria": "切换“文件”面板",
 	"header.settings.title": "设置",
 	"header.settings.aria": "设置",
+	"header.theme.toLight": "切换到浅色主题",
+	"header.theme.toDark": "切换到深色主题",
 	"header.help.title": "关于 DaSSHboard",
 	"header.help.aria": "关于 DaSSHboard",
+	"header.help.updateAvailable": "关于 DaSSHboard（有可用更新）",
+	"layout.resizeSidebar": "调整侧边菜单大小",
+	"layout.resizeFiles": "调整文件面板大小",
 	"header.paneRoot.aria": "SSH 终端",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -79,13 +84,12 @@ export const zh: Messages = {
 
 	/* -- settings dialog ---------------------------------------------------- */
 	"settings.title": "设置",
+	"settings.tab.general": "常规",
+	"settings.tab.connections": "连接",
 	"settings.fontSize": "字体大小",
 	"settings.fontFamily": "字体",
 	"settings.scrollback": "回滚缓冲",
 	"settings.scrollback.hint": "每个终端保留的历史行数（0–100000）。",
-	"settings.theme": "外观",
-	"settings.theme.dark": "深色",
-	"settings.theme.light": "浅色",
 	"settings.keepalive.interval": "保活间隔（秒）",
 	"settings.keepalive.interval.hint": "保活探测之间的秒数；0 表示禁用。",
 	"settings.keepalive.countMax": "保活重试次数",
@@ -94,6 +98,8 @@ export const zh: Messages = {
 	"settings.sftp.idleDisconnect.hint": "折叠的“文件”面板空闲这么多分钟后断开连接；0 表示保持连接。",
 	"settings.language": "语言",
 	"settings.language.system": "系统语言",
+	"settings.updates.checkOnLaunch": "启动时检查更新",
+	"settings.updates.checkOnLaunch.hint": "每次启动时联系一次更新服务器。关闭时，DaSSHboard 仅在你于“关于”中点击“检查更新”时检查。",
 
 	/* -- about dialog ------------------------------------------------------- */
 	"about.tagline": "支持 SFTP 文件传输的多窗格 SSH 与串口终端仪表盘",
@@ -102,6 +108,21 @@ export const zh: Messages = {
 	"about.license": "That One Tool - 2026 - MIT 许可证",
 	"about.source": '<a href="https://github.com/that-one-tool/dasshboard" target="_blank">https://github.com/that-one-tool/dasshboard</a>',
 	"about.unavailable": "版本不可用",
+
+	/* -- app updates (updates/*) ------------------------------------------- */
+	"updates.check": "检查更新",
+	"updates.checking": "正在检查更新…",
+	"updates.upToDate": "已是最新版本。",
+	"updates.available": "版本 {version} 可用。",
+	"updates.notifyOnly": "此安装无法自行更新；请从网站下载新版本。",
+	"updates.install": "安装并重启",
+	"updates.download": "下载",
+	"updates.installing": "正在下载并安装…",
+	"updates.checkFailed": "无法检查更新：{message}",
+	"updates.failed": "更新失败：{message}",
+	"updates.confirm.title": "安装更新",
+	"updates.confirm.message": "现在安装版本 {version}？DaSSHboard 将关闭以进行安装，所有打开的会话都会结束，包括其他 DaSSHboard 窗口中的会话。标签页会在下次启动时恢复。",
+	"updates.toast": "DaSSHboard {version} 可用；打开“关于”进行更新。",
 
 	/* -- devices sidebar + dialog ------------------------------------------- */
 	"devices.title": "设备",

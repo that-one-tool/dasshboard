@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
@@ -147,15 +147,62 @@ fn home_dir() -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
+/// TLS trust-store overrides `tauri-plugin-updater` sets process-wide on Linux
+/// during an update check (when unset). Its paths are Debian's; on Fedora/RHEL
+/// the file doesn't exist, so OpenSSL-based tools in a shell that inherited
+/// them fail certificate checks. A shell keeps them only if the app started
+/// with them.
+const UPDATER_TLS_VARS: [&str; 2] = ["SSL_CERT_FILE", "SSL_CERT_DIR"];
+
+static TLS_VARS_AT_STARTUP: OnceLock<Vec<&'static str>> = OnceLock::new();
+
+/// Records which [`UPDATER_TLS_VARS`] the app started with. Called first thing
+/// in `run`, before any update check can set them.
+pub fn record_startup_env() {
+    TLS_VARS_AT_STARTUP.get_or_init(present_tls_vars);
+}
+
+/// Removes the [`UPDATER_TLS_VARS`] the app did not start with — called right
+/// after each update check, which may have set them process-wide.
+pub fn restore_startup_tls_env() {
+    let startup = TLS_VARS_AT_STARTUP.get_or_init(present_tls_vars);
+    for var in vars_to_scrub(startup) {
+        std::env::remove_var(var);
+    }
+}
+
+fn present_tls_vars() -> Vec<&'static str> {
+    UPDATER_TLS_VARS
+        .into_iter()
+        .filter(|var| std::env::var_os(var).is_some())
+        .collect()
+}
+
+fn vars_to_scrub(present_at_startup: &[&str]) -> Vec<&'static str> {
+    UPDATER_TLS_VARS
+        .into_iter()
+        .filter(|var| !present_at_startup.contains(var))
+        .collect()
+}
+
+fn scrub_env(cmd: &mut CommandBuilder, vars: &[&str]) {
+    for var in vars {
+        cmd.env_remove(var);
+    }
+}
+
 /// Build the `CommandBuilder` for the shell: the resolved program, the resolved
-/// startup directory (when known), and `TERM=xterm-256color` so full-screen
-/// programs behave (matching the SSH session's `TERM`).
+/// startup directory (when known), `TERM=xterm-256color` so full-screen
+/// programs behave (matching the SSH session's `TERM`), and the app's own
+/// environment minus the updater's TLS overrides.
 fn build_command(params: &LocalShellParams) -> CommandBuilder {
     let mut cmd = CommandBuilder::new(resolve_program(&params.shell));
     if let Some(dir) = resolve_cwd(&params.cwd) {
         cmd.cwd(dir);
     }
     cmd.env("TERM", "xterm-256color");
+    let startup = TLS_VARS_AT_STARTUP.get_or_init(present_tls_vars);
+    scrub_env(&mut cmd, &vars_to_scrub(startup));
     cmd
 }
 
@@ -465,6 +512,25 @@ mod tests {
         fn on_host_key_prompt(&self, _payload: crate::session::HostKeyPromptPayload) {
             unreachable!("local shell sessions never prompt for a host key");
         }
+    }
+
+    #[test]
+    fn scrubs_only_the_tls_vars_absent_at_startup() {
+        assert_eq!(vars_to_scrub(&[]), vec!["SSL_CERT_FILE", "SSL_CERT_DIR"]);
+        assert_eq!(vars_to_scrub(&["SSL_CERT_FILE"]), vec!["SSL_CERT_DIR"]);
+        assert!(vars_to_scrub(&["SSL_CERT_FILE", "SSL_CERT_DIR"]).is_empty());
+    }
+
+    #[test]
+    fn scrub_removes_the_updater_tls_vars_from_the_shell_env() {
+        let mut cmd = CommandBuilder::new("sh");
+        cmd.env("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt");
+        cmd.env("SSL_CERT_DIR", "/etc/ssl/certs");
+
+        scrub_env(&mut cmd, &["SSL_CERT_DIR"]);
+
+        assert!(cmd.get_env("SSL_CERT_FILE").is_some());
+        assert!(cmd.get_env("SSL_CERT_DIR").is_none());
     }
 
     #[test]

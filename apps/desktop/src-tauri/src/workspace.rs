@@ -86,6 +86,10 @@ pub struct WorkspaceState {
     /// serialize when absent so the file stays clean until the panel is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sftp: Option<SftpPanelState>,
+    /// The left menu's width in px, once the user resized it (`None` = the CSS
+    /// default). Same legacy/clean-file handling as `sftp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar_width: Option<u32>,
 }
 
 impl WorkspaceState {
@@ -97,6 +101,7 @@ impl WorkspaceState {
             tabs: Vec::new(),
             active_index: 0,
             sftp: None,
+            sidebar_width: None,
         }
     }
 
@@ -146,6 +151,7 @@ mod tests {
             tabs: vec![tab()],
             active_index: 0,
             sftp: None,
+            sidebar_width: None,
         }
     }
 
@@ -221,6 +227,28 @@ mod tests {
         // A clean file until the panel is used: `None` is skipped on serialize.
         let value = serde_json::to_value(state()).expect("serialize");
         assert!(value.get("sftp").is_none());
+    }
+
+    #[test]
+    fn sidebar_width_round_trips_camel_case_and_is_omitted_when_absent() {
+        let mut s = state();
+        assert!(serde_json::to_value(&s)
+            .unwrap()
+            .get("sidebarWidth")
+            .is_none());
+
+        s.sidebar_width = Some(360);
+        let value = serde_json::to_value(&s).expect("serialize");
+        assert_eq!(value["sidebarWidth"], 360);
+        let back: WorkspaceState = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(back.sidebar_width, Some(360));
+    }
+
+    #[test]
+    fn deserializes_older_file_missing_sidebar_width() {
+        let json = r#"{ "tabs": [], "activeIndex": 0 }"#;
+        let back: WorkspaceState = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(back.sidebar_width, None);
     }
 
     #[test]

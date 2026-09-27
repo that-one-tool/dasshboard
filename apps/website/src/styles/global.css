@@ -33,7 +33,7 @@
 	--radius-lg: 14px;
 	--radius-pill: 999px;
 	--mono-font: "Cascadia Mono", Consolas, ui-monospace, monospace;
-	--content-width: 1080px;
+	--content-width: 67.5rem;
 }
 
 @media (prefers-color-scheme: light) {

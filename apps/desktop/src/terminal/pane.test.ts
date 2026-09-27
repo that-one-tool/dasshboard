@@ -681,6 +681,35 @@ describe("TerminalPane status chip", () => {
     expect(q<HTMLElement>(chip, ".pane-status-label").textContent).toBe("Disconnected");
   });
 
+  it("uses icon buttons for connect/disconnect, labelled for hover and assistive tech", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+
+    const connect = q<HTMLButtonElement>(root, ".pane-connect");
+    expect(connect.classList.contains("btn-icon")).toBe(true);
+    expect(connect.querySelector("svg")).toBeInstanceOf(SVGElement);
+    expect(connect.textContent?.trim()).toBe("");
+    expect(connect.getAttribute("aria-label")).toBe("Connect");
+    expect(connect.title).toBe("Connect");
+    const disconnect = q<HTMLButtonElement>(root, ".pane-disconnect");
+    expect(disconnect.classList.contains("btn-icon")).toBe(true);
+    expect(disconnect.getAttribute("aria-label")).toBe("Disconnect");
+  });
+
+  it("keeps the icons and relabels the connect/disconnect buttons on retranslate", async () => {
+    const { root, pane } = await connectedPane();
+
+    setLocale("fr");
+    pane.retranslate();
+
+    const disconnect = q<HTMLButtonElement>(root, ".pane-disconnect");
+    expect(disconnect.querySelector("svg")).toBeInstanceOf(SVGElement);
+    expect(disconnect.getAttribute("aria-label")).toBe("Déconnecter");
+    expect(disconnect.title).toBe("Déconnecter");
+    expect(q<HTMLButtonElement>(root, ".pane-connect").getAttribute("aria-label")).toBe("Connecter");
+  });
+
   it("relabels in the new language on retranslate", async () => {
     const { root, pane } = await connectedPane();
 

@@ -47,6 +47,9 @@ import {
 	deleteProfile,
 	setDefaultProfile,
 	getSettings,
+	checkUpdate,
+	downloadUpdate,
+	installUpdate,
 	saveSettings,
 	ping,
 	listProfiles,
@@ -279,6 +282,7 @@ describe("IPC command wrapper argument shapes", () => {
 			language: null,
 			keepalive: { intervalSecs: 30, countMax: 3 },
 			sftp: { idleDisconnectMins: 10 },
+			updates: { checkOnLaunch: false },
 		};
 		invokeMock.mockResolvedValue(settings);
 		await expect(getSettings()).resolves.toEqual(settings);
@@ -293,10 +297,35 @@ describe("IPC command wrapper argument shapes", () => {
 			language: null,
 			keepalive: { intervalSecs: 30, countMax: 3 },
 			sftp: { idleDisconnectMins: 10 },
+			updates: { checkOnLaunch: false },
 		};
 		invokeMock.mockResolvedValue(settings);
 		await saveSettings(settings);
 		expect(invokeMock).toHaveBeenCalledWith("save_settings", { settings });
+	});
+
+	it("checkUpdate forwards no arguments and returns the found update", async () => {
+		const info = { version: "1.21.0", notes: null, canInstall: true };
+		invokeMock.mockResolvedValue(info);
+		await expect(checkUpdate()).resolves.toEqual(info);
+		expect(invokeMock).toHaveBeenCalledWith("check_update");
+	});
+
+	it("checkUpdate normalizes a rejected error", async () => {
+		invokeMock.mockRejectedValue({ code: "Update", message: "offline" });
+		await expect(checkUpdate()).rejects.toEqual({ code: "Update", message: "offline" });
+	});
+
+	it("downloadUpdate sends the confirmed { version }", async () => {
+		invokeMock.mockResolvedValue(undefined);
+		await downloadUpdate("1.21.0");
+		expect(invokeMock).toHaveBeenCalledWith("download_update", { version: "1.21.0" });
+	});
+
+	it("installUpdate sends the confirmed { version }", async () => {
+		invokeMock.mockResolvedValue(undefined);
+		await installUpdate("1.21.0");
+		expect(invokeMock).toHaveBeenCalledWith("install_update", { version: "1.21.0" });
 	});
 
 	it("listProfiles forwards no arguments and returns the list", async () => {

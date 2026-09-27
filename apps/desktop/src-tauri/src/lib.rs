@@ -17,6 +17,7 @@ mod ssh_config;
 mod state;
 mod store;
 mod transfer;
+mod updater;
 mod workspace;
 mod workspace_store;
 
@@ -70,12 +71,17 @@ pub(crate) fn app_version() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before anything can run an update check (which may set TLS env vars).
+    local_shell::record_startup_env();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         // Persist and restore the window size/position across restarts (Phase 5).
         .plugin(tauri_plugin_window_state::Builder::default().build())
         // Native save/open file pickers backing devices/profiles import/export.
         .plugin(tauri_plugin_dialog::init())
+        // In-app updates; only ever invoked by `check_update`/`install_update`.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::PendingUpdate::default())
         .setup(|app| {
             // SPEC.md §4: all persisted JSON lives in the Tauri app-config
             // dir. DeviceStore itself takes a plain directory path (not an
@@ -144,30 +150,13 @@ pub fn run() {
             // `destroy()` to actually close. `destroy()` fires no further
             // `CloseRequested`, so there is no re-entrancy loop.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let state = window.state::<AppState>();
-                let manager = Arc::clone(&state.session_manager);
-                let serial = Arc::clone(&state.serial_manager);
-                let local_shell = Arc::clone(&state.local_shell_manager);
-                let tunnels = Arc::clone(&state.tunnel_manager);
-                let sftp = Arc::clone(&state.sftp_manager);
-                if manager.session_count() == 0
-                    && serial.session_count() == 0
-                    && local_shell.session_count() == 0
-                    && tunnels.tunnel_count() == 0
-                    && sftp.connection_count() == 0
-                {
+                if !window.state::<AppState>().has_live_sessions() {
                     return; // nothing live — let the close proceed normally.
                 }
                 api.prevent_close();
                 let window = window.clone();
                 tauri::async_runtime::spawn(async move {
-                    manager.disconnect_all().await;
-                    serial.disconnect_all().await;
-                    local_shell.disconnect_all().await;
-                    // Release every bound local listener before the window goes away.
-                    tunnels.stop_all().await;
-                    // Close every SFTP transport too.
-                    sftp.disconnect_all().await;
+                    window.state::<AppState>().shutdown_live_sessions().await;
                     let _ = window.destroy();
                 });
             }
@@ -224,6 +213,9 @@ pub fn run() {
             commands::sftp_bookmarks,
             commands::sftp_bookmark_add,
             commands::sftp_bookmark_remove,
+            commands::check_update,
+            commands::download_update,
+            commands::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

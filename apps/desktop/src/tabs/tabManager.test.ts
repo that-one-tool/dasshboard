@@ -333,6 +333,16 @@ describe("TabManager persistence (Phase 3)", () => {
     expect(s.tabs[1]?.panes).toEqual([{ deviceId: null }]); // from the fake snapshot
   });
 
+  it("serialize() includes the left menu width once it has been resized", async () => {
+    const tm = makeManager({ getSidebarWidth: () => 360 });
+    await tm.init();
+    expect(tm.serialize().sidebarWidth).toBe(360);
+
+    const untouched = makeManager({ getSidebarWidth: () => undefined });
+    await untouched.init();
+    expect(untouched.serialize().sidebarWidth).toBeUndefined();
+  });
+
   it("does not persist during init/restore, then persists (debounced) on a change", async () => {
     vi.useFakeTimers();
     try {

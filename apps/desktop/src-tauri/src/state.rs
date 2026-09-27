@@ -57,3 +57,27 @@ pub struct AppState {
     /// `sftp_bookmarks.json`; a plain data store, not tied to a live connection.
     pub bookmark_store: BookmarkStore,
 }
+
+impl AppState {
+    /// Whether any shell session, tunnel or SFTP connection is live.
+    pub fn has_live_sessions(&self) -> bool {
+        self.session_manager.session_count() > 0
+            || self.serial_manager.session_count() > 0
+            || self.local_shell_manager.session_count() > 0
+            || self.tunnel_manager.tunnel_count() > 0
+            || self.sftp_manager.connection_count() > 0
+    }
+
+    /// Gracefully closes every live session, tunnel and SFTP connection, so
+    /// remotes see a clean SSH disconnect rather than a dropped socket. Shared
+    /// by app close and the update install (whose installer exits the process
+    /// without a close event). Each manager bounds its own teardown.
+    pub async fn shutdown_live_sessions(&self) {
+        self.session_manager.disconnect_all().await;
+        self.serial_manager.disconnect_all().await;
+        self.local_shell_manager.disconnect_all().await;
+        // Release every bound local listener.
+        self.tunnel_manager.stop_all().await;
+        self.sftp_manager.disconnect_all().await;
+    }
+}

@@ -1,7 +1,7 @@
 name: release
 
 # Draft -> build -> publish a CrabNebula Cloud release with Windows (msi, nsis)
-# and Linux (deb, rpm) installers. Adapted from
+# and Linux (deb, rpm, AppImage) installers. Adapted from
 # https://docs.crabnebula.dev/cloud/ci/tauri-v2-workflow/ (desktop-only: no
 # macOS/Android/iOS jobs, since this app doesn't target those platforms).
 #
@@ -102,7 +102,8 @@ jobs:
                   cache-workspaces: "apps/desktop/src-tauri -> target"
 
             # Tauri's official Linux prerequisites for building + bundling
-            # (deb/rpm bundling itself is pure-Rust, no extra system tool needed).
+            # (deb/rpm bundling itself is pure-Rust, no extra system tool needed;
+            # the AppImage bundler downloads its own linuxdeploy tooling).
             - name: install Linux dependencies
               if: matrix.os == 'ubuntu-22.04'
               run: |

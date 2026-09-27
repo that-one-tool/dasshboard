@@ -10,7 +10,15 @@ import { describe, it, expect } from "vitest";
 import * as icons from "./icons";
 
 /** The top-bar action icons, drawn larger than the in-list / toolbar glyphs. */
-const HEADER_ICONS = new Set(["helpIcon", "reloadIcon", "lockIcon", "gearIcon", "filesIcon"]);
+const HEADER_ICONS = new Set([
+  "helpIcon",
+  "reloadIcon",
+  "lockIcon",
+  "gearIcon",
+  "filesIcon",
+  "sunIcon",
+  "moonIcon",
+]);
 
 /** "On" states drawn as a filled shape rather than an outline. */
 const FILLED_ICONS = new Set(["starFillIcon", "bookmarkFilledIcon"]);
@@ -30,9 +38,12 @@ describe("icons", () => {
       expect(svg).toContain('stroke-width="2"');
     });
 
-    it(`${name} is sized for its role`, () => {
-      const size = HEADER_ICONS.has(name) ? 18 : 16;
-      expect(svg).toContain(`width="${size}" height="${size}"`);
+    it(`${name} is sized for its role by a rem class, not px attributes`, () => {
+      const cls = HEADER_ICONS.has(name) ? "icon icon-lg" : "icon";
+      expect(svg).toContain(`class="${cls}"`);
+      // Only the <svg> tag: inner shapes' width/height are viewBox units, not px.
+      const svgTag = svg.slice(0, svg.indexOf(">"));
+      expect(svgTag).not.toMatch(/\s(width|height)="/);
     });
 
     it(`${name} is ${FILLED_ICONS.has(name) ? "filled" : "an outline"}`, () => {

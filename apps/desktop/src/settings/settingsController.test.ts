@@ -21,6 +21,7 @@ vi.mock("../ipc", () => ({
 
 import { SettingsController } from "./settingsController";
 import { getSettings, saveSettings } from "../ipc";
+import { setLocale } from "../i18n";
 
 function fakeGrid(): {
   applyTerminalSettings: ReturnType<typeof vi.fn<(s: TerminalSettings) => void>>;
@@ -36,6 +37,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     language: null,
     keepalive: { intervalSecs: 30, countMax: 3 },
     sftp: { idleDisconnectMins: 10 },
+    updates: { checkOnLaunch: false },
     ...overrides,
   };
 }
@@ -45,7 +47,7 @@ async function flush(): Promise<void> {
 }
 
 beforeEach(() => {
-  document.body.innerHTML = '<button id="settings-btn"></button>';
+  document.body.innerHTML = '<button id="theme-btn"></button><button id="settings-btn"></button>';
   vi.mocked(getSettings).mockReset();
   vi.mocked(saveSettings).mockReset();
 });
@@ -98,6 +100,34 @@ describe("SettingsController.init", () => {
     expect(document.querySelector(".settings-dialog")).toBeNull();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
     expect(document.querySelector(".settings-dialog")).not.toBeNull();
+  });
+
+  it("names the dialog by its title and links the update checkbox to its hint", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+
+    const dialog = document.querySelector(".settings-dialog");
+    const titleId = dialog?.getAttribute("aria-labelledby") ?? "";
+    expect(document.getElementById(titleId)?.textContent).toBe("Settings");
+    const box = document.querySelector(".settings-check-updates");
+    const hintId = box?.getAttribute("aria-describedby") ?? "";
+    expect(document.getElementById(hintId)?.textContent).toContain("update server");
+  });
+
+  it("puts the fields in a scroll body between the fixed header and footer", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+
+    const body = document.querySelector(".settings-content > .settings-body");
+    expect(body).not.toBeNull();
+    expect(body?.querySelector(".settings-font-size")).toBeInstanceOf(HTMLElement);
+    expect(body?.querySelector(".settings-check-updates")).toBeInstanceOf(HTMLElement);
+    expect(document.querySelector(".settings-content > .dialog-header")).not.toBeNull();
+    expect(document.querySelector(".settings-content > .form-actions")).not.toBeNull();
   });
 });
 
@@ -212,5 +242,194 @@ describe("SettingsController live-apply round trip", () => {
     expect(g.applyTerminalSettings).toHaveBeenCalledWith(
       expect.objectContaining({ fontSize: 16 }),
     );
+  });
+});
+
+describe("SettingsController update check on launch", () => {
+  it("exposes the stored opt-in", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings({ updates: { checkOnLaunch: true } }));
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    expect(controller.checkUpdatesOnLaunch()).toBe(true);
+  });
+
+  it("is off when settings fail to load", async () => {
+    vi.mocked(getSettings).mockRejectedValue({ code: "Io", message: "disk error" });
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    expect(controller.checkUpdatesOnLaunch()).toBe(false);
+  });
+
+  it("reflects the setting in the dialog checkbox and persists a toggle", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+
+    const box = document.querySelector<HTMLInputElement>(".settings-check-updates");
+    expect(box?.checked).toBe(false);
+    if (!box) throw new Error("unreachable");
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    await flush();
+
+    expect(vi.mocked(saveSettings).mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ updates: { checkOnLaunch: true } }),
+    );
+    expect(controller.checkUpdatesOnLaunch()).toBe(true);
+  });
+});
+
+describe("SettingsController theme toggle", () => {
+  async function initWith(theme: "dark" | "light") {
+    const g = fakeGrid();
+    vi.mocked(getSettings).mockResolvedValue(
+      settings({ terminal: { fontSize: 14, fontFamily: "Consolas", theme, scrollback: 1000 } }),
+    );
+    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
+    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
+    await controller.init();
+    const button = document.querySelector<HTMLButtonElement>("#theme-btn");
+    if (!button) throw new Error("unreachable");
+    return { g, controller, button };
+  }
+
+  it("renders the button for the loaded theme", async () => {
+    const { button } = await initWith("dark");
+    expect(button.getAttribute("aria-label")).toBe("Switch to light theme");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+  });
+
+  it("switches dark to light live, persists it, and flips the button", async () => {
+    const { g, controller, button } = await initWith("dark");
+
+    button.click();
+    await flush();
+
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(g.applyTerminalSettings).toHaveBeenCalledWith(expect.objectContaining({ theme: "light" }));
+    expect(vi.mocked(saveSettings).mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ terminal: expect.objectContaining({ theme: "light", fontSize: 14 }) }),
+    );
+    expect(controller.terminalSettings().theme).toBe("light");
+    expect(button.getAttribute("aria-label")).toBe("Switch to dark theme");
+  });
+
+  it("switches light back to dark", async () => {
+    const { button } = await initWith("light");
+    button.click();
+    await flush();
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(button.getAttribute("aria-label")).toBe("Switch to light theme");
+  });
+
+  it("follows a theme another instance saved", async () => {
+    const { button, controller } = await initWith("dark");
+    vi.mocked(getSettings).mockResolvedValue(
+      settings({ terminal: { fontSize: 14, fontFamily: "Consolas", theme: "light", scrollback: 1000 } }),
+    );
+    await controller.reloadFromDisk();
+    expect(button.getAttribute("aria-label")).toBe("Switch to dark theme");
+  });
+
+  it("is no longer part of the Settings dialog", async () => {
+    await initWith("dark");
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+    expect(document.querySelector(".settings-dialog")).not.toBeNull();
+    expect(document.querySelector(".settings-theme")).toBeNull();
+  });
+});
+
+describe("SettingsController dialog tabs", () => {
+  async function openDialog() {
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+  }
+
+  /** The field classes a panel holds, in document order. */
+  function fieldsIn(panel: string): string[] {
+    const root = document.querySelector(`.settings-dialog [data-panel="${panel}"]`);
+    return [...(root?.querySelectorAll<HTMLElement>("input, select") ?? [])].map((el) => el.className);
+  }
+
+  it("opens on General: language, font, font size, scrollback, then the update check", async () => {
+    await openDialog();
+    expect(fieldsIn("general")).toEqual([
+      "settings-language",
+      "settings-font-family",
+      "settings-font-size",
+      "settings-scrollback",
+      "settings-check-updates",
+    ]);
+    expect(document.querySelector<HTMLElement>('[data-panel="general"]')?.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>('[data-panel="connections"]')?.hidden).toBe(true);
+  });
+
+  it("puts the connection settings in the Connections tab", async () => {
+    await openDialog();
+    expect(fieldsIn("connections")).toEqual([
+      "settings-keepalive-interval",
+      "settings-keepalive-count",
+      "settings-sftp-idle",
+    ]);
+
+    document.querySelector<HTMLButtonElement>('[data-tab="connections"]')?.click();
+
+    expect(document.querySelector<HTMLElement>('[data-panel="connections"]')?.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>('[data-panel="general"]')?.hidden).toBe(true);
+  });
+});
+
+describe("SettingsController live language switch", () => {
+  const text = (selector: string): string | undefined =>
+    document.querySelector(`.settings-dialog ${selector}`)?.textContent?.trim();
+
+  async function openAndPick(language: string) {
+    vi.mocked(getSettings).mockResolvedValue(settings({ language: "en" }));
+    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+    const select = document.querySelector<HTMLSelectElement>(".settings-language");
+    if (!select) throw new Error("unreachable");
+    select.value = language;
+    select.dispatchEvent(new Event("change"));
+    await flush();
+    return select;
+  }
+
+  it("re-translates the open dialog as soon as a language is picked", async () => {
+    try {
+      const select = await openAndPick("fr");
+
+      expect(text("h2")).toBe("Paramètres");
+      expect(text('[data-tab="general"]')).toBe("Général");
+      expect(text('[data-tab="connections"]')).toBe("Connexions");
+      expect(text(".form-field span")).toBe("Langue");
+      expect(text(".form-hint")).toBe("Lignes d'historique conservées par terminal (0–100000).");
+      expect(text(".form-group-checkbox label")).toBe("Rechercher les mises à jour au démarrage");
+      expect(text('[data-action="close"]')).toBe("Fermer");
+      expect(text('.settings-language option[value=""]')).toBe("Langue du système");
+      // The controls themselves survive: same element, choice kept, checkbox intact.
+      expect(select.isConnected).toBe(true);
+      expect(select.value).toBe("fr");
+      expect(document.querySelector(".settings-check-updates")).not.toBeNull();
+    } finally {
+      setLocale("en");
+    }
+  });
+
+  it("stops listening once the dialog is closed", async () => {
+    try {
+      await openAndPick("fr");
+      document.querySelector<HTMLButtonElement>('.settings-dialog [data-action="close"]')?.click();
+      expect(() => setLocale("de")).not.toThrow();
+      expect(document.querySelector(".settings-dialog")).toBeNull();
+    } finally {
+      setLocale("en");
+    }
   });
 });
