@@ -34,6 +34,13 @@ describe("overlayForStatus", () => {
     expect(o.detail).toBe("");
   });
 
+  it("says the session ended, with Retry, when the shell exited", () => {
+    const o = overlayForStatus("exited");
+    expect(o.visible).toBe(true);
+    expect(o.title).toBe("Session ended");
+    expect(o.showRetry).toBe(true);
+  });
+
   it("tolerates a missing message on error (empty detail)", () => {
     const o = overlayForStatus("error");
     expect(o.detail).toBe("");

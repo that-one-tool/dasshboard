@@ -30,7 +30,8 @@ From the repo root, `npm run tauri dev` and `npm run check` delegate here.
 
 ```
 src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands.rs  ──▶  domain modules
-                       ◀──events──  session_status, host_key_prompt, tunnel_status,
+                       ◀──events──  session_status, host_key_prompt,
+                                    host_key_prompt_closed, tunnel_status,
                                     sftp_progress, config_changed
 ```
 
@@ -83,7 +84,7 @@ The app stores its data in the Tauri app-config directory
 | `settings.json`        | Terminal appearance, language, keepalive, SFTP idle timeout, last profile, update check on launch, close to tray |
 | `known_hosts.json`     | Trusted host keys (TOFU)                                                  |
 | `sftp_bookmarks.json`  | SFTP bookmarks for each device                                            |
-| `workspace_state.json` | Open tabs, Files panel and side-menu widths, per instance (not synced)   |
+| `workspace_state.json` | Open tabs, Files panel and side-menu widths, tunnels left running/stopped, per instance (not synced) |
 
 When another running instance changes `devices.json`, `profiles.json`,
 `settings.json` or `known_hosts.json`, a file watcher reloads them. Passwords and passphrases are stored only in the OS keychain, under the

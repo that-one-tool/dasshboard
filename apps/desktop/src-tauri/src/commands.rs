@@ -353,6 +353,22 @@ pub async fn install_update(
 
 const SESSION_STATUS_EVENT: &str = "session_status";
 const HOST_KEY_PROMPT_EVENT: &str = "host_key_prompt";
+const HOST_KEY_PROMPT_CLOSED_EVENT: &str = "host_key_prompt_closed";
+
+/// Payload of the `host_key_prompt_closed` event: the prompt the backend is no
+/// longer waiting on.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostKeyPromptClosedPayload {
+    prompt_id: String,
+}
+
+fn emit_host_key_prompt_closed(app: &AppHandle, prompt_id: &str) {
+    let payload = HostKeyPromptClosedPayload {
+        prompt_id: prompt_id.to_string(),
+    };
+    let _ = app.emit(HOST_KEY_PROMPT_CLOSED_EVENT, payload);
+}
 
 /// Wire payload of the `session_status` event (SPEC.md §5), `camelCase`.
 #[derive(Debug, Clone, Serialize)]
@@ -400,6 +416,38 @@ impl SessionSink for TauriSessionSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
     }
+    fn on_host_key_prompt_closed(&self, prompt_id: &str) {
+        emit_host_key_prompt_closed(&self.app, prompt_id);
+    }
+}
+
+/// Validate a session/tunnel id chosen by the frontend. The frontend picks it
+/// (rather than receiving it from the command) so its status listener knows the
+/// id before the first event — which can be emitted before the command returns.
+///
+/// A reused id is refused: the managers key their maps by it, so a second
+/// spawn would overwrite the live entry and leave a session no command can
+/// reach.
+fn client_chosen_id(id: String, in_use: impl Fn(&str) -> bool) -> Result<String, AppError> {
+    if Uuid::parse_str(&id).is_err() {
+        return Err(AppError::Validation(
+            "session id must be a UUID".to_string(),
+        ));
+    }
+    if in_use(&id) {
+        return Err(AppError::Validation(
+            "session id is already in use".to_string(),
+        ));
+    }
+    Ok(id)
+}
+
+/// Whether any session or tunnel manager already tracks `id`.
+fn id_in_use(state: &AppState, id: &str) -> bool {
+    state.session_manager.owns(id)
+        || state.serial_manager.owns(id)
+        || state.local_shell_manager.owns(id)
+        || state.tunnel_manager.owns(id)
 }
 
 /// Look up a device by id (SPEC §5 `NotFound` on miss).
@@ -523,13 +571,14 @@ fn ssh_auth_of(device: &Device) -> Result<&Auth, AppError> {
 pub async fn connect(
     app: AppHandle,
     state: State<'_, AppState>,
+    session_id: String,
     device_id: String,
     cols: u32,
     rows: u32,
     on_data: Channel<InvokeResponseBody>,
 ) -> Result<String, AppError> {
+    let session_id = client_chosen_id(session_id, |id| id_in_use(&state, id))?;
     let device = find_device(&state, &device_id)?;
-    let session_id = Uuid::new_v4().to_string();
     let sink: Arc<dyn SessionSink> = Arc::new(TauriSessionSink {
         app,
         session_id: session_id.clone(),
@@ -814,6 +863,9 @@ impl TunnelSink for TauriTunnelSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
     }
+    fn on_host_key_prompt_closed(&self, prompt_id: &str) {
+        emit_host_key_prompt_closed(&self.app, prompt_id);
+    }
 }
 
 /// The SSH connection details + forwards of a device, or an error if the device
@@ -848,8 +900,10 @@ fn tunnel_target_of(device: &Device) -> Result<(&str, u16, &str, &[Forward]), Ap
 pub async fn start_tunnel(
     app: AppHandle,
     state: State<'_, AppState>,
+    tunnel_id: String,
     device_id: String,
 ) -> Result<String, AppError> {
+    let tunnel_id = client_chosen_id(tunnel_id, |id| id_in_use(&state, id))?;
     let device = find_device(&state, &device_id)?;
     // ProxyJump is wired for shell sessions only (v1). Rather than silently
     // ignore the jump and bind a forward straight to the target — which in a
@@ -866,7 +920,6 @@ pub async fn start_tunnel(
     let forwards = forwards.to_vec();
 
     let creds = resolve_credentials(&state, &device).await?;
-    let tunnel_id = Uuid::new_v4().to_string();
     let sink: Arc<dyn TunnelSink> = Arc::new(TauriTunnelSink {
         app,
         tunnel_id: tunnel_id.clone(),
@@ -965,6 +1018,9 @@ struct TauriSftpSink {
 impl SftpSink for TauriSftpSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
+    }
+    fn on_host_key_prompt_closed(&self, prompt_id: &str) {
+        emit_host_key_prompt_closed(&self.app, prompt_id);
     }
 }
 
@@ -1851,6 +1907,30 @@ mod tests {
             AuthCredentials::Agent { fingerprint } => assert_eq!(fingerprint, "SHA256:abc"),
             other => panic!("expected agent credentials, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn client_chosen_id_accepts_a_fresh_uuid_and_rejects_anything_else() {
+        let id = Uuid::new_v4().to_string();
+        assert_eq!(client_chosen_id(id.clone(), |_| false).unwrap(), id);
+        assert!(matches!(
+            client_chosen_id("s1".to_string(), |_| false),
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn client_chosen_id_rejects_an_id_already_in_use() {
+        let id = Uuid::new_v4().to_string();
+        let err = client_chosen_id(id.clone(), |candidate| candidate == id).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn a_fresh_state_tracks_no_ids() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        assert!(!id_in_use(&state, &Uuid::new_v4().to_string()));
     }
 
     #[test]

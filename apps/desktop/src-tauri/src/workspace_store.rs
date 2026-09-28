@@ -108,6 +108,7 @@ mod tests {
             active_index: 0,
             sftp: None,
             sidebar_width: None,
+            tunnels: None,
         }
     }
 

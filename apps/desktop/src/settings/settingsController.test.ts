@@ -183,41 +183,70 @@ describe("SettingsController.persistLastProfileId", () => {
 });
 
 describe("SettingsController live-apply round trip", () => {
-  it("applies live, saves, and adopts the backend-clamped value back into the field", async () => {
+  it("clamps an out-of-range font size before applying it live or saving it", async () => {
     const g = fakeGrid();
-    vi.mocked(getSettings).mockResolvedValue(
-      settings({
-        terminal: { fontSize: 14, fontFamily: "Consolas", theme: "dark", scrollback: 1000 },
-      }),
-    );
-    // Backend clamps an out-of-range font size to its max (40).
-    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => ({
-      ...s,
-      terminal: { ...s.terminal, fontSize: 40 },
-    }));
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
 
     const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 
     const fontSizeInput = document.querySelector<HTMLInputElement>(".settings-font-size");
-    expect(fontSizeInput).not.toBeNull();
     if (!fontSizeInput) throw new Error("unreachable");
 
-    fontSizeInput.value = "999"; // out of range; the backend will clamp it
+    fontSizeInput.value = "999";
     fontSizeInput.dispatchEvent(new Event("change"));
     await flush();
 
-    // Live-applied to the grid immediately with the raw parsed value...
-    expect(g.applyTerminalSettings).toHaveBeenCalledWith(
-      expect.objectContaining({ fontSize: 999 }),
-    );
-    // ...then persisted...
-    expect(saveSettings).toHaveBeenCalledTimes(1);
-    // ...and the clamped value the backend actually stored is reflected back
-    // into both the input and `terminalSettings()`.
+    expect(g.applyTerminalSettings).toHaveBeenCalledWith(expect.objectContaining({ fontSize: 40 }));
+    expect(g.applyTerminalSettings).not.toHaveBeenCalledWith(expect.objectContaining({ fontSize: 999 }));
+    expect(vi.mocked(saveSettings).mock.calls[0]?.[0].terminal.fontSize).toBe(40);
     expect(fontSizeInput.value).toBe("40");
     expect(controller.terminalSettings().fontSize).toBe(40);
+  });
+
+  it("adopts and live-applies the value the backend actually stored", async () => {
+    const g = fakeGrid();
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => ({
+      ...s,
+      terminal: { ...s.terminal, fontSize: 18 },
+    }));
+
+    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+    const fontSizeInput = document.querySelector<HTMLInputElement>(".settings-font-size");
+    if (!fontSizeInput) throw new Error("unreachable");
+
+    fontSizeInput.value = "20";
+    fontSizeInput.dispatchEvent(new Event("change"));
+    await flush();
+
+    expect(g.applyTerminalSettings).toHaveBeenLastCalledWith(expect.objectContaining({ fontSize: 18 }));
+    expect(fontSizeInput.value).toBe("18");
+  });
+
+  it("never sends a negative number to the backend", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+
+    for (const field of [".settings-scrollback", ".settings-keepalive-interval", ".settings-keepalive-count", ".settings-sftp-idle"]) {
+      const input = document.querySelector<HTMLInputElement>(field);
+      if (!input) throw new Error(`missing ${field}`);
+      input.value = "-5";
+      input.dispatchEvent(new Event("change"));
+      await flush();
+    }
+
+    const saved = vi.mocked(saveSettings).mock.calls.at(-1)?.[0];
+    expect(saved?.terminal.scrollback).toBe(0);
+    expect(saved?.keepalive).toEqual({ intervalSecs: 0, countMax: 1 });
+    expect(saved?.sftp.idleDisconnectMins).toBe(0);
   });
 
   it("keeps the current font size when the field is non-numeric", async () => {

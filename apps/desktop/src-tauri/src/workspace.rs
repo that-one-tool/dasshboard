@@ -8,6 +8,8 @@
 //! and NOT watched by the multi-instance config watcher — one window's tab
 //! layout must never clobber another's.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
@@ -90,6 +92,11 @@ pub struct WorkspaceState {
     /// default). Same legacy/clean-file handling as `sftp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_width: Option<u32>,
+    /// Device id → whether the user last left its tunnel running (an explicit
+    /// Start/Stop), restored on launch; a device absent here follows its
+    /// `tunnelAutoStart` flag. Same legacy/clean-file handling as `sftp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnels: Option<BTreeMap<String, bool>>,
 }
 
 impl WorkspaceState {
@@ -102,6 +109,7 @@ impl WorkspaceState {
             active_index: 0,
             sftp: None,
             sidebar_width: None,
+            tunnels: None,
         }
     }
 
@@ -152,6 +160,7 @@ mod tests {
             active_index: 0,
             sftp: None,
             sidebar_width: None,
+            tunnels: None,
         }
     }
 
@@ -242,6 +251,29 @@ mod tests {
         assert_eq!(value["sidebarWidth"], 360);
         let back: WorkspaceState = serde_json::from_value(value).expect("deserialize");
         assert_eq!(back.sidebar_width, Some(360));
+    }
+
+    #[test]
+    fn tunnels_round_trip_by_device_id_and_are_omitted_when_absent() {
+        let mut s = state();
+        assert!(serde_json::to_value(&s).unwrap().get("tunnels").is_none());
+
+        s.tunnels = Some(BTreeMap::from([
+            ("dev-1".to_string(), true),
+            ("dev-2".to_string(), false),
+        ]));
+        let value = serde_json::to_value(&s).expect("serialize");
+        assert_eq!(value["tunnels"]["dev-1"], true);
+        assert_eq!(value["tunnels"]["dev-2"], false);
+        let back: WorkspaceState = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(back.tunnels, s.tunnels);
+    }
+
+    #[test]
+    fn deserializes_older_file_missing_tunnels() {
+        let json = r#"{ "tabs": [], "activeIndex": 0 }"#;
+        let back: WorkspaceState = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(back.tunnels, None);
     }
 
     #[test]

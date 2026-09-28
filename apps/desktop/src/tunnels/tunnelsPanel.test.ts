@@ -12,7 +12,7 @@ const h = vi.hoisted(() => ({
 vi.mock("../ipc", () => ({
   listDevices: vi.fn(async () => h.devices),
   listTunnels: vi.fn(async () => []),
-  startTunnel: vi.fn(async () => "t1"),
+  startTunnel: vi.fn(async (_deviceId: string, tunnelId: string) => tunnelId),
   stopTunnel: vi.fn(async () => {}),
   onTunnelStatus: vi.fn(async (handler: (e: TunnelStatusEvent) => void) => {
     h.statusHandler = handler;
@@ -95,6 +95,7 @@ describe("TunnelsPanel", () => {
     h.statusHandler = null;
     vi.clearAllMocks();
     h.devices = [sshDevice("dev-1", "NAS", [forward("f1", 5432)])];
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("t1" as ReturnType<typeof crypto.randomUUID>);
   });
 
   it("renders a card only for tunnelable devices", async () => {
@@ -125,7 +126,7 @@ describe("TunnelsPanel", () => {
     await panel.init();
     document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
     await flush();
-    expect(startTunnel).toHaveBeenCalledWith("dev-1");
+    expect(startTunnel).toHaveBeenCalledWith("dev-1", "t1");
   });
 
   it("reflects a listening event and stops on the Stop button", async () => {
@@ -213,7 +214,7 @@ describe("TunnelsPanel", () => {
     const panel = new TunnelsPanel();
     await panel.init();
     await flush();
-    expect(startTunnel).toHaveBeenCalledWith("dev-1");
+    expect(startTunnel).toHaveBeenCalledWith("dev-1", "t1");
   });
 
   it("does not auto-start an unflagged device on launch", async () => {
@@ -235,5 +236,208 @@ describe("TunnelsPanel", () => {
     await panel.init();
     await flush();
     expect(startTunnel).not.toHaveBeenCalled();
+  });
+
+  /* ----- remembered run state across launches ---------------------------- */
+
+  const flagged = (): Device =>
+    ({ ...sshDevice("dev-1", "NAS", [forward("f1", 5432)]), tunnelAutoStart: true }) as Device;
+
+  function clickAction(): void {
+    document.querySelector<HTMLButtonElement>(".tunnel-card-header .btn")!.click();
+  }
+
+  it("does not restart a flagged tunnel the user left stopped", async () => {
+    h.devices = [flagged()];
+    const panel = new TunnelsPanel({ initialState: { "dev-1": false } });
+    await panel.init();
+    await flush();
+    expect(startTunnel).not.toHaveBeenCalled();
+  });
+
+  it("restarts an unflagged tunnel the user left running", async () => {
+    const panel = new TunnelsPanel({ initialState: { "dev-1": true } });
+    await panel.init();
+    await flush();
+    expect(startTunnel).toHaveBeenCalledWith("dev-1", "t1");
+  });
+
+  it("remembers a manual stop and asks for a save", async () => {
+    h.devices = [flagged()];
+    const onPersist = vi.fn();
+    const panel = new TunnelsPanel({ onPersist });
+    await panel.init();
+    await flush();
+
+    clickAction(); // Stop
+    await flush();
+    expect(stopTunnel).toHaveBeenCalledWith("t1");
+    expect(panel.layoutState()).toEqual({ "dev-1": false });
+    expect(onPersist).toHaveBeenCalled();
+  });
+
+  it("remembers a manual start", async () => {
+    const panel = new TunnelsPanel({ onPersist: vi.fn() });
+    await panel.init();
+    await flush();
+
+    clickAction(); // Start
+    await flush();
+    expect(panel.layoutState()).toEqual({ "dev-1": true });
+  });
+
+  it("an auto-start alone records nothing (the flag stays the default)", async () => {
+    h.devices = [flagged()];
+    const panel = new TunnelsPanel();
+    await panel.init();
+    await flush();
+    expect(panel.layoutState()).toBeUndefined();
+  });
+
+  it("forgets remembered state for devices that are gone", async () => {
+    const panel = new TunnelsPanel({ initialState: { "dev-1": false, ghost: true } });
+    await panel.init();
+    await flush();
+    expect(startTunnel).not.toHaveBeenCalled();
+    expect(panel.layoutState()).toEqual({ "dev-1": false });
+  });
+
+  it("keeps the restored state until the device list has loaded", () => {
+    const panel = new TunnelsPanel({ initialState: { "dev-1": false } });
+    expect(panel.layoutState()).toEqual({ "dev-1": false });
+  });
+
+  /* ----- orphaned tunnels ------------------------------------------------ */
+
+  async function runningPanel(): Promise<TunnelsPanel> {
+    const panel = new TunnelsPanel();
+    await panel.init();
+    await flush();
+    document.querySelector<HTMLButtonElement>(".tunnel-card-header .btn")!.click(); // Start
+    await flush();
+    return panel;
+  }
+
+  it("stops a running tunnel whose device was deleted", async () => {
+    const panel = await runningPanel();
+    panel.setDevices([]);
+    await flush();
+    expect(stopTunnel).toHaveBeenCalledWith("t1");
+  });
+
+  it("stops a running tunnel whose device lost all its forwards", async () => {
+    const panel = await runningPanel();
+    panel.setDevices([sshDevice("dev-1", "NAS", [])]);
+    await flush();
+    expect(stopTunnel).toHaveBeenCalledWith("t1");
+  });
+
+  it("leaves a running tunnel alone when its device still has forwards", async () => {
+    const panel = await runningPanel();
+    panel.setDevices([sshDevice("dev-1", "Renamed", [forward("f1", 5432)])]);
+    await flush();
+    expect(stopTunnel).not.toHaveBeenCalled();
+  });
+
+  it("stops a tunnel whose device was deleted while it was starting", async () => {
+    let resolveStart: (id: string) => void = () => {};
+    vi.mocked(startTunnel).mockImplementationOnce(
+      () => new Promise<string>((resolve) => (resolveStart = resolve)),
+    );
+    vi.mocked(crypto.randomUUID).mockReturnValueOnce("t9" as ReturnType<typeof crypto.randomUUID>);
+    const panel = new TunnelsPanel();
+    await panel.init();
+    await flush();
+    document.querySelector<HTMLButtonElement>(".tunnel-card-header .btn")!.click();
+    await flush();
+
+    panel.setDevices([]);
+    resolveStart("t9");
+    await flush();
+    expect(stopTunnel).toHaveBeenCalledWith("t9");
+  });
+
+  /* ----- events racing the start command --------------------------------- */
+
+  it("honors an error that arrives before startTunnel returns", async () => {
+    vi.mocked(startTunnel).mockImplementationOnce(async (_deviceId: string, tunnelId: string) => {
+      h.statusHandler!({ tunnelId, status: "error", message: "connection refused", forwards: [] });
+      return tunnelId;
+    });
+    const onError = vi.fn();
+    const panel = new TunnelsPanel({ onError });
+    await panel.init();
+    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
+    await flush();
+
+    expect(onError).toHaveBeenCalled();
+    const status = document.querySelector<HTMLElement>(".tunnel-status")!;
+    expect(status.classList.contains("is-stopped")).toBe(true);
+  });
+
+  it("a Stop clicked while the start is in flight takes effect once it has started", async () => {
+    let started: (id: string) => void = () => {};
+    vi.mocked(startTunnel).mockImplementationOnce(
+      () => new Promise<string>((resolve) => (started = resolve)),
+    );
+    const panel = new TunnelsPanel({ onPersist: vi.fn() });
+    await panel.init();
+    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click(); // Start
+    await flush();
+    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click(); // Stop
+    await flush();
+    // The backend doesn't know the tunnel yet, so that first stop is a no-op…
+    vi.mocked(stopTunnel).mockClear();
+
+    started("t1");
+    await flush();
+
+    // …and is re-sent once the tunnel exists.
+    expect(stopTunnel).toHaveBeenCalledWith("t1");
+    expect(panel.layoutState()).toEqual({ "dev-1": false });
+  });
+
+  it("remembers a Start only once it succeeded", async () => {
+    let started: (id: string) => void = () => {};
+    vi.mocked(startTunnel).mockImplementationOnce(
+      () => new Promise<string>((resolve) => (started = resolve)),
+    );
+    const panel = new TunnelsPanel({ onPersist: vi.fn() });
+    await panel.init();
+    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
+    await flush();
+    expect(panel.layoutState()).toBeUndefined();
+
+    started("t1");
+    await flush();
+    expect(panel.layoutState()).toEqual({ "dev-1": true });
+  });
+
+  it("a Start the backend rejects is remembered as stopped (no retry every launch)", async () => {
+    vi.mocked(startTunnel).mockRejectedValueOnce({ code: "Validation", message: "ProxyJump" });
+    const panel = new TunnelsPanel({ initialState: { "dev-1": true }, onError: vi.fn() });
+    await panel.init(); // launch start from the remembered state is rejected
+    await flush();
+    expect(panel.layoutState()).toEqual({ "dev-1": false });
+  });
+
+  it("a failed device refresh stops nothing and forgets nothing", async () => {
+    const panel = new TunnelsPanel({ initialState: { "dev-1": true }, onError: vi.fn() });
+    await panel.init(); // starts dev-1
+    await flush();
+    vi.mocked(listDevices).mockRejectedValueOnce({ code: "Io", message: "disk" });
+
+    await panel.refresh();
+    await flush();
+
+    expect(stopTunnel).not.toHaveBeenCalled();
+    expect(panel.layoutState()).toEqual({ "dev-1": true });
+  });
+
+  it("a failed device load at launch keeps the remembered state", async () => {
+    vi.mocked(listDevices).mockRejectedValueOnce({ code: "Io", message: "disk" });
+    const panel = new TunnelsPanel({ initialState: { "dev-1": false }, onError: vi.fn() });
+    await panel.init();
+    expect(panel.layoutState()).toEqual({ "dev-1": false });
   });
 });

@@ -189,11 +189,12 @@ describe("IPC command wrapper argument shapes", () => {
 		expect(invokeMock).toHaveBeenCalledWith("delete_device", { deviceId: "dev-1" });
 	});
 
-	it("connect sends { deviceId, cols, rows, onData }", async () => {
+	it("connect sends { sessionId, deviceId, cols, rows, onData }", async () => {
 		invokeMock.mockResolvedValue("sess-1");
 		const channel = { onmessage: null };
-		await connect("dev-1", 80, 24, channel as never);
+		await connect("sess-1", "dev-1", 80, 24, channel as never);
 		expect(invokeMock).toHaveBeenCalledWith("connect", {
+			sessionId: "sess-1",
 			deviceId: "dev-1",
 			cols: 80,
 			rows: 24,

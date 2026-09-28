@@ -40,7 +40,9 @@ files, releasing),
 
 - `src/` — frontend (TypeScript, no framework):
     - `grid.ts` / `gridModel.ts` — multi-pane grid layout
-    - `terminal/` — pane, overlay, reconnect, paste, host-key dialog, terminal settings
+    - `terminal/` — pane, overlay, reconnect, paste, host-key dialog, terminal
+      settings, `terminalReplies` (keeps xterm's own query replies / mouse
+      reports out of broadcast input)
     - `devices/` — device CRUD, validation, save payloads, the port-forward
       editor; the dialog is split into `deviceManager` (controller: events +
       backend calls + list), `deviceDialogTemplate` (markup), and `deviceForm`
@@ -52,7 +54,8 @@ files, releasing),
       `tabShortcuts` maps the tab keys (incl. Cmd+W on macOS)
     - `profiles/` — workspace/profile persistence
     - `settings/` — app settings controller (dialog with General / Connections
-      tabs via `settingsTabs`), the header dark/light toggle (`themeToggle`),
+      tabs via `settingsTabs`; numeric fields clamped by `settingsBounds`,
+      mirroring the backend clamps), the header dark/light toggle (`themeToggle`),
       known-hosts dialog
     - `tray/` — pushes the translated tray menu labels (incl. the pluralized
       live-connection count) to the backend on count/locale change

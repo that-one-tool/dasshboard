@@ -20,6 +20,14 @@ import { DEFAULT_TERMINAL_SETTINGS } from "../terminal/terminalSettings";
 import { renderThemeToggle } from "./themeToggle";
 import { wireSettingsTabs } from "./settingsTabs";
 import {
+  FONT_SIZE,
+  KEEPALIVE_COUNT,
+  KEEPALIVE_INTERVAL,
+  SCROLLBACK,
+  SFTP_IDLE_MINS,
+  parseBounded,
+} from "./settingsBounds";
+import {
   SUPPORTED_LOCALES,
   applyDomTranslations,
   localeName,
@@ -158,6 +166,10 @@ export class SettingsController {
     this.applyAppTheme(terminal.theme); // switch the chrome light/dark live
     this.applyTerminalSettings(terminal); // live to existing terminals
     await this.save();
+    // The backend may sanitize further (e.g. an empty font family); keep live
+    // terminals on what was actually stored.
+    const stored = this.settings.terminal;
+    if (!sameTerminalSettings(stored, terminal)) this.applyTerminalSettings(stored);
   }
 
   /**
@@ -353,20 +365,16 @@ export class SettingsController {
       void this.applyLanguage(language.value);
     });
 
-    // Live-apply on every change. A parsed number (including 0 / out-of-range)
-    // is sent through; the backend clamps it (6..=40) and we reflect the clamped
-    // value back into the field. Only a genuinely non-numeric field keeps the
-    // current size.
+    // Live-apply on every change, clamped into range (see `settingsBounds`); a
+    // non-numeric field keeps the current value. The stored (sanitized) values
+    // are reflected back into the fields.
     const apply = async (): Promise<void> => {
-      const parsed = Number.parseInt(fontSize?.value ?? "", 10);
-      const parsedScrollback = Number.parseInt(scrollback?.value ?? "", 10);
+      const current = this.settings.terminal;
       const next: TerminalSettings = {
-        fontSize: Number.isNaN(parsed) ? this.settings.terminal.fontSize : parsed,
-        fontFamily: fontFamily?.value ?? this.settings.terminal.fontFamily,
-        scrollback: Number.isNaN(parsedScrollback)
-          ? this.settings.terminal.scrollback
-          : parsedScrollback,
-        theme: this.settings.terminal.theme,
+        fontSize: parseBounded(fontSize?.value ?? "", current.fontSize, FONT_SIZE),
+        fontFamily: fontFamily?.value ?? current.fontFamily,
+        scrollback: parseBounded(scrollback?.value ?? "", current.scrollback, SCROLLBACK),
+        theme: current.theme,
       };
       await this.applyTerminal(next);
       // Reflect the backend-sanitized values (e.g. a clamped font size/scrollback).
@@ -379,18 +387,14 @@ export class SettingsController {
     scrollback?.addEventListener("change", onApply);
 
     // Keepalive doesn't affect live terminals (it applies to connections opened
-    // afterwards), so it only needs to be persisted. A non-numeric field keeps
-    // the current value; the backend clamps interval (0..=3600) and count (1..=10)
-    // and we reflect the clamped values back into the fields.
+    // afterwards), so it only needs to be persisted — clamped, and reflected back.
     const applyKeepalive = async (): Promise<void> => {
       const current = this.settings.keepalive;
-      const parsedInterval = Number.parseInt(keepaliveInterval?.value ?? "", 10);
-      const parsedCount = Number.parseInt(keepaliveCount?.value ?? "", 10);
       this.settings = {
         ...this.settings,
         keepalive: {
-          intervalSecs: Number.isNaN(parsedInterval) ? current.intervalSecs : parsedInterval,
-          countMax: Number.isNaN(parsedCount) ? current.countMax : parsedCount,
+          intervalSecs: parseBounded(keepaliveInterval?.value ?? "", current.intervalSecs, KEEPALIVE_INTERVAL),
+          countMax: parseBounded(keepaliveCount?.value ?? "", current.countMax, KEEPALIVE_COUNT),
         },
       };
       await this.save();
@@ -401,14 +405,11 @@ export class SettingsController {
     keepaliveInterval?.addEventListener("change", onApplyKeepalive);
     keepaliveCount?.addEventListener("change", onApplyKeepalive);
 
-    // SFTP idle-disconnect: a non-numeric field keeps the current value; the
-    // backend clamps (0..=1440) and we reflect the clamped value back.
+    // SFTP idle-disconnect: clamped, and reflected back.
     const applySftp = async (): Promise<void> => {
-      const parsed = Number.parseInt(sftpIdle?.value ?? "", 10);
+      const current = this.settings.sftp.idleDisconnectMins;
       await this.applySftp({
-        idleDisconnectMins: Number.isNaN(parsed)
-          ? this.settings.sftp.idleDisconnectMins
-          : parsed,
+        idleDisconnectMins: parseBounded(sftpIdle?.value ?? "", current, SFTP_IDLE_MINS),
       });
       if (sftpIdle) sftpIdle.value = String(this.settings.sftp.idleDisconnectMins);
     };
@@ -443,6 +444,15 @@ export class SettingsController {
     document.body.appendChild(root);
     language?.focus();
   }
+}
+
+function sameTerminalSettings(a: TerminalSettings, b: TerminalSettings): boolean {
+  return (
+    a.fontSize === b.fontSize &&
+    a.fontFamily === b.fontFamily &&
+    a.scrollback === b.scrollback &&
+    a.theme === b.theme
+  );
 }
 
 function errorMessage(err: unknown): string {

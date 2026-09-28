@@ -22,6 +22,8 @@ export interface UpdateControllerOptions {
 export class UpdateController {
 	private found: UpdateInfo | null = null;
 	private installing = false;
+	/** The last install attempt failed (cleared by the next check). */
+	private failed = false;
 	private readonly listeners = new Set<() => void>();
 
 	constructor(private readonly options: UpdateControllerOptions) {}
@@ -36,6 +38,12 @@ export class UpdateController {
 		return this.installing;
 	}
 
+	/** Whether the last install attempt failed — the found release may be
+	 * broken or gone, so the dialog offers a re-check and a manual download. */
+	installFailed(): boolean {
+		return this.failed;
+	}
+
 	/** Calls `listener` after every state change; returns an unsubscribe. */
 	subscribe(listener: () => void): () => void {
 		this.listeners.add(listener);
@@ -48,6 +56,7 @@ export class UpdateController {
 	async check(): Promise<UpdateInfo | null> {
 		if (this.installing) return this.found;
 		this.found = await checkUpdate();
+		this.failed = false;
 		this.emit();
 		return this.found;
 	}
@@ -87,6 +96,7 @@ export class UpdateController {
 			await installUpdate(version);
 			return true;
 		} catch (err) {
+			this.failed = true;
 			this.options.onInstallError((err as AppError).message);
 			return false;
 		} finally {

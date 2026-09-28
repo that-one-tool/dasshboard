@@ -277,14 +277,15 @@ fn open_shell(params: &LocalShellParams) -> Result<OpenedShell, AppError> {
 
 /// The full lifecycle of one local shell session: open the PTY + spawn the shell
 /// (reporting Connected on success), pump bytes both ways via dedicated threads,
-/// and end when the shell exits or a disconnect is requested. Returns `Ok(())`
-/// for any clean end and `Err` for a failure that should surface as
+/// and end when the shell exits or a disconnect is requested. Returns the final
+/// status for a clean end (`Exited` when the shell ended on its own with exit
+/// code 0, `Disconnected` when asked to or on any other end) and `Err` for a failure that should surface as
 /// `session_status: error`.
 async fn run_session(
     params: LocalShellParams,
     sink: Arc<dyn SessionSink>,
     mut control_rx: mpsc::Receiver<ShellControl>,
-) -> Result<(), AppError> {
+) -> Result<SessionStatus, AppError> {
     // Capture the connect snippet before `params` moves into the blocking open.
     let connect_snippet = params.connect_snippet.clone();
     // Opening the PTY and spawning are blocking; do them off the async runtime.
@@ -338,20 +339,20 @@ async fn run_session(
     }
 
     // Detect the shell exiting on its own: a blocking `wait` fires `done`.
-    let (done_tx, mut done_rx) = mpsc::channel::<()>(1);
+    let (done_tx, mut done_rx) = mpsc::channel::<Option<u32>>(1);
     std::thread::spawn(move || {
-        let _ = child.wait();
-        let _ = done_tx.blocking_send(());
+        let exit_code = child.wait().ok().map(|status| status.exit_code());
+        let _ = done_tx.blocking_send(exit_code);
     });
 
-    loop {
+    let status = loop {
         tokio::select! {
             ctrl = control_rx.recv() => {
                 match ctrl {
                     Some(ShellControl::Write(bytes)) => {
                         // Writer thread gone ⇒ PTY is dead; end the session.
                         if write_tx.send(bytes).is_err() {
-                            break;
+                            break SessionStatus::Exited;
                         }
                     }
                     Some(ShellControl::Resize { cols, rows }) => {
@@ -363,13 +364,13 @@ async fn run_session(
                         });
                     }
                     // Explicit disconnect, or the manager dropped the handle.
-                    Some(ShellControl::Disconnect) | None => break,
+                    Some(ShellControl::Disconnect) | None => break SessionStatus::Disconnected,
                 }
             }
-            // The shell process exited: clean end.
-            _ = done_rx.recv() => break,
+            // The shell process ended on its own.
+            exit_code = done_rx.recv() => break SessionStatus::for_shell_exit(exit_code.flatten()),
         }
-    }
+    };
 
     // Teardown: kill the child (idempotent if it already exited), end the writer
     // thread by dropping its sender, and drop the master so the PTY closes and
@@ -377,7 +378,7 @@ async fn run_session(
     let _ = killer.kill();
     drop(write_tx);
     drop(master);
-    Ok(())
+    Ok(status)
 }
 
 /// Owns all live local shell sessions. Lives in Tauri managed state behind an
@@ -449,7 +450,7 @@ impl LocalShellManager {
 
             let result = run_session(params, Arc::clone(&sink), control_rx).await;
             match result {
-                Ok(()) => sink.on_status(SessionStatus::Disconnected, None),
+                Ok(status) => sink.on_status(status, None),
                 // AppError messages are always secret-free (local shells have none).
                 Err(err) => sink.on_status(SessionStatus::Error, Some(err.to_string())),
             }

@@ -205,6 +205,57 @@ describe("TabManager.closeTab", () => {
     expect(tabButtons()).toHaveLength(2);
   });
 
+  it("a second close of a tab awaiting its confirm never closes another tab", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    tm.activate(0);
+    if (gridInstances[0]) gridInstances[0].live = 1;
+    let accept: (ok: boolean) => void = () => {};
+    confirmMock.mockImplementation(() => new Promise<boolean>((resolve) => (accept = resolve)));
+
+    const first = tm.closeTab(0);
+    const second = tm.closeTab(0); // e.g. the shortcut pressed twice
+    accept(true);
+    await Promise.all([first, second]);
+
+    expect(confirmMock).toHaveBeenCalledOnce();
+    expect(gridInstances[1]?.dispose).not.toHaveBeenCalled();
+    expect(tabButtons()).toHaveLength(1);
+    expect(tm.activeGrid()).toBe(gridInstances[1]);
+  });
+
+  it("closes the confirmed tab even if the tabs shifted during the confirm", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    await tm.newTab(); // tabs [0, 1, 2]
+    if (gridInstances[2]) gridInstances[2].live = 1;
+    let accept: (ok: boolean) => void = () => {};
+    confirmMock.mockImplementationOnce(() => new Promise<boolean>((resolve) => (accept = resolve)));
+
+    const closing = tm.closeTab(2);
+    await tm.closeTab(0); // tab 2 shifts to index 1 meanwhile
+    accept(true);
+    await closing;
+
+    expect(gridInstances[2]?.dispose).toHaveBeenCalledOnce();
+    expect(gridInstances[1]?.dispose).not.toHaveBeenCalled();
+    expect(tm.activeGrid()).toBe(gridInstances[1]);
+  });
+
+  it("closing a background tab keeps the active tab active", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    await tm.newTab(); // tab 2 active
+
+    await tm.closeTab(0);
+
+    expect(tm.activeGrid()).toBe(gridInstances[2]);
+    expect(tm.serialize().activeIndex).toBe(1);
+  });
+
   it("never leaves zero tabs — closing the last opens a fresh blank one", async () => {
     const tm = makeManager();
     await tm.init();
@@ -296,12 +347,35 @@ describe("TabManager profile strip (Phase 2)", () => {
     expect(tm.activeLinkedProfileId()).toBe("p1");
   });
 
-  it("setActiveLinkedProfileId links the active tab and refreshes its badge", async () => {
+  it("setLinkedProfileId links the tab owning a grid, not the active one", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab(); // tab 1 active
+    const background = gridInstances[0] as unknown as Parameters<typeof tm.setLinkedProfileId>[0];
+
+    tm.setLinkedProfileId(background, "p1");
+
+    expect(tm.linkedProfileIdOf(background)).toBe("p1");
+    expect(tm.activeLinkedProfileId()).toBeNull();
+  });
+
+  it("setLinkedProfileId is a no-op for a closed tab's grid", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    const closed = gridInstances[1] as unknown as Parameters<typeof tm.setLinkedProfileId>[0];
+    await tm.closeTab(1);
+
+    tm.setLinkedProfileId(closed, "p1");
+    expect(tm.activeLinkedProfileId()).toBeNull();
+  });
+
+  it("setLinkedProfileId on the active grid links the active tab and refreshes its badge", async () => {
     const tm = makeManager({ resolveTabState: (id) => ({ linked: id !== null, dirty: false }) });
     await tm.init();
     expect(badge(tabButtons()[0]!).hidden).toBe(true);
 
-    tm.setActiveLinkedProfileId("p1");
+    tm.setLinkedProfileId(tm.activeGrid(), "p1");
 
     expect(tm.activeLinkedProfileId()).toBe("p1");
     expect(badge(tabButtons()[0]!).hidden).toBe(false);
@@ -363,7 +437,7 @@ describe("TabManager persistence (Phase 3)", () => {
     const tm = makeManager();
     await tm.init();
     await tm.newTab();
-    tm.setActiveLinkedProfileId("p9");
+    tm.setLinkedProfileId(tm.activeGrid(), "p9");
 
     const s = tm.serialize();
     expect(s.tabs).toHaveLength(2);
@@ -382,6 +456,12 @@ describe("TabManager persistence (Phase 3)", () => {
     expect(untouched.serialize().sidebarWidth).toBeUndefined();
   });
 
+  it("serialize() includes the tunnels' remembered run state", async () => {
+    const tm = makeManager({ getTunnelState: () => ({ "dev-1": false }) });
+    await tm.init();
+    expect(tm.serialize().tunnels).toEqual({ "dev-1": false });
+  });
+
   it("does not persist during init/restore, then persists (debounced) on a change", async () => {
     vi.useFakeTimers();
     try {
@@ -392,7 +472,7 @@ describe("TabManager persistence (Phase 3)", () => {
       vi.advanceTimersByTime(1000);
       expect(persist).not.toHaveBeenCalled();
 
-      tm.setActiveLinkedProfileId("p2"); // a real change → schedules a save
+      tm.setLinkedProfileId(tm.activeGrid(), "p2"); // a real change → schedules a save
       expect(persist).not.toHaveBeenCalled(); // still debounced
       vi.advanceTimersByTime(600);
       expect(persist).toHaveBeenCalledTimes(1);
@@ -407,9 +487,9 @@ describe("TabManager review fixes (1-5)", () => {
   it("clearProfileLink unlinks every matching tab, not just the active one", async () => {
     const tm = makeManager({ resolveTabState: (id) => ({ linked: id !== null, dirty: false }) });
     await tm.init();
-    tm.setActiveLinkedProfileId("p1"); // tab 0 → p1
+    tm.setLinkedProfileId(tm.activeGrid(), "p1"); // tab 0 → p1
     await tm.newTab();
-    tm.setActiveLinkedProfileId("p1"); // tab 1 → p1 (now active)
+    tm.setLinkedProfileId(tm.activeGrid(), "p1"); // tab 1 → p1 (now active)
 
     tm.clearProfileLink("p1");
 
@@ -425,11 +505,11 @@ describe("TabManager review fixes (1-5)", () => {
       const tm = makeManager({ persist });
       await tm.init();
 
-      tm.setActiveLinkedProfileId("p1"); // schedules a debounced save
+      tm.setLinkedProfileId(tm.activeGrid(), "p1"); // schedules a debounced save
       tm.flushPersist();
       expect(persist).toHaveBeenCalledTimes(1); // fired without waiting the debounce
 
-      tm.setActiveLinkedProfileId("p2");
+      tm.setLinkedProfileId(tm.activeGrid(), "p2");
       window.dispatchEvent(new Event("beforeunload"));
       expect(persist).toHaveBeenCalledTimes(2);
 

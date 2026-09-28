@@ -62,6 +62,8 @@ export interface TabManagerOptions {
   getSftpState?: () => SftpPanelState | undefined;
   /** The left menu's width to persist (undefined while it has its default). */
   getSidebarWidth?: () => number | undefined;
+  /** The tunnels' remembered run state to persist (undefined when empty). */
+  getTunnelState?: () => Record<string, boolean> | undefined;
   /**
    * The app-action buttons (reload / trusted-hosts / settings / help), mounted
    * into the right side of the tab-strip row so the app has no separate header.
@@ -78,6 +80,9 @@ export class TabManager {
   private options: TabManagerOptions;
   private tabs: Tab[] = [];
   private activeIndex = 0;
+  /** Tabs whose close is waiting on the live-session confirm (a repeated close
+   * request for the same tab is ignored meanwhile). */
+  private readonly closing = new Set<Tab>();
   /** Monotonic counter so fresh blank tabs get stable default names. */
   private nextTabNumber = 1;
   /**
@@ -257,18 +262,33 @@ export class TabManager {
    */
   async closeTab(index: number): Promise<void> {
     const tab = this.tabs[index];
-    if (!tab) return;
+    if (!tab || this.closing.has(tab)) return;
 
-    const live = tab.grid.liveSessionCount();
-    if (live > 0) {
-      const ok = await confirm(shrinkConfirmMessage(live), {
-        title: t("grid.closeSessions.title"),
-        confirmLabel: t("common.continue"),
-        danger: true,
-      });
-      if (!ok) return;
+    this.closing.add(tab);
+    try {
+      if (!(await this.confirmClose(tab))) return;
+    } finally {
+      this.closing.delete(tab);
     }
+    // The tab set may have changed during the confirm: act on this tab, by
+    // identity, wherever it now sits.
+    if (this.tabs.includes(tab)) await this.removeTab(tab);
+  }
 
+  /** Asks before closing a tab that has live sessions. */
+  private async confirmClose(tab: Tab): Promise<boolean> {
+    const live = tab.grid.liveSessionCount();
+    if (live === 0) return true;
+    return confirm(shrinkConfirmMessage(live), {
+      title: t("grid.closeSessions.title"),
+      confirmLabel: t("common.continue"),
+      danger: true,
+    });
+  }
+
+  private async removeTab(tab: Tab): Promise<void> {
+    const index = this.tabs.indexOf(tab);
+    const active = this.tabs[this.activeIndex];
     tab.grid.dispose();
     tab.panel.remove();
     tab.button.remove();
@@ -278,9 +298,10 @@ export class TabManager {
       await this.newTab();
       return;
     }
-    // Activate a sensible neighbour: the tab that shifted into this slot, or the
-    // new last tab if we closed the tail.
-    const next = Math.min(index, this.tabs.length - 1);
+    // Closing a background tab keeps the active one; closing the active tab
+    // moves to the tab that shifted into its slot (or the new last tab).
+    const next =
+      active && active !== tab ? this.tabs.indexOf(active) : Math.min(index, this.tabs.length - 1);
     this.activeIndex = -1; // force activate() to re-apply visibility
     this.activate(next);
     this.refreshStrip();
@@ -325,10 +346,17 @@ export class TabManager {
     return this.tabs[this.activeIndex]?.linkedProfileId ?? null;
   }
 
-  /** Sets the active tab's linked-profile id and refreshes its strip badge/dot. */
-  setActiveLinkedProfileId(id: string | null): void {
-    const tab = this.tabs[this.activeIndex];
-    if (tab) tab.linkedProfileId = id;
+  /** The linked-profile id of the tab owning `grid` (null if unlinked/closed). */
+  linkedProfileIdOf(grid: Grid): string | null {
+    return this.tabs.find((tab) => tab.grid === grid)?.linkedProfileId ?? null;
+  }
+
+  /** Links the tab owning `grid` (a no-op once that tab is closed) and
+   * refreshes the strip badge/dot. */
+  setLinkedProfileId(grid: Grid, id: string | null): void {
+    const tab = this.tabs.find((candidate) => candidate.grid === grid);
+    if (!tab) return;
+    tab.linkedProfileId = id;
     this.refreshStrip();
     this.schedulePersist();
   }
@@ -372,6 +400,7 @@ export class TabManager {
       activeIndex: Math.max(0, this.activeIndex),
       sftp: this.options.getSftpState?.(),
       sidebarWidth: this.options.getSidebarWidth?.(),
+      tunnels: this.options.getTunnelState?.(),
     };
   }
 

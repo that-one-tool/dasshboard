@@ -71,6 +71,7 @@ import {
   folderPlusIcon,
   chevronLeftIcon,
   chevronRightIcon,
+  connectIcon,
   disconnectIcon,
   lockIcon,
   bookmarkIcon,
@@ -202,6 +203,11 @@ export class SftpPanel {
   private historyIndex = -1;
   /** True while a connect/list/transfer is in flight (disables the toolbar). */
   private busy = false;
+  /** True while `sftpConnect` is in flight (the connect toggle is inert). */
+  private connecting = false;
+  /** Bumped by every connect attempt and every disconnect, so a connect that
+   * resolves after the user closed/disconnected is recognised as stale. */
+  private connectSeq = 0;
 
   /** The splitter lives outside the panel's replaced innerHTML, so its listener
    * survives a `buildPanel()` rebuild — wire it exactly once. */
@@ -285,6 +291,8 @@ export class SftpPanel {
     const deviceId = this.activeDeviceId;
     if (!deviceId) return;
     const live = await sftpConnectedDevices().catch(() => [deviceId]);
+    // The user may have switched devices while the lookup was in flight.
+    if (this.activeDeviceId !== deviceId) return;
     if (!live.includes(deviceId)) await this.handleDisconnect();
   }
 
@@ -310,6 +318,13 @@ export class SftpPanel {
     this.unlistenProgress = null;
     this.clearQueueHideTimers();
     this.clearIdleTimer();
+  }
+
+  /** Surface an operation's error, then check whether it failed because the
+   * connection itself is gone (server closed it, network dropped). */
+  private reportError(err: unknown): void {
+    this.options.onError?.(err as AppError);
+    void this.resyncConnection();
   }
 
   private async safeListDevices(): Promise<Device[]> {
@@ -530,6 +545,7 @@ export class SftpPanel {
     });
 
     this.wireSplitter();
+    this.updateConnDot();
 
     // Live transfer progress (throttled events from the backend) → active item.
     void onSftpProgress((e) => this.queue.applyProgress(e.deviceId, e.transferred, e.total)).then(
@@ -633,25 +649,47 @@ export class SftpPanel {
     this.history = [];
     this.historyIndex = -1;
     this.setStatus(t("sftp.connecting"));
+    const seq = ++this.connectSeq;
+    this.connecting = true;
     this.setBusy(true);
     try {
       // A first-contact host key raises the global host-key dialog; on accept the
       // connect proceeds and resolves here.
       const startDir = await sftpConnect(deviceId);
+      if (seq !== this.connectSeq) {
+        this.dropStaleConnection(deviceId);
+        return;
+      }
       this.activeDeviceId = deviceId;
       this.updateConnDot();
       await this.loadBookmarks(deviceId);
       await this.goTo(startDir);
     } catch (err) {
+      // A superseded attempt (the user moved on) must not touch the newer one.
+      if (seq !== this.connectSeq) return;
       this.activeDeviceId = null;
       this.setStatus("");
       this.options.onError?.(err as AppError);
       this.renderDisconnectedState();
       this.updateConnDot();
     } finally {
-      this.setBusy(false);
-      this.persist(); // remember the (now-)selected device
+      if (seq === this.connectSeq) this.finishConnect();
     }
+  }
+
+  /** Settle the panel after the current connect attempt ends either way. */
+  private finishConnect(): void {
+    this.connecting = false;
+    this.setBusy(false);
+    this.updateConnDot();
+    this.persist(); // remember the (now-)selected device
+  }
+
+  /** Close a connection that finished opening after the user moved on (closed
+   * the panel mid-connect), unless it is the one now on screen. */
+  private dropStaleConnection(deviceId: string): void {
+    if (this.activeDeviceId === deviceId) return;
+    void sftpDisconnect(deviceId).catch(() => {});
   }
 
   /** Disconnect the live connection (if any) without touching panel visibility.
@@ -659,6 +697,9 @@ export class SftpPanel {
   private async disconnectActive(): Promise<void> {
     const deviceId = this.activeDeviceId;
     this.activeDeviceId = null;
+    this.connectSeq += 1; // a connect still in flight is now stale
+    this.connecting = false;
+    this.setBusy(false); // …and will never clear `busy` itself
     this.moveClipboard = null; // a pending move is tied to this connection
     this.bookmarks = []; // bookmarks are loaded per active device
     this.renderBookmarks();
@@ -678,6 +719,7 @@ export class SftpPanel {
   /** The header connect/disconnect toggle: disconnect when connected, otherwise
    * connect the selected device (the replacement for the old Reconnect button). */
   private handleConnToggle(): void {
+    if (this.connecting) return;
     if (this.activeDeviceId) {
       void this.handleDisconnect();
     } else if (this.selectedDeviceId) {
@@ -739,7 +781,8 @@ export class SftpPanel {
    * the shared worker behind `goTo`/`goBack`/`goForward`.
    */
   private async loadDir(path: string): Promise<void> {
-    if (this.activeDeviceId === null) return;
+    const deviceId = this.activeDeviceId;
+    if (deviceId === null) return;
     // Re-listing the same directory (Refresh, or an auto-refresh after a
     // transfer) keeps any live filter; navigating to a different directory
     // starts fresh.
@@ -749,7 +792,9 @@ export class SftpPanel {
     this.lastClickedIndex = -1;
     this.setBusy(true);
     try {
-      const entries = await sftpList(this.activeDeviceId, path);
+      const entries = await sftpList(deviceId, path);
+      // Disconnected (or switched device) while the listing was in flight.
+      if (this.activeDeviceId !== deviceId) return;
       this.cwd = path;
       this.allEntries = entries;
       if (!sameDir) {
@@ -760,7 +805,7 @@ export class SftpPanel {
       this.applyView(); // renders + sets the count status
       this.updateBookmarkButton();
     } catch (err) {
-      this.options.onError?.(err as AppError);
+      if (this.activeDeviceId === deviceId) this.reportError(err);
     } finally {
       this.setBusy(false); // also reconciles Back/Forward enabled state
     }
@@ -897,7 +942,7 @@ export class SftpPanel {
         : await sftpBookmarkAdd(deviceId, this.cwd);
       this.updateBookmarkButton();
     } catch (err) {
-      this.options.onError?.(err as AppError);
+      this.reportError(err);
     }
   }
 
@@ -908,7 +953,7 @@ export class SftpPanel {
       this.bookmarks = await sftpBookmarkRemove(this.activeDeviceId, path);
       this.updateBookmarkButton();
     } catch (err) {
-      this.options.onError?.(err as AppError);
+      this.reportError(err);
     }
   }
 
@@ -927,7 +972,7 @@ export class SftpPanel {
       await this.loadDir(this.cwd);
       this.options.onSuccess?.(t("sftp.perms.changed", { name: entry.name }));
     } catch (err) {
-      this.options.onError?.(err as AppError);
+      this.reportError(err);
     }
   }
 
@@ -977,7 +1022,7 @@ export class SftpPanel {
         target = await sftpRealpath(deviceId, parentOf(resolved));
       }
     } catch (err) {
-      this.options.onError?.(err as AppError);
+      this.reportError(err);
       this.syncPathInput();
       this.setBusy(false);
       return;
@@ -993,7 +1038,7 @@ export class SftpPanel {
       await navigator.clipboard.writeText(this.cwd);
       this.options.onSuccess?.(t("sftp.pathCopied"));
     } catch (err) {
-      this.options.onError?.(err as AppError);
+      this.reportError(err);
     }
   }
 
@@ -1022,7 +1067,7 @@ export class SftpPanel {
       const parent = await sftpRealpath(this.activeDeviceId, parentOf(this.cwd));
       if (parent !== this.cwd) await this.goTo(parent);
     } catch (err) {
-      this.options.onError?.(err as AppError);
+      this.reportError(err);
     }
   }
 
@@ -1167,7 +1212,7 @@ export class SftpPanel {
       }
       this.scheduleQueueItemHide(item.id);
     } else if (item.state === "failed" && item.error) {
-      this.options.onError?.(item.error);
+      this.reportError(item.error);
     }
     // "cancelled": quiet — the row stays until dismissed/cleared.
   }
@@ -1177,7 +1222,7 @@ export class SftpPanel {
     try {
       await sftpCancelTransfer(deviceId);
     } catch (err) {
-      this.options.onError?.(err as AppError);
+      this.reportError(err);
     }
   }
 
@@ -1207,7 +1252,7 @@ export class SftpPanel {
       await sftpMkdir(this.activeDeviceId, joinRemote(this.cwd, name.trim()));
       await this.loadDir(this.cwd);
     } catch (err) {
-      this.options.onError?.(err as AppError);
+      this.reportError(err);
     }
   }
 
@@ -1224,7 +1269,7 @@ export class SftpPanel {
       );
       await this.loadDir(this.cwd);
     } catch (err) {
-      this.options.onError?.(err as AppError);
+      this.reportError(err);
     }
   }
 
@@ -1243,7 +1288,7 @@ export class SftpPanel {
       await sftpRemove(this.activeDeviceId, joinRemote(this.cwd, entry.name), isDir, isDir);
       await this.loadDir(this.cwd);
     } catch (err) {
-      this.options.onError?.(err as AppError);
+      this.reportError(err);
     }
   }
 
@@ -1551,7 +1596,7 @@ export class SftpPanel {
   ): void {
     if (firstError && done < total) {
       this.setStatus(t("sftp.bulk.partial"));
-      this.options.onError?.(firstError);
+      this.reportError(firstError);
     } else if (done > 0) {
       this.setStatus(successMsg);
       this.options.onSuccess?.(successMsg);
@@ -1722,24 +1767,34 @@ export class SftpPanel {
     if (btn) {
       btn.classList.toggle("is-connected", connected);
       btn.classList.toggle("is-disconnected", !connected);
-      // Disconnected with no device chosen yet → nothing to connect.
-      btn.disabled = !connected && !this.selectedDeviceId;
+      // Mid-connect, or disconnected with no device chosen yet → inert.
+      btn.disabled = this.connecting || (!connected && !this.selectedDeviceId);
+      btn.innerHTML = connected ? disconnectIcon : connectIcon;
       const label = connected ? t("sftp.disconnect") : t("sftp.connect");
       btn.title = label;
       btn.setAttribute("aria-label", label);
     }
+    this.syncControls();
   }
 
   private setBusy(busy: boolean): void {
     this.busy = busy;
+    this.syncControls();
+  }
+
+  /** Enable the browsing controls (toolbar, path, filter, sort) only when
+   * connected and idle; the device picker only needs idle. */
+  private syncControls(): void {
+    const off = this.busy || this.activeDeviceId === null;
     this.panel
-      ?.querySelectorAll<HTMLButtonElement>(".sftp-toolbar .btn")
+      ?.querySelectorAll<HTMLButtonElement>('.sftp-toolbar .btn, [data-action="sort"]')
       .forEach((b) => {
-        b.disabled = busy;
+        b.disabled = off;
       });
-    if (this.pathEl) this.pathEl.readOnly = busy;
-    if (this.deviceSelectEl) this.deviceSelectEl.disabled = busy;
-    if (!busy) this.updateNavButtons();
+    if (this.pathEl) this.pathEl.readOnly = off;
+    if (this.filterEl) this.filterEl.disabled = off;
+    if (this.deviceSelectEl) this.deviceSelectEl.disabled = this.busy;
+    if (!off) this.updateNavButtons();
   }
 
   /** Enable/disable Back and Forward per the history cursor (idle state only). */

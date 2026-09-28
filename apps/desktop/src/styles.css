@@ -962,6 +962,7 @@ body.grid-dragging-row * {
 	--chip-dot: var(--ok);
 }
 .pane-status-disconnected,
+.pane-status-exited,
 .pane-status-error {
 	--chip-bg: var(--danger-soft);
 	--chip-fg: var(--danger-text);

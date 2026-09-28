@@ -103,6 +103,7 @@ import {
   sftpBookmarkRemove,
 } from "../ipc";
 import type { AppError } from "../ipc";
+import { connectIcon, disconnectIcon } from "../ui/icons";
 
 function sshDevice(id: string, name: string): Device {
   return {
@@ -596,6 +597,160 @@ describe("SftpPanel", () => {
     const toggle = q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]');
     expect(toggle.classList.contains("is-disconnected")).toBe(true);
     expect(toggle.disabled).toBe(true);
+  });
+
+  function browsingControls(): (HTMLButtonElement | HTMLInputElement)[] {
+    return [
+      ...document.querySelectorAll<HTMLButtonElement>(
+        '.sftp-toolbar .btn:not([data-action="back"]):not([data-action="forward"])',
+      ),
+      ...document.querySelectorAll<HTMLButtonElement>('.sftp-panel [data-action="sort"]'),
+      q<HTMLInputElement>(".sftp-filter"),
+    ];
+  }
+
+  it("disables the browsing controls while disconnected", async () => {
+    await setup();
+    activePanel.open();
+    await flush();
+    expect(browsingControls().every((el) => el.disabled)).toBe(true);
+    expect(q<HTMLInputElement>(".sftp-path").readOnly).toBe(true);
+
+    await browse();
+    expect(browsingControls().some((el) => el.disabled)).toBe(false);
+    expect(q<HTMLInputElement>(".sftp-path").readOnly).toBe(false);
+
+    q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]').click();
+    await flush();
+    expect(browsingControls().every((el) => el.disabled)).toBe(true);
+  });
+
+  it("the toggle shows a plug to connect and an unplug to disconnect", async () => {
+    await setup();
+    activePanel.open();
+    await flush();
+    const toggle = q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]');
+    const asRendered = (svg: string): string => {
+      const el = document.createElement("span");
+      el.innerHTML = svg;
+      return el.innerHTML;
+    };
+    expect(toggle.innerHTML).toBe(asRendered(connectIcon));
+
+    await browse();
+    expect(toggle.innerHTML).toBe(asRendered(disconnectIcon));
+  });
+
+  it("drops a listing that lands after a disconnect", async () => {
+    await setup();
+    await browse();
+    let resolveList: (entries: SftpEntry[]) => void = () => {};
+    vi.mocked(sftpList).mockImplementationOnce(
+      () => new Promise((resolve) => (resolveList = resolve)),
+    );
+    q<HTMLButtonElement>('.sftp-panel [data-action="refresh"]').click();
+    await flush();
+
+    q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]').click();
+    await flush();
+    resolveList(h.listResult);
+    await flush();
+
+    expect(document.querySelector(".sftp-entry")).toBeNull();
+    expect(document.querySelector(".sftp-disconnected")).not.toBeNull();
+  });
+
+  it("the toggle does nothing while a connect is in flight", async () => {
+    await setup();
+    vi.mocked(sftpConnect).mockImplementationOnce(() => new Promise(() => {}));
+    await browse();
+    const toggle = q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]');
+    expect(toggle.disabled).toBe(true);
+
+    toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flush();
+    expect(sftpConnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("closing the panel mid-connect drops the late connection", async () => {
+    await setup();
+    let resolveConnect: (dir: string) => void = () => {};
+    vi.mocked(sftpConnect).mockImplementationOnce(
+      () => new Promise((resolve) => (resolveConnect = resolve)),
+    );
+    await browse();
+
+    q<HTMLButtonElement>('.sftp-panel [data-action="hide"]').click();
+    await flush();
+    resolveConnect("/home/j");
+    await flush();
+
+    expect(sftpDisconnect).toHaveBeenCalledWith("a");
+    expect(sftpList).not.toHaveBeenCalled();
+    const toggle = q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]');
+    expect(toggle.classList.contains("is-disconnected")).toBe(true);
+  });
+
+  it("a superseded connect that fails later leaves the newer connection alone", async () => {
+    h.devices = [sshDevice("a", "Alpha"), sshDevice("b", "Beta")];
+    const onError = vi.fn();
+    await setup({ onError });
+    let failA: (err: unknown) => void = () => {};
+    vi.mocked(sftpConnect).mockImplementationOnce(
+      () => new Promise<string>((_resolve, reject) => (failA = reject)),
+    );
+    await browse(); // A: slow, still connecting
+
+    activePanel.openWith("b"); // sidebar Browse on B while A is in flight
+    await flush();
+    failA({ code: "SshConnect", message: "timed out" });
+    await flush();
+
+    const toggle = q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]');
+    expect(toggle.classList.contains("is-connected")).toBe(true);
+    expect(q<HTMLSelectElement>(".sftp-device-select").value).toBe("b");
+    expect(document.querySelector(".sftp-entry")).not.toBeNull();
+    expect(onError).not.toHaveBeenCalled();
+    expect(q<HTMLSelectElement>(".sftp-device-select").disabled).toBe(false);
+  });
+
+  it("a resync that lands after a device switch leaves the new device alone", async () => {
+    h.devices = [sshDevice("a", "Alpha"), sshDevice("b", "Beta")];
+    await setup();
+    await browse(); // connected to A
+    let answer: (ids: string[]) => void = () => {};
+    vi.mocked(sftpConnectedDevices).mockImplementationOnce(
+      () => new Promise<string[]>((resolve) => (answer = resolve)),
+    );
+    const resync = activePanel.resyncConnection();
+
+    const select = q<HTMLSelectElement>(".sftp-device-select");
+    select.value = "b";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    answer([]); // taken before the switch: A is gone, B isn't listed yet
+    await resync;
+    await flush();
+
+    const toggle = q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]');
+    expect(toggle.classList.contains("is-connected")).toBe(true);
+    expect(sftpDisconnect).not.toHaveBeenCalledWith("b");
+  });
+
+  it("drops to disconnected when an operation fails on a lost connection", async () => {
+    const onError = vi.fn();
+    await setup({ onError });
+    await browse();
+    vi.mocked(sftpList).mockRejectedValueOnce({ code: "Sftp", message: "channel closed" });
+    vi.mocked(sftpConnectedDevices).mockResolvedValueOnce([]);
+
+    q<HTMLButtonElement>('.sftp-panel [data-action="refresh"]').click();
+    await flush();
+
+    expect(onError).toHaveBeenCalled();
+    const toggle = q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]');
+    expect(toggle.classList.contains("is-disconnected")).toBe(true);
+    expect(document.querySelector(".sftp-disconnected")).not.toBeNull();
   });
 
   it("an idle collapsed panel auto-disconnects after the configured timeout", async () => {

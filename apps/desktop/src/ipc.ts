@@ -324,7 +324,11 @@ export async function deleteDevice(deviceId: string): Promise<void> {
 export type SessionStatus =
   | "connecting"
   | "connected"
+  /** Ended by the user, or the connection was lost (auto-reconnect applies). */
   | "disconnected"
+  /** The shell ended on its own with exit code 0 (`exit`, `logout`): never
+   * auto-reconnected. A failure code or a kill by signal is `disconnected`. */
+  | "exited"
   | "error";
 
 /** Payload of the `session_status` event (SPEC §5). */
@@ -354,12 +358,13 @@ export interface HostKeyPromptEvent {
  * writing it to xterm.js.
  */
 export async function connect(
+  sessionId: string,
   deviceId: string,
   cols: number,
   rows: number,
   onData: Channel<ArrayBuffer>,
 ): Promise<string> {
-  return invokeChecked<string>("connect", { deviceId, cols, rows, onData });
+  return invokeChecked<string>("connect", { sessionId, deviceId, cols, rows, onData });
 }
 
 /** Sends keystrokes to a session (SPEC §5). */
@@ -447,6 +452,16 @@ export function onHostKeyPrompt(
   );
 }
 
+/** Subscribes to `host_key_prompt_closed` events: the backend stopped waiting
+ * on a prompt (answered, timed out, or its connection went away). */
+export function onHostKeyPromptClosed(
+  handler: (promptId: string) => void,
+): Promise<UnlistenFn> {
+  return listen<{ promptId: string }>("host_key_prompt_closed", (e) =>
+    handler(e.payload.promptId),
+  );
+}
+
 /* ============================================================================
  * Tunnel types & commands (local port-forwarding — SPEC tunnels §3)
  * ============================================================================ */
@@ -487,8 +502,8 @@ export interface TunnelInfo {
  * listener for each of the device's forwards. Returns the new `tunnelId`; live
  * state arrives via `onTunnelStatus`.
  */
-export async function startTunnel(deviceId: string): Promise<string> {
-  return invokeChecked<string>("start_tunnel", { deviceId });
+export async function startTunnel(deviceId: string, tunnelId: string): Promise<string> {
+  return invokeChecked<string>("start_tunnel", { tunnelId, deviceId });
 }
 
 /** Stops a tunnel by id, releasing its bound local listeners. Idempotent. */
@@ -592,6 +607,9 @@ export interface WorkspaceState {
   sftp?: SftpPanelState;
   /** The left menu's width in px, or absent while the CSS default applies. */
   sidebarWidth?: number;
+  /** Device id → whether the user last left its tunnel running (explicit
+   * Start/Stop); absent devices follow their `tunnelAutoStart` flag. */
+  tunnels?: Record<string, boolean>;
 }
 
 /** The saved workspace, or an empty one (no tabs) on first launch / corrupt file. */

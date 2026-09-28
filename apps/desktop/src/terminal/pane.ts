@@ -27,6 +27,7 @@ import {
   type TerminalSettings,
 } from "../ipc";
 import { overlayForStatus } from "./overlay";
+import { isTerminalReply } from "./terminalReplies";
 import { isShortcutModifier } from "../ui/keyboard";
 import {
   DEFAULT_TERMINAL_SETTINGS,
@@ -87,6 +88,7 @@ const STATUS_LABEL_KEYS: Record<PaneStatus, MessageKey> = {
   connecting: "pane.status.connecting",
   connected: "pane.status.connected",
   disconnected: "pane.status.disconnected",
+  exited: "pane.status.exited",
   error: "pane.status.error",
 };
 
@@ -101,6 +103,10 @@ export class TerminalPane {
   private unlistenStatus: (() => void) | null = null;
 
   private sessionId: string | null = null;
+  /** The id of a session being opened: status events for it can arrive before
+   * `connect()` returns, so the listener must recognize it already. Cleared
+   * when that session ends (so a late `connect()` return doesn't adopt it). */
+  private pendingSessionId: string | null = null;
   private deviceId: string | null = null;
   private connected = false;
   // Re-entrancy guard: `startSession()` mutates state across an
@@ -121,6 +127,8 @@ export class TerminalPane {
   private reconnecting = false;
   private reconnectAttempts = 0;
   private reconnectTimer: number | null = null;
+  /** Set by `dispose()`: a connect resolving afterwards must close its session. */
+  private disposed = false;
 
   // The thunk that re-renders whatever overlay is currently shown. Set every
   // time an overlay is displayed so `retranslate()` can rebuild it in the new
@@ -137,11 +145,15 @@ export class TerminalPane {
   async init(): Promise<void> {
     this.renderUI();
     this.unlistenStatus = await onSessionStatus((event) => {
-      if (event.sessionId === this.sessionId) {
+      if (this.ownsSession(event.sessionId)) {
         this.applyStatus(event.status, event.message);
       }
     });
     await this.refreshDevices();
+  }
+
+  private ownsSession(sessionId: string): boolean {
+    return sessionId === this.sessionId || sessionId === this.pendingSessionId;
   }
 
   /** Reloads the device dropdown (call after devices are added/edited/deleted). */
@@ -348,6 +360,11 @@ export class TerminalPane {
     // field comment for why the async window is dangerous.
     if (this.connecting) return;
     this.connecting = true;
+    // A manual connect supersedes a pending auto-reconnect; left armed, its timer
+    // would start a second session and dispose this one's terminal.
+    if (!fromReconnect) this.stopReconnecting();
+    // One session per pane: close whatever this one replaces.
+    this.releaseSession();
     try {
       const deviceId = this.resolveConnectDeviceId(fromReconnect);
       if (!deviceId) return;
@@ -425,8 +442,9 @@ export class TerminalPane {
     terminal.onData((data) => {
       if (this.connected && this.sessionId) {
         void writeStdin(this.sessionId, data);
-        // Let the grid mirror this input into other panes (broadcast mode).
-        this.options.onInput?.(data);
+        // Let the grid mirror what the user typed into other panes (broadcast
+        // mode) — never the terminal's own query replies or mouse reports.
+        if (!isTerminalReply(data)) this.options.onInput?.(data);
       }
     });
     // Copy on select (SPEC §7).
@@ -453,25 +471,39 @@ export class TerminalPane {
   /** Opens the backend session and wires the data channel into the terminal. */
   private async establishConnection(deviceId: string, terminal: Terminal): Promise<void> {
     const channel = newDataChannel();
+    // Only into the terminal this session was opened with — never a later one.
     channel.onmessage = (buffer) => {
-      this.terminal?.write(new Uint8Array(buffer));
+      if (this.terminal === terminal) terminal.write(new Uint8Array(buffer));
     };
 
+    const sessionId = crypto.randomUUID();
+    this.pendingSessionId = sessionId;
     try {
-      const sessionId = await connect(
-        deviceId,
-        terminal.cols,
-        terminal.rows,
-        channel,
-      );
-      this.sessionId = sessionId;
-      this.updateControls();
-      this.observeResize();
+      await connect(sessionId, deviceId, terminal.cols, terminal.rows, channel);
+      this.adoptSession(sessionId);
     } catch (err) {
+      // Released (cancelled / replaced) while opening: nothing left to report.
+      if (this.pendingSessionId !== sessionId) return;
+      this.pendingSessionId = null;
       const message = err instanceof Error ? err.message : errorMessage(err);
       this.applyStatus("error", message);
       this.options.onError?.(message);
     }
+  }
+
+  /** Take ownership of a session `connect()` just opened — unless the pane
+   * let go of it meanwhile (disposed, cancelled, replaced, or its terminal
+   * status beat the command's return), in which case close it (a no-op for a
+   * session that already ended). */
+  private adoptSession(sessionId: string): void {
+    if (this.disposed || this.pendingSessionId !== sessionId) {
+      void disconnect(sessionId);
+      return;
+    }
+    this.pendingSessionId = null;
+    this.sessionId = sessionId;
+    this.updateControls();
+    this.observeResize();
   }
 
   private observeResize(): void {
@@ -539,16 +571,15 @@ export class TerminalPane {
   private applyTerminatedStatus(status: SessionStatus, message?: string): void {
     this.connected = false;
     this.sessionId = null;
+    this.pendingSessionId = null;
     this.stopResizeObserver();
     this.updateControls();
 
-    const wasUserInitiated = this.userInitiated;
+    // Neither a drop the user asked for nor a shell they exited is unexpected.
+    const expected = this.userInitiated || status === "exited";
     this.userInitiated = false;
 
-    if (
-      !wasUserInitiated &&
-      canReconnect(this.deviceAutoReconnect(), this.reconnectAttempts)
-    ) {
+    if (!expected && canReconnect(this.deviceAutoReconnect(), this.reconnectAttempts)) {
       this.scheduleReconnect();
       return;
     }
@@ -575,17 +606,28 @@ export class TerminalPane {
     }, reconnectDelayMs(this.reconnectAttempts));
   }
 
-  /** Cancel a pending/active auto-reconnect and show a manual-retry overlay. */
+  /** Cancel a pending/active auto-reconnect — closing an attempt that is
+   * already opening — and show a manual-retry overlay. */
   private cancelReconnect(): void {
-    this.cancelReconnectTimer();
-    this.reconnecting = false;
-    this.reconnectAttempts = 0;
-    // Mark this as user-initiated so that if a `connect()` was already in flight
-    // when Cancel was clicked, its later failure is NOT treated as an unexpected
-    // drop and does not silently re-enter auto-reconnect. A successful in-flight
-    // connect clears this again (see the `connected` branch of applyStatus).
-    this.userInitiated = true;
+    this.stopReconnecting();
+    this.releaseSession();
     this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus("disconnected", t("pane.overlay.reconnectCancelled"))));
+  }
+
+  /**
+   * Let go of the current and any in-flight session: close them and stop
+   * listening to their ids, so their late events can't touch whatever comes
+   * next. `disconnect` is idempotent and a no-op for a session that already
+   * ended (or one not spawned yet — `adoptSession` closes that one later).
+   */
+  private releaseSession(): void {
+    const ids = [this.sessionId, this.pendingSessionId];
+    this.sessionId = null;
+    this.pendingSessionId = null;
+    this.connected = false;
+    this.stopResizeObserver();
+    for (const id of ids) if (id) void disconnect(id);
+    this.updateControls();
   }
 
   private cancelReconnectTimer(): void {
@@ -597,10 +639,14 @@ export class TerminalPane {
 
   /** Manual Retry: reset the reconnect budget and connect fresh. */
   private async manualRetry(): Promise<void> {
+    await this.startSession();
+  }
+
+  /** End any auto-reconnect sequence (pending timer + attempt budget). */
+  private stopReconnecting(): void {
     this.cancelReconnectTimer();
     this.reconnecting = false;
     this.reconnectAttempts = 0;
-    await this.startSession();
   }
 
   /** The six overlay nodes both overlay-rendering paths manipulate. */
@@ -694,11 +740,12 @@ export class TerminalPane {
   }
 
   /**
-   * True when a backend session exists for this pane. Used by the grid-shrink
-   * flow to decide whether dropping this pane needs a confirmation (SPEC §7).
+   * True when a backend session exists — or is being opened — for this pane.
+   * Used by the grid-shrink flow to decide whether dropping this pane needs a
+   * confirmation (SPEC §7).
    */
   hasLiveSession(): boolean {
-    return this.sessionId !== null;
+    return this.sessionId !== null || this.connecting;
   }
 
   /**
@@ -843,6 +890,7 @@ export class TerminalPane {
     // Stop any pending auto-reconnect so its timer can't fire startSession()
     // after this pane is gone (would leak a session / touch a dead DOM).
     this.userInitiated = true;
+    this.disposed = true;
     this.cancelReconnectTimer();
     this.reconnecting = false;
     this.unlistenStatus?.();

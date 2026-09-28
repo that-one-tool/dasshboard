@@ -100,6 +100,7 @@ pub struct SftpParams {
 /// dialog handles it). Object-safe for `Arc<dyn SftpSink>`.
 pub trait SftpSink: Send + Sync {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload);
+    fn on_host_key_prompt_closed(&self, _prompt_id: &str) {}
 }
 
 /// Adapts an [`SftpSink`] to the [`SessionSink`] that [`SshHandler`] requires.
@@ -114,13 +115,16 @@ impl SessionSink for HandshakeSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         self.0.on_host_key_prompt(payload);
     }
+    fn on_host_key_prompt_closed(&self, prompt_id: &str) {
+        self.0.on_host_key_prompt_closed(prompt_id);
+    }
 }
 
 /// A live SFTP connection: the authenticated SSH `Handle` (kept alive only to
 /// hold the transport open — dropping it disconnects) plus the `SftpSession`
 /// speaking the subsystem over one channel.
 struct SftpConn {
-    _handle: client::Handle<SshHandler>,
+    handle: client::Handle<SshHandler>,
     session: SftpSession,
 }
 
@@ -199,9 +203,14 @@ impl SftpManager {
     }
 
     /// The device ids with a live SFTP connection, so a freshly-mounted drawer
-    /// can restore its "connected" state.
+    /// can restore its "connected" state. A connection whose transport already
+    /// ended (the server closed it, the network dropped) is not live.
     pub fn connected_devices(&self) -> Vec<String> {
-        self.lock_conns().keys().cloned().collect()
+        self.lock_conns()
+            .iter()
+            .filter(|(_, conn)| !conn.handle.is_closed())
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     /// Resolve a pending host-key trust prompt raised by an SFTP handshake.
@@ -302,13 +311,8 @@ impl SftpManager {
             .await
             .map_err(|e| sftp_err("could not resolve the home directory", e))?;
 
-        self.lock_conns().insert(
-            params.device_id,
-            Arc::new(SftpConn {
-                _handle: handle,
-                session,
-            }),
-        );
+        self.lock_conns()
+            .insert(params.device_id, Arc::new(SftpConn { handle, session }));
         Ok(start_dir)
     }
 
@@ -581,12 +585,13 @@ impl SftpManager {
     }
 
     /// Close and forget a device's SFTP connection. Idempotent: an unknown
-    /// device is a no-op. Best-effort `close()`; the transport is torn down when
-    /// the `Arc<SftpConn>` (and thus the `Handle`) is dropped regardless.
+    /// device is a no-op. Best-effort: closes the SFTP channel, then ends the
+    /// SSH session explicitly (like shells and tunnels) rather than waiting for
+    /// the last `Arc<SftpConn>` clone to drop.
     pub async fn disconnect(&self, device_id: &str) {
         let conn = self.lock_conns().remove(device_id);
         if let Some(conn) = conn {
-            let _ = conn.session.close().await;
+            close_conn(&conn).await;
         }
     }
 
@@ -595,9 +600,17 @@ impl SftpManager {
     pub async fn disconnect_all(&self) {
         let conns: Vec<Arc<SftpConn>> = self.lock_conns().drain().map(|(_, c)| c).collect();
         for conn in conns {
-            let _ = conn.session.close().await;
+            close_conn(&conn).await;
         }
     }
+}
+
+async fn close_conn(conn: &SftpConn) {
+    let _ = conn.session.close().await;
+    let _ = conn
+        .handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
 }
 
 /// Join a POSIX parent path and a child name for remote paths (root stays a

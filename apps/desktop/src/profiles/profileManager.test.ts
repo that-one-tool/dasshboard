@@ -66,7 +66,8 @@ function fakeGrid(snapshot: WorkspaceSnapshot): {
   const workspace: ProfileWorkspace = {
     activeGrid: () => stub,
     activeLinkedProfileId: () => linked,
-    setActiveLinkedProfileId: (id) => {
+    linkedProfileIdOf: () => linked,
+    linkProfile: (_grid, id) => {
       linked = id;
     },
     refreshTabStrip: () => {},
@@ -341,6 +342,87 @@ describe("ProfileManager per-tab (Tabs Phase 2)", () => {
     );
     expect(g.linkedProfileId()).toBe("p1");
     expect(onSuccess).toHaveBeenCalled();
+  });
+});
+
+/**
+ * Two tabs whose active one can be switched mid-action — for the flows that
+ * await (a teardown confirm, a name prompt) before linking the tab.
+ */
+function twoTabs(): {
+  workspace: ProfileWorkspace;
+  tabA: { grid: Grid; applyProfile: ReturnType<typeof vi.fn>; linked: () => string | null };
+  tabB: { linked: () => string | null };
+  activate: (tab: "A" | "B") => void;
+} {
+  const linked = new Map<Grid, string | null>();
+  const makeGrid = (snap: WorkspaceSnapshot) =>
+    ({ snapshot: () => snap, applyProfile: vi.fn(async () => true), liveSessionCount: () => 0 }) as unknown as Grid;
+  const a = makeGrid(snapshot(["dev-a", null]));
+  const b = makeGrid(snapshot(["dev-b", null]));
+  let active = a;
+  const workspace: ProfileWorkspace = {
+    activeGrid: () => active,
+    activeLinkedProfileId: () => linked.get(active) ?? null,
+    linkedProfileIdOf: (grid) => linked.get(grid) ?? null,
+    linkProfile: (grid, id) => {
+      linked.set(grid, id);
+    },
+    refreshTabStrip: () => {},
+    clearProfileLink: () => {},
+    openTab: async () => a,
+  };
+  return {
+    workspace,
+    tabA: {
+      grid: a,
+      applyProfile: (a as unknown as { applyProfile: ReturnType<typeof vi.fn> }).applyProfile,
+      linked: () => linked.get(a) ?? null,
+    },
+    tabB: { linked: () => linked.get(b) ?? null },
+    activate: (tab) => {
+      active = tab === "A" ? a : b;
+    },
+  };
+}
+
+describe("ProfileManager links the tab it acted on", () => {
+  it("a load links the tab it loaded into, even if the user switched tabs during the confirm", async () => {
+    const tabs = twoTabs();
+    vi.mocked(listProfiles).mockResolvedValue({ defaultProfileId: null, profiles: [profile(["dev-1", null])] });
+    const mgr = new ProfileManager({ workspace: tabs.workspace, onError: vi.fn(), onSuccess: vi.fn() });
+    await mgr.init(null);
+    let confirmApply: (ok: boolean) => void = () => {};
+    tabs.tabA.applyProfile.mockImplementationOnce(() => new Promise<boolean>((r) => (confirmApply = r)));
+
+    document.querySelector<HTMLButtonElement>('[data-action="load"]')?.click();
+    await flush();
+    tabs.activate("B"); // Ctrl+Tab while the teardown confirm is open
+    confirmApply(true);
+    await flush();
+
+    expect(tabs.tabA.linked()).toBe("p1");
+    expect(tabs.tabB.linked()).toBeNull();
+  });
+
+  it("Save As saves and links the tab it started on, even if the user switched tabs during the prompt", async () => {
+    const tabs = twoTabs();
+    vi.mocked(listProfiles).mockResolvedValue({ defaultProfileId: null, profiles: [] });
+    vi.mocked(saveProfile).mockImplementation(async (p: Profile) => ({ ...p, id: "new" }));
+    const mgr = new ProfileManager({ workspace: tabs.workspace, onError: vi.fn(), onSuccess: vi.fn() });
+    await mgr.init(null);
+
+    document.querySelector<HTMLButtonElement>('[data-action="save-as"]')?.click();
+    await flush();
+    tabs.activate("B");
+    const input = document.querySelector<HTMLInputElement>(".prompt-dialog .prompt-input");
+    if (input) input.value = "From A";
+    document.querySelector<HTMLButtonElement>('.prompt-dialog [data-action="ok"]')?.click();
+    await flush();
+
+    expect(vi.mocked(saveProfile).mock.calls[0]?.[0].panes).toEqual([{ deviceId: "dev-a" }, { deviceId: null }]);
+    expect(tabs.tabA.linked()).toBe("new");
+    expect(tabs.tabB.linked()).toBeNull();
   });
 });
 

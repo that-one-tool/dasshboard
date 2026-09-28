@@ -224,6 +224,11 @@ impl SerialSessionManager {
         }
     }
 
+    /// Whether this manager owns `session_id` (see `SessionManager::owns`).
+    pub fn owns(&self, session_id: &str) -> bool {
+        self.lock_sessions().contains_key(session_id)
+    }
+
     fn lock_sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, SerialHandle>> {
         self.sessions
             .lock()

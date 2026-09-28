@@ -7,6 +7,10 @@
  *
  * Live state comes from `tunnel_status` events (keyed by `tunnelId`); the panel
  * maps those back to devices so each device row reflects its own tunnel.
+ *
+ * Launch restores what the user last did: a tunnel they started stays started
+ * on the next launch, one they stopped stays stopped. A device with no such
+ * remembered choice follows its `tunnelAutoStart` flag.
  */
 
 import {
@@ -33,9 +37,17 @@ interface DeviceTunnelState {
   forwards: ForwardStatus[];
 }
 
+/** deviceId → whether the user last left its tunnel running (persisted in
+ * `workspace_state.json`). */
+export type TunnelRunState = Record<string, boolean>;
+
 export interface TunnelsPanelOptions {
   onError?: (error: AppError) => void;
   onSuccess?: (message: string) => void;
+  /** The remembered run state to restore on launch. */
+  initialState?: TunnelRunState;
+  /** Fired when the user starts/stops a tunnel, so the caller schedules a save. */
+  onPersist?: () => void;
 }
 
 /** The SSH devices that have at least one forward — the only tunnelable ones. */
@@ -76,6 +88,16 @@ export class TunnelsPanel {
   private readonly byDevice = new Map<string, DeviceTunnelState>();
   /** tunnelId → deviceId, so a `tunnel_status` event routes to the right row. */
   private readonly deviceByTunnel = new Map<string, string>();
+  /** The user's last explicit Start (true) / Stop (false) per device. */
+  private readonly remembered: Map<string, boolean>;
+  /** False until the device list has loaded (pruning before that would drop
+   * every remembered entry). */
+  private devicesLoaded = false;
+  /** Tunnels whose `startTunnel` hasn't returned: the backend may not know the
+   * id yet, so a stop sent now can be a no-op. */
+  private readonly startsInFlight = new Set<string>();
+  /** Stops requested for a tunnel still starting — re-sent once it has. */
+  private readonly stopsPending = new Set<string>();
   private unlisten: UnlistenFn | null = null;
   private readonly container: HTMLElement | null;
   private body: HTMLElement | null = null;
@@ -84,11 +106,15 @@ export class TunnelsPanel {
     // The sidebar card container (mirrors how the device/profile managers bind
     // to their `.device-list` / `.profile-list` sections).
     this.container = document.querySelector<HTMLElement>(".tunnel-list");
+    this.remembered = new Map(Object.entries(options.initialState ?? {}));
   }
 
   async init(): Promise<void> {
     this.buildCard();
-    this.devices = await this.safeListDevices();
+    const devices = await this.safeListDevices();
+    // A failed load is not "no devices": leave the remembered state unpruned.
+    this.devices = devices ?? [];
+    this.devicesLoaded = devices !== null;
     await this.adoptRunningTunnels();
     this.subscribe();
     this.render();
@@ -96,27 +122,74 @@ export class TunnelsPanel {
   }
 
   /**
-   * Start tunnels for devices flagged `tunnelAutoStart` on launch — unless one
-   * is already running (adopted above). Sequential so a burst of failures
-   * surfaces as individual toasts rather than all at once.
+   * Start the tunnels that should run at launch (see `shouldRunAtLaunch`) —
+   * unless one is already running (adopted above). Sequential so a burst of
+   * failures surfaces as individual toasts rather than all at once.
    */
   private async autoStartFlagged(): Promise<void> {
     for (const device of tunnelableDevices(this.devices)) {
-      if (device.tunnelAutoStart && !this.byDevice.has(device.id)) {
+      if (this.shouldRunAtLaunch(device) && !this.byDevice.has(device.id)) {
         await this.handleStart(device.id);
       }
     }
   }
 
+  /** The user's remembered choice, else the device's auto-start flag. */
+  private shouldRunAtLaunch(device: SshDevice): boolean {
+    return this.remembered.get(device.id) ?? device.tunnelAutoStart;
+  }
+
+  /** The remembered run state to persist, limited to devices that still have
+   * forwards; `undefined` when there is nothing to remember. */
+  layoutState(): TunnelRunState | undefined {
+    if (!this.devicesLoaded) return this.options.initialState;
+    const ids = new Set(tunnelableDevices(this.devices).map((d) => d.id));
+    const kept = [...this.remembered].filter(([id]) => ids.has(id));
+    return kept.length > 0 ? Object.fromEntries(kept) : undefined;
+  }
+
+  /** Record an explicit Start/Stop and ask the caller to save it. */
+  private remember(deviceId: string, running: boolean): void {
+    this.remembered.set(deviceId, running);
+    this.options.onPersist?.();
+  }
+
   /** Refresh the device list (called when devices are added/edited/deleted). */
   setDevices(devices: Device[]): void {
     this.devices = devices;
+    this.devicesLoaded = true;
+    this.stopOrphans();
     this.render();
   }
 
-  /** Re-fetch devices from the backend and re-render (device CRUD happened). */
+  /** Stop every running tunnel whose device was deleted or no longer has
+   * forwards — its row is gone, so nothing else could ever stop it. */
+  private stopOrphans(): void {
+    for (const [deviceId, state] of this.byDevice) {
+      if (!this.isTunnelable(deviceId)) {
+        void this.requestStop(state.tunnelId);
+      }
+    }
+  }
+
+  private isTunnelable(deviceId: string): boolean {
+    return tunnelableDevices(this.devices).some((d) => d.id === deviceId);
+  }
+
+  private async requestStop(tunnelId: string): Promise<void> {
+    if (this.startsInFlight.has(tunnelId)) this.stopsPending.add(tunnelId);
+    try {
+      await stopTunnel(tunnelId);
+    } catch (err) {
+      this.options.onError?.(err as AppError);
+    }
+  }
+
+  /** Re-fetch devices from the backend and re-render (device CRUD happened).
+   * A failed fetch changes nothing — it must not read as "every device gone". */
   async refresh(): Promise<void> {
-    this.setDevices(await this.safeListDevices());
+    const devices = await this.safeListDevices();
+    if (devices) this.setDevices(devices);
   }
 
   /** Rebuild the card shell + rows in the current locale (language change). */
@@ -131,12 +204,13 @@ export class TunnelsPanel {
     this.unlisten = null;
   }
 
-  private async safeListDevices(): Promise<Device[]> {
+  /** The device list, or `null` when it couldn't be loaded (error toasted). */
+  private async safeListDevices(): Promise<Device[] | null> {
     try {
       return await listDevices();
     } catch (err) {
       this.options.onError?.(err as AppError);
-      return [];
+      return null;
     }
   }
 
@@ -187,39 +261,51 @@ export class TunnelsPanel {
     this.render();
   }
 
-  private async handleStart(deviceId: string): Promise<void> {
+  /**
+   * Start a device's tunnel. `manual` marks a user click, remembered as "keep
+   * running" once the backend accepted it. A start the backend rejects outright
+   * is a configuration problem (not a flaky network), so it is remembered as
+   * stopped rather than retried — and failing — on every launch.
+   */
+  private async handleStart(deviceId: string, manual = false): Promise<void> {
+    // The id is chosen here so status events (which can beat the command's
+    // return) route to this row, and Stop works while the start is in flight.
+    const tunnelId = crypto.randomUUID();
+    this.deviceByTunnel.set(tunnelId, deviceId);
     // Optimistically mark connecting so the row reflects the click immediately.
-    this.byDevice.set(deviceId, {
-      tunnelId: "",
-      status: "connecting",
-      forwards: [],
-    });
+    this.byDevice.set(deviceId, { tunnelId, status: "connecting", forwards: [] });
     this.render();
+    this.startsInFlight.add(tunnelId);
     try {
-      const tunnelId = await startTunnel(deviceId);
-      this.deviceByTunnel.set(tunnelId, deviceId);
-      const current = this.byDevice.get(deviceId);
-      this.byDevice.set(deviceId, {
-        tunnelId,
-        status: current?.status ?? "connecting",
-        forwards: current?.forwards ?? [],
-      });
-      this.render();
+      await startTunnel(deviceId, tunnelId);
+      this.startsInFlight.delete(tunnelId);
+      this.afterStarted(deviceId, tunnelId, manual);
     } catch (err) {
+      this.startsInFlight.delete(tunnelId);
+      this.stopsPending.delete(tunnelId);
+      this.deviceByTunnel.delete(tunnelId);
       this.byDevice.delete(deviceId);
+      this.remember(deviceId, false);
       this.render();
       this.options.onError?.(err as AppError);
     }
   }
 
+  /** The backend has the tunnel now: honour a Stop clicked meanwhile, or a
+   * device deleted meanwhile; otherwise remember a manual start. */
+  private afterStarted(deviceId: string, tunnelId: string, manual: boolean): void {
+    const stopWanted = this.stopsPending.delete(tunnelId);
+    if (stopWanted || !this.isTunnelable(deviceId)) {
+      void this.requestStop(tunnelId);
+      return;
+    }
+    if (manual) this.remember(deviceId, true);
+  }
+
   private async handleStop(deviceId: string): Promise<void> {
     const state = this.byDevice.get(deviceId);
-    if (!state || state.tunnelId === "") return;
-    try {
-      await stopTunnel(state.tunnelId);
-    } catch (err) {
-      this.options.onError?.(err as AppError);
-    }
+    if (!state) return;
+    await this.requestStop(state.tunnelId);
   }
 
   private async copyEndpoint(text: string): Promise<void> {
@@ -294,7 +380,12 @@ export class TunnelsPanel {
       running ? t("tunnels.stop") : t("tunnels.start"),
     );
     action.addEventListener("click", () => {
-      void (running ? this.handleStop(device.id) : this.handleStart(device.id));
+      if (running) {
+        this.remember(device.id, false);
+        void this.handleStop(device.id);
+      } else {
+        void this.handleStart(device.id, true);
+      }
     });
     return action;
   }

@@ -39,7 +39,7 @@ use russh::{ChannelMsg, Pty};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -128,7 +128,13 @@ const MAX_AGENT_CHANNELS: usize = 8;
 pub enum SessionStatus {
     Connecting,
     Connected,
+    /// Ended by the user, or the connection was lost (auto-reconnect applies).
     Disconnected,
+    /// The shell ended on its own with exit code 0 (`exit`, `logout`, ...): the
+    /// frontend must not auto-reconnect it. Any other end — a failure code, a
+    /// kill by signal (e.g. a reboot), no exit status at all — is
+    /// `Disconnected`.
+    Exited,
     Error,
 }
 
@@ -138,7 +144,18 @@ impl SessionStatus {
             SessionStatus::Connecting => "connecting",
             SessionStatus::Connected => "connected",
             SessionStatus::Disconnected => "disconnected",
+            SessionStatus::Exited => "exited",
             SessionStatus::Error => "error",
+        }
+    }
+
+    /// The final status of a shell that ended on its own, from its exit code
+    /// (`None` when none was reported): only a clean exit is `Exited`.
+    pub(crate) fn for_shell_exit(exit_code: Option<u32>) -> SessionStatus {
+        if exit_code == Some(0) {
+            SessionStatus::Exited
+        } else {
+            SessionStatus::Disconnected
         }
     }
 }
@@ -211,6 +228,10 @@ pub trait SessionSink: Send + Sync {
     /// An unknown/changed host key needs the user's decision →
     /// `host_key_prompt` event.
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload);
+    /// The backend stopped waiting on a prompt (answered, timed out, or its
+    /// connection was torn down) → `host_key_prompt_closed` event, so the
+    /// dialog can drop a prompt that can no longer be answered.
+    fn on_host_key_prompt_closed(&self, _prompt_id: &str) {}
 }
 
 /// The connection-shaped parameters for a session (as opposed to bookkeeping
@@ -298,6 +319,19 @@ impl Drop for PromptGuard {
     }
 }
 
+/// Announces a prompt as closed when dropped — on every exit path of the wait,
+/// including the handshake future being dropped mid-prompt.
+struct PromptClosedNotice {
+    sink: Arc<dyn SessionSink>,
+    prompt_id: String,
+}
+
+impl Drop for PromptClosedNotice {
+    fn drop(&mut self) {
+        self.sink.on_host_key_prompt_closed(&self.prompt_id);
+    }
+}
+
 impl PromptRegistry {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, oneshot::Sender<bool>>> {
         self.pending
@@ -361,7 +395,18 @@ pub(crate) struct SshHandler {
     /// `MAX_AGENT_CHANNELS`). Shared per handler; a permit is held for the life
     /// of each proxy task.
     agent_channel_limit: Arc<Semaphore>,
+    /// Closes when whoever started the handshake gives up on it. russh runs
+    /// `check_server_key` on its own task, so dropping the handshake future
+    /// alone would leave a host-key prompt waiting out its full timeout.
+    owner_gone: watch::Receiver<()>,
+    /// The sending half, until taken by `take_owner_token`. Kept here otherwise,
+    /// so an untaken token never reads as "gone".
+    owner_token: Option<HandshakeOwner>,
 }
+
+/// Held by the code that awaits a handshake: dropping it tells the handler to
+/// stop waiting on a pending host-key prompt (treated as a reject).
+pub(crate) struct HandshakeOwner(#[allow(dead_code)] watch::Sender<()>);
 
 impl SshHandler {
     /// Construct a handler. Used by `SessionManager::build_handler` and, for
@@ -381,6 +426,7 @@ impl SshHandler {
         keepalive: KeepaliveConfig,
         forward_agent: bool,
     ) -> Self {
+        let (owner_tx, owner_gone) = watch::channel(());
         SshHandler {
             sink,
             known_hosts,
@@ -391,7 +437,15 @@ impl SshHandler {
             keepalive,
             forward_agent,
             agent_channel_limit: Arc::new(Semaphore::new(MAX_AGENT_CHANNELS)),
+            owner_gone,
+            owner_token: Some(HandshakeOwner(owner_tx)),
         }
+    }
+
+    /// Take the token whose drop abandons this handler's pending host-key
+    /// prompt. Hold it for as long as the handshake is wanted.
+    pub(crate) fn take_owner_token(&mut self) -> Option<HandshakeOwner> {
+        self.owner_token.take()
     }
 
     /// Emit the host-key prompt event and await the user's decision, bounded
@@ -408,6 +462,10 @@ impl SshHandler {
     ) -> bool {
         let prompt_id = Uuid::new_v4().to_string();
         let (rx, _guard) = self.prompts.register(prompt_id.clone());
+        let _closed_notice = PromptClosedNotice {
+            sink: Arc::clone(&self.sink),
+            prompt_id: prompt_id.clone(),
+        };
 
         self.sink.on_host_key_prompt(HostKeyPromptPayload {
             prompt_id,
@@ -418,10 +476,15 @@ impl SshHandler {
             changed,
         });
 
-        match timeout(self.prompt_timeout, rx).await {
-            Ok(Ok(accept)) => accept,
-            Ok(Err(_)) => false, // sender dropped => treat as reject
-            Err(_) => false,     // timed out => reject (SPEC §6)
+        let mut owner_gone = self.owner_gone.clone();
+        tokio::select! {
+            decision = timeout(self.prompt_timeout, rx) => match decision {
+                Ok(Ok(accept)) => accept,
+                Ok(Err(_)) => false, // sender dropped => treat as reject
+                Err(_) => false,     // timed out => reject (SPEC §6)
+            },
+            // The session was abandoned mid-prompt => reject.
+            _ = owner_gone.changed() => false,
         }
     }
 
@@ -831,7 +894,7 @@ async fn run_shell(
     rows: u32,
     forward_agent: bool,
     connect_snippet: Option<String>,
-) -> Result<(), AppError> {
+) -> Result<SessionStatus, AppError> {
     let mut channel = handle
         .channel_open_session()
         .await
@@ -872,58 +935,67 @@ async fn run_shell(
     // `KeepaliveConfig`): it pings an idle link and drops the connection after
     // `keepalive_max` unanswered pings, which surfaces here as the channel
     // closing — so the pump loop only needs the data and control arms.
+    // Reported by the server just before it closes the channel (after EOF).
+    let mut exit_code = None;
     loop {
-        let keep_running = tokio::select! {
-            msg = channel.wait() => handle_channel_msg(msg, &sink),
+        let end = tokio::select! {
+            msg = channel.wait() => handle_channel_msg(msg, &sink, &mut exit_code),
             ctrl = control_rx.recv() => handle_control(ctrl, &mut channel).await,
         };
-        if !keep_running {
-            break;
+        if let Some(status) = end {
+            return Ok(status);
         }
     }
-
-    Ok(())
 }
 
-/// Route one message off the server channel: stream data to the sink, or
-/// signal the pump loop to stop on EOF/close/transport-end. Returns whether
-/// the loop should keep running.
-fn handle_channel_msg(msg: Option<ChannelMsg>, sink: &Arc<dyn SessionSink>) -> bool {
+/// Route one message off the server channel: stream data to the sink, note
+/// the shell's exit code, or end the pump loop. Returns the session's final
+/// status once it is over.
+fn handle_channel_msg(
+    msg: Option<ChannelMsg>,
+    sink: &Arc<dyn SessionSink>,
+    exit_code: &mut Option<u32>,
+) -> Option<SessionStatus> {
     match msg {
-        Some(ChannelMsg::Data { ref data }) => {
+        Some(ChannelMsg::Data { ref data }) | Some(ChannelMsg::ExtendedData { ref data, .. }) => {
             sink.on_data(data);
-            true
+            None
         }
-        Some(ChannelMsg::ExtendedData { ref data, .. }) => {
-            sink.on_data(data);
-            true
+        Some(ChannelMsg::ExitStatus { exit_status }) => {
+            *exit_code = Some(exit_status);
+            None
         }
-        // Remote closed the channel (shell exited) or the transport ended:
-        // clean disconnect.
-        Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => false,
-        // Ignore the exit status itself; the following Close ends us.
-        _ => true,
+        // The server closed the channel: the shell ended. OpenSSH sends the exit
+        // status after EOF, so only Close (not EOF) decides.
+        Some(ChannelMsg::Close) => Some(SessionStatus::for_shell_exit(*exit_code)),
+        // The transport ended under us: a lost connection.
+        None => Some(SessionStatus::Disconnected),
+        // EOF, an exit signal, etc.: wait for the Close.
+        _ => None,
     }
 }
 
 /// Apply one control message (keystrokes, resize, or disconnect) to the
-/// channel. Returns whether the pump loop should keep running.
+/// channel. Returns the session's final status once it is over.
 async fn handle_control(
     ctrl: Option<SessionControl>,
     channel: &mut russh::Channel<client::Msg>,
-) -> bool {
+) -> Option<SessionStatus> {
     match ctrl {
-        Some(SessionControl::Write(bytes)) => channel.data(&bytes[..]).await.is_ok(),
+        Some(SessionControl::Write(bytes)) => match channel.data(&bytes[..]).await {
+            Ok(()) => None,
+            Err(_) => Some(SessionStatus::Disconnected),
+        },
         Some(SessionControl::Resize { cols, rows }) => {
             // A failed window-change isn't fatal to the session.
             let _ = channel.window_change(cols, rows, 0, 0).await;
-            true
+            None
         }
         // Explicit disconnect, or the manager dropped the handle.
         Some(SessionControl::Disconnect) | None => {
             let _ = channel.eof().await;
             let _ = channel.close().await;
-            false
+            Some(SessionStatus::Disconnected)
         }
     }
 }
@@ -942,26 +1014,30 @@ async fn wait_for_disconnect(rx: &mut mpsc::Receiver<SessionControl>) {
 }
 
 /// The full lifecycle of one session task: connect+auth (racing an early
-/// disconnect), then shell. Returns `Ok(())` for any clean end and `Err` for a
-/// failure that should surface as `session_status: error`. `overall_timeout`
+/// disconnect), then shell. Returns the final status for a clean end
+/// (`Disconnected` or `Exited`) and `Err` for a failure that should surface as
+/// `session_status: error`. `overall_timeout`
 /// is the B3 backstop covering the whole handshake+auth flow — see
 /// `establish_with_deadline`.
 async fn run_session(
     params: ConnectParams,
-    handler: SshHandler,
-    jump_handler: Option<SshHandler>,
+    mut handler: SshHandler,
+    mut jump_handler: Option<SshHandler>,
     connect_timeout: Duration,
     overall_timeout: Duration,
     sink: Arc<dyn SessionSink>,
     mut control_rx: mpsc::Receiver<SessionControl>,
-) -> Result<(), AppError> {
+) -> Result<SessionStatus, AppError> {
+    // Abandons a pending host-key prompt if this returns mid-handshake.
+    let _owner = handler.take_owner_token();
+    let _jump_owner = jump_handler.as_mut().and_then(SshHandler::take_owner_token);
     let (handle, _jump_keepalive) = tokio::select! {
         biased;
         // If a disconnect arrives during the handshake, abort: dropping the
         // `establish_target` future drops the handler(s) (and any PromptGuard
         // within) plus any jump handle, so a pending host-key prompt and the
         // jump connection are cleaned up too.
-        _ = wait_for_disconnect(&mut control_rx) => return Ok(()),
+        _ = wait_for_disconnect(&mut control_rx) => return Ok(SessionStatus::Disconnected),
         result = establish_target(
             &params,
             handler,
@@ -1080,17 +1156,16 @@ impl SessionManager {
         keepalive: KeepaliveConfig,
         forward_agent: bool,
     ) -> SshHandler {
-        SshHandler {
+        SshHandler::new(
             sink,
-            known_hosts: Arc::clone(&self.known_hosts),
-            prompts: Arc::clone(&self.prompts),
+            Arc::clone(&self.known_hosts),
+            Arc::clone(&self.prompts),
             host,
             port,
-            prompt_timeout: self.prompt_timeout,
+            self.prompt_timeout,
             keepalive,
             forward_agent,
-            agent_channel_limit: Arc::new(Semaphore::new(MAX_AGENT_CHANNELS)),
-        }
+        )
     }
 
     /// Spawn a live shell session. Inserts the handle synchronously (so the map
@@ -1149,7 +1224,7 @@ impl SessionManager {
             .await;
 
             match result {
-                Ok(()) => sink.on_status(SessionStatus::Disconnected, None),
+                Ok(status) => sink.on_status(status, None),
                 // AppError messages are always secret-free (see error.rs).
                 Err(err) => sink.on_status(SessionStatus::Error, Some(err.to_string())),
             }
@@ -1249,6 +1324,23 @@ mod tests {
         assert_eq!(SessionStatus::Connected.as_str(), "connected");
         assert_eq!(SessionStatus::Disconnected.as_str(), "disconnected");
         assert_eq!(SessionStatus::Error.as_str(), "error");
+        assert_eq!(SessionStatus::Exited.as_str(), "exited");
+    }
+
+    #[test]
+    fn only_a_clean_shell_exit_is_exited() {
+        assert_eq!(
+            SessionStatus::for_shell_exit(Some(0)),
+            SessionStatus::Exited
+        );
+        assert_eq!(
+            SessionStatus::for_shell_exit(Some(1)),
+            SessionStatus::Disconnected
+        );
+        assert_eq!(
+            SessionStatus::for_shell_exit(None),
+            SessionStatus::Disconnected
+        );
     }
 
     #[test]

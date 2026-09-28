@@ -31,7 +31,8 @@ vi.mock("./ipc", () => ({
   // Forwarding closure (not `connectMock` directly): the mock factory is
   // hoisted above the `const`, so referencing it here would hit the TDZ; the
   // closure defers access until the mock is actually called.
-  connect: (deviceId: string, cols: number, rows: number, ch: unknown) =>
+  // The pane-chosen session id is dropped: these tests key off the device.
+  connect: (_sessionId: string, deviceId: string, cols: number, rows: number, ch: unknown) =>
     connectMock(deviceId, cols, rows, ch),
   disconnect: vi.fn(async () => {}),
   writeStdin: vi.fn(async () => {}),

@@ -10,13 +10,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { UpdateInfo } from "../ipc";
 import type { UpdateController } from "./updateController";
-import { DOWNLOAD_PAGE_URL, mountUpdateSection } from "./updateSection";
+import { DOWNLOAD_PAGE_URL, RELEASES_URL, mountUpdateSection } from "./updateSection";
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 class FakeUpdates {
 	found: UpdateInfo | null = null;
 	installing = false;
+	failed = false;
 	listeners = new Set<() => void>();
 	check = vi.fn(async (): Promise<UpdateInfo | null> => this.found);
 	install = vi.fn(async (): Promise<boolean> => false);
@@ -25,6 +26,9 @@ class FakeUpdates {
 	}
 	isInstalling(): boolean {
 		return this.installing;
+	}
+	installFailed(): boolean {
+		return this.failed;
 	}
 	subscribe(listener: () => void): () => void {
 		this.listeners.add(listener);
@@ -58,6 +62,7 @@ describe("mountUpdateSection", () => {
 		expect(q('[data-update="check"]').hidden).toBe(false);
 		expect(q('[data-update="install"]').hidden).toBe(true);
 		expect(q('[data-update="download"]').hidden).toBe(true);
+		expect(q('[data-update="releases"]').hidden).toBe(true);
 		expect(q(".about-update-status").textContent).toBe("");
 	});
 
@@ -79,22 +84,42 @@ describe("mountUpdateSection", () => {
 		expect(q<HTMLButtonElement>('[data-update="check"]').disabled).toBe(false);
 	});
 
-	it("hides a stale Install button when a re-check finds nothing", async () => {
+	it("replaces Check with Install & restart once a release is known", () => {
 		const fake = new FakeUpdates();
 		fake.found = installable;
 		mount(fake);
-		fake.check.mockImplementation(async () => {
-			fake.found = null;
-			fake.emit();
-			return null;
-		});
+		expect(q('[data-update="install"]').hidden).toBe(false);
+		expect(q('[data-update="check"]').hidden).toBe(true);
+	});
 
-		q<HTMLButtonElement>('[data-update="check"]').click();
-		await flush();
+	it("after a failed install, offers Check again and a manual download from the releases page", () => {
+		const fake = new FakeUpdates();
+		fake.found = installable;
+		mount(fake);
+		expect(q('[data-update="releases"]').hidden).toBe(true);
+
+		fake.failed = true;
+		fake.emit();
+
+		expect(q('[data-update="check"]').hidden).toBe(false);
+		expect(q('[data-update="install"]').hidden).toBe(false); // retry stays possible
+		const link = q<HTMLAnchorElement>('[data-update="releases"]');
+		expect(link.hidden).toBe(false);
+		expect(link.getAttribute("href")).toBe(RELEASES_URL);
+		expect(link.getAttribute("target")).toBe("_blank");
+		expect(RELEASES_URL).toBe("https://web.crabnebula.cloud/that-one-tool/dasshboard/releases");
+	});
+
+	it("brings Check back when the known release goes away", () => {
+		const fake = new FakeUpdates();
+		fake.found = installable;
+		mount(fake);
+		fake.found = null;
+		fake.emit();
 
 		expect(q('[data-update="install"]').hidden).toBe(true);
 		expect(q(".about-update-notes").hidden).toBe(true);
-		expect(q(".about-update-status").textContent).toBe("You're up to date.");
+		expect(q('[data-update="check"]').hidden).toBe(false);
 	});
 
 	it("offers a download link instead of install for a notify-only build", () => {
@@ -107,6 +132,7 @@ describe("mountUpdateSection", () => {
 		expect(link.getAttribute("href")).toBe(DOWNLOAD_PAGE_URL);
 		expect(link.getAttribute("target")).toBe("_blank");
 		expect(q(".about-update-notes").hidden).toBe(true);
+		expect(q('[data-update="check"]').hidden).toBe(true);
 	});
 
 	it("shows the error when a check fails", async () => {
@@ -116,19 +142,6 @@ describe("mountUpdateSection", () => {
 		q<HTMLButtonElement>('[data-update="check"]').click();
 		await flush();
 		expect(q(".about-update-status").textContent).toBe("Couldn't check for updates: offline");
-	});
-
-	it("keeps a failed re-check's error visible when a release is already known", async () => {
-		const fake = new FakeUpdates();
-		fake.found = installable;
-		fake.check.mockRejectedValue({ code: "Update", message: "offline" });
-		mount(fake);
-
-		q<HTMLButtonElement>('[data-update="check"]').click();
-		await flush();
-
-		expect(q(".about-update-status").textContent).toBe("Couldn't check for updates: offline");
-		expect(q('[data-update="install"]').hidden).toBe(false);
 	});
 
 	it("renders the installing state, including when reopened mid-install", () => {

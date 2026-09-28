@@ -112,6 +112,7 @@ async function initApp(): Promise<void> {
 	let notifySftpIdleChange = (): void => {};
 	let sftpLayoutState = (): SftpPanelState | undefined => undefined;
 	let sidebarWidth = (): number | undefined => undefined;
+	let tunnelState = (): Record<string, boolean> | undefined => undefined;
 	const tabs = new TabManager(paneRoot, {
 		grid: {
 			onError: (message) => showToast(t("error.prefix", { message }), "error"),
@@ -130,6 +131,8 @@ async function initApp(): Promise<void> {
 		getSftpState: () => sftpLayoutState(),
 		// …and the resized left menu's width.
 		getSidebarWidth: () => sidebarWidth(),
+		// …and which tunnels the user left running or stopped.
+		getTunnelState: () => tunnelState(),
 		// The app-action buttons move into the tab-strip row (no separate header).
 		headerActions: document.querySelector<HTMLElement>(".header-actions"),
 	});
@@ -184,7 +187,8 @@ async function initApp(): Promise<void> {
 		workspace: {
 			activeGrid: () => tabs.activeGrid(),
 			activeLinkedProfileId: () => tabs.activeLinkedProfileId(),
-			setActiveLinkedProfileId: (id) => tabs.setActiveLinkedProfileId(id),
+			linkedProfileIdOf: (grid) => tabs.linkedProfileIdOf(grid),
+			linkProfile: (grid, id) => tabs.setLinkedProfileId(grid, id),
 			refreshTabStrip: () => tabs.refreshStrip(),
 			clearProfileLink: (id) => tabs.clearProfileLink(id),
 			openTab: (opts) => tabs.openTab(opts),
@@ -208,7 +212,10 @@ async function initApp(): Promise<void> {
 	const tunnelsPanel = initTunnelsPanel({
 		onError: (error: AppError) => showToast(t("error.prefix", { message: error.message }), "error"),
 		onSuccess: (message: string) => showToast(message, "success"),
+		initialState: restoredWorkspace.tunnels,
+		onPersist: () => tabs.scheduleSave(),
 	});
+	tunnelState = () => tunnelsPanel.layoutState();
 
 	// Files (SFTP) panel: a sidebar card listing SSH devices plus a persistent,
 	// resizable browser panel docked to the right of the grid. Independent of the

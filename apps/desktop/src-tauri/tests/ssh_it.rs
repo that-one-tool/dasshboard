@@ -210,10 +210,29 @@ impl server::Handler for TestServerHandler {
         // echoing them back here would loop the target's SSH handshake into the
         // client's stream and corrupt it. Only the plain (target) server echoes,
         // standing in for a shell's tty.
-        if !self.bridge_direct_tcpip {
-            session.data(channel, data.to_vec())?;
+        if self.bridge_direct_tcpip {
+            return Ok(());
         }
+        // Standing in for a shell's `exit [code]`: end the channel the way
+        // OpenSSH does — EOF, then the exit status, then close.
+        if let Some(code) = exit_code_of(data) {
+            session.eof(channel)?;
+            session.exit_status_request(channel, code)?;
+            session.close(channel)?;
+            return Ok(());
+        }
+        session.data(channel, data.to_vec())?;
         Ok(())
+    }
+}
+
+/// The exit code a test shell ends with: `exit\n` → 0, `exit N\n` → N.
+fn exit_code_of(data: &[u8]) -> Option<u32> {
+    let line = std::str::from_utf8(data).ok()?.strip_suffix('\n')?;
+    match line.strip_prefix("exit") {
+        Some("") => Some(0),
+        Some(rest) => rest.trim().parse().ok(),
+        None => None,
     }
 }
 
@@ -230,7 +249,13 @@ async fn spawn_jump_server(password: &str) -> u16 {
 }
 
 async fn spawn_configured_server(password: &str, bridge_direct_tcpip: bool) -> u16 {
-    spawn_full_server(password, bridge_direct_tcpip, None).await
+    spawn_full_server(password, bridge_direct_tcpip, None, Duration::from_secs(30)).await
+}
+
+/// A server that drops any connection idle for `inactivity` — a stand-in for a
+/// server that goes away on its own (reboot, network loss).
+async fn spawn_dropping_server(password: &str, inactivity: Duration) -> u16 {
+    spawn_full_server(password, false, None, inactivity).await
 }
 
 /// Spawn a server that opens an agent-forward channel to the client on shell
@@ -239,7 +264,7 @@ async fn spawn_configured_server(password: &str, bridge_direct_tcpip: bool) -> u
 /// empty — the agent-forwarding tests distinguish accept from reject on that.
 async fn spawn_agent_probe_server(password: &str) -> (u16, mpsc::UnboundedReceiver<bool>) {
     let (tx, rx) = mpsc::unbounded_channel();
-    let port = spawn_full_server(password, false, Some(tx)).await;
+    let port = spawn_full_server(password, false, Some(tx), Duration::from_secs(30)).await;
     (port, rx)
 }
 
@@ -247,6 +272,7 @@ async fn spawn_full_server(
     password: &str,
     bridge_direct_tcpip: bool,
     agent_probe: Option<mpsc::UnboundedSender<bool>>,
+    inactivity: Duration,
 ) -> u16 {
     let host_key = PrivateKey::from_openssh(TEST_HOST_KEY).expect("valid test host key");
     let config = Arc::new(server::Config {
@@ -254,7 +280,7 @@ async fn spawn_full_server(
         // Keep wrong-password rejections snappy in tests.
         auth_rejection_time: Duration::from_millis(10),
         auth_rejection_time_initial: Some(Duration::ZERO),
-        inactivity_timeout: Some(Duration::from_secs(30)),
+        inactivity_timeout: Some(inactivity),
         ..Default::default()
     });
 
@@ -285,6 +311,7 @@ struct TestSink {
     data_tx: mpsc::UnboundedSender<Vec<u8>>,
     status_tx: mpsc::UnboundedSender<(SessionStatus, Option<String>)>,
     prompt_tx: mpsc::UnboundedSender<HostKeyPromptPayload>,
+    prompt_closed_tx: mpsc::UnboundedSender<String>,
 }
 
 impl SessionSink for TestSink {
@@ -297,22 +324,28 @@ impl SessionSink for TestSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.prompt_tx.send(payload);
     }
+    fn on_host_key_prompt_closed(&self, prompt_id: &str) {
+        let _ = self.prompt_closed_tx.send(prompt_id.to_string());
+    }
 }
 
 struct SinkChannels {
     data_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     status_rx: mpsc::UnboundedReceiver<(SessionStatus, Option<String>)>,
     prompt_rx: mpsc::UnboundedReceiver<HostKeyPromptPayload>,
+    prompt_closed_rx: mpsc::UnboundedReceiver<String>,
 }
 
 fn new_sink() -> (Arc<dyn SessionSink>, SinkChannels) {
     let (data_tx, data_rx) = mpsc::unbounded_channel();
     let (status_tx, status_rx) = mpsc::unbounded_channel();
     let (prompt_tx, prompt_rx) = mpsc::unbounded_channel();
+    let (prompt_closed_tx, prompt_closed_rx) = mpsc::unbounded_channel();
     let sink: Arc<dyn SessionSink> = Arc::new(TestSink {
         data_tx,
         status_tx,
         prompt_tx,
+        prompt_closed_tx,
     });
     (
         sink,
@@ -320,6 +353,7 @@ fn new_sink() -> (Arc<dyn SessionSink>, SinkChannels) {
             data_rx,
             status_rx,
             prompt_rx,
+            prompt_closed_rx,
         },
     )
 }
@@ -569,6 +603,42 @@ async fn peer_accepts_tcp_but_never_speaks_ssh_times_out() {
 /* ------------------------------------------------------------------------- *
  * Live session — PTY echo + cleanup
  * ------------------------------------------------------------------------- */
+
+/// Spawn a session, wait for Connected, type `line`, and return the final status.
+async fn final_status_after_typing(line: &[u8]) -> SessionStatus {
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_test_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session(&manager, "s1", port, sink);
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+
+    manager.write_stdin("s1", line.to_vec()).await;
+    await_settled(&mut chans.status_rx).await.0
+}
+
+/// Not `Disconnected`: the frontend must not auto-reconnect a shell the user
+/// ended themselves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shell_that_exits_cleanly_reports_exited() {
+    assert_eq!(
+        final_status_after_typing(b"exit\n").await,
+        SessionStatus::Exited
+    );
+}
+
+/// A shell ending with a failure code (or killed, e.g. on reboot) isn't a
+/// deliberate logout: it stays `Disconnected`, so auto-reconnect applies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shell_that_exits_with_a_failure_code_reports_disconnected() {
+    assert_eq!(
+        final_status_after_typing(b"exit 1\n").await,
+        SessionStatus::Disconnected
+    );
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn echo_through_pty_and_clean_disconnect() {
@@ -1078,6 +1148,29 @@ async fn disconnect_all_closes_every_session() {
 /// `PromptGuard` cleans the registry) and the task must remove its own map
 /// entry — i.e. the session settles well under the prompt timeout and
 /// `session_count()` returns to 0.
+/// A prompt the backend stops waiting on (session torn down, timeout) must be
+/// announced as closed, so the frontend dialog can drop it instead of offering
+/// a Trust button that no longer does anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_abandoned_host_key_prompt_is_announced_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let port = spawn_test_server(TEST_PASSWORD).await;
+
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session(&manager, "s1", port, sink);
+    let prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
+        .await
+        .expect("a host_key_prompt");
+
+    manager.disconnect("s1").await;
+
+    let closed = recv_timeout(&mut chans.prompt_closed_rx, Duration::from_secs(5))
+        .await
+        .expect("a prompt-closed notice");
+    assert_eq!(closed, prompt.prompt_id);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn disconnect_while_host_key_prompt_pending_cleans_up() {
     let dir = tempfile::tempdir().unwrap();
@@ -1404,6 +1497,45 @@ async fn free_local_port() -> u16 {
 /// a `direct-tcpip` channel; stopping it releases the listener and leaves no
 /// tracked tunnel. The in-process server echoes channel data, so writing to the
 /// local port and reading it back proves the whole forward path works.
+/// With keepalive off nothing probes the link, but a transport the server
+/// closed must still end the tunnel (as an error) instead of showing Listening.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tunnel_reports_a_lost_connection_without_keepalive() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_dropping_server(TEST_PASSWORD, Duration::from_millis(300)).await;
+    seed_trusted(dir.path(), port);
+    let manager = tunnel_manager_with(dir.path());
+    let local_port = free_local_port().await;
+
+    let (sink, mut chans) = new_tunnel_sink();
+    manager.spawn_tunnel(
+        "t1".to_string(),
+        TunnelParams {
+            device_id: "dev-1".to_string(),
+            host: "127.0.0.1".to_string(),
+            port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            forwards: vec![Forward {
+                id: "f1".to_string(),
+                name: "echo".to_string(),
+                local_addr: "127.0.0.1".to_string(),
+                local_port,
+                remote_host: "127.0.0.1".to_string(),
+                remote_port: 9,
+            }],
+            keepalive: KeepaliveConfig::disabled(),
+        },
+        sink,
+    );
+    await_listening(&mut chans.status_rx).await;
+
+    let (status, _) = recv_timeout(&mut chans.status_rx, Duration::from_secs(5))
+        .await
+        .expect("the tunnel must notice the lost connection");
+    assert_eq!(status, TunnelStatus::Error);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tunnel_forwards_bytes_and_cleans_up() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

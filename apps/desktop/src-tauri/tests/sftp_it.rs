@@ -486,6 +486,12 @@ impl server::Handler for SftpServerHandler {
 /// Bind an ephemeral port, run the SFTP-capable server on it, and return the
 /// port plus the server host key's SHA256 fingerprint (to pre-trust it).
 async fn spawn_sftp_server() -> (u16, String) {
+    spawn_sftp_server_with_inactivity(Duration::from_secs(30)).await
+}
+
+/// Like `spawn_sftp_server`, but the server drops a connection idle for
+/// `inactivity` — a stand-in for a server that goes away on its own.
+async fn spawn_sftp_server_with_inactivity(inactivity: Duration) -> (u16, String) {
     let host_key = PrivateKey::from_openssh(TEST_HOST_KEY).expect("valid test host key");
     let fingerprint = host_key
         .public_key()
@@ -496,7 +502,7 @@ async fn spawn_sftp_server() -> (u16, String) {
         keys: vec![host_key],
         auth_rejection_time: Duration::from_millis(10),
         auth_rejection_time_initial: Some(Duration::ZERO),
-        inactivity_timeout: Some(Duration::from_secs(30)),
+        inactivity_timeout: Some(inactivity),
         ..Default::default()
     });
 
@@ -586,6 +592,24 @@ async fn connect_resolves_home_and_lists_empty_root() {
 
     manager.disconnect("dev-1").await;
     assert_eq!(manager.connection_count(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_the_server_dropped_is_not_reported_connected() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server_with_inactivity(Duration::from_millis(300)).await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+    assert_eq!(manager.connected_devices(), vec!["dev-1".to_string()]);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !manager.connected_devices().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a server-dropped connection must stop being reported as connected"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -115,6 +115,8 @@ pub trait TunnelSink: Send + Sync {
     /// An unknown/changed host key needs the user's decision → `host_key_prompt`
     /// event (the same event a shell session raises; the dialog is shared).
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload);
+    /// The prompt can no longer be answered → `host_key_prompt_closed` event.
+    fn on_host_key_prompt_closed(&self, _prompt_id: &str) {}
 }
 
 /// Adapts a [`TunnelSink`] to the [`SessionSink`] that [`SshHandler`] requires
@@ -128,6 +130,9 @@ impl SessionSink for HandshakeSink {
     fn on_status(&self, _status: SessionStatus, _message: Option<String>) {}
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         self.0.on_host_key_prompt(payload);
+    }
+    fn on_host_key_prompt_closed(&self, prompt_id: &str) {
+        self.0.on_host_key_prompt_closed(prompt_id);
     }
 }
 
@@ -228,6 +233,11 @@ impl TunnelManager {
                 device_id: handle.device_id.clone(),
             })
             .collect()
+    }
+
+    /// Whether a live tunnel has this id.
+    pub fn owns(&self, tunnel_id: &str) -> bool {
+        self.lock_tunnels().contains_key(tunnel_id)
     }
 
     fn lock_tunnels(&self) -> std::sync::MutexGuard<'_, HashMap<String, TunnelHandle>> {
@@ -338,12 +348,14 @@ impl TunnelManager {
 /// `tunnel_status: error`.
 async fn run_tunnel(
     params: TunnelParams,
-    handler: SshHandler,
+    mut handler: SshHandler,
     connect_timeout: Duration,
     overall_timeout: Duration,
     sink: Arc<dyn TunnelSink>,
     mut control_rx: mpsc::Receiver<TunnelControl>,
 ) -> Result<(), AppError> {
+    // Abandons a pending host-key prompt if this returns mid-handshake.
+    let _owner = handler.take_owner_token();
     let handle = tokio::select! {
         biased;
         // A stop during the handshake aborts: dropping the `establish` future
@@ -375,7 +387,7 @@ async fn run_tunnel(
 
     sink.on_status(TunnelStatus::Listening, None, statuses);
 
-    serve_until_stopped(&handle, &mut control_rx, params.keepalive).await;
+    let end = serve_until_stopped(&handle, &mut control_rx, params.keepalive).await;
 
     // Abort every listener (which cascades to their in-flight connection tasks),
     // then close the SSH transport cleanly.
@@ -383,8 +395,28 @@ async fn run_tunnel(
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
-    Ok(())
+    match end {
+        ServeEnd::Stopped => Ok(()),
+        ServeEnd::ConnectionLost => Err(AppError::SshConnect(
+            "the SSH connection was lost".to_string(),
+        )),
+    }
 }
+
+/// Why `serve_until_stopped` returned.
+enum ServeEnd {
+    /// A stop was requested (or the manager dropped the handle).
+    Stopped,
+    /// The SSH transport went away under the tunnel.
+    ConnectionLost,
+}
+
+/// How often the serve loop checks whether russh has seen the transport end.
+const TRANSPORT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Pause before accepting again after a failed `accept` (e.g. out of file
+/// descriptors), so a transient failure doesn't end the forward or spin.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 /// Bind a local `TcpListener` for each forward and spawn its accept loop into
 /// `listeners`. Returns a per-forward [`ForwardStatus`] (bound or not) for the
@@ -446,8 +478,9 @@ async fn run_listener(
                         peer,
                     ));
                 }
-                // The listening socket died; nothing more to accept.
-                Err(_) => break,
+                // Usually transient (e.g. out of file descriptors): back off and
+                // keep the forward alive rather than silently ending it.
+                Err(_) => tokio::time::sleep(ACCEPT_RETRY_DELAY).await,
             },
             // Reap finished connection tasks so the set doesn't grow unbounded
             // over a long-lived tunnel serving many short connections.
@@ -485,35 +518,53 @@ async fn handle_connection(
 /// Serve the tunnel until a stop is requested or the transport dies. russh
 /// drives the actual keepalive pings and dead-peer detection natively from the
 /// connection's `client::Config` (see `KeepaliveConfig`); this loop additionally
-/// probes the handle at the configured cadence so a dropped transport ends the
-/// tunnel promptly (a failed send means the connection is gone). With keepalive
-/// disabled it sends no periodic traffic and ends only on a stop / dropped handle.
+/// probes the handle at the configured cadence (a failed send means the
+/// connection is gone) and — keepalive or not — notices a transport russh has
+/// already seen end (e.g. the server closed it), so the tunnel never keeps
+/// reporting Listening over a dead connection.
 async fn serve_until_stopped(
     handle: &Arc<client::Handle<SshHandler>>,
     control_rx: &mut mpsc::Receiver<TunnelControl>,
     keepalive: KeepaliveConfig,
-) {
-    let Some(interval) = keepalive.interval else {
-        // Any control message (currently only `Stop`) or a dropped handle ends it.
-        let _ = control_rx.recv().await;
-        return;
-    };
-
-    let mut probe = tokio::time::interval(interval);
-    probe.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    probe.tick().await; // consume the immediate first tick
+) -> ServeEnd {
+    let mut probe = keepalive.interval.map(|interval| {
+        let mut probe = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+        probe.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        probe
+    });
+    let mut transport_check = tokio::time::interval(TRANSPORT_CHECK_INTERVAL);
+    transport_check.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
-        let keep_running = tokio::select! {
-            _ = probe.tick() => handle.send_keepalive(false).await.is_ok(),
+        tokio::select! {
             // Any control message (currently only `Stop`) or a dropped handle
             // (`None`) ends the tunnel.
-            _ = control_rx.recv() => false,
-        };
-        if !keep_running {
-            break;
+            _ = control_rx.recv() => return ServeEnd::Stopped,
+            alive = send_probe(handle, probe.as_mut()) => {
+                if !alive {
+                    return ServeEnd::ConnectionLost;
+                }
+            }
+            _ = transport_check.tick() => {
+                if handle.is_closed() {
+                    return ServeEnd::ConnectionLost;
+                }
+            }
         }
     }
+}
+
+/// Wait for the next keepalive tick and ping; `false` when the ping fails.
+/// Never resolves with keepalive disabled.
+async fn send_probe(
+    handle: &Arc<client::Handle<SshHandler>>,
+    probe: Option<&mut tokio::time::Interval>,
+) -> bool {
+    let Some(probe) = probe else {
+        return std::future::pending().await;
+    };
+    probe.tick().await;
+    handle.send_keepalive(false).await.is_ok()
 }
 
 /// Wait for a stop request (or the manager dropping the handle). Used to race

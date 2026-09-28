@@ -61,6 +61,7 @@ describe("openAboutDialog", () => {
     const updates = {
       available: vi.fn(() => null),
       isInstalling: vi.fn(() => false),
+      installFailed: vi.fn(() => false),
       subscribe: vi.fn(() => unsubscribe),
       check: vi.fn(),
       install: vi.fn(),

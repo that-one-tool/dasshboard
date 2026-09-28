@@ -3,13 +3,18 @@
  * (raised by a live connect or by `test_connection`) and resolves each via
  * `respond_host_key`. A *changed* key gets a prominent MITM warning variant.
  *
- * Only one prompt is shown at a time; concurrent prompts queue. Dynamic values
+ * Only one prompt is shown at a time; concurrent prompts queue, and one answer
+ * covers every queued prompt for the same host key (e.g. a profile opening
+ * several panes to one new host). A prompt the backend stops waiting on
+ * (`host_key_prompt_closed`) is dropped, so Trust never silently does nothing.
+ * Dynamic values
  * (host, fingerprint) are injected via `textContent`, never `innerHTML`, since
  * they are server-controlled strings.
  */
 
 import {
   onHostKeyPrompt,
+  onHostKeyPromptClosed,
   respondHostKey,
   type HostKeyPromptEvent,
 } from "../ipc";
@@ -31,15 +36,15 @@ export function initHostKeyDialog(): () => void {
       </div>
       <p class="hostkey-lead"></p>
       <dl class="hostkey-facts">
-        <div><dt>${t("hostkey.host")}</dt><dd class="hostkey-host"></dd></div>
-        <div><dt>${t("hostkey.keyType")}</dt><dd class="hostkey-keytype"></dd></div>
-        <div><dt>${t("hostkey.fingerprint")}</dt><dd class="hostkey-fingerprint"></dd></div>
+        <div><dt data-i18n="hostkey.host">${t("hostkey.host")}</dt><dd class="hostkey-host"></dd></div>
+        <div><dt data-i18n="hostkey.keyType">${t("hostkey.keyType")}</dt><dd class="hostkey-keytype"></dd></div>
+        <div><dt data-i18n="hostkey.fingerprint">${t("hostkey.fingerprint")}</dt><dd class="hostkey-fingerprint"></dd></div>
       </dl>
       <div class="form-actions">
-        <button type="button" class="btn btn-danger" data-hostkey-action="trust">
+        <button type="button" class="btn btn-danger" data-hostkey-action="trust" data-i18n="hostkey.trust">
           ${t("hostkey.trust")}
         </button>
-        <button type="button" class="btn btn-secondary" data-hostkey-action="reject">
+        <button type="button" class="btn btn-secondary" data-hostkey-action="reject" data-i18n="hostkey.reject">
           ${t("hostkey.reject")}
         </button>
       </div>
@@ -87,16 +92,41 @@ export function initHostKeyDialog(): () => void {
   async function respond(accept: boolean): Promise<void> {
     const prompt = current;
     if (!prompt) return;
+    // The same answer covers every queued prompt for this exact host key.
+    const answered = [prompt, ...takeSameKey(prompt)];
     // Advance the UI first so a slow IPC round trip can't wedge the dialog; a
     // failure to deliver the response is non-fatal (the backend prompt simply
     // times out and rejects).
     current = null;
     showNext();
+    await Promise.all(answered.map((p) => deliver(p.promptId, accept)));
+  }
+
+  /** Remove and return the queued prompts for the same host + key as `prompt`. */
+  function takeSameKey(prompt: HostKeyPromptEvent): HostKeyPromptEvent[] {
+    const same = queue.filter((p) => isSameKey(p, prompt));
+    removeFromQueue((p) => isSameKey(p, prompt));
+    return same;
+  }
+
+  function removeFromQueue(match: (p: HostKeyPromptEvent) => boolean): void {
+    const kept = queue.filter((p) => !match(p));
+    queue.splice(0, queue.length, ...kept);
+  }
+
+  async function deliver(promptId: string, accept: boolean): Promise<void> {
     try {
-      await respondHostKey(prompt.promptId, accept);
+      await respondHostKey(promptId, accept);
     } catch {
       /* backend will time out and reject on its own */
     }
+  }
+
+  /** The backend stopped waiting on `promptId`: forget it, advancing past it
+   * if it is the one on screen. */
+  function dropClosed(promptId: string): void {
+    removeFromQueue((p) => p.promptId === promptId);
+    if (current?.promptId === promptId) showNext();
   }
 
   const onClick = (e: Event): void => {
@@ -121,11 +151,24 @@ export function initHostKeyDialog(): () => void {
     queue.push(event);
     if (!current) showNext();
   });
+  const unlistenClosedPromise = onHostKeyPromptClosed(dropClosed);
 
   return () => {
     root.removeEventListener("click", onClick);
     document.removeEventListener("keydown", onKey, true);
     void unlistenPromise.then((unlisten) => unlisten());
+    void unlistenClosedPromise.then((unlisten) => unlisten());
     root.remove();
   };
+}
+
+/** Same host, key and verdict — a changed-key prompt is never answered by a
+ * neutral unknown-key one (it must always get its own loud warning). */
+function isSameKey(a: HostKeyPromptEvent, b: HostKeyPromptEvent): boolean {
+  return (
+    a.host === b.host &&
+    a.port === b.port &&
+    a.fingerprint === b.fingerprint &&
+    a.changed === b.changed
+  );
 }

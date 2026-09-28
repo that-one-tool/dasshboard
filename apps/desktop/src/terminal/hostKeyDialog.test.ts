@@ -14,6 +14,7 @@ import type { HostKeyPromptEvent } from "../ipc";
 
 const h = vi.hoisted(() => ({
   promptHandler: null as ((event: HostKeyPromptEvent) => void) | null,
+  closedHandler: null as ((promptId: string) => void) | null,
   respond: vi.fn(async (_promptId: string, _accept: boolean) => {}),
 }));
 
@@ -22,11 +23,16 @@ vi.mock("../ipc", () => ({
     h.promptHandler = handler;
     return () => {};
   }),
+  onHostKeyPromptClosed: vi.fn(async (handler: (promptId: string) => void) => {
+    h.closedHandler = handler;
+    return () => {};
+  }),
   respondHostKey: (promptId: string, accept: boolean) => h.respond(promptId, accept),
 }));
 
 // Imported after the mock is registered so the module graph uses it.
 import { initHostKeyDialog } from "./hostKeyDialog";
+import { applyDomTranslations, setLocale } from "../i18n";
 
 function q<T extends Element>(selector: string): T {
   const el = document.querySelector<T>(selector);
@@ -90,6 +96,84 @@ describe("initHostKeyDialog", () => {
     expect(h.respond).toHaveBeenCalledWith("p1", true);
     // showNext() dequeued the second prompt.
     expect(q<HTMLElement>(".hostkey-host").textContent).toBe("host-b:22");
+  });
+
+  it("drops the shown prompt once the backend stops waiting on it", () => {
+    h.promptHandler?.(promptEvent({ promptId: "p1", host: "host-a" }));
+    h.promptHandler?.(promptEvent({ promptId: "p2", host: "host-b" }));
+
+    h.closedHandler?.("p1");
+
+    expect(q<HTMLElement>(".hostkey-host").textContent).toBe("host-b:22");
+    expect(h.respond).not.toHaveBeenCalled();
+  });
+
+  it("drops a queued prompt the backend stopped waiting on", async () => {
+    h.promptHandler?.(promptEvent({ promptId: "p1", host: "host-a" }));
+    h.promptHandler?.(promptEvent({ promptId: "p2", host: "host-b" }));
+    h.closedHandler?.("p2");
+
+    q<HTMLButtonElement>('[data-hostkey-action="reject"]').dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+    await flush();
+
+    expect(q<HTMLElement>(".hostkey-dialog").classList.contains("dialog-hidden")).toBe(true);
+  });
+
+  it("ignores a closed notice for a prompt it already answered", async () => {
+    h.promptHandler?.(promptEvent({ promptId: "p1", host: "host-a" }));
+    h.promptHandler?.(promptEvent({ promptId: "p2", host: "host-b" }));
+    q<HTMLButtonElement>('[data-hostkey-action="trust"]').dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+    await flush();
+
+    h.closedHandler?.("p1");
+    expect(q<HTMLElement>(".hostkey-host").textContent).toBe("host-b:22");
+  });
+
+  it("applies one answer to every queued prompt for the same host key", async () => {
+    // e.g. a profile opening four panes to the same new host.
+    h.promptHandler?.(promptEvent({ promptId: "p1" }));
+    h.promptHandler?.(promptEvent({ promptId: "p2" }));
+    h.promptHandler?.(promptEvent({ promptId: "p3", host: "other" }));
+
+    q<HTMLButtonElement>('[data-hostkey-action="trust"]').dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+    await flush();
+
+    expect(h.respond).toHaveBeenCalledWith("p1", true);
+    expect(h.respond).toHaveBeenCalledWith("p2", true);
+    expect(h.respond).not.toHaveBeenCalledWith("p3", expect.anything());
+    expect(q<HTMLElement>(".hostkey-host").textContent).toBe("other:22");
+  });
+
+  it("never lets an unknown-key answer approve a queued changed-key prompt", async () => {
+    h.promptHandler?.(promptEvent({ promptId: "p1", changed: false }));
+    h.promptHandler?.(promptEvent({ promptId: "p2", changed: true }));
+
+    q<HTMLButtonElement>('[data-hostkey-action="trust"]').dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+    await flush();
+
+    expect(h.respond).toHaveBeenCalledWith("p1", true);
+    expect(h.respond).not.toHaveBeenCalledWith("p2", expect.anything());
+    // The changed key still gets its own, loud prompt.
+    expect(q<HTMLElement>(".hostkey-content").classList.contains("hostkey-danger")).toBe(true);
+  });
+
+  it("relabels its static text when the language changes", () => {
+    try {
+      setLocale("fr");
+      applyDomTranslations(document);
+      expect(q<HTMLElement>('[data-hostkey-action="reject"]').textContent?.trim()).toBe("Rejeter");
+      expect(q<HTMLElement>(".hostkey-facts dt").textContent).toBe("Hôte");
+    } finally {
+      setLocale("en");
+    }
   });
 
   it("hides the dialog once the queue is drained", async () => {

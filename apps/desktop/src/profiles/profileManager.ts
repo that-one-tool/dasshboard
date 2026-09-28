@@ -44,8 +44,13 @@ export interface ProfileWorkspace {
   activeGrid(): Grid;
   /** The active tab's linked-profile id, or null. */
   activeLinkedProfileId(): string | null;
-  /** Link the active tab to a profile id (or null to unlink). */
-  setActiveLinkedProfileId(id: string | null): void;
+  /** The linked-profile id of the tab owning `grid`, or null. */
+  linkedProfileIdOf(grid: Grid): string | null;
+  /** Link the tab owning `grid` to a profile id (or null to unlink). Flows that
+   * await (a confirm, a prompt) capture the grid first and link by it, so a tab
+   * switch in the meantime can't link the wrong tab. A no-op if that tab has
+   * since been closed. */
+  linkProfile(grid: Grid, id: string | null): void;
   /** Re-render every tab's strip badge + dirty dot. */
   refreshTabStrip(): void;
   /** Unlink every tab pointing at `profileId` (used when it is deleted). */
@@ -116,8 +121,9 @@ export class ProfileManager {
       const start = this.findProfile(this.defaultProfileId) ?? this.findProfile(lastProfileId);
       if (start) {
         // App-start load: no teardown confirm (nothing is live yet).
-        await this.ws.activeGrid().applyProfile(start, { confirmTeardown: false });
-        this.ws.setActiveLinkedProfileId(start.id);
+        const grid = this.ws.activeGrid();
+        await grid.applyProfile(start, { confirmTeardown: false });
+        this.ws.linkProfile(grid, start.id);
       }
     }
     this.render();
@@ -289,9 +295,10 @@ export class ProfileManager {
   /* ---------------------------------------------------------------------- */
 
   private async load(profile: Profile): Promise<void> {
-    const applied = await this.ws.activeGrid().applyProfile(profile);
+    const grid = this.ws.activeGrid();
+    const applied = await grid.applyProfile(profile);
     if (!applied) return; // user cancelled the teardown confirm
-    this.ws.setActiveLinkedProfileId(profile.id);
+    this.ws.linkProfile(grid, profile.id);
     this.render();
     this.refreshDirty();
     this.notifyProfileChange();
@@ -325,13 +332,14 @@ export class ProfileManager {
     if (this.busy) return;
     this.busy = true;
     try {
+      const grid = this.ws.activeGrid();
       const loaded = this.activeLoaded();
       if (!loaded) {
         // Nothing loaded yet → behave as Save As.
-        await this.performSaveAs();
+        await this.performSaveAs(grid);
         return;
       }
-      await this.persist({ ...loaded, ...snapshotToProfileFields(this.ws.activeGrid().snapshot()) }, "profiles.savedProfile");
+      await this.persist({ ...loaded, ...snapshotToProfileFields(grid.snapshot()) }, "profiles.savedProfile", grid);
     } finally {
       this.busy = false;
     }
@@ -341,14 +349,15 @@ export class ProfileManager {
     if (this.busy) return;
     this.busy = true;
     try {
-      await this.performSaveAs();
+      await this.performSaveAs(this.ws.activeGrid());
     } finally {
       this.busy = false;
     }
   }
 
-  /** Shared Save-As body; callers (`save`, `saveAs`) hold the `busy` guard. */
-  private async performSaveAs(): Promise<void> {
+  /** Shared Save-As body for the tab owning `grid` (captured before the name
+   * prompt); callers (`save`, `saveAs`) hold the `busy` guard. */
+  private async performSaveAs(grid: Grid): Promise<void> {
     const name = await prompt(t("profiles.saveAs.title"), t("profiles.saveAs.placeholder"));
     if (name === null) return;
     const trimmed = name.trim();
@@ -357,8 +366,9 @@ export class ProfileManager {
       return;
     }
     await this.persist(
-      { id: "", name: trimmed, ...snapshotToProfileFields(this.ws.activeGrid().snapshot()) },
+      { id: "", name: trimmed, ...snapshotToProfileFields(grid.snapshot()) },
       "profiles.savedProfile",
+      grid,
     );
   }
 
@@ -374,21 +384,25 @@ export class ProfileManager {
         return;
       }
       // Rename keeps the profile's stored layout; only the name changes.
-      await this.persist({ ...profile, name: trimmed }, "profiles.renamedProfile");
+      await this.persist({ ...profile, name: trimmed }, "profiles.renamedProfile", this.ws.activeGrid());
     } finally {
       this.busy = false;
     }
   }
 
-  private async persist(profile: Profile, successKey: "profiles.savedProfile" | "profiles.renamedProfile"): Promise<void> {
+  private async persist(
+    profile: Profile,
+    successKey: "profiles.savedProfile" | "profiles.renamedProfile",
+    grid: Grid,
+  ): Promise<void> {
     try {
       const saved = await saveProfile(profile);
-      // If we saved the active tab's loaded profile (or just created one via Save
-      // As from its live workspace), link the active tab to it so the dirty dot
-      // clears. A rename of some *other* profile leaves the active link alone.
-      const link = this.ws.activeLinkedProfileId();
+      // If we saved the tab's loaded profile (or just created one via Save As
+      // from its live workspace), link that tab to it so the dirty dot clears.
+      // A rename of some *other* profile leaves the link alone.
+      const link = this.ws.linkedProfileIdOf(grid);
       if (link === null || link === saved.id || profile.id === "") {
-        this.ws.setActiveLinkedProfileId(saved.id);
+        this.ws.linkProfile(grid, saved.id);
       }
       await this.reload();
       this.notifyProfileChange();

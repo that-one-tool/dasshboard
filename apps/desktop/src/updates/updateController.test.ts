@@ -183,6 +183,25 @@ describe("UpdateController.install", () => {
 		await expect(updates.install()).resolves.toBe(true);
 	});
 
+	it("remembers a failed install until the next check", async () => {
+		vi.mocked(downloadUpdate).mockRejectedValueOnce({ code: "Update", message: "gone" });
+		const updates = await withFound();
+		expect(updates.installFailed()).toBe(false);
+
+		await updates.install();
+		expect(updates.installFailed()).toBe(true);
+
+		await updates.check();
+		expect(updates.installFailed()).toBe(false);
+	});
+
+	it("a cancelled install is not a failure", async () => {
+		vi.mocked(confirm).mockResolvedValueOnce(false);
+		const updates = await withFound();
+		await updates.install();
+		expect(updates.installFailed()).toBe(false);
+	});
+
 	it("does not re-check while installing", async () => {
 		vi.mocked(downloadUpdate).mockImplementation(() => new Promise(() => {}));
 		const updates = await withFound();

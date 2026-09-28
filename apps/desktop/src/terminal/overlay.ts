@@ -59,6 +59,15 @@ export function overlayForStatus(
         showSpinner: false,
         showRetry: true,
       };
+    case "exited":
+      return {
+        visible: true,
+        variant: "error",
+        title: t("pane.overlay.exited"),
+        detail: message ?? "",
+        showSpinner: false,
+        showRetry: true,
+      };
     case "error":
       return {
         visible: true,
