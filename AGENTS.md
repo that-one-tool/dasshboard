@@ -48,7 +48,8 @@ files, releasing),
     - `tunnels/` — the Tunnels sidebar card (start/stop/status for local forwards)
     - `sftp/` — the docked Files panel (browser + transfer queue)
     - `tabs/` — tab strip + per-tab workspaces (every tab's `Grid` stays alive;
-      hidden tabs keep their sessions running and refit on activation)
+      hidden tabs keep their sessions running and refit on activation);
+      `tabShortcuts` maps the tab keys (incl. Cmd+W on macOS)
     - `profiles/` — workspace/profile persistence
     - `settings/` — app settings controller (dialog with General / Connections
       tabs via `settingsTabs`), the header dark/light toggle (`themeToggle`),
@@ -61,7 +62,8 @@ files, releasing),
       window in `workspace_state.json`)
     - `ui/` — confirm dialogs, file dialog, icons, toast notifications (`toast.ts`),
       shared DOM helpers (`dom.ts`), the resize handle shared by the left menu and
-      the Files panel (`splitter.ts`: drag, arrow keys, double-click reset)
+      the Files panel (`splitter.ts`: drag, arrow keys, double-click reset),
+      shortcut modifiers (`keyboard.ts`: Ctrl, or Cmd on macOS)
     - `ipc.ts` — typed `invoke` wrappers; every payload type here must mirror the
       matching Rust `serde` struct (camelCase on the wire)
 - `src-tauri/src/` — backend (Rust):
@@ -95,14 +97,18 @@ files, releasing),
     - `local_shell.rs` — local PTY shells (PowerShell/bash/zsh) via `portable-pty`,
       reusing the same `SessionSink`/`SessionStatus` seam; bridges the crate's
       blocking reader/writer to the async sink with reader/writer threads + a
-      control task
+      control task; on macOS the default shell runs as a login shell with a
+      UTF-8 `LANG` fallback
     - `transfer.rs` — devices/profiles import-export
     - `updater.rs` — in-app updates via `tauri-plugin-updater` (CrabNebula
       endpoints): check → download → install, each naming the confirmed
       version; runs only on user request or opt-in launch check; self-install
-      for NSIS/MSI + AppImage (keyed on the bundle type), notify-only for
+      for NSIS/MSI + AppImage + a real macOS `.app` (keyed on the bundle type;
+      an unbundled macOS dev binary is notify-only), notify-only for
       `.deb`/`.rpm`; the install closes live sessions first
-      (`AppState::shutdown_live_sessions`, shared with app close)
+      (`AppState::shutdown_live_sessions`, shared with app close and quit)
+    - `app_menu.rs` — the macOS menu bar (Tauri's default minus Close Window,
+      so Cmd+W closes a tab)
     - `state.rs` — `AppState` (managed Tauri state), `error.rs` — `AppError`
 - `src-tauri/tests/` — `ssh_it.rs`, `sftp_it.rs`: integration tests against an
   in-process throwaway `russh` server, no Docker/external daemon needed

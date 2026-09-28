@@ -4,6 +4,7 @@ name: check
 # cargo test (with a job-summary report), and clippy (-D warnings). Mirrors
 # `npm run check` (still the local gate), split into steps so each suite reports
 # its own status and the Rust results get a summary card alongside Vitest's.
+# A second job runs clippy and cargo test on macOS.
 #
 # Called by both `ci.yml` (on every pull request) and `desktop-release.yml` (on push to
 # main, where its `release` output gates the release chain). Kept in one place so
@@ -17,6 +18,32 @@ on:
                 value: ${{ jobs.check.outputs.release }}
 
 jobs:
+    # macOS-only code (cfg(target_os = "macos") branches, the menu, the
+    # keychain/PTY backends) otherwise first compiles in the release matrix,
+    # where a failure would block every platform's release. Lint and test it
+    # here instead; the release chain needs this whole workflow to pass.
+    check-macos:
+        runs-on: macos-latest
+        defaults:
+            run:
+                working-directory: apps/desktop/src-tauri
+        steps:
+            - uses: actions/checkout@v5
+
+            - name: install Rust stable
+              uses: actions-rust-lang/setup-rust-toolchain@v1
+              with:
+                  toolchain: stable
+                  components: clippy
+                  cache: true
+                  cache-workspaces: "apps/desktop/src-tauri -> target"
+
+            - name: clippy (-D warnings)
+              run: cargo clippy --all-targets -- -D warnings
+
+            - name: backend tests (cargo test)
+              run: cargo test --no-fail-fast
+
     check:
         runs-on: ubuntu-22.04
         # Whether this push should cut a release (consumed by desktop-release.yml).

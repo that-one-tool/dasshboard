@@ -4,7 +4,7 @@ export const fr: SiteMessages = {
 	meta: {
 		title: "DaSSHboard — un tableau de bord de bureau pour vos appareils SSH",
 		description:
-			"Enregistrez vos appareils une fois, disposez des terminaux en direct dans une grille et rechargez tout l'espace de travail en un clic. Application de bureau gratuite pour Windows et Linux.",
+			"Enregistrez vos appareils une fois, disposez des terminaux en direct dans une grille et rechargez tout l'espace de travail en un clic. Application de bureau gratuite pour Windows, macOS et Linux.",
 	},
 	nav: {
 		features: "Fonctionnalités",
@@ -17,7 +17,7 @@ export const fr: SiteMessages = {
 		sections: "Sections de la page",
 	},
 	hero: {
-		eyebrow: "v{version} · Windows et Linux",
+		eyebrow: "v{version} · Windows, macOS et Linux",
 		title: "Vos appareils SSH, un seul tableau de bord.",
 		lede: "Enregistrez vos appareils une fois, disposez des terminaux en direct dans une grille et rechargez tout l'espace de travail en un clic.",
 		localNote:
@@ -159,7 +159,7 @@ export const fr: SiteMessages = {
 	},
 	download: {
 		title: "Télécharger DaSSHboard {version}",
-		body: "Gratuit et open source. Installeurs pour Windows et Linux, avec mises à jour signées dans l'application.",
+		body: "Gratuit et open source. Installeurs pour Windows, macOS et Linux, avec mises à jour signées dans l'application.",
 		installers: "Obtenir les installeurs",
 		releaseNotes: "Notes de version",
 		platformsTitle: "Plateformes prises en charge",
@@ -170,6 +170,7 @@ export const fr: SiteMessages = {
 		},
 		rows: [
 			{ platform: "Windows", packages: "MSI, setup .exe", updates: "Installer et redémarrer" },
+			{ platform: "macOS", packages: ".dmg (Intel, Apple Silicon)", updates: "Installer et redémarrer" },
 			{ platform: "Linux", packages: "AppImage", updates: "Installer et redémarrer" },
 			{ platform: "Linux", packages: ".deb, .rpm", updates: "Notification avec un lien de téléchargement" },
 		],
@@ -183,7 +184,7 @@ export const fr: SiteMessages = {
 			},
 			{
 				question: "Existe-t-il une version macOS ?",
-				answer: "Pas pour le moment : DaSSHboard est distribué pour Windows et Linux.",
+				answer: "Oui, pour les Mac Intel et Apple Silicon. L'application n'est pas notarisée par Apple : macOS bloque donc son premier lancement. Essayez de l'ouvrir une fois, puis cliquez sur « Ouvrir quand même » dans Réglages Système → Confidentialité et sécurité. Glissez d'abord l'application du .dmg vers Applications : les mises à jour intégrées ne peuvent pas la remplacer tant qu'elle s'exécute depuis l'image disque.",
 			},
 			{
 				question: "Quelles méthodes d'authentification sont prises en charge ?",
@@ -195,11 +196,11 @@ export const fr: SiteMessages = {
 			},
 			{
 				question: "Où mes données sont-elles stockées ?",
-				answer: "Dans de simples fichiers JSON du dossier de configuration de l'application (%APPDATA%\\com.dasshboard.app sous Windows, ~/.config/com.dasshboard.app sous Linux). Ils ne contiennent aucun secret : vous pouvez les sauvegarder sans risque.",
+				answer: "Dans de simples fichiers JSON du dossier de configuration de l'application (%APPDATA%\\com.dasshboard.app sous Windows, ~/Library/Application Support/com.dasshboard.app sous macOS, ~/.config/com.dasshboard.app sous Linux). Ils ne contiennent aucun secret : vous pouvez les sauvegarder sans risque.",
 			},
 			{
 				question: "Comment fonctionnent les mises à jour ?",
-				answer: "Recherchez les mises à jour depuis la boîte À propos, ou activez une vérification au démarrage. Sous Windows et avec l'AppImage, « Installer et redémarrer » applique la mise à jour signée ; les installations .deb et .rpm reçoivent un lien vers le nouveau paquet.",
+				answer: "Recherchez les mises à jour depuis la boîte À propos, ou activez une vérification au démarrage. Sous Windows, macOS et avec l'AppImage, « Installer et redémarrer » applique la mise à jour signée ; les installations .deb et .rpm reçoivent un lien vers le nouveau paquet.",
 			},
 		],
 	},

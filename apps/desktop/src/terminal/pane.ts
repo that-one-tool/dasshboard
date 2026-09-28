@@ -4,7 +4,8 @@
  * keystrokes → `write_stdin`, the per-session `Channel` → `terminal.write`, and
  * a `ResizeObserver` → fit addon → `resize_pty`. Status overlays (connecting
  * spinner; error/disconnected + Retry) react to `session_status` events. Copy
- * on select; paste on Ctrl+Shift+V and right-click.
+ * on select; paste on Ctrl+Shift+V (Cmd+Shift+V on macOS), right-click, and
+ * native paste events (Cmd+V on macOS), all through the multi-line confirm.
  *
  * This module is deliberately thin glue over the DOM/terminal; the testable
  * decisions (status → overlay) live in `overlay.ts`.
@@ -26,6 +27,7 @@ import {
   type TerminalSettings,
 } from "../ipc";
 import { overlayForStatus } from "./overlay";
+import { isShortcutModifier } from "../ui/keyboard";
 import {
   DEFAULT_TERMINAL_SETTINGS,
   withIconFont,
@@ -296,13 +298,20 @@ export class TerminalPane {
     // duplicate listener on every Retry/reconnect and fire paste N times.
     // `pasteFromClipboard()` already self-guards on `this.connected`/`terminal`,
     // so it is safe to have live before the first connect.
-    requireEl<HTMLElement>(this.root, ".pane-terminal").addEventListener(
-      "contextmenu",
-      (e) => {
-        e.preventDefault();
-        void this.pasteFromClipboard();
-      },
-    );
+    const terminalEl = requireEl<HTMLElement>(this.root, ".pane-terminal");
+    terminalEl.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      void this.pasteFromClipboard();
+    });
+    // A native paste (Cmd+V / Edit → Paste on macOS) would reach xterm's own
+    // handler and skip the multi-line confirm; capture it first.
+    terminalEl.addEventListener("paste", (e) => this.onNativePaste(e), true);
+  }
+
+  private onNativePaste(e: ClipboardEvent): void {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    void this.pasteText(e.clipboardData?.getData("text/plain") ?? "");
   }
 
   private updateControls(): void {
@@ -427,7 +436,7 @@ export class TerminalPane {
     });
     // Ctrl+Shift+V paste (SPEC §7).
     terminal.attachCustomKeyEventHandler((e) => {
-      if (e.type === "keydown" && e.ctrlKey && e.shiftKey && e.code === "KeyV") {
+      if (e.type === "keydown" && isShortcutModifier(e) && e.shiftKey && e.code === "KeyV") {
         void this.pasteFromClipboard();
         return false;
       }
@@ -785,8 +794,11 @@ export class TerminalPane {
 
   private async pasteFromClipboard(): Promise<void> {
     if (!this.connected || !this.terminal) return;
-    const text = await readClipboard();
-    if (!text) return;
+    await this.pasteText(await readClipboard());
+  }
+
+  private async pasteText(text: string): Promise<void> {
+    if (!text || !this.connected || !this.terminal) return;
     // Multi-line paste can run several commands at once — confirm first (Phase 5).
     if (isMultilinePaste(text)) {
       const ok = await confirm(pasteConfirmMessage(text), {

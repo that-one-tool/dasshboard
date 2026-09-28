@@ -18,6 +18,7 @@
 import { Grid, type GridOptions } from "../grid";
 import { confirm } from "../ui/confirm";
 import { requireEl } from "../ui/dom";
+import { tabShortcut, type TabShortcut } from "./tabShortcuts";
 import { closeIcon, plusIcon } from "../ui/icons";
 import { shrinkConfirmMessage } from "../gridModel";
 import { t } from "../i18n";
@@ -524,27 +525,22 @@ export class TabManager {
 
   /* -------------------------------------------------------------------------
    * Keyboard (capture phase, so tab combos win over xterm's key handling).
-   * Shift is required on T/W to avoid clobbering a shell's Ctrl+W (delete word)
-   * / Ctrl+T (transpose). Ctrl+Tab cycles.
+   * The key map lives in `tabShortcuts.ts`.
    * ---------------------------------------------------------------------- */
 
   private onKeyDown = (e: KeyboardEvent): void => {
-    if (!e.ctrlKey) return;
-    const key = e.key.toLowerCase();
-    if (e.shiftKey && key === "t") {
-      e.preventDefault();
-      e.stopPropagation();
-      void this.newTab();
-    } else if (e.shiftKey && key === "w") {
-      e.preventDefault();
-      e.stopPropagation();
-      void this.closeTab(this.activeIndex);
-    } else if (key === "tab") {
-      e.preventDefault();
-      e.stopPropagation();
-      this.cycle(e.shiftKey ? -1 : 1);
-    }
+    const shortcut = tabShortcut(e);
+    if (!shortcut) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.runShortcut(shortcut);
   };
+
+  private runShortcut(shortcut: TabShortcut): void {
+    if (shortcut === "new") void this.newTab();
+    else if (shortcut === "close") void this.closeTab(this.activeIndex);
+    else this.cycle(shortcut === "next" ? 1 : -1);
+  }
 
   private cycle(delta: number): void {
     const n = this.tabs.length;

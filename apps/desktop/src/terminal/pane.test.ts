@@ -55,6 +55,9 @@ vi.mock("../ipc", () => ({
   }),
 }));
 
+const confirmMock = vi.hoisted(() => vi.fn(async () => false));
+vi.mock("../ui/confirm", () => ({ confirm: confirmMock }));
+
 // Imported after the mock is registered so the module graph uses it.
 import { TerminalPane, deviceEndpoint, deviceOptionLabel } from "./pane";
 import { connect, disconnect, listDevices, writeStdin } from "../ipc";
@@ -157,6 +160,77 @@ describe("TerminalPane right-click paste listener", () => {
     await flush();
 
     expect(readText).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("TerminalPane native paste (Cmd+V / Edit → Paste)", () => {
+  beforeEach(() => {
+    h.statusHandler = null;
+    confirmMock.mockClear();
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText, writeText: vi.fn(async () => {}) },
+    });
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  async function connectedPane(): Promise<{ root: HTMLElement; paste: ReturnType<typeof vi.fn> }> {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+    await (pane as unknown as { startSession(): Promise<void> }).startSession();
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    const terminal = (pane as unknown as { terminal: { paste(text: string): void } }).terminal;
+    const paste = vi.fn();
+    terminal.paste = paste;
+    return { root, paste };
+  }
+
+  function nativePaste(target: HTMLElement, text: string): Event {
+    const data = new DataTransfer();
+    data.setData("text/plain", text);
+    const event = new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: data });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  it("routes a multi-line paste through the confirm instead of the shell", async () => {
+    const { root, paste } = await connectedPane();
+    const event = nativePaste(q<HTMLElement>(root, ".xterm-helper-textarea"), "rm -rf /tmp/x\nreboot\n");
+    await flush();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(confirmMock).toHaveBeenCalledOnce();
+    expect(paste).not.toHaveBeenCalled(); // the mocked confirm declines
+  });
+
+  it("reads the clipboard on Cmd+Shift+V on macOS", async () => {
+    const ua = vi
+      .spyOn(navigator, "userAgent", "get")
+      .mockReturnValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15");
+    try {
+      const { root } = await connectedPane();
+      readText.mockClear();
+      q<HTMLElement>(root, ".xterm-helper-textarea").dispatchEvent(
+        new KeyboardEvent("keydown", { code: "KeyV", key: "V", metaKey: true, shiftKey: true, bubbles: true }),
+      );
+      await flush();
+      expect(readText).toHaveBeenCalledOnce();
+    } finally {
+      ua.mockRestore();
+    }
+  });
+
+  it("pastes a single line straight away", async () => {
+    const { root, paste } = await connectedPane();
+    nativePaste(q<HTMLElement>(root, ".xterm-helper-textarea"), "uptime");
+    await flush();
+
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(paste).toHaveBeenCalledWith("uptime");
   });
 });
 

@@ -9,7 +9,7 @@
  * grid or backend.
  */
 
-import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 
 interface FakeGrid {
   root: HTMLElement;
@@ -104,6 +104,45 @@ describe("TabManager.init", () => {
     // Activation refits + focuses the now-visible grid.
     expect(gridInstances[0]?.refit).toHaveBeenCalled();
     expect(gridInstances[0]?.focus).toHaveBeenCalled();
+  });
+});
+
+describe("TabManager keyboard shortcuts", () => {
+  const MAC_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
+
+  function press(init: KeyboardEventInit): void {
+    window.dispatchEvent(new KeyboardEvent("keydown", init));
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("opens a tab on Ctrl+Shift+T", async () => {
+    const tm = makeManager();
+    await tm.init();
+    press({ key: "T", shiftKey: true, ctrlKey: true });
+    await vi.waitFor(() => expect(tabButtons()).toHaveLength(2));
+    tm.dispose();
+  });
+
+  it("opens a tab on Cmd+Shift+T on macOS", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(MAC_UA);
+    const tm = makeManager();
+    await tm.init();
+    press({ key: "T", shiftKey: true, metaKey: true });
+    await vi.waitFor(() => expect(tabButtons()).toHaveLength(2));
+    tm.dispose();
+  });
+
+  it("closes the active tab on Cmd+W on macOS", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(MAC_UA);
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    press({ key: "w", metaKey: true });
+    await vi.waitFor(() => expect(tabButtons()).toHaveLength(1));
+    tm.dispose();
   });
 });
 

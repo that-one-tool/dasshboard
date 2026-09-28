@@ -37,6 +37,8 @@ const CONTROL_CHANNEL_CAPACITY: usize = 256;
 /// Read buffer for the PTY→terminal pump. 4 KiB covers a burst of shell output
 /// between reads without oversizing each copy (matches the serial pump).
 const READ_BUFFER_SIZE: usize = 4096;
+/// `LANG` for a macOS shell when the app started without one.
+const MACOS_FALLBACK_LANG: &str = "en_US.UTF-8";
 
 /// The connection-shaped params for a local shell session (mirrors
 /// `session::ConnectParams` / `serial::SerialParams`). Built by the `connect`
@@ -203,7 +205,28 @@ fn build_command(params: &LocalShellParams) -> CommandBuilder {
     cmd.env("TERM", "xterm-256color");
     let startup = TLS_VARS_AT_STARTUP.get_or_init(present_tls_vars);
     scrub_env(&mut cmd, &vars_to_scrub(startup));
+    if cfg!(target_os = "macos") {
+        apply_macos_login_env(&mut cmd, is_default_shell(&params.shell));
+    }
     cmd
+}
+
+/// A macOS app launched from Finder inherits launchd's bare environment: a
+/// minimal `PATH` (no Homebrew) and no `LANG` (zsh then garbles non-ASCII
+/// input). Like Terminal.app, run the default shell as a login shell so
+/// `/etc/zprofile` and `~/.zprofile` set `PATH`, and fall back to a UTF-8
+/// locale. An explicit shell setting may be any program, so it gets no `-l`.
+fn apply_macos_login_env(cmd: &mut CommandBuilder, default_shell: bool) {
+    if default_shell {
+        cmd.arg("-l");
+    }
+    if cmd.get_env("LANG").is_none_or(|lang| lang.is_empty()) {
+        cmd.env("LANG", MACOS_FALLBACK_LANG);
+    }
+}
+
+fn is_default_shell(shell: &Option<String>) -> bool {
+    shell.as_deref().is_none_or(|s| s.trim().is_empty())
 }
 
 /// Open a PTY and spawn the shell into it — the only OS-touching call, isolated
@@ -542,6 +565,35 @@ mod tests {
         // Blank ⇒ falls back to the OS default (non-empty).
         assert!(!resolve_program(&Some("   ".to_string())).is_empty());
         assert!(!resolve_program(&None).is_empty());
+    }
+
+    #[test]
+    fn macos_default_shell_is_a_login_shell_with_a_utf8_locale() {
+        let mut cmd = CommandBuilder::new("/bin/zsh");
+        cmd.env_remove("LANG");
+
+        apply_macos_login_env(&mut cmd, true);
+
+        assert_eq!(cmd.get_argv(), &vec!["/bin/zsh", "-l"]);
+        assert_eq!(cmd.get_env("LANG"), Some("en_US.UTF-8".as_ref()));
+    }
+
+    #[test]
+    fn macos_keeps_an_explicit_shell_and_the_users_locale() {
+        let mut cmd = CommandBuilder::new("/usr/local/bin/fish");
+        cmd.env("LANG", "fr_FR.UTF-8");
+
+        apply_macos_login_env(&mut cmd, false);
+
+        assert_eq!(cmd.get_argv(), &vec!["/usr/local/bin/fish"]);
+        assert_eq!(cmd.get_env("LANG"), Some("fr_FR.UTF-8".as_ref()));
+    }
+
+    #[test]
+    fn only_a_blank_shell_setting_means_the_default_shell() {
+        assert!(is_default_shell(&None));
+        assert!(is_default_shell(&Some("  ".to_string())));
+        assert!(!is_default_shell(&Some("/bin/bash".to_string())));
     }
 
     #[test]

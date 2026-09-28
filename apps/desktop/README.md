@@ -2,7 +2,7 @@
 
 This is the desktop app: [Tauri 2](https://tauri.app/) with a Rust backend, and a
 vanilla TypeScript + Vite frontend (no framework) that renders terminals with
-[xterm.js](https://xtermjs.org/). It targets Windows and Linux.
+[xterm.js](https://xtermjs.org/). It targets Windows, macOS and Linux.
 
 ## Getting started
 
@@ -21,7 +21,7 @@ npm ci
 npm run tauri dev     # full app with hot-reload
 npm run dev           # Vite frontend only, without the backend
 npm run check         # the gate: tsc, Vitest, cargo fmt --check, cargo test, clippy -D warnings
-npm run tauri build   # installers in src-tauri/target/release/bundle/ (NSIS + MSI, or deb + rpm)
+npm run tauri build   # installers in src-tauri/target/release/bundle/ (NSIS + MSI, .app + dmg, or deb + rpm)
 ```
 
 From the repo root, `npm run tauri dev` and `npm run check` delegate here.
@@ -72,7 +72,9 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands.rs  ──�
 ## Data
 
 The app stores its data in the Tauri app-config directory
-(`%APPDATA%\com.dasshboard.app\` on Windows):
+(`%APPDATA%\com.dasshboard.app\` on Windows,
+`~/Library/Application Support/com.dasshboard.app/` on macOS,
+`~/.config/com.dasshboard.app/` on Linux):
 
 | File                   | Contents                                                                  |
 | ---------------------- | ------------------------------------------------------------------------- |
@@ -91,7 +93,8 @@ to the frontend.
 ## Releasing
 
 A push to `main` that touches `apps/desktop/**` runs `desktop-release.yml`. It
-builds on Windows and Linux and publishes to CrabNebula Cloud when the commit
+builds on Windows, Linux and macOS (separate Intel and Apple Silicon builds)
+and publishes to CrabNebula Cloud when the commit
 is a `feat`, `fix` or `perf`, a breaking change, or a `Release vX.Y.Z` commit.
 `.github/scripts/release-gate.sh` makes that decision. Before a release, bump
 the version in `package.json`, `src-tauri/tauri.conf.json` and
@@ -104,6 +107,18 @@ the MSI); the second is the fallback for bundles CrabNebula has no entry for.
 `requireSignedVersion` makes the app reject a signature that doesn't carry the
 release version, which `@tauri-apps/cli` writes from 2.11.5 on, so keep the CLI
 at 2.11.5 or later. The app checks for updates only on demand (About) or at
-startup when the user opts in. The NSIS/MSI installers and the Linux AppImage
-install updates in place; `.deb`/`.rpm` installs only get a link to the
-download page.
+startup when the user opts in. The NSIS/MSI installers, the macOS `.app` and
+the Linux AppImage install updates in place; `.deb`/`.rpm` installs only get a
+link to the download page.
+
+macOS builds are ad-hoc signed (`bundle.macOS.signingIdentity: "-"`), not
+Developer ID signed or notarized, so Gatekeeper blocks the first launch of a
+downloaded copy; the root README tells users how to clear it. An ad-hoc
+signature changes with every build, so after an update macOS asks again for
+Keychain access to saved secrets.
+
+On macOS the app replaces Tauri's default menu bar (`app_menu.rs`) to drop
+Close Window, so Cmd+W closes a tab instead; quitting (Cmd+Q) closes sessions
+from the `RunEvent::Exit` handler, since it skips `CloseRequested`. The default
+local shell runs as a login shell (`-l`) with a UTF-8 `LANG` fallback, like
+Terminal.app, because a Finder-launched app gets launchd's bare environment.

@@ -4,7 +4,7 @@ export const de: SiteMessages = {
 	meta: {
 		title: "DaSSHboard — ein Desktop-Dashboard für Ihre SSH-Geräte",
 		description:
-			"Speichern Sie Ihre Geräte einmal, ordnen Sie Live-Terminals in einem Raster an und laden Sie den ganzen Arbeitsbereich mit einem Klick neu. Kostenlose Desktop-App für Windows und Linux.",
+			"Speichern Sie Ihre Geräte einmal, ordnen Sie Live-Terminals in einem Raster an und laden Sie den ganzen Arbeitsbereich mit einem Klick neu. Kostenlose Desktop-App für Windows, macOS und Linux.",
 	},
 	nav: {
 		features: "Funktionen",
@@ -17,7 +17,7 @@ export const de: SiteMessages = {
 		sections: "Seitenabschnitte",
 	},
 	hero: {
-		eyebrow: "v{version} · Windows & Linux",
+		eyebrow: "v{version} · Windows, macOS & Linux",
 		title: "Ihre SSH-Geräte, ein Dashboard.",
 		lede: "Speichern Sie Ihre Geräte einmal, ordnen Sie Live-Terminals in einem Raster an und laden Sie den ganzen Arbeitsbereich mit einem Klick neu.",
 		localNote:
@@ -159,7 +159,7 @@ export const de: SiteMessages = {
 	},
 	download: {
 		title: "DaSSHboard {version} herunterladen",
-		body: "Kostenlos und Open Source. Installer für Windows und Linux, mit signierten Updates direkt in der App.",
+		body: "Kostenlos und Open Source. Installer für Windows, macOS und Linux, mit signierten Updates direkt in der App.",
 		installers: "Zu den Installern",
 		releaseNotes: "Versionshinweise",
 		platformsTitle: "Unterstützte Plattformen",
@@ -170,6 +170,7 @@ export const de: SiteMessages = {
 		},
 		rows: [
 			{ platform: "Windows", packages: "MSI, setup .exe", updates: "Installieren und neu starten" },
+			{ platform: "macOS", packages: ".dmg (Intel, Apple Silicon)", updates: "Installieren und neu starten" },
 			{ platform: "Linux", packages: "AppImage", updates: "Installieren und neu starten" },
 			{ platform: "Linux", packages: ".deb, .rpm", updates: "Hinweis mit Download-Link" },
 		],
@@ -183,7 +184,7 @@ export const de: SiteMessages = {
 			},
 			{
 				question: "Gibt es eine macOS-Version?",
-				answer: "Derzeit nicht: DaSSHboard erscheint für Windows und Linux.",
+				answer: "Ja, für Macs mit Intel und Apple Silicon. Die App ist nicht von Apple notarisiert, daher blockiert macOS den ersten Start: Öffnen Sie sie einmal und klicken Sie dann unter Systemeinstellungen → Datenschutz & Sicherheit auf „Dennoch öffnen“. Ziehen Sie die App vorher aus der .dmg in den Ordner „Programme“: Solange sie aus dem Disk-Image läuft, können In-App-Updates sie nicht ersetzen.",
 			},
 			{
 				question: "Welche Authentifizierungsmethoden werden unterstützt?",
@@ -195,11 +196,11 @@ export const de: SiteMessages = {
 			},
 			{
 				question: "Wo werden meine Daten gespeichert?",
-				answer: "In einfachen JSON-Dateien im Konfigurationsordner der App (%APPDATA%\\com.dasshboard.app unter Windows, ~/.config/com.dasshboard.app unter Linux). Sie enthalten keine Geheimnisse, Sie können sie also bedenkenlos sichern.",
+				answer: "In einfachen JSON-Dateien im Konfigurationsordner der App (%APPDATA%\\com.dasshboard.app unter Windows, ~/Library/Application Support/com.dasshboard.app unter macOS, ~/.config/com.dasshboard.app unter Linux). Sie enthalten keine Geheimnisse, Sie können sie also bedenkenlos sichern.",
 			},
 			{
 				question: "Wie funktionieren Updates?",
-				answer: "Suchen Sie im Info-Dialog nach Updates oder aktivieren Sie eine Prüfung beim Start. Unter Windows und mit dem AppImage installiert „Installieren und neu starten“ das signierte Update; .deb- und .rpm-Installationen erhalten einen Link zum neuen Paket.",
+				answer: "Suchen Sie im Info-Dialog nach Updates oder aktivieren Sie eine Prüfung beim Start. Unter Windows, macOS und mit dem AppImage installiert „Installieren und neu starten“ das signierte Update; .deb- und .rpm-Installationen erhalten einen Link zum neuen Paket.",
 			},
 		],
 	},

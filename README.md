@@ -27,7 +27,7 @@
   terminal font and scrollback.
 - **7 languages** — English, French, Spanish, German, Portuguese, Chinese, Japanese.
 - **Signed updates** — check from About (or opt in to a check at startup), then
-  Install & restart on Windows and the Linux AppImage.
+  Install & restart on Windows, macOS and the Linux AppImage.
 
 ## Security
 
@@ -43,13 +43,26 @@
 
 ## Download
 
-Windows and Linux builds are on
+Windows, macOS (Intel and Apple Silicon) and Linux builds are on
 [CrabNebula Cloud](https://web.crabnebula.cloud/that-one-tool/dasshboard/releases/)
 and the [website](https://that-one-tool.github.io/dasshboard/).
 
+The macOS app isn't notarized by Apple, so the first launch is blocked. Move
+DaSSHboard to Applications, then either open it once and click **Open Anyway**
+in System Settings → Privacy & Security, or run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/DaSSHboard.app
+```
+
+Because the app isn't signed with an Apple Developer ID, macOS asks again for
+Keychain access to your saved passwords after each update. Serial ports are
+the `/dev/cu.*` devices.
+
 Your devices, profiles and settings are saved as JSON files in the app-config
-directory (`%APPDATA%\com.dasshboard.app\` on Windows). These files contain no
-secrets, so you can back them up safely.
+directory (`%APPDATA%\com.dasshboard.app\` on Windows,
+`~/Library/Application Support/com.dasshboard.app/` on macOS). These files
+contain no secrets, so you can back them up safely.
 
 ## Development
 

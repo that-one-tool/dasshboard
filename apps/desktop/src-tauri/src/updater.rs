@@ -6,9 +6,11 @@
 //! The flow is check → download → install, each step naming the version the
 //! user confirmed so a concurrent re-check can't swap the release underneath.
 //! The download is kept until the install succeeds, so a failure is
-//! retryable. Self-install works for the NSIS/MSI installers and the Linux
-//! AppImage; a `.deb`/`.rpm` (or unbundled dev) build is notify-only.
+//! retryable. Self-install works for the NSIS/MSI installers, the Linux
+//! AppImage and the macOS `.app`; a `.deb`/`.rpm` (or unbundled dev) build is
+//! notify-only.
 
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -34,7 +36,7 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Windows installers exit the process from `Update::install`, so sessions must
-/// be closed before it. Elsewhere (the AppImage) installing only swaps a file,
+/// be closed before it. Elsewhere (AppImage, `.app`) installing only swaps files,
 /// so sessions close after it succeeds and survive a failed install.
 const INSTALL_EXITS_APP: bool = cfg!(windows);
 
@@ -134,12 +136,30 @@ impl PendingUpdate {
 
 /// Whether this build can replace itself. Keyed on the bundle marker the
 /// bundler patches into the binary — the same one the plugin uses to pick an
-/// installer — never on inheritable env like `APPIMAGE`.
-pub(crate) fn can_self_install(bundle: Option<BundleType>) -> bool {
-    matches!(
-        bundle,
-        Some(BundleType::Nsis | BundleType::Msi | BundleType::AppImage)
-    )
+/// installer — never on inheritable env like `APPIMAGE`. macOS reports `App`
+/// even for an unpatched `tauri dev` binary, so there the executable must also
+/// sit inside a real `.app` (the plugin would otherwise replace `target/debug`).
+pub(crate) fn can_self_install(bundle: Option<BundleType>, exe: &Path) -> bool {
+    match bundle {
+        Some(BundleType::Nsis | BundleType::Msi | BundleType::AppImage) => true,
+        Some(BundleType::App) => is_inside_app_bundle(exe),
+        _ => false,
+    }
+}
+
+/// `…/Name.app/Contents/MacOS/<exe>`.
+fn is_inside_app_bundle(exe: &Path) -> bool {
+    let mut dirs = exe.ancestors().skip(1);
+    let mut next_name = || dirs.next().and_then(Path::file_name);
+    let (macos, contents, bundle) = (next_name(), next_name(), next_name());
+    macos == Some("MacOS".as_ref())
+        && contents == Some("Contents".as_ref())
+        && bundle.is_some_and(|name| Path::new(name).extension() == Some("app".as_ref()))
+}
+
+fn this_build_can_self_install() -> bool {
+    let exe = std::env::current_exe().unwrap_or_default();
+    can_self_install(bundle_type(), &exe)
 }
 
 /// CrabNebula sends `""` when a release has no notes.
@@ -171,7 +191,7 @@ pub async fn check<R: Runtime>(
     let info = found.as_ref().map(|update| UpdateInfo {
         version: update.version.clone(),
         notes: notes_or_none(update.body.clone()),
-        can_install: can_self_install(bundle_type()),
+        can_install: this_build_can_self_install(),
     });
     pending.lock().replace(found);
     Ok(info)
@@ -218,7 +238,7 @@ async fn prepare_to_exit<R: Runtime>(app: &AppHandle<R>) {
 }
 
 fn ensure_self_install() -> Result<(), AppError> {
-    if can_self_install(bundle_type()) {
+    if this_build_can_self_install() {
         return Ok(());
     }
     Err(AppError::Update(
@@ -245,18 +265,41 @@ mod tests {
         pending
     }
 
+    const INSTALLED_EXE: &str = "/opt/DaSSHboard/dasshboard";
+    const MAC_APP_EXE: &str = "/Applications/DaSSHboard.app/Contents/MacOS/dasshboard";
+    const DEV_EXE: &str = "/Users/me/dasshboard/src-tauri/target/debug/dasshboard";
+
+    fn can_install(bundle: Option<BundleType>, exe: &str) -> bool {
+        can_self_install(bundle, Path::new(exe))
+    }
+
     #[test]
     fn windows_installers_and_the_appimage_self_install() {
-        assert!(can_self_install(Some(BundleType::Nsis)));
-        assert!(can_self_install(Some(BundleType::Msi)));
-        assert!(can_self_install(Some(BundleType::AppImage)));
+        assert!(can_install(Some(BundleType::Nsis), INSTALLED_EXE));
+        assert!(can_install(Some(BundleType::Msi), INSTALLED_EXE));
+        assert!(can_install(Some(BundleType::AppImage), INSTALLED_EXE));
+    }
+
+    #[test]
+    fn the_macos_app_bundle_self_installs() {
+        assert!(can_install(Some(BundleType::App), MAC_APP_EXE));
+    }
+
+    #[test]
+    fn an_unbundled_macos_build_is_notify_only() {
+        // Tauri reports every unpatched macOS binary (`tauri dev`) as `App`.
+        assert!(!can_install(Some(BundleType::App), DEV_EXE));
+        assert!(!can_install(
+            Some(BundleType::App),
+            "/Users/me/Contents/MacOS/dasshboard"
+        ));
     }
 
     #[test]
     fn deb_rpm_and_unbundled_builds_are_notify_only() {
-        assert!(!can_self_install(Some(BundleType::Deb)));
-        assert!(!can_self_install(Some(BundleType::Rpm)));
-        assert!(!can_self_install(None), "tauri dev / unbundled binary");
+        assert!(!can_install(Some(BundleType::Deb), INSTALLED_EXE));
+        assert!(!can_install(Some(BundleType::Rpm), INSTALLED_EXE));
+        assert!(!can_install(None, DEV_EXE), "tauri dev / unbundled binary");
     }
 
     #[test]

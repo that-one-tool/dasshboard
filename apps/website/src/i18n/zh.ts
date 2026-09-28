@@ -3,7 +3,7 @@ import type { SiteMessages } from "./en";
 export const zh: SiteMessages = {
 	meta: {
 		title: "DaSSHboard — 管理 SSH 设备的桌面仪表板",
-		description: "设备只需保存一次，在网格中排列实时终端，一键重新加载整个工作区。适用于 Windows 和 Linux 的免费桌面应用。",
+		description: "设备只需保存一次，在网格中排列实时终端，一键重新加载整个工作区。适用于 Windows、macOS 和 Linux 的免费桌面应用。",
 	},
 	nav: {
 		features: "功能",
@@ -16,7 +16,7 @@ export const zh: SiteMessages = {
 		sections: "页面章节",
 	},
 	hero: {
-		eyebrow: "v{version} · Windows 和 Linux",
+		eyebrow: "v{version} · Windows、macOS 和 Linux",
 		title: "所有 SSH 设备，尽在一个仪表板。",
 		lede: "设备只需保存一次，在网格中排列实时终端，一键重新加载整个工作区。",
 		localNote: "无需账号，不用云端，没有遥测——应用只与你连接的主机通信，并且只在你要求时检查更新。",
@@ -137,7 +137,7 @@ export const zh: SiteMessages = {
 	},
 	download: {
 		title: "下载 DaSSHboard {version}",
-		body: "免费且开源。提供 Windows 和 Linux 安装包，支持应用内签名更新。",
+		body: "免费且开源。提供 Windows、macOS 和 Linux 安装包，支持应用内签名更新。",
 		installers: "获取安装包",
 		releaseNotes: "发行说明",
 		platformsTitle: "支持的平台",
@@ -148,6 +148,7 @@ export const zh: SiteMessages = {
 		},
 		rows: [
 			{ platform: "Windows", packages: "MSI、setup .exe", updates: "安装并重启" },
+			{ platform: "macOS", packages: ".dmg（Intel、Apple 芯片）", updates: "安装并重启" },
 			{ platform: "Linux", packages: "AppImage", updates: "安装并重启" },
 			{ platform: "Linux", packages: ".deb、.rpm", updates: "通知并提供下载链接" },
 		],
@@ -161,7 +162,7 @@ export const zh: SiteMessages = {
 			},
 			{
 				question: "有 macOS 版本吗？",
-				answer: "目前没有：DaSSHboard 提供 Windows 和 Linux 版本。",
+				answer: "有，支持 Intel 和 Apple 芯片的 Mac。应用未经 Apple 公证，因此 macOS 会阻止首次启动：先尝试打开一次，然后在“系统设置 → 隐私与安全性”中点击“仍要打开”。请先将应用从 .dmg 拖到“应用程序”文件夹：从磁盘映像中运行时，应用内更新无法替换它。",
 			},
 			{
 				question: "支持哪些认证方式？",
@@ -173,11 +174,11 @@ export const zh: SiteMessages = {
 			},
 			{
 				question: "我的数据保存在哪里？",
-				answer: "以普通 JSON 文件保存在应用的配置文件夹中（Windows 上为 %APPDATA%\\com.dasshboard.app，Linux 上为 ~/.config/com.dasshboard.app）。这些文件不含任何密钥，可以放心备份。",
+				answer: "以普通 JSON 文件保存在应用的配置文件夹中（Windows 上为 %APPDATA%\\com.dasshboard.app，macOS 上为 ~/Library/Application Support/com.dasshboard.app，Linux 上为 ~/.config/com.dasshboard.app）。这些文件不含任何密钥，可以放心备份。",
 			},
 			{
 				question: "更新如何进行？",
-				answer: "在“关于”对话框中检查更新，或选择在启动时检查。在 Windows 和 AppImage 上，“安装并重启”会应用已签名的更新；.deb 和 .rpm 安装会收到新安装包的链接。",
+				answer: "在“关于”对话框中检查更新，或选择在启动时检查。在 Windows、macOS 和 AppImage 上，“安装并重启”会应用已签名的更新；.deb 和 .rpm 安装会收到新安装包的链接。",
 			},
 		],
 	},

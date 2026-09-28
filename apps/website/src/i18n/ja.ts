@@ -4,7 +4,7 @@ export const ja: SiteMessages = {
 	meta: {
 		title: "DaSSHboard — SSH デバイスのためのデスクトップダッシュボード",
 		description:
-			"デバイスは一度保存するだけ。ライブターミナルをグリッドに並べ、ワークスペース全体をワンクリックで再読み込み。Windows と Linux 向けの無料デスクトップアプリです。",
+			"デバイスは一度保存するだけ。ライブターミナルをグリッドに並べ、ワークスペース全体をワンクリックで再読み込み。Windows、macOS、Linux 向けの無料デスクトップアプリです。",
 	},
 	nav: {
 		features: "機能",
@@ -17,7 +17,7 @@ export const ja: SiteMessages = {
 		sections: "ページのセクション",
 	},
 	hero: {
-		eyebrow: "v{version} · Windows と Linux",
+		eyebrow: "v{version} · Windows・macOS・Linux",
 		title: "すべての SSH デバイスを、ひとつのダッシュボードに。",
 		lede: "デバイスは一度保存するだけ。ライブターミナルをグリッドに並べ、ワークスペース全体をワンクリックで再読み込みできます。",
 		localNote:
@@ -159,7 +159,7 @@ export const ja: SiteMessages = {
 	},
 	download: {
 		title: "DaSSHboard {version} をダウンロード",
-		body: "無料のオープンソース。Windows と Linux 向けのインストーラーを用意し、署名付きのアプリ内更新に対応しています。",
+		body: "無料のオープンソース。Windows、macOS、Linux 向けのインストーラーを用意し、署名付きのアプリ内更新に対応しています。",
 		installers: "インストーラーを入手",
 		releaseNotes: "リリースノート",
 		platformsTitle: "対応プラットフォーム",
@@ -170,6 +170,7 @@ export const ja: SiteMessages = {
 		},
 		rows: [
 			{ platform: "Windows", packages: "MSI、setup .exe", updates: "インストールして再起動" },
+			{ platform: "macOS", packages: ".dmg（Intel、Apple シリコン）", updates: "インストールして再起動" },
 			{ platform: "Linux", packages: "AppImage", updates: "インストールして再起動" },
 			{ platform: "Linux", packages: ".deb、.rpm", updates: "ダウンロードリンク付きの通知" },
 		],
@@ -183,7 +184,7 @@ export const ja: SiteMessages = {
 			},
 			{
 				question: "macOS 版はありますか？",
-				answer: "現時点ではありません。DaSSHboard は Windows と Linux 向けに提供しています。",
+				answer: "あります。Intel と Apple シリコンの Mac に対応しています。Apple の公証を受けていないため、初回起動は macOS にブロックされます。一度開こうとしたあと、「システム設定」→「プライバシーとセキュリティ」で「このまま開く」をクリックしてください。先に .dmg からアプリを「アプリケーション」フォルダーにドラッグしてください。ディスクイメージから実行している間は、アプリ内更新で置き換えられません。",
 			},
 			{
 				question: "どの認証方式に対応していますか？",
@@ -195,11 +196,11 @@ export const ja: SiteMessages = {
 			},
 			{
 				question: "データはどこに保存されますか？",
-				answer: "アプリの設定フォルダー（Windows は %APPDATA%\\com.dasshboard.app、Linux は ~/.config/com.dasshboard.app）に普通の JSON ファイルとして保存されます。シークレットを含まないので、安心してバックアップできます。",
+				answer: "アプリの設定フォルダー（Windows は %APPDATA%\\com.dasshboard.app、macOS は ~/Library/Application Support/com.dasshboard.app、Linux は ~/.config/com.dasshboard.app）に普通の JSON ファイルとして保存されます。シークレットを含まないので、安心してバックアップできます。",
 			},
 			{
 				question: "更新はどのように行われますか？",
-				answer: "バージョン情報ダイアログから更新を確認するか、起動時の確認をオンにします。Windows と AppImage では「インストールして再起動」で署名付きの更新を適用し、.deb と .rpm では新しいパッケージへのリンクが表示されます。",
+				answer: "バージョン情報ダイアログから更新を確認するか、起動時の確認をオンにします。Windows、macOS、AppImage では「インストールして再起動」で署名付きの更新を適用し、.deb と .rpm では新しいパッケージへのリンクが表示されます。",
 			},
 		],
 	},

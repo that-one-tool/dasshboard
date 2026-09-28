@@ -1,9 +1,11 @@
 name: release
 
-# Draft -> build -> publish a CrabNebula Cloud release with Windows (msi, nsis)
-# and Linux (deb, rpm, AppImage) installers. Adapted from
+# Draft -> build -> publish a CrabNebula Cloud release with Windows (msi, nsis),
+# Linux (deb, rpm, AppImage) and macOS (dmg + updater .app, Intel and Apple
+# Silicon) installers. Adapted from
 # https://docs.crabnebula.dev/cloud/ci/tauri-v2-workflow/ (desktop-only: no
-# macOS/Android/iOS jobs, since this app doesn't target those platforms).
+# Android/iOS jobs). macOS builds are ad-hoc signed only (no Apple Developer ID,
+# no notarization), so users clear Gatekeeper once by hand — see README.
 #
 # Required repo secrets:
 #   CN_API_KEY                         - CrabNebula Cloud API key for that-one-tool/dasshboard
@@ -86,6 +88,7 @@ jobs:
                 os:
                     - ubuntu-22.04
                     - windows-latest
+                    - macos-latest
         runs-on: ${{ matrix.os }}
         steps:
             - uses: actions/checkout@v5
@@ -98,6 +101,8 @@ jobs:
               uses: actions-rust-lang/setup-rust-toolchain@v1
               with:
                   toolchain: stable
+                  # The macOS runner is Apple Silicon; add Intel so it builds both.
+                  target: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
                   cache: true
                   cache-workspaces: "apps/desktop/src-tauri -> target"
 
@@ -126,8 +131,21 @@ jobs:
               run: npm ci
 
             - name: build Tauri app
+              if: matrix.os != 'macos-latest'
               working-directory: apps/desktop
               run: npm exec tauri build
+              env:
+                  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+                  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+            # One build per architecture (not universal), so each gets its own
+            # darwin-x86_64 / darwin-aarch64 updater entry on CrabNebula.
+            - name: build Tauri app (macOS Intel + Apple Silicon)
+              if: matrix.os == 'macos-latest'
+              working-directory: apps/desktop
+              run: |
+                  npm exec tauri build -- --target x86_64-apple-darwin
+                  npm exec tauri build -- --target aarch64-apple-darwin
               env:
                   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
                   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}

@@ -177,7 +177,7 @@ export const zh: Messages = {
 	"devices.agent.count.one": "{count} 个可用身份",
 	"devices.agent.count.other": "{count} 个可用身份",
 	"devices.field.portName": "端口名称",
-	"devices.field.portName.placeholder": "COM3 或 /dev/ttyUSB0",
+	"devices.field.portName.placeholder": "COM3、/dev/ttyUSB0 或 /dev/cu.usbserial-…",
 	"devices.field.baudRate": "波特率",
 	"devices.framing.legend": "帧格式（高级）",
 	"devices.field.dataBits": "数据位",

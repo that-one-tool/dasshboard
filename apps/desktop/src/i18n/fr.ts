@@ -177,7 +177,7 @@ export const fr: Messages = {
 	"devices.agent.count.one": "{count} identité disponible",
 	"devices.agent.count.other": "{count} identités disponibles",
 	"devices.field.portName": "Nom du port",
-	"devices.field.portName.placeholder": "COM3 ou /dev/ttyUSB0",
+	"devices.field.portName.placeholder": "COM3, /dev/ttyUSB0 ou /dev/cu.usbserial-…",
 	"devices.field.baudRate": "Débit en bauds",
 	"devices.framing.legend": "Trame (avancé)",
 	"devices.field.dataBits": "Bits de données",

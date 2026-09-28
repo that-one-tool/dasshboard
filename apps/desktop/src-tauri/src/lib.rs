@@ -3,6 +3,7 @@
 
 mod agent;
 mod agent_ident;
+mod app_menu;
 mod atomic_file;
 mod bookmark_store;
 mod commands;
@@ -45,7 +46,7 @@ pub mod tunnel;
 
 use std::sync::Arc;
 
-use tauri::Manager;
+use tauri::{AppHandle, Manager, RunEvent, Runtime};
 
 use bookmark_store::BookmarkStore;
 use known_hosts::KnownHostsStore;
@@ -73,7 +74,14 @@ pub(crate) fn app_version() -> String {
 pub fn run() {
     // Before anything can run an update check (which may set TLS env vars).
     local_shell::record_startup_env();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Tauri installs its default menu bar on macOS only; ours drops Cmd+W.
+    let builder = if cfg!(target_os = "macos") {
+        builder.menu(app_menu::macos_menu)
+    } else {
+        builder
+    };
+    builder
         .plugin(tauri_plugin_opener::init())
         // Persist and restore the window size/position across restarts (Phase 5).
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -217,8 +225,25 @@ pub fn run() {
             commands::download_update,
             commands::install_update,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let RunEvent::Exit = event {
+                close_sessions_on_exit(app);
+            }
+        });
+}
+
+/// Quitting from the macOS menu or Dock (Cmd+Q) ends the event loop without a
+/// `CloseRequested`, so the graceful disconnect runs here as well. After a
+/// normal window close nothing is live any more, so this is a no-op.
+fn close_sessions_on_exit<R: Runtime>(app: &AppHandle<R>) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    if state.has_live_sessions() {
+        tauri::async_runtime::block_on(state.shutdown_live_sessions());
+    }
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ export const en = {
 	meta: {
 		title: "DaSSHboard — a desktop dashboard for your SSH devices",
 		description:
-			"Save your devices once, arrange live terminals in a grid, and reload the whole workspace with a click. Free desktop app for Windows and Linux.",
+			"Save your devices once, arrange live terminals in a grid, and reload the whole workspace with a click. Free desktop app for Windows, macOS and Linux.",
 	},
 	nav: {
 		features: "Features",
@@ -17,7 +17,7 @@ export const en = {
 		sections: "Page sections",
 	},
 	hero: {
-		eyebrow: "v{version} · Windows & Linux",
+		eyebrow: "v{version} · Windows, macOS & Linux",
 		title: "Your SSH devices, one dashboard.",
 		lede: "Save your devices once, arrange live terminals in a grid, and reload the whole workspace with a click.",
 		localNote:
@@ -159,7 +159,7 @@ export const en = {
 	},
 	download: {
 		title: "Download DaSSHboard {version}",
-		body: "Free and open source. Installers for Windows and Linux, with signed in-app updates.",
+		body: "Free and open source. Installers for Windows, macOS and Linux, with signed in-app updates.",
 		installers: "Get the installers",
 		releaseNotes: "Release notes",
 		platformsTitle: "Supported platforms",
@@ -170,6 +170,7 @@ export const en = {
 		},
 		rows: [
 			{ platform: "Windows", packages: "MSI, setup .exe", updates: "Install & restart" },
+			{ platform: "macOS", packages: ".dmg (Intel, Apple Silicon)", updates: "Install & restart" },
 			{ platform: "Linux", packages: "AppImage", updates: "Install & restart" },
 			{ platform: "Linux", packages: ".deb, .rpm", updates: "Notification with a download link" },
 		],
@@ -183,7 +184,7 @@ export const en = {
 			},
 			{
 				question: "Is there a macOS version?",
-				answer: "Not at the moment: DaSSHboard ships for Windows and Linux.",
+				answer: "Yes, for Intel and Apple Silicon Macs. The app isn't notarized by Apple, so macOS blocks its first launch: try to open it once, then click Open Anyway in System Settings → Privacy & Security. Drag the app from the .dmg into Applications first: in-app updates can't replace it while it runs from the disk image.",
 			},
 			{
 				question: "Which authentication methods are supported?",
@@ -195,11 +196,11 @@ export const en = {
 			},
 			{
 				question: "Where is my data stored?",
-				answer: "In plain JSON files in the app's config folder (%APPDATA%\\com.dasshboard.app on Windows, ~/.config/com.dasshboard.app on Linux). They hold no secrets, so you can back them up safely.",
+				answer: "In plain JSON files in the app's config folder (%APPDATA%\\com.dasshboard.app on Windows, ~/Library/Application Support/com.dasshboard.app on macOS, ~/.config/com.dasshboard.app on Linux). They hold no secrets, so you can back them up safely.",
 			},
 			{
 				question: "How do updates work?",
-				answer: "Check for updates from the About dialog, or opt in to a check at startup. On Windows and with the AppImage, Install & restart applies the signed update; .deb and .rpm installs get a link to the new package.",
+				answer: "Check for updates from the About dialog, or opt in to a check at startup. On Windows, macOS and with the AppImage, Install & restart applies the signed update; .deb and .rpm installs get a link to the new package.",
 			},
 		],
 	},

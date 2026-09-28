@@ -183,7 +183,7 @@ export const en = {
 	"devices.agent.count.one": "{count} identity available",
 	"devices.agent.count.other": "{count} identities available",
 	"devices.field.portName": "Port name",
-	"devices.field.portName.placeholder": "COM3 or /dev/ttyUSB0",
+	"devices.field.portName.placeholder": "COM3, /dev/ttyUSB0 or /dev/cu.usbserial-…",
 	"devices.field.baudRate": "Baud rate",
 	"devices.framing.legend": "Framing (advanced)",
 	"devices.field.dataBits": "Data bits",

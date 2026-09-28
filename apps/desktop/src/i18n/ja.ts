@@ -177,7 +177,7 @@ export const ja: Messages = {
 	"devices.agent.count.one": "{count} 件の識別情報が利用可能",
 	"devices.agent.count.other": "{count} 件の識別情報が利用可能",
 	"devices.field.portName": "ポート名",
-	"devices.field.portName.placeholder": "COM3 または /dev/ttyUSB0",
+	"devices.field.portName.placeholder": "COM3、/dev/ttyUSB0 または /dev/cu.usbserial-…",
 	"devices.field.baudRate": "ボーレート",
 	"devices.framing.legend": "フレーミング（詳細）",
 	"devices.field.dataBits": "データビット",
