@@ -1144,10 +1144,11 @@ dependencies = [
 
 [[package]]
 name = "dasshboard"
-version = "1.22.0"
+version = "1.23.0"
 dependencies = [
  "aws-lc-rs",
  "keyring",
+ "libloading",
  "notify",
  "portable-pty",
  "russh",

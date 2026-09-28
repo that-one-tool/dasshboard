@@ -23,6 +23,8 @@
   bulk actions, bookmarks and chmod.
 - **Commands on connect** — a per-device snippet typed in as soon as the shell opens.
 - **Broadcast input** — type into several panes at once.
+- **System tray** — opt in to keep running in the tray when the window is closed,
+  with connections still live.
 - **Dark & light themes** with a one-click toggle in the top bar, configurable
   terminal font and scrollback.
 - **7 languages** — English, French, Spanish, German, Portuguese, Chinese, Japanese.

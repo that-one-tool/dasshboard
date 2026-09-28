@@ -100,6 +100,13 @@ export const ja: Messages = {
 	"settings.language.system": "システムの言語",
 	"settings.updates.checkOnLaunch": "起動時に更新を確認",
 	"settings.updates.checkOnLaunch.hint": "起動ごとに一度だけ更新サーバーに接続します。オフの場合、DaSSHboard は「DaSSHboard について」で「更新を確認」をクリックしたときだけ確認します。",
+	"settings.tray.closeToTray": "閉じてもシステムトレイで実行を続ける",
+	"settings.tray.closeToTray.hint": "ウィンドウを閉じると DaSSHboard はシステムトレイ（macOS ではメニューバー）に隠れ、接続は開いたままになります。終了はトレイアイコンのメニューから行います。GNOME では、トレイアイコンに AppIndicator 拡張機能が必要です。",
+	"settings.tray.unavailable": "このデスクトップではシステムトレイを利用できません。",
+	"tray.connections.one": "{count} 件のアクティブな接続",
+	"tray.connections.other": "{count} 件のアクティブな接続",
+	"tray.show": "DaSSHboard を表示",
+	"tray.quit": "終了",
 
 	/* -- about dialog ------------------------------------------------------- */
 	"about.tagline": "SFTP ファイル転送に対応したマルチペインの SSH・シリアルターミナルダッシュボード",

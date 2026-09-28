@@ -1,6 +1,6 @@
 [package]
 name = "dasshboard"
-version = "1.22.0"
+version = "1.23.0"
 description = "Multi-pane SSH & serial terminal dashboard with SFTP file transfer"
 authors = ["That one tool"]
 edition = "2021"
@@ -18,7 +18,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
-tauri = { version = "=2.11.5", features = [] }
+# `tray-icon`: the opt-in close-to-tray icon (`tray.rs`).
+tauri = { version = "=2.11.5", features = ["tray-icon"] }
 tauri-plugin-opener = "=2.5.4"
 # Native file pickers for import/export of devices/profiles. Pinned exactly
 # (like the other tauri-family crates); 2.7.2 is the latest 2.x that resolves
@@ -75,6 +76,11 @@ notify = "=8.2.0"
 # `AsyncRead + AsyncWrite`). Pinned exactly like the other crates; 3.0.0 requires
 # serde >= 1.0.229 (why the serde pin above was bumped one patch).
 russh-sftp = "=3.0.0"
+
+# Probes for an AppIndicator library before building the tray (`tray.rs`):
+# tray-icon's Linux backend panics when none loads. Same version it uses.
+[target.'cfg(target_os = "linux")'.dependencies]
+libloading = "=0.7.4"
 
 [dev-dependencies]
 # Temp-dir fixtures for DeviceStore tests (missing/corrupt-file recovery,

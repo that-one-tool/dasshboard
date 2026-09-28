@@ -22,6 +22,7 @@ import { openAboutDialog } from "./ui/aboutDialog";
 import { UpdateController } from "./updates/updateController";
 import { applyUpdateBadge } from "./updates/updateBadge";
 import { initSidebarResize } from "./layout/sidebarResize";
+import { initTrayLabels } from "./tray/trayLabels";
 import { openKnownHostsDialog } from "./settings/knownHostsDialog";
 import { showToast } from "./ui/toast";
 import { helpIcon, reloadIcon, lockIcon, gearIcon, filesIcon } from "./ui/icons";
@@ -301,6 +302,9 @@ async function initApp(): Promise<void> {
 		tunnelsPanel.retranslate();
 		sftpPanel.retranslate();
 	});
+
+	// Tray menu labels follow the UI language and the live-session count.
+	void initTrayLabels();
 
 	// Opt-in update check, last so it never delays startup. Off by default: the
 	// app contacts no server unless the user asked for it.

@@ -18,6 +18,7 @@ mod ssh_config;
 mod state;
 mod store;
 mod transfer;
+mod tray;
 mod updater;
 mod workspace;
 mod workspace_store;
@@ -147,26 +148,13 @@ pub fn run() {
             // reloading. Best-effort — a watcher failure just disables the
             // automatic layer; the manual Reload button is unaffected.
             config_watch::spawn(app.handle().clone(), config_dir);
+            // Opt-in close-to-tray: shows the tray icon when the setting is on.
+            tray::init(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
-            // App close (SPEC §7): gracefully disconnect every live SSH session
-            // before the window goes away, so the remote sees a clean SSH
-            // disconnect rather than a dropped TCP socket on process exit. We
-            // prevent the immediate close, run `disconnect_all` (bounded by its
-            // own ~1s timeout so a stuck session can't hang the quit), then
-            // `destroy()` to actually close. `destroy()` fires no further
-            // `CloseRequested`, so there is no re-entrancy loop.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if !window.state::<AppState>().has_live_sessions() {
-                    return; // nothing live — let the close proceed normally.
-                }
-                api.prevent_close();
-                let window = window.clone();
-                tauri::async_runtime::spawn(async move {
-                    window.state::<AppState>().shutdown_live_sessions().await;
-                    let _ = window.destroy();
-                });
+                on_close_requested(window, api);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -224,14 +212,42 @@ pub fn run() {
             commands::check_update,
             commands::download_update,
             commands::install_update,
+            commands::set_tray_labels,
+            commands::live_session_count,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
-            if let RunEvent::Exit = event {
-                close_sessions_on_exit(app);
-            }
+        .run(|app, event| match event {
+            RunEvent::Exit => close_sessions_on_exit(app),
+            // Clicking the Dock icon brings back a window hidden to the tray.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => tray::show_main_window(app),
+            _ => {}
         });
+}
+
+/// Window close: hide to the tray when opted in; otherwise (SPEC §7) gracefully
+/// disconnect every live SSH session before the window goes away, so the remote
+/// sees a clean SSH disconnect rather than a dropped TCP socket on process exit.
+/// The disconnect is bounded by its own ~1s timeout so a stuck session can't
+/// hang the quit; `destroy()` fires no further `CloseRequested`, so there is no
+/// re-entrancy loop.
+fn on_close_requested<R: Runtime>(window: &tauri::Window<R>, api: &tauri::CloseRequestApi) {
+    match tray::close_action_for(window.app_handle()) {
+        tray::CloseAction::Close => {}
+        tray::CloseAction::HideToTray => {
+            api.prevent_close();
+            let _ = window.hide();
+        }
+        tray::CloseAction::ShutdownThenClose => {
+            api.prevent_close();
+            let window = window.clone();
+            tauri::async_runtime::spawn(async move {
+                window.state::<AppState>().shutdown_live_sessions().await;
+                let _ = window.destroy();
+            });
+        }
+    }
 }
 
 /// Quitting from the macOS menu or Dock (Cmd+Q) ends the event loop without a

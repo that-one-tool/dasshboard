@@ -100,6 +100,13 @@ export const zh: Messages = {
 	"settings.language.system": "系统语言",
 	"settings.updates.checkOnLaunch": "启动时检查更新",
 	"settings.updates.checkOnLaunch.hint": "每次启动时联系一次更新服务器。关闭时，DaSSHboard 仅在你于“关于”中点击“检查更新”时检查。",
+	"settings.tray.closeToTray": "关闭时保留在系统托盘",
+	"settings.tray.closeToTray.hint": "关闭窗口会将 DaSSHboard 隐藏到系统托盘（macOS 上为菜单栏），连接保持打开。可从托盘图标的菜单中退出。在 GNOME 上，托盘图标需要 AppIndicator 扩展。",
+	"settings.tray.unavailable": "此桌面环境不支持系统托盘。",
+	"tray.connections.one": "{count} 个活动连接",
+	"tray.connections.other": "{count} 个活动连接",
+	"tray.show": "显示 DaSSHboard",
+	"tray.quit": "退出",
 
 	/* -- about dialog ------------------------------------------------------- */
 	"about.tagline": "支持 SFTP 文件传输的多窗格 SSH 与串口终端仪表盘",

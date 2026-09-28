@@ -99,6 +99,13 @@ export const es: Messages = {
 	"settings.language.system": "Idioma del sistema",
 	"settings.updates.checkOnLaunch": "Buscar actualizaciones al iniciar",
 	"settings.updates.checkOnLaunch.hint": "Contacta con el servidor de actualizaciones una vez por inicio. Si está desactivado, DaSSHboard solo comprueba cuando pulsas Buscar actualizaciones en Acerca de.",
+	"settings.tray.closeToTray": "Seguir en la bandeja del sistema al cerrar",
+	"settings.tray.closeToTray.hint": "Cerrar la ventana oculta DaSSHboard en la bandeja del sistema (barra de menús en macOS); las conexiones siguen abiertas. Sal desde el menú del icono. En GNOME, el icono necesita la extensión AppIndicator.",
+	"settings.tray.unavailable": "La bandeja del sistema no está disponible en este escritorio.",
+	"tray.connections.one": "{count} conexión activa",
+	"tray.connections.other": "{count} conexiones activas",
+	"tray.show": "Mostrar DaSSHboard",
+	"tray.quit": "Salir",
 
 	/* -- about dialog ------------------------------------------------------- */
 	"about.tagline": "Panel de terminales SSH y serie multipanel con transferencia de archivos SFTP",

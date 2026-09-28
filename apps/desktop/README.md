@@ -80,7 +80,7 @@ The app stores its data in the Tauri app-config directory
 | ---------------------- | ------------------------------------------------------------------------- |
 | `devices.json`         | Saved devices (never secrets)                                             |
 | `profiles.json`        | Layout profiles and the default profile id                                |
-| `settings.json`        | Terminal appearance, language, keepalive, SFTP idle timeout, last profile, update check on launch |
+| `settings.json`        | Terminal appearance, language, keepalive, SFTP idle timeout, last profile, update check on launch, close to tray |
 | `known_hosts.json`     | Trusted host keys (TOFU)                                                  |
 | `sftp_bookmarks.json`  | SFTP bookmarks for each device                                            |
 | `workspace_state.json` | Open tabs, Files panel and side-menu widths, per instance (not synced)   |

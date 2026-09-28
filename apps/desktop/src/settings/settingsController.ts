@@ -57,6 +57,7 @@ const FALLBACK_SETTINGS: Settings = {
   keepalive: { ...DEFAULT_KEEPALIVE_SETTINGS },
   sftp: { ...DEFAULT_SFTP_SETTINGS },
   updates: { checkOnLaunch: false },
+  tray: { closeToTray: false },
 };
 
 export class SettingsController {
@@ -217,6 +218,25 @@ export class SettingsController {
     });
   }
 
+  /** Reflects and persists the opt-in close-to-tray (the backend shows or
+   * hides the tray icon on save). */
+  private wireTrayCheckbox(root: HTMLElement): void {
+    const box = root.querySelector<HTMLInputElement>(".settings-close-to-tray");
+    if (!box) return;
+    box.checked = this.settings.tray.closeToTray;
+    box.addEventListener("change", () => void this.applyCloseToTray(box));
+  }
+
+  /** The backend stores the setting as off when it can't build the tray icon;
+   * reflect that and say why. */
+  private async applyCloseToTray(box: HTMLInputElement): Promise<void> {
+    const wanted = box.checked;
+    this.settings = { ...this.settings, tray: { closeToTray: wanted } };
+    await this.save();
+    box.checked = this.settings.tray.closeToTray;
+    if (wanted && !box.checked) this.onError(t("settings.tray.unavailable"));
+  }
+
   /* ---------------------------------------------------------------------- */
 
   private openDialog(): void {
@@ -275,6 +295,15 @@ export class SettingsController {
               </label>
               <small class="form-hint" id="settings-check-updates-hint"
               data-i18n="settings.updates.checkOnLaunch.hint">${t("settings.updates.checkOnLaunch.hint")}</small>
+            </div>
+            <div class="form-group form-group-checkbox">
+              <label>
+                <input type="checkbox" class="settings-close-to-tray"
+                  aria-describedby="settings-close-to-tray-hint" />
+                <span data-i18n="settings.tray.closeToTray">${t("settings.tray.closeToTray")}</span>
+              </label>
+              <small class="form-hint" id="settings-close-to-tray-hint"
+              data-i18n="settings.tray.closeToTray.hint">${t("settings.tray.closeToTray.hint")}</small>
             </div>
           </div>
           <div class="settings-panel" role="tabpanel" id="settings-panel-connections"
@@ -386,6 +415,7 @@ export class SettingsController {
     sftpIdle?.addEventListener("change", () => void applySftp());
 
     this.wireUpdateCheckbox(root);
+    this.wireTrayCheckbox(root);
     wireSettingsTabs(root);
 
     // Re-translate the open dialog the moment the language changes (its

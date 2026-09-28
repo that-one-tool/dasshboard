@@ -38,6 +38,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     keepalive: { intervalSecs: 30, countMax: 3 },
     sftp: { idleDisconnectMins: 10 },
     updates: { checkOnLaunch: false },
+    tray: { closeToTray: false },
     ...overrides,
   };
 }
@@ -281,6 +282,58 @@ describe("SettingsController update check on launch", () => {
   });
 });
 
+describe("SettingsController close to tray", () => {
+  it("reflects the setting in the dialog checkbox and persists a toggle", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+
+    const box = document.querySelector<HTMLInputElement>(".settings-close-to-tray");
+    expect(box?.checked).toBe(false);
+    if (!box) throw new Error("unreachable");
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    await flush();
+
+    expect(vi.mocked(saveSettings).mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ tray: { closeToTray: true } }),
+    );
+  });
+
+  it("unticks the box and reports an error when the tray is unavailable", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    // The backend stores close-to-tray as off when it can't build the icon.
+    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => ({
+      ...s,
+      tray: { closeToTray: false },
+    }));
+    const onError = vi.fn();
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+
+    const box = document.querySelector<HTMLInputElement>(".settings-close-to-tray");
+    if (!box) throw new Error("unreachable");
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    await flush();
+
+    expect(box.checked).toBe(false);
+    expect(onError).toHaveBeenCalledWith("The system tray isn't available on this desktop.");
+  });
+
+  it("checks the box when the setting is stored on", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings({ tray: { closeToTray: true } }));
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+
+    expect(document.querySelector<HTMLInputElement>(".settings-close-to-tray")?.checked).toBe(true);
+  });
+});
+
 describe("SettingsController theme toggle", () => {
   async function initWith(theme: "dark" | "light") {
     const g = fakeGrid();
@@ -355,7 +408,7 @@ describe("SettingsController dialog tabs", () => {
     return [...(root?.querySelectorAll<HTMLElement>("input, select") ?? [])].map((el) => el.className);
   }
 
-  it("opens on General: language, font, font size, scrollback, then the update check", async () => {
+  it("opens on General: language, font, font size, scrollback, update check, then close to tray", async () => {
     await openDialog();
     expect(fieldsIn("general")).toEqual([
       "settings-language",
@@ -363,6 +416,7 @@ describe("SettingsController dialog tabs", () => {
       "settings-font-size",
       "settings-scrollback",
       "settings-check-updates",
+      "settings-close-to-tray",
     ]);
     expect(document.querySelector<HTMLElement>('[data-panel="general"]')?.hidden).toBe(false);
     expect(document.querySelector<HTMLElement>('[data-panel="connections"]')?.hidden).toBe(true);

@@ -55,6 +55,9 @@ import {
 	listProfiles,
 	onSessionStatus,
 	onHostKeyPrompt,
+	onLiveSessionCount,
+	setTrayLabels,
+	getLiveSessionCount,
 	newDataChannel,
 	isLocalConfigWriteRecent,
 	type Device,
@@ -283,6 +286,7 @@ describe("IPC command wrapper argument shapes", () => {
 			keepalive: { intervalSecs: 30, countMax: 3 },
 			sftp: { idleDisconnectMins: 10 },
 			updates: { checkOnLaunch: false },
+			tray: { closeToTray: false },
 		};
 		invokeMock.mockResolvedValue(settings);
 		await expect(getSettings()).resolves.toEqual(settings);
@@ -298,10 +302,24 @@ describe("IPC command wrapper argument shapes", () => {
 			keepalive: { intervalSecs: 30, countMax: 3 },
 			sftp: { idleDisconnectMins: 10 },
 			updates: { checkOnLaunch: false },
+			tray: { closeToTray: false },
 		};
 		invokeMock.mockResolvedValue(settings);
 		await saveSettings(settings);
 		expect(invokeMock).toHaveBeenCalledWith("save_settings", { settings });
+	});
+
+	it("getLiveSessionCount forwards no arguments", async () => {
+		invokeMock.mockResolvedValue(2);
+		await expect(getLiveSessionCount()).resolves.toBe(2);
+		expect(invokeMock).toHaveBeenCalledWith("live_session_count");
+	});
+
+	it("setTrayLabels sends { labels }", async () => {
+		const labels = { connections: "2 live connections", show: "Show DaSSHboard", quit: "Quit" };
+		invokeMock.mockResolvedValue(undefined);
+		await setTrayLabels(labels);
+		expect(invokeMock).toHaveBeenCalledWith("set_tray_labels", { labels });
 	});
 
 	it("checkUpdate forwards no arguments and returns the found update", async () => {
@@ -365,6 +383,23 @@ describe("event subscriptions and data channel", () => {
 		const payload = { sessionId: "s1", status: "connected" };
 		captured?.({ payload });
 		expect(handler).toHaveBeenCalledWith(payload);
+	});
+
+	it("onLiveSessionCount subscribes to live_session_count and unwraps the count", async () => {
+		const unlisten = vi.fn();
+		let captured: ((e: { payload: unknown }) => void) | undefined;
+		listenMock.mockImplementation((_event: string, cb: (e: { payload: unknown }) => void) => {
+			captured = cb;
+			return Promise.resolve(unlisten);
+		});
+
+		const handler = vi.fn();
+		const result = await onLiveSessionCount(handler);
+
+		expect(listenMock).toHaveBeenCalledWith("live_session_count", expect.any(Function));
+		expect(result).toBe(unlisten);
+		captured?.({ payload: 3 });
+		expect(handler).toHaveBeenCalledWith(3);
 	});
 
 	it("onHostKeyPrompt subscribes to host_key_prompt and unwraps the payload", async () => {

@@ -254,10 +254,30 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, AppError> {
 }
 
 /// Persists app settings (sanitized: font size clamped, empty family defaulted)
-/// and returns the stored value (SPEC.md §5).
+/// and returns the stored value (SPEC.md §5). Shows or hides the tray icon to
+/// match the close-to-tray setting.
 #[tauri::command]
-pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<Settings, AppError> {
+pub fn save_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mut settings: Settings,
+) -> Result<Settings, AppError> {
+    // Stored as off when the tray can't be built, so the checkbox reflects it.
+    settings.tray.close_to_tray = crate::tray::set_enabled(&app, settings.tray.close_to_tray);
     save_settings_impl(&state, settings)
+}
+
+/// Live shell sessions, tunnels and SFTP connections — the tray menu's count,
+/// read once by the frontend after it subscribes to changes.
+#[tauri::command]
+pub fn live_session_count(state: State<'_, AppState>) -> usize {
+    state.live_session_count()
+}
+
+/// Updates the tray menu with labels the frontend translated (and pluralized).
+#[tauri::command]
+pub fn set_tray_labels(app: AppHandle, labels: crate::tray::TrayLabels) {
+    crate::tray::set_labels(&app, labels);
 }
 
 /// The saved open-tabs workspace (Tabs milestone, Phase 3). Empty `tabs` means
@@ -284,8 +304,12 @@ pub fn save_workspace_state(
 /// frontend invokes this before re-fetching its lists so the list commands
 /// serve the freshly-read data rather than the startup cache.
 #[tauri::command]
-pub fn reload_config(state: State<'_, AppState>) {
+pub fn reload_config(app: AppHandle, state: State<'_, AppState>) {
     reload_config_impl(&state);
+    // Another instance may have toggled close-to-tray. Only reflected, never
+    // written back, so a reload can't clobber the other instance's setting.
+    let close_to_tray = state.settings_store.get().tray.close_to_tray;
+    crate::tray::set_enabled(&app, close_to_tray);
 }
 
 /* ============================================================================

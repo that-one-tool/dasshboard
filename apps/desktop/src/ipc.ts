@@ -652,6 +652,15 @@ export interface Settings {
   sftp: SftpSettings;
   /** Update-check behavior (launch check is opt-in). */
   updates: UpdateSettings;
+  /** System-tray behavior (close-to-tray is opt-in). */
+  tray: TraySettings;
+}
+
+/** Mirrors the backend `TraySettings`. */
+export interface TraySettings {
+  /** Closing the window hides it to the tray (sessions keep running); off by
+   * default. */
+  closeToTray: boolean;
 }
 
 /** Mirrors the backend `UpdateSettings`. */
@@ -700,6 +709,34 @@ export async function getSettings(): Promise<Settings> {
 /** Persists app settings (backend clamps font size / defaults empty family). */
 export async function saveSettings(settings: Settings): Promise<Settings> {
   return invokeMutation<Settings>("save_settings", { settings });
+}
+
+/* ----------------------------------------------------------------------------
+ * System tray (backend `tray.rs`)
+ * -------------------------------------------------------------------------- */
+
+/** Mirrors the backend `TrayLabels`: the tray menu, already translated. */
+export interface TrayLabels {
+  /** The disabled live-connection count line, pluralized. */
+  connections: string;
+  show: string;
+  quit: string;
+}
+
+/** Live shell sessions, tunnels and SFTP connections right now. */
+export async function getLiveSessionCount(): Promise<number> {
+  return invokeChecked<number>("live_session_count");
+}
+
+/** Pushes translated tray menu labels to the backend. */
+export async function setTrayLabels(labels: TrayLabels): Promise<void> {
+  await invokeChecked<void>("set_tray_labels", { labels });
+}
+
+/** Subscribes to `live_session_count` (emitted when the number of live
+ * sessions, tunnels and SFTP connections changes). Returns an unlisten function. */
+export function onLiveSessionCount(handler: (count: number) => void): Promise<UnlistenFn> {
+  return listen<number>("live_session_count", (e) => handler(e.payload));
 }
 
 /* ============================================================================

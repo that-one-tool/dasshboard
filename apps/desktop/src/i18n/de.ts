@@ -100,6 +100,13 @@ export const de: Messages = {
 	"settings.language.system": "Systemsprache",
 	"settings.updates.checkOnLaunch": "Beim Start nach Updates suchen",
 	"settings.updates.checkOnLaunch.hint": "Kontaktiert den Update-Server einmal pro Start. Wenn deaktiviert, prüft DaSSHboard nur, wenn Sie unter Über auf Nach Updates suchen klicken.",
+	"settings.tray.closeToTray": "Beim Schließen im Infobereich weiterlaufen",
+	"settings.tray.closeToTray.hint": "Schließen des Fensters blendet DaSSHboard in den Infobereich aus (Menüleiste unter macOS); Verbindungen bleiben offen. Beenden über das Menü des Symbols. Unter GNOME benötigt das Symbol die Erweiterung AppIndicator.",
+	"settings.tray.unavailable": "Der Infobereich ist auf diesem Desktop nicht verfügbar.",
+	"tray.connections.one": "{count} aktive Verbindung",
+	"tray.connections.other": "{count} aktive Verbindungen",
+	"tray.show": "DaSSHboard anzeigen",
+	"tray.quit": "Beenden",
 
 	/* -- about dialog ------------------------------------------------------- */
 	"about.tagline": "Mehrbereich-Dashboard für SSH- und serielle Terminals mit SFTP-Dateiübertragung",

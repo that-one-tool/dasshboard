@@ -129,6 +129,15 @@ pub struct UpdateSettings {
     pub check_on_launch: bool,
 }
 
+/// System-tray behavior. Off by default: closing the window quits the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TraySettings {
+    /// Closing the window hides it to the tray; live sessions keep running
+    /// until Quit is chosen from the tray menu.
+    pub close_to_tray: bool,
+}
+
 impl Default for TerminalSettings {
     fn default() -> Self {
         TerminalSettings {
@@ -173,6 +182,10 @@ pub struct Settings {
     /// before this group existed still loads (with the launch check off).
     #[serde(default)]
     pub updates: UpdateSettings,
+    /// System-tray behavior. `#[serde(default)]` so a `settings.json` written
+    /// before this group existed still loads (with close-to-tray off).
+    #[serde(default)]
+    pub tray: TraySettings,
 }
 
 fn default_version() -> u32 {
@@ -189,6 +202,7 @@ impl Default for Settings {
             keepalive: KeepaliveSettings::default(),
             sftp: SftpSettings::default(),
             updates: UpdateSettings::default(),
+            tray: TraySettings::default(),
         }
     }
 }
@@ -593,6 +607,36 @@ mod tests {
         .unwrap();
         let store = SettingsStore::load(dir.path().to_path_buf());
         assert_eq!(store.get().updates, UpdateSettings::default());
+    }
+
+    #[test]
+    fn close_to_tray_is_off_by_default_and_round_trips() {
+        let dir = tempdir().unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        assert!(!store.get().tray.close_to_tray);
+
+        let mut s = store.get();
+        s.tray.close_to_tray = true;
+        store.save(s).unwrap();
+
+        let reloaded = SettingsStore::load(dir.path().to_path_buf());
+        assert!(reloaded.get().tray.close_to_tray);
+        let value = serde_json::to_value(reloaded.get()).unwrap();
+        assert_eq!(value["tray"]["closeToTray"], true);
+    }
+
+    #[test]
+    fn deserializes_older_file_missing_tray_group() {
+        // A settings.json written before `tray` existed must still load, with
+        // close-to-tray off (closing the window keeps quitting the app).
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(SETTINGS_FILE),
+            r#"{ "version": 1, "terminal": { "fontSize": 14, "fontFamily": "Consolas", "theme": "dark" } }"#,
+        )
+        .unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        assert_eq!(store.get().tray, TraySettings::default());
     }
 
     #[test]

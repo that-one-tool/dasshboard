@@ -61,11 +61,17 @@ pub struct AppState {
 impl AppState {
     /// Whether any shell session, tunnel or SFTP connection is live.
     pub fn has_live_sessions(&self) -> bool {
-        self.session_manager.session_count() > 0
-            || self.serial_manager.session_count() > 0
-            || self.local_shell_manager.session_count() > 0
-            || self.tunnel_manager.tunnel_count() > 0
-            || self.sftp_manager.connection_count() > 0
+        self.live_session_count() > 0
+    }
+
+    /// Number of live shell sessions, tunnels and SFTP connections — everything
+    /// app close would disconnect (shown in the tray menu).
+    pub fn live_session_count(&self) -> usize {
+        self.session_manager.session_count()
+            + self.serial_manager.session_count()
+            + self.local_shell_manager.session_count()
+            + self.tunnel_manager.tunnel_count()
+            + self.sftp_manager.connection_count()
     }
 
     /// Gracefully closes every live session, tunnel and SFTP connection, so

@@ -100,6 +100,13 @@ export const fr: Messages = {
 	"settings.language.system": "Langue du système",
 	"settings.updates.checkOnLaunch": "Rechercher les mises à jour au démarrage",
 	"settings.updates.checkOnLaunch.hint": "Contacte le serveur de mises à jour une fois par lancement. Désactivé, DaSSHboard ne vérifie que lorsque vous cliquez sur Rechercher les mises à jour dans À propos.",
+	"settings.tray.closeToTray": "Rester dans la zone de notification à la fermeture",
+	"settings.tray.closeToTray.hint": "Fermer la fenêtre masque DaSSHboard dans la zone de notification (barre des menus sur macOS) ; les connexions restent ouvertes. Quittez depuis le menu de l'icône. Sous GNOME, l'icône nécessite l'extension AppIndicator.",
+	"settings.tray.unavailable": "La zone de notification n'est pas disponible sur ce bureau.",
+	"tray.connections.one": "{count} connexion active",
+	"tray.connections.other": "{count} connexions actives",
+	"tray.show": "Afficher DaSSHboard",
+	"tray.quit": "Quitter",
 
 	/* -- about dialog ------------------------------------------------------- */
 	"about.tagline": "Tableau de bord de terminaux SSH et série multi-volets avec transfert de fichiers SFTP",

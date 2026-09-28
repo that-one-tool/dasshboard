@@ -106,6 +106,13 @@ export const en = {
 	"settings.language.system": "System default",
 	"settings.updates.checkOnLaunch": "Check for updates at startup",
 	"settings.updates.checkOnLaunch.hint": "Contacts the update server once per launch. When off, DaSSHboard only checks when you click Check for updates in About.",
+	"settings.tray.closeToTray": "Keep running in the tray when closed",
+	"settings.tray.closeToTray.hint": "Closing the window hides DaSSHboard to the system tray (menu bar on macOS); connections stay open. Quit from the tray icon's menu. On GNOME, the tray icon needs the AppIndicator extension.",
+	"settings.tray.unavailable": "The system tray isn't available on this desktop.",
+	"tray.connections.one": "{count} live connection",
+	"tray.connections.other": "{count} live connections",
+	"tray.show": "Show DaSSHboard",
+	"tray.quit": "Quit",
 
 	/* -- about dialog (ui/aboutDialog.ts) ----------------------------------- */
 	"about.tagline": "Multi-pane SSH & serial terminal dashboard with SFTP file transfer",

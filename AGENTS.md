@@ -54,6 +54,8 @@ files, releasing),
     - `settings/` — app settings controller (dialog with General / Connections
       tabs via `settingsTabs`), the header dark/light toggle (`themeToggle`),
       known-hosts dialog
+    - `tray/` — pushes the translated tray menu labels (incl. the pluralized
+      live-connection count) to the backend on count/locale change
     - `updates/` — update controller (check/confirm/install), the update
       block in the About dialog, and the About-button badge
     - `i18n/` — dependency-free `t`/`tp` runtime + one message table per locale;
@@ -107,6 +109,13 @@ files, releasing),
       an unbundled macOS dev binary is notify-only), notify-only for
       `.deb`/`.rpm`; the install closes live sessions first
       (`AppState::shutdown_live_sessions`, shared with app close and quit)
+    - `tray.rs` — opt-in close-to-tray: a lazily built tray icon (disabled
+      live-connection count, Show, Quit; a monochrome template image on macOS,
+      `icons/tray-template.png`), the window-close decision (hide vs.
+      disconnect-then-close; never hides without a built tray), and a poller
+      emitting `live_session_count`; labels come translated from the frontend.
+      Tauri alone holds the icon so its exit cleanup removes it; on Linux the
+      AppIndicator library is probed first (tray-icon panics without it)
     - `app_menu.rs` — the macOS menu bar (Tauri's default minus Close Window,
       so Cmd+W closes a tab)
     - `state.rs` — `AppState` (managed Tauri state), `error.rs` — `AppError`
