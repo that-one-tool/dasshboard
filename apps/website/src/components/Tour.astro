@@ -19,30 +19,32 @@ const stops = [
 ] as const;
 ---
 
-<section id="tour" class="section container">
-	<h2 class="section-title">{t.tour.title}</h2>
-	<p class="section-lede">{t.tour.lede}</p>
-	<div class="stops">
-		{
-			stops.map(({ shot, copy, Mock }) => (
-				<article class="stop">
-					<div class="stop-copy">
-						<h3>{copy.title}</h3>
-						<p>{copy.body}</p>
-						<ul class="points">
-							{copy.points.map((point) => (
-								<li>{point}</li>
-							))}
-						</ul>
-					</div>
-					<div class="stop-visual">
-						<Screenshot shot={shot} alt={copy.alt}>
-							<Mock />
-						</Screenshot>
-					</div>
-				</article>
-			))
-		}
+<section id="tour" class="section band">
+	<div class="container">
+		<h2 class="section-title">{t.tour.title}</h2>
+		<p class="section-lede">{t.tour.lede}</p>
+		<div class="stops">
+			{
+				stops.map(({ shot, copy, Mock }) => (
+					<article class="stop">
+						<div class="stop-copy">
+							<h3>{copy.title}</h3>
+							<p>{copy.body}</p>
+							<ul class="points">
+								{copy.points.map((point) => (
+									<li>{point}</li>
+								))}
+							</ul>
+						</div>
+						<div class="stop-visual">
+							<Screenshot shot={shot} alt={copy.alt}>
+								<Mock />
+							</Screenshot>
+						</div>
+					</article>
+				))
+			}
+		</div>
 	</div>
 </section>
 

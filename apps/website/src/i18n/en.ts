@@ -155,6 +155,10 @@ export const en = {
 				title: "Locked-down app, signed updates",
 				body: "A strict content security policy with no remote content, and update packages that must carry a valid signature before they install.",
 			},
+			{
+				title: "Open source, nothing hidden",
+				body: "MIT-licensed, with every line of code on GitHub — anyone can audit exactly what the app does.",
+			},
 		],
 	},
 	download: {

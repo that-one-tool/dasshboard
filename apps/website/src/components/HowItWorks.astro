@@ -8,24 +8,22 @@ interface Props {
 const { t } = Astro.props;
 ---
 
-<section id="how-it-works" class="section band">
-	<div class="container">
-		<h2 class="section-title">{t.howItWorks.title}</h2>
-		<p class="section-lede">{t.howItWorks.lede}</p>
-		<ol class="steps">
-			{
-				t.howItWorks.steps.map((step, index) => (
-					<li class="step">
-						<span class="step-number" aria-hidden="true">
-							{index + 1}
-						</span>
-						<h3>{step.title}</h3>
-						<p>{step.body}</p>
-					</li>
-				))
-			}
-		</ol>
-	</div>
+<section id="how-it-works" class="section container">
+	<h2 class="section-title">{t.howItWorks.title}</h2>
+	<p class="section-lede">{t.howItWorks.lede}</p>
+	<ol class="steps">
+		{
+			t.howItWorks.steps.map((step, index) => (
+				<li class="step">
+					<span class="step-number" aria-hidden="true">
+						{index + 1}
+					</span>
+					<h3>{step.title}</h3>
+					<p>{step.body}</p>
+				</li>
+			))
+		}
+	</ol>
 </section>
 
 <style>

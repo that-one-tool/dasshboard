@@ -155,6 +155,10 @@ export const de: SiteMessages = {
 				title: "Abgeschottete App, signierte Updates",
 				body: "Eine strenge Content Security Policy ohne entfernte Inhalte und Update-Pakete, die vor der Installation eine gültige Signatur tragen müssen.",
 			},
+			{
+				title: "Open Source, nichts versteckt",
+				body: "MIT-lizenziert, der gesamte Code liegt auf GitHub – jeder kann genau prüfen, was die App tut.",
+			},
 		],
 	},
 	download: {

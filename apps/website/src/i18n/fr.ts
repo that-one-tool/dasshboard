@@ -155,6 +155,10 @@ export const fr: SiteMessages = {
 				title: "Application verrouillée, mises à jour signées",
 				body: "Une politique de sécurité du contenu stricte sans contenu distant, et des paquets de mise à jour qui doivent porter une signature valide avant d'être installés.",
 			},
+			{
+				title: "Open source, rien de caché",
+				body: "Sous licence MIT, avec tout le code sur GitHub : chacun peut vérifier exactement ce que fait l'application.",
+			},
 		],
 	},
 	download: {

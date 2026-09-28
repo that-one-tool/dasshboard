@@ -156,6 +156,10 @@ export const pt: SiteMessages = {
 				title: "Aplicação blindada, atualizações assinadas",
 				body: "Uma política de segurança de conteúdo rigorosa sem conteúdo remoto, e pacotes de atualização que têm de ter uma assinatura válida antes de serem instalados.",
 			},
+			{
+				title: "Código aberto, nada escondido",
+				body: "Licença MIT e todo o código no GitHub: qualquer pessoa pode auditar exatamente o que a aplicação faz.",
+			},
 		],
 	},
 	download: {

@@ -133,6 +133,10 @@ export const zh: SiteMessages = {
 				title: "严格锁定的应用，签名的更新",
 				body: "严格的内容安全策略，不加载任何远程内容；更新包必须带有有效签名才能安装。",
 			},
+			{
+				title: "开源，毫无隐藏",
+				body: "采用 MIT 许可证，全部代码公开在 GitHub 上，任何人都能审查应用究竟做了什么。",
+			},
 		],
 	},
 	download: {
