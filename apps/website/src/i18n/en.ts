@@ -208,6 +208,9 @@ export const en = {
 			},
 		],
 	},
+	lightbox: {
+		close: "Close",
+	},
 	footer: {
 		builtWith: "DaSSHboard — built with Tauri, Rust and xterm.js.",
 		license: "MIT license",

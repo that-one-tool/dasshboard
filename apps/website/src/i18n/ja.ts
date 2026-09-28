@@ -208,6 +208,9 @@ export const ja: SiteMessages = {
 			},
 		],
 	},
+	lightbox: {
+		close: "閉じる",
+	},
 	footer: {
 		builtWith: "DaSSHboard — Tauri、Rust、xterm.js で構築。",
 		license: "MIT ライセンス",

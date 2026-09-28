@@ -9,6 +9,7 @@ import Security from "./Security.astro";
 import Download from "./Download.astro";
 import Faq from "./Faq.astro";
 import Footer from "./Footer.astro";
+import Lightbox from "./Lightbox.astro";
 import { messagesFor } from "../i18n";
 import type { Locale } from "../i18n/locales";
 import { readAppVersion } from "../lib/appVersion";
@@ -36,4 +37,5 @@ const repoUrl = "https://github.com/that-one-tool/dasshboard";
 		<Faq t={t} />
 	</main>
 	<Footer t={t} repoUrl={repoUrl} />
+	<Lightbox t={t} />
 </Layout>

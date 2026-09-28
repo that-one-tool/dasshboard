@@ -186,6 +186,9 @@ export const zh: SiteMessages = {
 			},
 		],
 	},
+	lightbox: {
+		close: "关闭",
+	},
 	footer: {
 		builtWith: "DaSSHboard — 基于 Tauri、Rust 和 xterm.js 构建。",
 		license: "MIT 许可证",

@@ -1,5 +1,5 @@
 ---
-import { Image } from "astro:assets";
+import { Image, getImage } from "astro:assets";
 import { findScreenshot, responsiveWidths, type ScreenshotSlot } from "../lib/screenshots";
 
 interface Props {
@@ -12,17 +12,27 @@ const modules = import.meta.glob<{ default: ImageMetadata }>("../assets/screensh
 	eager: true,
 });
 const image = findScreenshot(shot, modules);
+const full = image ? await getImage({ src: image, format: "webp", width: image.width }) : undefined;
 ---
 
 {
-	image ? (
-		<Image
-			class="shot-image"
-			src={image}
-			alt={alt}
-			widths={responsiveWidths(image.width)}
-			sizes="(max-width: 51.25em) 100vw, 36em"
-		/>
+	image && full ? (
+		<button
+			class="shot-zoom"
+			type="button"
+			aria-haspopup="dialog"
+			data-full-src={full.src}
+			data-full-width={image.width}
+			data-full-height={image.height}
+		>
+			<Image
+				class="shot-image"
+				src={image}
+				alt={alt}
+				widths={responsiveWidths(image.width)}
+				sizes="(max-width: 51.25em) 100vw, 36em"
+			/>
+		</button>
 	) : (
 		<div class="shot-mock" role="img" aria-label={alt}>
 			<div class="shot-bar">
@@ -48,6 +58,26 @@ const image = findScreenshot(shot, modules);
 
 	.shot-image {
 		height: auto;
+		transition: border-color 0.15s ease;
+	}
+
+	.shot-zoom {
+		display: block;
+		width: 100%;
+		padding: 0;
+		border: 0;
+		border-radius: var(--radius-lg);
+		background: none;
+		cursor: zoom-in;
+	}
+
+	.shot-zoom:hover .shot-image {
+		border-color: var(--accent);
+	}
+
+	.shot-zoom:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 3px;
 	}
 
 	.shot-bar {

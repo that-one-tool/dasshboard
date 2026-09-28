@@ -208,6 +208,9 @@ export const fr: SiteMessages = {
 			},
 		],
 	},
+	lightbox: {
+		close: "Fermer",
+	},
 	footer: {
 		builtWith: "DaSSHboard — conçu avec Tauri, Rust et xterm.js.",
 		license: "Licence MIT",

@@ -1,0 +1,100 @@
+---
+import type { SiteMessages } from "../i18n/en";
+
+interface Props {
+	t: SiteMessages;
+}
+
+const { t } = Astro.props;
+---
+
+<dialog class="lightbox">
+	<button class="lightbox-close" type="button" aria-label={t.lightbox.close}>
+		<svg viewBox="0 0 24 24" aria-hidden="true">
+			<path d="M6 6l12 12M18 6L6 18" />
+		</svg>
+	</button>
+	<img class="lightbox-image" alt="" />
+</dialog>
+
+<script>
+	const dialog = document.querySelector<HTMLDialogElement>(".lightbox");
+	const image = dialog?.querySelector<HTMLImageElement>(".lightbox-image");
+
+	function open(trigger: HTMLElement, target: HTMLImageElement, box: HTMLDialogElement): void {
+		const { fullSrc, fullWidth, fullHeight } = trigger.dataset;
+		target.src = fullSrc ?? "";
+		target.alt = trigger.querySelector("img")?.alt ?? "";
+		target.style.setProperty("--shot-width", `${fullWidth}px`);
+		target.style.setProperty("--shot-ratio", `${fullWidth} / ${fullHeight}`);
+		box.setAttribute("aria-label", target.alt);
+		box.showModal();
+	}
+
+	if (dialog && image) {
+		document.querySelectorAll<HTMLElement>(".shot-zoom").forEach((trigger) => {
+			trigger.addEventListener("click", () => open(trigger, image, dialog));
+		});
+		// Any click closes: the backdrop, the image or the close button.
+		dialog.addEventListener("click", () => dialog.close());
+	}
+</script>
+
+<style>
+	.lightbox {
+		max-width: none;
+		max-height: none;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		overflow: visible;
+	}
+
+	.lightbox::backdrop {
+		background: rgba(0, 0, 0, 0.82);
+	}
+
+	:global(html:has(.lightbox[open])) {
+		overflow: hidden;
+	}
+
+	/* Fit the viewport, but upscale small screenshots at most 2× so they stay sharp. */
+	.lightbox-image {
+		display: block;
+		width: min(94vw, calc(86vh * var(--shot-ratio)), calc(var(--shot-width) * 2));
+		height: auto;
+		aspect-ratio: var(--shot-ratio);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-lg);
+		cursor: zoom-out;
+	}
+
+	.lightbox-close {
+		position: fixed;
+		top: 1rem;
+		right: 1rem;
+		display: grid;
+		place-items: center;
+		width: 2.5rem;
+		height: 2.5rem;
+		padding: 0;
+		border: 1px solid var(--border-strong);
+		border-radius: 50%;
+		color: var(--text-bright);
+		background: var(--surface-1);
+		cursor: pointer;
+	}
+
+	.lightbox-close:hover {
+		background: var(--surface-2);
+	}
+
+	.lightbox-close svg {
+		width: 1.1rem;
+		height: 1.1rem;
+		fill: none;
+		stroke: currentColor;
+		stroke-width: 2;
+		stroke-linecap: round;
+	}
+</style>
