@@ -185,7 +185,7 @@ export const pt: SiteMessages = {
 		items: [
 			{
 				question: "O DaSSHboard é gratuito?",
-				answer: "Sim. O DaSSHboard é gratuito e de código aberto sob a licença MIT, sem conta nem planos pagos.",
+				answer: "Sim. O DaSSHboard é gratuito e de código aberto sob a licença MIT, sem conta nem planos pagos. Para sempre.",
 			},
 			{
 				question: "Existe uma versão para macOS?",

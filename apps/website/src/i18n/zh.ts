@@ -162,7 +162,7 @@ export const zh: SiteMessages = {
 		items: [
 			{
 				question: "DaSSHboard 免费吗？",
-				answer: "是的。DaSSHboard 基于 MIT 许可证免费开源，无需账号，也没有付费版本。",
+				answer: "是的。DaSSHboard 基于 MIT 许可证免费开源，无需账号，也没有付费版本。永远如此。",
 			},
 			{
 				question: "有 macOS 版本吗？",

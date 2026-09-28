@@ -184,7 +184,7 @@ export const ja: SiteMessages = {
 		items: [
 			{
 				question: "DaSSHboard は無料ですか？",
-				answer: "はい。DaSSHboard は MIT ライセンスの無料オープンソースソフトウェアで、アカウントも有料プランもありません。",
+				answer: "はい。DaSSHboard は MIT ライセンスの無料オープンソースソフトウェアで、アカウントも有料プランもありません。これからもずっと。",
 			},
 			{
 				question: "macOS 版はありますか？",

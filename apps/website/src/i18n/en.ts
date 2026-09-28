@@ -184,7 +184,7 @@ export const en = {
 		items: [
 			{
 				question: "Is DaSSHboard free?",
-				answer: "Yes. DaSSHboard is free and open source under the MIT license, with no account and no paid tier.",
+				answer: "Yes. DaSSHboard is free and open source under the MIT license, with no account and no paid tier. Forever.",
 			},
 			{
 				question: "Is there a macOS version?",
