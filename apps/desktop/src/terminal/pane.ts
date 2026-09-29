@@ -560,7 +560,9 @@ export class TerminalPane {
     this.userInitiated = false;
     this.cancelReconnectTimer();
     this.terminal?.focus();
-    this.fitAddon?.fit();
+    // The backend drops resizes sent while connecting, so a layout change since
+    // the PTY was requested (e.g. the startup layout settling) must be pushed now.
+    this.syncSize();
     this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus(status, message)));
   }
 
@@ -825,8 +827,10 @@ export class TerminalPane {
   syncSize(): void {
     if (!this.fitAddon || !this.terminal) return;
     this.fitAddon.fit();
-    if (this.connected && this.sessionId) {
-      void resizePty(this.sessionId, this.terminal.cols, this.terminal.rows);
+    // `connected` can arrive before `connect()` returns: the session is still pending.
+    const sessionId = this.sessionId ?? this.pendingSessionId;
+    if (this.connected && sessionId) {
+      void resizePty(sessionId, this.terminal.cols, this.terminal.rows);
     }
   }
 

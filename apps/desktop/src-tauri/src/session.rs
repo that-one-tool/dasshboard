@@ -1001,14 +1001,17 @@ async fn handle_control(
 }
 
 /// Drain control messages until a disconnect (or the manager drops the
-/// handle), ignoring any keystrokes/resizes queued before the shell exists.
+/// handle), ignoring any keystrokes queued before the shell exists. A resize
+/// updates `size`, the `(cols, rows)` the PTY will be requested with, so a pane
+/// resized while connecting doesn't start its shell at a stale width.
 /// Used to race the handshake so a disconnect requested mid-handshake (even
 /// while a host-key prompt is pending) tears the task down promptly.
-async fn wait_for_disconnect(rx: &mut mpsc::Receiver<SessionControl>) {
+async fn wait_for_disconnect(rx: &mut mpsc::Receiver<SessionControl>, size: &mut (u32, u32)) {
     loop {
         match rx.recv().await {
             Some(SessionControl::Disconnect) | None => return,
-            _ => continue,
+            Some(SessionControl::Resize { cols, rows }) => *size = (cols, rows),
+            Some(SessionControl::Write(_)) => continue,
         }
     }
 }
@@ -1031,13 +1034,14 @@ async fn run_session(
     // Abandons a pending host-key prompt if this returns mid-handshake.
     let _owner = handler.take_owner_token();
     let _jump_owner = jump_handler.as_mut().and_then(SshHandler::take_owner_token);
+    let mut pty_size = (params.cols, params.rows);
     let (handle, _jump_keepalive) = tokio::select! {
         biased;
         // If a disconnect arrives during the handshake, abort: dropping the
         // `establish_target` future drops the handler(s) (and any PromptGuard
         // within) plus any jump handle, so a pending host-key prompt and the
         // jump connection are cleaned up too.
-        _ = wait_for_disconnect(&mut control_rx) => return Ok(SessionStatus::Disconnected),
+        _ = wait_for_disconnect(&mut control_rx, &mut pty_size) => return Ok(SessionStatus::Disconnected),
         result = establish_target(
             &params,
             handler,
@@ -1055,8 +1059,8 @@ async fn run_session(
         handle,
         sink,
         control_rx,
-        params.cols,
-        params.rows,
+        pty_size.0,
+        pty_size.1,
         params.forward_agent,
         params.connect_snippet,
     )
@@ -1317,6 +1321,30 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_resize_during_the_handshake_sets_the_pty_size() {
+        let (tx, mut rx) = mpsc::channel(8);
+        for control in [
+            SessionControl::Resize {
+                cols: 100,
+                rows: 30,
+            },
+            SessionControl::Write(b"x".to_vec()),
+            SessionControl::Resize {
+                cols: 132,
+                rows: 43,
+            },
+            SessionControl::Disconnect,
+        ] {
+            tx.send(control).await.unwrap();
+        }
+        let mut size = (80, 24);
+
+        wait_for_disconnect(&mut rx, &mut size).await;
+
+        assert_eq!(size, (132, 43));
+    }
 
     #[test]
     fn session_status_serializes_to_spec_strings() {

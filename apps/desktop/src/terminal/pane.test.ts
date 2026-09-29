@@ -67,7 +67,7 @@ beforeEach(() => {
 
 // Imported after the mock is registered so the module graph uses it.
 import { TerminalPane, deviceEndpoint, deviceOptionLabel } from "./pane";
-import { connect, disconnect, listDevices, newDataChannel, writeStdin } from "../ipc";
+import { connect, disconnect, listDevices, newDataChannel, resizePty, writeStdin } from "../ipc";
 import type { Device } from "../ipc";
 import { setLocale } from "../i18n";
 
@@ -786,6 +786,58 @@ describe("TerminalPane terminal settings (Phase 5)", () => {
     });
     expect(terminalOf(pane)?.options.fontSize).toBe(30);
     expect(terminalOf(pane)?.options.scrollback).toBe(3000);
+  });
+});
+
+describe("TerminalPane PTY size on connect", () => {
+  type Internals = {
+    startSession(): Promise<void>;
+    terminal: { resize(cols: number, rows: number): void };
+    fitAddon: { fit(): void };
+  };
+  const internals = (pane: TerminalPane) => pane as unknown as Internals;
+
+  beforeEach(() => {
+    h.statusHandler = null;
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    vi.mocked(resizePty).mockClear();
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  /** Opens a session, then makes the next fit land on a new size — as when the
+   * layout settles while the pane is still connecting. */
+  async function paneResizedWhileConnecting(): Promise<TerminalPane> {
+    const pane = new TerminalPane(q<HTMLElement>(document, "#pane-root"));
+    await pane.init();
+    pane.assignDevice(h.device.id);
+    await internals(pane).startSession();
+    await flush();
+    const inner = internals(pane);
+    inner.fitAddon.fit = () => inner.terminal.resize(132, 43);
+    vi.mocked(resizePty).mockClear();
+    return pane;
+  }
+
+  it("pushes the fitted size to the PTY once connected", async () => {
+    await paneResizedWhileConnecting();
+
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+
+    expect(resizePty).toHaveBeenCalledWith(h.sessionId, 132, 43);
+  });
+
+  it("pushes the size when connected arrives before connect() returns", async () => {
+    const pane = new TerminalPane(q<HTMLElement>(document, "#pane-root"));
+    await pane.init();
+    pane.assignDevice(h.device.id);
+    vi.mocked(connect).mockImplementationOnce(async () => {
+      h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+      return h.sessionId;
+    });
+
+    await internals(pane).startSession();
+
+    expect(resizePty).toHaveBeenCalledWith(h.sessionId, expect.any(Number), expect.any(Number));
   });
 });
 
