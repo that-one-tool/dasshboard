@@ -17,8 +17,8 @@
   side menu and Files panel; tabs and layouts are restored on launch.
 - **Profiles** — save a workspace and set a default that reconnects every pane
   on launch.
-- **SSH extras** — jump hosts (`-J`), agent forwarding (`-A`), local port
-  forwarding (`-L`) that resumes as you left it (or auto-starts), keepalive and
+- **SSH extras** — jump hosts (`-J`), agent forwarding (`-A`), named local port
+  forwards (`-L`) that resume as you left them (or auto-start), keepalive and
   auto-reconnect.
 - **SFTP browser** — docked file panel with folder transfers, a background queue,
   bulk actions, bookmarks and chmod.

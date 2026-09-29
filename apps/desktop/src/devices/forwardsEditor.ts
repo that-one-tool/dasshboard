@@ -86,13 +86,17 @@ export class ForwardsEditor {
     row.className = "forward-row";
     row.dataset.forwardId = forward?.id ?? newForwardId();
     row.innerHTML = `
-      <input class="forward-name" type="text" placeholder="${t("forwards.name.placeholder")}" autocomplete="off" />
-      <input class="forward-local-addr" type="text" placeholder="127.0.0.1" autocomplete="off" />
-      <input class="forward-local-port" type="number" placeholder="${t("forwards.localPort.placeholder")}" min="1" max="65535" />
-      <span class="forward-arrow" aria-hidden="true">&rarr;</span>
-      <input class="forward-remote-host" type="text" placeholder="${t("forwards.remoteHost.placeholder")}" autocomplete="off" />
-      <input class="forward-remote-port" type="number" placeholder="${t("forwards.remotePort.placeholder")}" min="1" max="65535" />
-      <button type="button" class="forward-remove" title="${t("forwards.remove")}" aria-label="${t("forwards.remove")}">&times;</button>
+      <div class="forward-name-line">
+        <input class="forward-name" type="text" placeholder="${t("forwards.name.placeholder")}" autocomplete="off" />
+        <button type="button" class="forward-remove" title="${t("forwards.remove")}" aria-label="${t("forwards.remove")}">&times;</button>
+      </div>
+      <div class="forward-endpoints">
+        <input class="forward-local-addr" type="text" placeholder="127.0.0.1" autocomplete="off" />
+        <input class="forward-local-port" type="number" placeholder="${t("forwards.localPort.placeholder")}" min="1" max="65535" />
+        <span class="forward-arrow" aria-hidden="true">&rarr;</span>
+        <input class="forward-remote-host" type="text" placeholder="${t("forwards.remoteHost.placeholder")}" autocomplete="off" />
+        <input class="forward-remote-port" type="number" placeholder="${t("forwards.remotePort.placeholder")}" min="1" max="65535" />
+      </div>
       <span class="error-text"></span>
     `;
     // Values are set programmatically (never interpolated into HTML) so
@@ -102,6 +106,10 @@ export class ForwardsEditor {
     this.setInput(row, ".forward-local-port", forward ? String(forward.localPort) : "");
     this.setInput(row, ".forward-remote-host", forward?.remoteHost ?? "");
     this.setInput(row, ".forward-remote-port", forward ? String(forward.remotePort) : "");
+    // A narrow field cuts its placeholder off; the tooltip keeps it readable.
+    row.querySelectorAll("input").forEach((input) => {
+      input.title = input.placeholder;
+    });
     row
       .querySelector(".forward-remove")
       ?.addEventListener("click", () => row.remove());

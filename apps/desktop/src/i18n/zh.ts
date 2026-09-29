@@ -111,6 +111,7 @@ export const zh: Messages = {
 	"tray.quit": "退出",
 
 	/* -- about dialog ------------------------------------------------------- */
+	"about.title": "关于 DaSSHboard",
 	"about.tagline": "支持 SFTP 文件传输的多窗格 SSH 与串口终端仪表盘",
 	"about.checking": "正在检查版本…",
 	"about.built": "使用 Tauri、Rust 和 TypeScript 构建。",
@@ -122,6 +123,7 @@ export const zh: Messages = {
 	"updates.check": "检查更新",
 	"updates.checking": "正在检查更新…",
 	"updates.upToDate": "已是最新版本。",
+	"updates.released": "发布于 {date}",
 	"updates.available": "版本 {version} 可用。",
 	"updates.notifyOnly": "此安装无法自行更新；请从网站下载新版本。",
 	"updates.install": "安装并重启",

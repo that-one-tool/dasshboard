@@ -111,6 +111,7 @@ export const ja: Messages = {
 	"tray.quit": "終了",
 
 	/* -- about dialog ------------------------------------------------------- */
+	"about.title": "DaSSHboard について",
 	"about.tagline": "SFTP ファイル転送に対応したマルチペインの SSH・シリアルターミナルダッシュボード",
 	"about.checking": "バージョンを確認中…",
 	"about.built": "Tauri、Rust、TypeScript で構築。",
@@ -122,6 +123,7 @@ export const ja: Messages = {
 	"updates.check": "更新を確認",
 	"updates.checking": "更新を確認しています…",
 	"updates.upToDate": "最新の状態です。",
+	"updates.released": "{date} リリース",
 	"updates.available": "バージョン {version} が利用可能です。",
 	"updates.notifyOnly": "このインストールは自動更新できません。Web サイトから新しいバージョンをダウンロードしてください。",
 	"updates.install": "インストールして再起動",

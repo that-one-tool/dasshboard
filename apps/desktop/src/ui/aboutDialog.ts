@@ -1,6 +1,8 @@
 /**
- * "About DaSSHboard" dialog (opened from the header help button). Shows the app
- * name, a one-line description, and the running version — the version is fetched
+ * "About DaSSHboard" dialog (opened from the header help button). Laid out like
+ * the other dialogs (header, body, footer); the body shows a one-line
+ * description and the running version, plus the Updates section when given a
+ * controller. The version — the version is fetched
  * live from the backend via `ping()` (the same round trip the old header banner
  * used), so it always reflects the actual build rather than a hard-coded string.
  *
@@ -22,17 +24,21 @@ export function openAboutDialog(updates?: UpdateController): void {
 	root.className = "dialog about-dialog";
 	root.setAttribute("role", "dialog");
 	root.setAttribute("aria-modal", "true");
-	root.setAttribute("aria-label", t("header.help.aria"));
+	root.setAttribute("aria-labelledby", "about-title");
 	root.innerHTML = `
     <div class="dialog-overlay"></div>
     <div class="dialog-content about-content">
-      <h2 class="about-name">DaSSHboard</h2>
-      <p class="about-tagline"></p>
-      <p class="about-version" aria-live="polite">${t("about.checking")}</p>
-      <p class="about-built">${t("about.built")}</p>
-      <p class="about-license">${t("about.license")}</p>
-      <p class="about-source">${t("about.source")}</p>
-      <div class="about-update-slot"></div>
+      <div class="dialog-header"><h2 id="about-title">${t("about.title")}</h2></div>
+      <div class="about-body">
+        <section class="about-app">
+          <p class="about-tagline"></p>
+          <p class="about-version" aria-live="polite">${t("about.checking")}</p>
+          <p class="about-built">${t("about.built")}</p>
+          <p class="about-license">${t("about.license")}</p>
+          <p class="about-source">${t("about.source")}</p>
+        </section>
+        <div class="about-update-slot"></div>
+      </div>
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" data-action="close">${t("common.close")}</button>
       </div>

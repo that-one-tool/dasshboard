@@ -1,6 +1,6 @@
 /**
- * The update block inside the About dialog: a Check for updates button, a
- * status line, the release notes, and — once a newer release is known — Check
+ * The update part of the About dialog: a Check for updates button, a
+ * status line, the release date and notes, and — once a newer release is known — Check
  * is replaced by either Install & restart (Windows installers, Linux AppImage)
  * or a Download link to the website (a .deb/.rpm install can't replace
  * itself). After a failed install, Check comes back (the release may have been
@@ -11,7 +11,7 @@
 
 import type { AppError, UpdateInfo } from "../ipc";
 import type { UpdateController } from "./updateController";
-import { t } from "../i18n";
+import { getLocale, t } from "../i18n";
 
 /** Where a notify-only build sends the user for the new installer. */
 export const DOWNLOAD_PAGE_URL = "https://that-one-tool.github.io/dasshboard/#download";
@@ -21,6 +21,7 @@ export const RELEASES_URL = "https://web.crabnebula.cloud/that-one-tool/dasshboa
 
 interface SectionElements {
 	status: HTMLElement;
+	date: HTMLElement;
 	notes: HTMLElement;
 	check: HTMLButtonElement;
 	install: HTMLButtonElement;
@@ -33,14 +34,19 @@ interface SectionElements {
 export function mountUpdateSection(container: HTMLElement, updates: UpdateController): () => void {
 	container.innerHTML = `
     <div class="about-update">
-      <p class="about-update-status" aria-live="polite"></p>
-      <p class="about-update-notes" hidden></p>
-      <div class="about-update-actions">
-        <button type="button" class="btn btn-secondary" data-update="check">${t("updates.check")}</button>
-        <button type="button" class="btn btn-primary" data-update="install" hidden>${t("updates.install")}</button>
-        <a class="btn btn-primary" data-update="download" href="${DOWNLOAD_PAGE_URL}" target="_blank" hidden>${t("updates.download")}</a>
-        <a class="btn btn-secondary" data-update="releases" href="${RELEASES_URL}" target="_blank" hidden>${t("updates.releasesLink")}</a>
+      <div class="about-update-row">
+        <div class="about-update-text">
+          <p class="about-update-status" aria-live="polite"></p>
+          <p class="about-update-date" hidden></p>
+        </div>
+        <div class="about-update-actions">
+          <button type="button" class="btn btn-secondary" data-update="check">${t("updates.check")}</button>
+          <button type="button" class="btn btn-primary" data-update="install" hidden>${t("updates.install")}</button>
+          <a class="btn btn-primary" data-update="download" href="${DOWNLOAD_PAGE_URL}" target="_blank" hidden>${t("updates.download")}</a>
+          <a class="btn btn-secondary" data-update="releases" href="${RELEASES_URL}" target="_blank" hidden>${t("updates.releasesLink")}</a>
+        </div>
       </div>
+      <p class="about-update-notes" hidden></p>
     </div>
   `;
 	const els = sectionElements(container);
@@ -54,6 +60,7 @@ function sectionElements(container: HTMLElement): SectionElements {
 	const q = <T extends HTMLElement>(selector: string): T => container.querySelector<T>(selector) as T;
 	return {
 		status: q(".about-update-status"),
+		date: q(".about-update-date"),
 		notes: q(".about-update-notes"),
 		check: q('[data-update="check"]'),
 		install: q('[data-update="install"]'),
@@ -66,7 +73,7 @@ function sectionElements(container: HTMLElement): SectionElements {
  * only when there is nothing to say). */
 function render(els: SectionElements, updates: UpdateController): void {
 	renderControls(els, updates);
-	const status = statusFor(updates.available(), updates.isInstalling());
+	const status = statusFor(updates);
 	if (status !== null) els.status.textContent = status;
 }
 
@@ -80,12 +87,26 @@ function renderControls(els: SectionElements, updates: UpdateController): void {
 }
 
 function showRelease(els: SectionElements, info: UpdateInfo | null): void {
+	showReleaseDate(els.date, info?.pubDate);
 	els.notes.textContent = info?.notes ?? "";
 	els.notes.hidden = !info?.notes;
 	// A known release's action (Install or Download) takes Check's place.
 	els.check.hidden = info !== null;
 	els.install.hidden = !info?.canInstall;
 	els.download.hidden = !info || info.canInstall;
+}
+
+function showReleaseDate(el: HTMLElement, pubDate: string | null | undefined): void {
+	const date = formatReleaseDate(pubDate);
+	el.textContent = date === null ? "" : t("updates.released", { date });
+	el.hidden = date === null;
+}
+
+/** The publish date in the UI language, or `null` when absent or unreadable. */
+function formatReleaseDate(pubDate: string | null | undefined): string | null {
+	const date = new Date(pubDate ?? "");
+	if (Number.isNaN(date.getTime())) return null;
+	return new Intl.DateTimeFormat(getLocale(), { dateStyle: "medium" }).format(date);
 }
 
 /** After a failed install: Check again (the release may be gone) and a link to
@@ -95,9 +116,11 @@ function showFailureRecovery(els: SectionElements, failed: boolean): void {
 	els.releases.hidden = !failed;
 }
 
-function statusFor(info: UpdateInfo | null, installing: boolean): string | null {
-	if (installing) return t("updates.installing");
-	return info ? availableText(info) : null;
+function statusFor(updates: UpdateController): string | null {
+	if (updates.isInstalling()) return t("updates.installing");
+	const info = updates.available();
+	if (info) return availableText(info);
+	return updates.isUpToDate() ? t("updates.upToDate") : null;
 }
 
 function availableText(info: UpdateInfo): string {

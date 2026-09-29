@@ -696,6 +696,8 @@ export interface UpdateInfo {
   version: string;
   /** Release notes, when the release carries any. */
   notes: string | null;
+  /** When the release was published (RFC 3339), when the server says. */
+  pubDate: string | null;
   /** Whether this build can install the update itself (Windows, Linux
    * AppImage); `false` for a .deb/.rpm install, which links to the download
    * page instead. */

@@ -73,6 +73,30 @@ describe("ForwardsEditor", () => {
     expect(back[0]!.id).toBe("b");
   });
 
+  it("puts the name with the remove button on its own line above the endpoints", () => {
+    editor.setForwards([sampleForward()]);
+    const row = container.querySelector(".forward-row")!;
+    const nameLine = row.querySelector(":scope > .forward-name-line")!;
+    const endpoints = row.querySelector(":scope > .forward-endpoints")!;
+    expect(nameLine.querySelector(".forward-name")).not.toBeNull();
+    expect(nameLine.querySelector(".forward-remove")).not.toBeNull();
+    expect(endpoints.querySelector(".forward-local-addr")).not.toBeNull();
+    expect(endpoints.querySelector(".forward-remote-port")).not.toBeNull();
+    expect(nameLine.compareDocumentPosition(endpoints)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("gives every input its placeholder as a tooltip (it may be cut off)", () => {
+    editor.setForwards([sampleForward()]);
+    const inputs = container.querySelectorAll<HTMLInputElement>(".forward-row input");
+    expect(inputs).toHaveLength(5);
+    for (const input of inputs) {
+      expect(input.title).not.toBe("");
+      expect(input.title).toBe(input.placeholder);
+    }
+  });
+
   it("defaults a blank local address to loopback on read", () => {
     editor.setForwards([sampleForward({ localAddr: "" })]);
     expect(editor.getForwards()[0]!.localAddr).toBe("127.0.0.1");

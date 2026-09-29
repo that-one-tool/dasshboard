@@ -117,6 +117,7 @@ export const en = {
 	"tray.quit": "Quit",
 
 	/* -- about dialog (ui/aboutDialog.ts) ----------------------------------- */
+	"about.title": "About DaSSHboard",
 	"about.tagline": "Multi-pane SSH & serial terminal dashboard with SFTP file transfer",
 	"about.checking": "Checking version…",
 	"about.built": "Built with Tauri, Rust & TypeScript.",
@@ -128,6 +129,7 @@ export const en = {
 	"updates.check": "Check for updates",
 	"updates.checking": "Checking for updates…",
 	"updates.upToDate": "You're up to date.",
+	"updates.released": "Released {date}",
 	"updates.available": "Version {version} is available.",
 	"updates.notifyOnly": "This installation can't update itself; download the new version from the website.",
 	"updates.install": "Install & restart",

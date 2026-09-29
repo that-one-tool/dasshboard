@@ -111,6 +111,7 @@ export const de: Messages = {
 	"tray.quit": "Beenden",
 
 	/* -- about dialog ------------------------------------------------------- */
+	"about.title": "Über DaSSHboard",
 	"about.tagline": "Mehrbereich-Dashboard für SSH- und serielle Terminals mit SFTP-Dateiübertragung",
 	"about.checking": "Version wird geprüft…",
 	"about.built": "Erstellt mit Tauri, Rust und TypeScript.",
@@ -122,6 +123,7 @@ export const de: Messages = {
 	"updates.check": "Nach Updates suchen",
 	"updates.checking": "Suche nach Updates…",
 	"updates.upToDate": "Sie sind auf dem neuesten Stand.",
+	"updates.released": "Veröffentlicht am {date}",
 	"updates.available": "Version {version} ist verfügbar.",
 	"updates.notifyOnly": "Diese Installation kann sich nicht selbst aktualisieren; laden Sie die neue Version von der Website herunter.",
 	"updates.install": "Installieren und neu starten",

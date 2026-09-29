@@ -184,6 +184,21 @@ describe("TunnelsPanel", () => {
     expect(copy.textContent!.trim()).toBe("");
   });
 
+  it("shows each forward's name above its endpoint", async () => {
+    const panel = new TunnelsPanel();
+    await panel.init();
+    const row = document.querySelector<HTMLElement>(".tunnel-forward")!;
+    const name = row.querySelector<HTMLElement>(".tunnel-forward-name")!;
+    const endpoint = row.querySelector<HTMLElement>(".tunnel-forward-endpoint")!;
+    expect(name.textContent).toBe("fwd-f1");
+    expect(name.title).toBe("fwd-f1");
+    expect(endpoint.textContent).toBe("127.0.0.1:5432 → db:5432");
+    expect(endpoint.title).toBe("127.0.0.1:5432 → db:5432");
+    expect(name.compareDocumentPosition(endpoint)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
   it("marks a forward whose port is in use", async () => {
     const panel = new TunnelsPanel();
     await panel.init();

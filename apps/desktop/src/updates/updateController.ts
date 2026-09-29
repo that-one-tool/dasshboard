@@ -24,6 +24,8 @@ export class UpdateController {
 	private installing = false;
 	/** The last install attempt failed (cleared by the next check). */
 	private failed = false;
+	/** The last successful check found nothing newer. */
+	private upToDate = false;
 	private readonly listeners = new Set<() => void>();
 
 	constructor(private readonly options: UpdateControllerOptions) {}
@@ -31,6 +33,12 @@ export class UpdateController {
 	/** The release found by the last successful check, if any. */
 	available(): UpdateInfo | null {
 		return this.found;
+	}
+
+	/** Whether the last successful check found this build to be the latest.
+	 * (The server names no version then, so there is no "latest" to show.) */
+	isUpToDate(): boolean {
+		return this.upToDate;
 	}
 
 	/** Whether an install is downloading or running. */
@@ -56,6 +64,7 @@ export class UpdateController {
 	async check(): Promise<UpdateInfo | null> {
 		if (this.installing) return this.found;
 		this.found = await checkUpdate();
+		this.upToDate = this.found === null;
 		this.failed = false;
 		this.emit();
 		return this.found;

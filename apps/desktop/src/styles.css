@@ -1331,7 +1331,8 @@ body.grid-dragging-row * {
 
 .form-group input[type="text"],
 .form-group input[type="password"],
-.form-group input[type="number"] {
+.form-group input[type="number"],
+.forward-row input {
 	padding: 8px 12px;
 	border: 1px solid var(--border-strong);
 	border-radius: var(--radius-sm);
@@ -1344,13 +1345,15 @@ body.grid-dragging-row * {
 		box-shadow 150ms ease-in-out;
 }
 
-.form-group input:focus {
+.form-group input:focus,
+.forward-row input:focus {
 	outline: none;
 	border-color: var(--accent);
 	box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-.form-group input::placeholder {
+.form-group input::placeholder,
+.forward-row input::placeholder {
 	color: var(--text-muted);
 }
 
@@ -1395,6 +1398,13 @@ body.grid-dragging-row * {
 
 .form-fieldset .form-group label input {
 	margin: 0 6px 0 0;
+}
+
+/* Password / Key / SSH agent side by side; wraps on a narrow window. */
+.auth-method-choices {
+	flex-direction: row;
+	flex-wrap: wrap;
+	row-gap: 0.4rem;
 }
 
 .auth-method-section {
@@ -1728,9 +1738,14 @@ body.grid-dragging-row * {
 	background: var(--accent);
 }
 
-/* Wider than the default dialog, so the field hints wrap less. */
-.settings-content {
-	max-width: 40rem;
+/* The main dialogs share one width, wider than the default: port-forward
+ * endpoints fit on one line, field hints wrap less, and long host names and
+ * fingerprints fit. */
+.settings-content,
+#device-dialog .dialog-content,
+.known-hosts-content,
+.about-content {
+	max-width: 48rem;
 }
 
 /* General / Connections tabs: the same segmented pill track as the workspace
@@ -1893,90 +1908,104 @@ body.grid-dragging-row * {
 }
 
 /* ============================================================================
- * Trusted-hosts management dialog (opened from the header padlock button)
- * ============================================================================ */
-
-.known-hosts-content {
-	max-width: 38.75rem;
-}
-
-/* ============================================================================
  * About dialog (opened from the header help button)
  * ============================================================================ */
 
-.about-content {
-	max-width: 26.25rem;
-	padding: 24px;
+/* Header and footer come from the shared dialog rules; the body scrolls
+ * between them once it outgrows the dialog's 90vh cap. */
+.about-body {
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 1rem;
+}
+
+.about-app {
 	text-align: center;
 }
 
-.about-name {
-	margin: 0;
-	font-size: 1.4rem;
-}
-
-.about-tagline {
-	margin: 6px 0 18px;
+.about-app p {
+	margin: 0.4rem 0 0;
 	color: var(--text-secondary);
-	font-size: 13px;
+	font-size: 0.8rem;
 }
 
-.about-version {
-	margin: 0;
+.about-app .about-tagline {
+	margin: 0 0 0.75rem;
+	color: var(--text-primary);
+	font-size: 0.9rem;
+}
+
+.about-app .about-version {
+	margin: 0 0 0.6rem;
 	font-family: "Cascadia Mono", Consolas, monospace;
-	font-size: 14px;
+	font-size: 0.9rem;
 	color: var(--endpoint);
 }
 
-.about-built,
-.about-license,
-.about-source {
-	margin: 8px 0 0;
-	color: var(--text-secondary);
-	font-size: 12px;
-}
-
+/* Set off from the app info by a full-width rule, like the dialog's header
+ * and footer separators (the negative margin cancels the body's padding). */
 .about-update {
-	margin-top: 18px;
-	padding-top: 16px;
+	margin: 0 -1rem;
+	padding: 1rem 1rem 0;
 	border-top: 1px solid var(--border);
 }
 
+/* Status (and release date) on the left, the buttons in their own column on
+ * the right; long text wraps within its column. */
+.about-update-row {
+	display: flex;
+	align-items: center;
+	gap: 1rem;
+}
+
+.about-update-text {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
 .about-update-status {
-	margin: 0 0 10px;
-	font-size: 13px;
+	margin: 0;
+	font-size: 0.85rem;
 }
 
 .about-update-status:empty {
 	display: none;
 }
 
+.about-update-date {
+	margin: 0.2rem 0 0;
+	color: var(--text-muted);
+	font-size: 0.8rem;
+}
+
 .about-update-notes {
-	margin: 0 0 12px;
+	margin: 0.75rem 0 0;
 	max-height: 7.5rem;
 	overflow-y: auto;
 	white-space: pre-line;
-	text-align: left;
 	color: var(--text-secondary);
-	font-size: 12px;
+	font-size: 0.8rem;
 }
 
+/* Several buttons (after a failed install) stack within the column rather
+ * than squeezing the text. */
 .about-update-actions {
 	display: flex;
-	justify-content: center;
-	gap: 8px;
+	flex: 0 0 auto;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 0.5rem;
+	max-width: 60%;
+	margin-left: auto;
 }
 
 .about-update-actions a.btn {
 	text-decoration: none;
-}
-
-/* The About dialog has no header bar, so its footer shouldn't carry the top
- * border the shared `.form-actions` rule adds; center the Close button instead. */
-.about-content .form-actions {
-	border-top: none;
-	justify-content: center;
-	padding-top: 20px;
 }
 
 .known-hosts-lead {
@@ -2050,6 +2079,9 @@ body.grid-dragging-row * {
 	padding: 10px;
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
+	/* Lets each forward pick its one-line or two-line layout from the space
+	 * the section actually has (see the @container block below). */
+	container-type: inline-size;
 }
 
 .forwards-header {
@@ -2066,22 +2098,43 @@ body.grid-dragging-row * {
 	font-weight: 600;
 }
 
+/* Each forward is a small block: its name (+ remove) on one line, the
+ * `local → remote` endpoints on the next. */
 .forward-row {
-	display: grid;
-	grid-template-columns: 1.3fr 1fr 0.8fr auto 1.3fr 0.8fr auto;
-	align-items: center;
-	gap: 6px;
-	margin-bottom: 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+	padding: 0.6rem 0;
+	border-top: 1px solid var(--border);
 }
 
+.forward-row:first-child {
+	border-top: none;
+	padding-top: 0;
+}
+
+.forward-name-line {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.forward-name-line .forward-name {
+	font-weight: 500;
+}
+
+.forward-endpoints {
+	display: grid;
+	grid-template-columns: 1fr 1fr auto 1.3fr 1fr;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+/* Looks come from the shared `.form-group input` rule; this only lets the
+ * grid cells shrink below the inputs' intrinsic width. */
 .forward-row input {
 	min-width: 0;
-	padding: 4px 6px;
-	border: 1px solid var(--border);
-	border-radius: var(--radius-sm);
-	background-color: var(--surface-0);
-	color: var(--text-primary);
-	font-size: 0.8rem;
 }
 
 .forward-arrow {
@@ -2089,14 +2142,17 @@ body.grid-dragging-row * {
 	text-align: center;
 }
 
+/* Same height as the inputs beside it. */
 .forward-remove {
-	border: 1px solid var(--border);
+	align-self: stretch;
+	aspect-ratio: 1;
+	border: 1px solid var(--border-strong);
 	border-radius: var(--radius-sm);
 	background: none;
 	color: var(--text-primary);
 	cursor: pointer;
+	font-size: 1.1rem;
 	line-height: 1;
-	padding: 2px 8px;
 }
 
 .forward-remove:hover {
@@ -2106,9 +2162,44 @@ body.grid-dragging-row * {
 }
 
 .forward-row .error-text {
-	grid-column: 1 / -1;
 	color: var(--danger-text);
 	font-size: 0.75rem;
+}
+
+/* One line per forward when the section is wide enough: the two wrapper lines
+ * dissolve into a single grid row (name · local addr · local port → remote
+ * host · remote port · ×). Narrower, the two-line layout above applies.
+ * Deleting this block alone restores the two-line layout everywhere. */
+@container (min-width: 40em) {
+	.forward-row {
+		display: grid;
+		grid-template-columns:
+			minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 0.8fr) auto
+			minmax(0, 1.25fr) minmax(0, 0.8fr) auto;
+		align-items: center;
+		column-gap: 0.5rem;
+		row-gap: 0.25rem;
+		padding: 0.4rem 0;
+	}
+
+	.forward-name-line,
+	.forward-endpoints {
+		display: contents;
+	}
+
+	/* Slimmer side padding so the port placeholders fit their column. */
+	.forward-row input {
+		padding-inline: 0.5rem;
+	}
+
+	.forward-remove {
+		grid-row: 1;
+		grid-column: -2;
+	}
+
+	.forward-row .error-text {
+		grid-column: 1 / -1;
+	}
 }
 
 /* --- Tunnels sidebar card (a section like Devices / Profiles) --- */
@@ -2186,8 +2277,30 @@ body.grid-dragging-row * {
 	padding: 4px 0;
 }
 
-.tunnel-forward-endpoint {
+/* Name over endpoint; `min-width: 0` lets both lines ellipsize. */
+.tunnel-forward-text {
 	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.tunnel-forward-label {
+	display: flex;
+	align-items: baseline;
+	gap: 0.4rem;
+	min-width: 0;
+}
+
+.tunnel-forward-name {
+	color: var(--text-primary);
+	font-size: 0.82rem;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tunnel-forward-endpoint {
 	color: var(--endpoint);
 	font-family: "Cascadia Mono", Consolas, monospace;
 	font-size: 0.72rem;

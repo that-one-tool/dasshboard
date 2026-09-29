@@ -39,6 +39,27 @@ describe("openAboutDialog", () => {
     );
   });
 
+  it("is laid out like the other dialogs: header, body, footer", () => {
+    openAboutDialog();
+    const content = dialog()!.querySelector(".dialog-content")!;
+    const parts = Array.from(content.children).map((el) => el.className);
+    expect(parts).toEqual(["dialog-header", "about-body", "form-actions"]);
+    expect(content.querySelector(".dialog-header h2")?.textContent).toBe("About DaSSHboard");
+    expect(content.querySelector(".about-body .about-version")).not.toBeNull();
+    expect(content.querySelector('.form-actions [data-action="close"]')).not.toBeNull();
+  });
+
+  it("puts the update section in the body", () => {
+    openAboutDialog({
+      available: () => null,
+      isInstalling: () => false,
+      installFailed: () => false,
+      isUpToDate: () => false,
+      subscribe: () => () => {},
+    } as unknown as UpdateController);
+    expect(dialog()?.querySelector(".about-body .about-update")).not.toBeNull();
+  });
+
   it("fills in the version once ping resolves", async () => {
     openAboutDialog();
     await flush();
@@ -62,6 +83,7 @@ describe("openAboutDialog", () => {
       available: vi.fn(() => null),
       isInstalling: vi.fn(() => false),
       installFailed: vi.fn(() => false),
+      isUpToDate: vi.fn(() => false),
       subscribe: vi.fn(() => unsubscribe),
       check: vi.fn(),
       install: vi.fn(),

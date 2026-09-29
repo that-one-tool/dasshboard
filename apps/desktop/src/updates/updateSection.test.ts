@@ -18,6 +18,7 @@ class FakeUpdates {
 	found: UpdateInfo | null = null;
 	installing = false;
 	failed = false;
+	upToDate = false;
 	listeners = new Set<() => void>();
 	check = vi.fn(async (): Promise<UpdateInfo | null> => this.found);
 	install = vi.fn(async (): Promise<boolean> => false);
@@ -29,6 +30,9 @@ class FakeUpdates {
 	}
 	installFailed(): boolean {
 		return this.failed;
+	}
+	isUpToDate(): boolean {
+		return this.upToDate;
 	}
 	subscribe(listener: () => void): () => void {
 		this.listeners.add(listener);
@@ -49,7 +53,7 @@ function q<T extends HTMLElement>(selector: string): T {
 	return el;
 }
 
-const installable: UpdateInfo = { version: "1.21.0", notes: "Fixes", canInstall: true };
+const installable: UpdateInfo = { version: "1.21.0", notes: "Fixes", pubDate: null, canInstall: true };
 const notifyOnly: UpdateInfo = { ...installable, notes: null, canInstall: false };
 
 beforeEach(() => {
@@ -73,6 +77,42 @@ describe("mountUpdateSection", () => {
 		expect(q(".about-update-status").textContent).toContain("1.21.0");
 		expect(q(".about-update-notes").textContent).toBe("Fixes");
 		expect(q('[data-update="install"]').hidden).toBe(false);
+	});
+
+	it("puts the status on one line with the buttons, the notes below", () => {
+		mount(new FakeUpdates());
+		const row = q(".about-update-row");
+		expect(row.firstElementChild?.contains(q(".about-update-status"))).toBe(true);
+		expect(row.firstElementChild?.contains(q(".about-update-date"))).toBe(true);
+		expect(row.lastElementChild).toBe(q(".about-update-actions"));
+		expect(row.contains(q(".about-update-notes"))).toBe(false);
+	});
+
+	it("shows when a known release was published", () => {
+		const fake = new FakeUpdates();
+		fake.found = { ...installable, pubDate: "2026-09-29T12:00:00Z" };
+		mount(fake);
+		const date = q(".about-update-date");
+		expect(date.hidden).toBe(false);
+		expect(date.textContent).toBe("Released Sep 29, 2026");
+	});
+
+	it("hides the release date when the server sent none or an unreadable one", () => {
+		const fake = new FakeUpdates();
+		fake.found = installable;
+		mount(fake);
+		expect(q(".about-update-date").hidden).toBe(true);
+
+		fake.found = { ...installable, pubDate: "not a date" };
+		fake.emit();
+		expect(q(".about-update-date").hidden).toBe(true);
+	});
+
+	it("shows up to date when reopened after a check that found nothing", () => {
+		const fake = new FakeUpdates();
+		fake.upToDate = true;
+		mount(fake);
+		expect(q(".about-update-status").textContent).toBe("You're up to date.");
 	});
 
 	it("reports up to date after a check that finds nothing", async () => {

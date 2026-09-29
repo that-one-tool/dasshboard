@@ -324,7 +324,7 @@ describe("IPC command wrapper argument shapes", () => {
 	});
 
 	it("checkUpdate forwards no arguments and returns the found update", async () => {
-		const info = { version: "1.21.0", notes: null, canInstall: true };
+		const info = { version: "1.21.0", notes: null, pubDate: "2026-09-29T00:26:49.821Z", canInstall: true };
 		invokeMock.mockResolvedValue(info);
 		await expect(checkUpdate()).resolves.toEqual(info);
 		expect(invokeMock).toHaveBeenCalledWith("check_update");

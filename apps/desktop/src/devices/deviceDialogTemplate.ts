@@ -143,7 +143,7 @@ export function deviceManagerMarkup(): string {
 
             <fieldset class="form-fieldset">
               <legend>${t("devices.auth.legend")}</legend>
-              <div class="form-group">
+              <div class="form-group auth-method-choices">
                 <label>
                   <input
                     type="radio"

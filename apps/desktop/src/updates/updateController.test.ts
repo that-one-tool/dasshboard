@@ -20,7 +20,7 @@ import { UpdateController, type UpdateControllerOptions } from "./updateControll
 import { checkUpdate, downloadUpdate, installUpdate } from "../ipc";
 import { confirm } from "../ui/confirm";
 
-const found: UpdateInfo = { version: "1.21.0", notes: "Fixes", canInstall: true };
+const found: UpdateInfo = { version: "1.21.0", notes: "Fixes", pubDate: null, canInstall: true };
 
 function controller(overrides: Partial<UpdateControllerOptions> = {}): UpdateController {
 	return new UpdateController({
@@ -64,6 +64,30 @@ describe("UpdateController.check", () => {
 		await expect(updates.check()).resolves.toBeNull();
 
 		expect(updates.available()).toBeNull();
+	});
+
+	it("knows it is up to date only after a check that found nothing", async () => {
+		const updates = controller();
+		expect(updates.isUpToDate()).toBe(false);
+
+		vi.mocked(checkUpdate).mockResolvedValue(null);
+		await updates.check();
+		expect(updates.isUpToDate()).toBe(true);
+
+		vi.mocked(checkUpdate).mockResolvedValue(found);
+		await updates.check();
+		expect(updates.isUpToDate()).toBe(false);
+	});
+
+	it("a failed check keeps the up-to-date state", async () => {
+		vi.mocked(checkUpdate).mockResolvedValue(null);
+		const updates = controller();
+		await updates.check();
+		vi.mocked(checkUpdate).mockRejectedValue({ code: "Update", message: "offline" });
+
+		await expect(updates.check()).rejects.toBeDefined();
+
+		expect(updates.isUpToDate()).toBe(true);
 	});
 
 	it("propagates a failed check and keeps the known release", async () => {

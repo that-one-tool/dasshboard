@@ -1,9 +1,10 @@
 /**
  * The Tunnels sidebar card (SPEC tunnels §6): a section under Devices listing
  * every SSH device that has port forwards with a Start/Stop control, a live
- * status icon, and per-forward `local → remote` rows (with copy-endpoint). It is
- * intentionally separate from the terminal grid — a tunnel has no terminal and
- * is long-lived — so `grid.ts` / `pane.ts` are untouched.
+ * status icon, and per-forward rows (name over `local → remote`, with
+ * copy-endpoint). It is intentionally separate from the terminal grid — a
+ * tunnel has no terminal and is long-lived — so `grid.ts` / `pane.ts` are
+ * untouched.
  *
  * Live state comes from `tunnel_status` events (keyed by `tunnelId`); the panel
  * maps those back to devices so each device row reflects its own tunnel.
@@ -406,6 +407,7 @@ export class TunnelsPanel {
     const rows = device.forwards.map((forward) => {
       const bindState = live.find((f) => f.forwardId === forward.id);
       return {
+        name: forward.name,
         text: forwardEndpoint(forward),
         bound: bindState?.bound,
       };
@@ -416,23 +418,13 @@ export class TunnelsPanel {
       li.className = "tunnel-forward";
       if (row.bound === false) li.classList.add("is-unbound");
 
-      const endpoint = document.createElement("code");
-      endpoint.className = "tunnel-forward-endpoint";
-      endpoint.textContent = row.text;
-
       const copy = iconButton("btn-secondary tunnel-copy", copyIcon, t("tunnels.copy.title"));
       copy.addEventListener("click", () => {
         // Copy just the local `addr:port` (before the arrow) — what a DB client needs.
         void this.copyEndpoint(row.text.split(" → ")[0] ?? row.text);
       });
 
-      li.append(endpoint, copy);
-      if (row.bound === false) {
-        const warn = document.createElement("span");
-        warn.className = "tunnel-forward-warn";
-        warn.textContent = t("tunnels.portInUse");
-        li.appendChild(warn);
-      }
+      li.append(forwardTextEl(row), copy);
       list.appendChild(li);
     }
     return list;
@@ -453,6 +445,38 @@ function statusIconEl(status: TunnelStatus | "stopped"): HTMLElement {
   el.setAttribute("aria-label", label);
   el.title = label;
   el.innerHTML = active ? wifiIcon : wifiOffIcon;
+  return el;
+}
+
+/**
+ * A forward's name (plus a "port in use" flag when it failed to bind) over its
+ * `local → remote` endpoint. Both lines truncate in a narrow sidebar, so each
+ * keeps its full text as a tooltip.
+ */
+function forwardTextEl(row: { name: string; text: string; bound?: boolean }): HTMLElement {
+  const text = document.createElement("div");
+  text.className = "tunnel-forward-text";
+
+  const label = document.createElement("div");
+  label.className = "tunnel-forward-label";
+  label.appendChild(truncatedEl("span", "tunnel-forward-name", row.name));
+  if (row.bound === false) {
+    const warn = document.createElement("span");
+    warn.className = "tunnel-forward-warn";
+    warn.textContent = t("tunnels.portInUse");
+    label.appendChild(warn);
+  }
+
+  text.append(label, truncatedEl("code", "tunnel-forward-endpoint", row.text));
+  return text;
+}
+
+/** An element whose text may be cut off by CSS, with the full text as tooltip. */
+function truncatedEl(tag: string, className: string, value: string): HTMLElement {
+  const el = document.createElement(tag);
+  el.className = className;
+  el.textContent = value;
+  el.title = value;
   return el;
 }
 

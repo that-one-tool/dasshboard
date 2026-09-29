@@ -65,6 +65,11 @@ describe("deviceManagerMarkup", () => {
     }
   });
 
+  it("groups every auth-method radio in the one-line choice row", () => {
+    const row = root.querySelector(".auth-method-choices")!;
+    expect(row.querySelectorAll('input[name="auth-method"]')).toHaveLength(3);
+  });
+
   it("hides the serial field group by default", () => {
     expect(
       root.querySelector("#serial-fields")?.classList.contains("device-kind-hidden"),

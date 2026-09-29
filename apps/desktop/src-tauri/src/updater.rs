@@ -47,6 +47,8 @@ pub struct UpdateInfo {
     pub version: String,
     /// Release notes, when the release carries any.
     pub notes: Option<String>,
+    /// When the release was published (RFC 3339, as the server sent it).
+    pub pub_date: Option<String>,
     /// Whether this build can download and install the update itself.
     pub can_install: bool,
 }
@@ -167,6 +169,15 @@ pub(crate) fn notes_or_none(notes: Option<String>) -> Option<String> {
     notes.filter(|n| !n.trim().is_empty())
 }
 
+/// The manifest's `pub_date`, passed through verbatim for the frontend to
+/// format in the user's locale.
+pub(crate) fn pub_date_of(manifest: &serde_json::Value) -> Option<String> {
+    manifest["pub_date"]
+        .as_str()
+        .filter(|d| !d.trim().is_empty())
+        .map(str::to_owned)
+}
+
 fn update_error(err: tauri_plugin_updater::Error) -> AppError {
     AppError::Update(err.to_string())
 }
@@ -191,6 +202,7 @@ pub async fn check<R: Runtime>(
     let info = found.as_ref().map(|update| UpdateInfo {
         version: update.version.clone(),
         notes: notes_or_none(update.body.clone()),
+        pub_date: pub_date_of(&update.raw_json),
         can_install: this_build_can_self_install(),
     });
     pending.lock().replace(found);
@@ -311,15 +323,37 @@ mod tests {
     }
 
     #[test]
+    fn pub_date_is_read_from_the_release_manifest() {
+        let manifest =
+            serde_json::json!({ "version": "1.24.0", "pub_date": "2026-09-29T00:26:49.821Z" });
+        assert_eq!(
+            pub_date_of(&manifest),
+            Some("2026-09-29T00:26:49.821Z".into())
+        );
+    }
+
+    #[test]
+    fn a_missing_or_blank_pub_date_is_none() {
+        assert_eq!(
+            pub_date_of(&serde_json::json!({ "version": "1.24.0" })),
+            None
+        );
+        assert_eq!(pub_date_of(&serde_json::json!({ "pub_date": " " })), None);
+        assert_eq!(pub_date_of(&serde_json::json!({ "pub_date": 42 })), None);
+    }
+
+    #[test]
     fn update_info_wire_format_is_camel_case() {
         let info = UpdateInfo {
             version: "1.21.0".into(),
             notes: Some("Fixes".into()),
+            pub_date: Some("2026-09-29T00:26:49.821Z".into()),
             can_install: true,
         };
         let value = serde_json::to_value(&info).unwrap();
         assert_eq!(value["version"], "1.21.0");
         assert_eq!(value["notes"], "Fixes");
+        assert_eq!(value["pubDate"], "2026-09-29T00:26:49.821Z");
         assert_eq!(value["canInstall"], true);
     }
 
