@@ -14,6 +14,7 @@ mod profile_store;
 mod secret;
 mod serial;
 mod settings;
+mod socks;
 mod ssh_config;
 mod state;
 mod store;

@@ -88,9 +88,14 @@ files, releasing),
       so a second running instance picks up on-disk changes
     - `secret.rs` — OS keychain access; secrets never touch the JSON stores
     - `session.rs` — SSH shell sessions via `russh`
-    - `tunnel.rs` — SSH local port forwarding (`ssh -L`); reuses `session.rs`'s
-      connect + auth + host-key-TOFU path, then binds a local `TcpListener` per
-      forward and pumps each connection over a `direct-tcpip` channel
+    - `tunnel.rs` — SSH local (`ssh -L`) and dynamic (`ssh -D`) port
+      forwarding; reuses `session.rs`'s connect + auth + host-key-TOFU path,
+      then binds a local `TcpListener` per forward and pumps each connection
+      over a `direct-tcpip` channel (to the fixed target, or the one a dynamic
+      forward's SOCKS client names)
+    - `socks.rs` — server side of the SOCKS4/4a/5 handshake (no-auth,
+      `CONNECT` only) for dynamic forwards; stream-generic, unit-tested
+      against an in-memory pipe
     - `sftp.rs` — SFTP browse/transfer over `russh-sftp`, reusing the same
       connect path
     - `agent.rs` — SSH agent forwarding (relays the remote's agent channels to

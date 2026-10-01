@@ -149,11 +149,14 @@ pub enum Connection {
     },
 }
 
-/// One local port-forward (`ssh -L`): the app binds `local_addr:local_port`
-/// locally and tunnels each accepted connection to `remote_host:remote_port` as
-/// resolved *from the SSH server*. Carries no secret material. `local_addr`
-/// defaults to loopback and validation rejects any non-loopback address
-/// (SPEC §8), so a saved forward is only ever reachable from this machine.
+/// One port-forward: the app binds `local_addr:local_port` locally and tunnels
+/// each accepted connection over SSH. A [`ForwardKind::Local`] forward (`ssh -L`)
+/// always goes to `remote_host:remote_port` as resolved *from the SSH server*; a
+/// [`ForwardKind::Dynamic`] one (`ssh -D`) is a SOCKS proxy whose client names
+/// the target per connection, so its remote fields are unused. Carries no
+/// secret material. `local_addr` defaults to loopback and validation rejects any
+/// non-loopback address (SPEC §8), so a saved forward is only ever reachable
+/// from this machine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Forward {
@@ -162,13 +165,38 @@ pub struct Forward {
     pub id: String,
     /// Human label shown in the Tunnels UI, e.g. `"Postgres"`.
     pub name: String,
+    /// `#[serde(default)]` loads forwards saved before dynamic ones existed as
+    /// local forwards.
+    #[serde(default)]
+    pub kind: ForwardKind,
     /// Local bind address; defaults to `127.0.0.1`. Must be a loopback IP.
     #[serde(default = "default_local_addr")]
     pub local_addr: String,
     pub local_port: u16,
     /// Host the SSH server dials on our behalf (e.g. `127.0.0.1`, `db.internal`).
+    /// Empty for a dynamic forward.
+    #[serde(default)]
     pub remote_host: String,
+    /// `0` for a dynamic forward.
+    #[serde(default)]
     pub remote_port: u16,
+}
+
+/// How a forward picks its destination. Serializes to `"local"`/`"dynamic"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ForwardKind {
+    /// `ssh -L`: one fixed `remote_host:remote_port`.
+    #[default]
+    Local,
+    /// `ssh -D`: a SOCKS4/4a/5 proxy; each connection names its own target.
+    Dynamic,
+    /// A kind written by a newer version. Loading it as this (rather than
+    /// failing) keeps one unknown forward from making the whole `devices.json`
+    /// unreadable after a downgrade; such a forward fails validation and is
+    /// never bound.
+    #[serde(other)]
+    Unsupported,
 }
 
 /// Default local bind address for a forward: IPv4 loopback.
@@ -495,9 +523,10 @@ fn validate_ssh(
     validate_forwards(forwards)
 }
 
-/// Port-forward validation: every forward must have a non-empty name and remote
-/// host, non-zero local/remote ports, a loopback `local_addr` (SPEC §8), and no
-/// two forwards may claim the same `(local_addr, local_port)` bind pair.
+/// Port-forward validation: every forward must have a non-empty name, a non-zero
+/// local port, a loopback `local_addr` (SPEC §8), a destination unless it is
+/// dynamic, and no two forwards may claim the same `(local_addr, local_port)`
+/// bind pair.
 fn validate_forwards(forwards: &[Forward]) -> Result<(), AppError> {
     let mut seen = std::collections::HashSet::new();
     for forward in forwards {
@@ -516,13 +545,37 @@ fn validate_forwards(forwards: &[Forward]) -> Result<(), AppError> {
 /// `validate_forwards` stays a simple iterate-and-dedupe loop.
 fn validate_one_forward(forward: &Forward) -> Result<(), AppError> {
     require_non_empty(&forward.name, "forward name must not be empty")?;
-    require_non_empty(&forward.remote_host, "forward remoteHost must not be empty")?;
-    if forward.local_port == 0 || forward.remote_port == 0 {
+    require_forward_port(forward.local_port)?;
+    validate_forward_destination(forward)?;
+    validate_forward_local_addr(&forward.local_addr)
+}
+
+/// A local forward needs a fixed `remote_host:remote_port`; a dynamic one gets
+/// its target from the SOCKS client, so its remote fields are ignored.
+fn validate_forward_destination(forward: &Forward) -> Result<(), AppError> {
+    match forward.kind {
+        ForwardKind::Dynamic => Ok(()),
+        ForwardKind::Unsupported => Err(AppError::Validation(
+            "this forward's type needs a newer version of DaSSHboard".to_string(),
+        )),
+        ForwardKind::Local => {
+            require_non_empty(&forward.remote_host, "forward remoteHost must not be empty")?;
+            require_forward_port(forward.remote_port)
+        }
+    }
+}
+
+fn require_forward_port(port: u16) -> Result<(), AppError> {
+    if port == 0 {
         return Err(AppError::Validation(
             "forward ports must be between 1 and 65535".to_string(),
         ));
     }
-    match forward.local_addr.parse::<std::net::IpAddr>() {
+    Ok(())
+}
+
+fn validate_forward_local_addr(local_addr: &str) -> Result<(), AppError> {
+    match local_addr.parse::<std::net::IpAddr>() {
         Ok(addr) if addr.is_loopback() => Ok(()),
         Ok(_) => Err(AppError::Validation(
             "forward localAddr must be a loopback address".to_string(),
@@ -655,6 +708,7 @@ mod tests {
         Forward {
             id: format!("fwd-{name}"),
             name: name.to_string(),
+            kind: ForwardKind::Local,
             local_addr: "127.0.0.1".to_string(),
             local_port,
             remote_host: "127.0.0.1".to_string(),
@@ -1232,6 +1286,7 @@ mod tests {
             serde_json::json!([{
                 "id": "fwd-Postgres",
                 "name": "Postgres",
+                "kind": "local",
                 "localAddr": "127.0.0.1",
                 "localPort": 5432,
                 "remoteHost": "127.0.0.1",
@@ -1240,6 +1295,85 @@ mod tests {
         );
         let back: Device = serde_json::from_value(value).expect("deserialize");
         assert_eq!(device, back);
+    }
+
+    fn sample_dynamic_forward(name: &str, local_port: u16) -> Forward {
+        Forward {
+            kind: ForwardKind::Dynamic,
+            remote_host: String::new(),
+            remote_port: 0,
+            ..sample_forward(name, local_port)
+        }
+    }
+
+    #[test]
+    fn legacy_forward_without_kind_loads_as_local() {
+        let legacy = r#"{ "id": "f1", "name": "db", "localPort": 5432, "remoteHost": "10.0.0.5", "remotePort": 5432 }"#;
+        let parsed: Forward = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.kind, ForwardKind::Local);
+    }
+
+    #[test]
+    fn dynamic_forward_loads_without_a_destination() {
+        let minimal =
+            r#"{ "id": "fwd-Proxy", "name": "Proxy", "kind": "dynamic", "localPort": 1080 }"#;
+        let parsed: Forward = serde_json::from_str(minimal).unwrap();
+        assert_eq!(parsed, sample_dynamic_forward("Proxy", 1080));
+        let value = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(value["kind"], "dynamic");
+    }
+
+    #[test]
+    fn unknown_forward_kind_loads_as_unsupported_and_fails_validation() {
+        let future = r#"{ "id": "f1", "name": "Rev", "kind": "remote", "localPort": 8080, "remoteHost": "h", "remotePort": 80 }"#;
+        let parsed: Forward = serde_json::from_str(future).unwrap();
+        assert_eq!(parsed.kind, ForwardKind::Unsupported);
+        let device = device_with_forwards(vec![parsed]);
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    #[test]
+    fn accepts_dynamic_forward_without_destination() {
+        let device = device_with_forwards(vec![
+            sample_forward("Postgres", 5432),
+            sample_dynamic_forward("Proxy", 1080),
+        ]);
+        assert!(device.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_dynamic_forward_with_zero_local_port() {
+        let device = device_with_forwards(vec![sample_dynamic_forward("Proxy", 0)]);
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_dynamic_forward_with_non_loopback_local_addr() {
+        let mut forward = sample_dynamic_forward("Proxy", 1080);
+        forward.local_addr = "0.0.0.0".to_string();
+        let device = device_with_forwards(vec![forward]);
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_dynamic_forward_sharing_a_bind_pair_with_a_local_one() {
+        let device = device_with_forwards(vec![
+            sample_forward("Postgres", 1080),
+            sample_dynamic_forward("Proxy", 1080),
+        ]);
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
     }
 
     #[test]

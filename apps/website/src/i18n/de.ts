@@ -47,7 +47,7 @@ export const de: SiteMessages = {
 			},
 			{
 				title: "Tunnel & Jump-Hosts",
-				body: "Lokale Portweiterleitung (ssh -L) mit Start/Stopp aus der Seitenleiste, ProxyJump über einen gespeicherten Bastion-Host und optionale Agent-Weiterleitung.",
+				body: "Lokale (ssh -L) und dynamische SOCKS-Portweiterleitung (ssh -D) mit Start/Stopp aus der Seitenleiste, ProxyJump über einen gespeicherten Bastion-Host und optionale Agent-Weiterleitung.",
 			},
 			{
 				title: "SFTP-Dateibrowser",
@@ -111,7 +111,7 @@ export const de: SiteMessages = {
 				title: "Tunnel und Jump-Hosts, ohne Kommandozeilenoptionen",
 				body: "Definieren Sie die Portweiterleitungen eines Geräts einmal und starten oder stoppen Sie sie dann über die Tunnel-Karte in der Seitenleiste. Erreichen Sie private Hosts über einen gespeicherten Bastion-Host.",
 				points: [
-					"Lokale Portweiterleitung (ssh -L) mit Autostart",
+					"Lokale (ssh -L) und dynamische SOCKS-Weiterleitungen (ssh -D) mit Autostart",
 					"ProxyJump (ssh -J) über ein gespeichertes Gerät",
 					"Optionale Agent-Weiterleitung (ssh -A)",
 					"Live-Status für jede Weiterleitung",

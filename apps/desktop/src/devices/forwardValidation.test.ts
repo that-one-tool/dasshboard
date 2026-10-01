@@ -10,6 +10,7 @@ function sampleForward(overrides: Partial<Forward> = {}): ForwardFormValues {
   return {
     id: "f1",
     name: "Postgres",
+    kind: "local",
     localAddr: "127.0.0.1",
     localPort: 5432,
     remoteHost: "127.0.0.1",
@@ -80,6 +81,21 @@ describe("validateForwards", () => {
       sampleForward({ name: "b", localPort: 5432 }),
     ]);
     expect(errors.some((e) => e.field === "forward-1-localPort")).toBe(true);
+  });
+
+  it("accepts a dynamic forward without a destination", () => {
+    const errors = validateForwards([
+      sampleForward({ kind: "dynamic", remoteHost: "", remotePort: 0 }),
+    ]);
+    expect(errors).toEqual([]);
+  });
+
+  it("still checks a dynamic forward's local port and address", () => {
+    const errors = validateForwards([
+      sampleForward({ kind: "dynamic", localAddr: "0.0.0.0", localPort: 0 }),
+    ]);
+    expect(errors.some((e) => e.field === "forward-0-localPort")).toBe(true);
+    expect(errors.some((e) => e.field === "forward-0-localAddr")).toBe(true);
   });
 
   it("does not flag the same local port on distinct loopback addresses", () => {

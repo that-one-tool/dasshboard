@@ -43,7 +43,8 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands.rs  ──�
 - **Backend (`src-tauri/src/`)**: `commands.rs` holds the handlers (registered in
   `lib.rs`), and each concern has its own module:
     - `session`: SSH shells over `russh`. `tunnel`, `sftp` and `agent` reuse its
-      connect, auth and host-key path.
+      connect, auth and host-key path; `tunnel`'s dynamic forwards speak SOCKS
+      via `socks`.
     - `serial` and `local_shell`: plug into the same `SessionSink`/`SessionStatus`
       seam as SSH shells.
     - `*_store`: JSON stores built on `atomic_file` (atomic writes, recovery from

@@ -1,11 +1,12 @@
-//! SSH local port-forwarding (`ssh -L`) — the tunnel analogue of `session.rs`
+//! SSH port-forwarding (`ssh -L` / `ssh -D`) — the tunnel analogue of `session.rs`
 //! (SPEC tunnels §2). A [`TunnelManager`] owns a `HashMap<TunnelId, TunnelHandle>`,
 //! one `tokio` task per live tunnel, and reuses `session.rs`'s connect + auth +
 //! host-key-TOFU path verbatim ([`establish_with_deadline`]). It diverges only
 //! *after* authentication: instead of requesting a PTY + shell, it binds a local
 //! `TcpListener` for each configured forward and pumps every accepted connection
 //! over a `direct-tcpip` channel to `remoteHost:remotePort` (resolved from the
-//! SSH server).
+//! SSH server) — or, for a dynamic forward (`ssh -D`), to whatever target the
+//! connection's SOCKS request names (see `socks.rs`).
 //!
 //! **Like `session.rs`, this module is deliberately Tauri-free.** All
 //! frontend-facing effects go through the [`TunnelSink`] trait, whose production
@@ -33,15 +34,15 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use russh::client;
+use russh::{client, Channel, ChannelOpenFailure};
 use serde::Serialize;
-use tokio::io::copy_bidirectional;
+use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 
-use crate::device::Forward;
+use crate::device::{Forward, ForwardKind};
 use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
 use crate::session::{
@@ -49,6 +50,7 @@ use crate::session::{
     PromptRegistry, SessionSink, SessionStatus, SshHandler, DEFAULT_CONNECT_TIMEOUT,
     DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
 };
+use crate::socks;
 
 /// Control-channel bound. A tunnel's control channel only ever carries a single
 /// `Stop`; the bound just keeps it from being unbounded (a standing review
@@ -429,18 +431,12 @@ async fn bind_forwards(
 ) -> Vec<ForwardStatus> {
     let mut statuses = Vec::with_capacity(forwards.len());
     for forward in forwards {
-        let bound = match TcpListener::bind((forward.local_addr.as_str(), forward.local_port)).await
-        {
-            Ok(listener) => {
-                listeners.spawn(run_listener(
-                    listener,
-                    Arc::clone(handle),
-                    forward.remote_host.clone(),
-                    forward.remote_port,
-                ));
+        let bound = match listen(forward).await {
+            Some((listener, destination)) => {
+                listeners.spawn(run_listener(listener, Arc::clone(handle), destination));
                 true
             }
-            Err(_) => false,
+            None => false,
         };
         statuses.push(ForwardStatus {
             forward_id: forward.id.clone(),
@@ -454,6 +450,54 @@ async fn bind_forwards(
     statuses
 }
 
+/// Where a forward's connections go: one fixed target (`ssh -L`) or wherever
+/// each SOCKS client asks (`ssh -D`).
+#[derive(Clone)]
+enum Destination {
+    Fixed { host: String, port: u16 },
+    Socks,
+}
+
+impl Destination {
+    /// `None` for a forward kind this version doesn't know (written by a newer
+    /// one); such a forward is left unbound.
+    fn of(forward: &Forward) -> Option<Self> {
+        match forward.kind {
+            ForwardKind::Local => Some(Destination::Fixed {
+                host: forward.remote_host.clone(),
+                port: forward.remote_port,
+            }),
+            ForwardKind::Dynamic => Some(Destination::Socks),
+            ForwardKind::Unsupported => None,
+        }
+    }
+}
+
+/// Bind one forward's listener, or `None` when it can't serve: an unknown
+/// kind, a non-loopback address, or a port already in use. Loopback is checked
+/// again here, not only when a device is saved, so a hand-edited
+/// `devices.json` can never expose a forward — least of all an open SOCKS
+/// proxy — to the network (SPEC §8).
+async fn listen(forward: &Forward) -> Option<(TcpListener, Destination)> {
+    let destination = Destination::of(forward)?;
+    if !is_loopback(&forward.local_addr) {
+        return None;
+    }
+    let listener = TcpListener::bind((forward.local_addr.as_str(), forward.local_port))
+        .await
+        .ok()?;
+    Some((listener, destination))
+}
+
+fn is_loopback(addr: &str) -> bool {
+    addr.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// How long a SOCKS client gets to send its request before its connection is
+/// dropped, so an idle or non-SOCKS client can't hold a task forever.
+const SOCKS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Accept loop for one forward: every accepted local connection opens a
 /// `direct-tcpip` channel and is copied bidirectionally. Per-connection tasks
 /// live in a local `JoinSet` that is reaped as connections finish (bounding
@@ -462,8 +506,7 @@ async fn bind_forwards(
 async fn run_listener(
     listener: TcpListener,
     handle: Arc<client::Handle<SshHandler>>,
-    remote_host: String,
-    remote_port: u16,
+    destination: Destination,
 ) {
     let mut conns = JoinSet::new();
     loop {
@@ -473,8 +516,7 @@ async fn run_listener(
                     conns.spawn(handle_connection(
                         tcp,
                         Arc::clone(&handle),
-                        remote_host.clone(),
-                        remote_port,
+                        destination.clone(),
                         peer,
                     ));
                 }
@@ -490,27 +532,100 @@ async fn run_listener(
 }
 
 /// Copy one accepted local connection to a fresh `direct-tcpip` channel and
-/// back until either side closes. A channel-open failure just drops the local
-/// connection (the DB client sees a closed socket); it never affects the tunnel.
+/// back until either side closes. A failure (channel open, SOCKS handshake)
+/// only drops this local connection; it never affects the tunnel.
 async fn handle_connection(
-    mut tcp: TcpStream,
+    tcp: TcpStream,
     handle: Arc<client::Handle<SshHandler>>,
-    remote_host: String,
-    remote_port: u16,
+    destination: Destination,
     peer: SocketAddr,
 ) {
-    let channel = match handle
+    match destination {
+        Destination::Fixed { host, port } => forward_fixed(tcp, &handle, host, port, peer).await,
+        Destination::Socks => forward_socks(tcp, &handle, peer).await,
+    }
+}
+
+/// `ssh -L`: a channel-open failure drops the local connection (the DB client
+/// sees a closed socket).
+async fn forward_fixed(
+    tcp: TcpStream,
+    handle: &client::Handle<SshHandler>,
+    host: String,
+    port: u16,
+    peer: SocketAddr,
+) {
+    if let Ok(channel) = open_direct_tcpip(handle, host, port, peer).await {
+        pump(tcp, channel).await;
+    }
+}
+
+/// `ssh -D`: learn the target from the SOCKS request, open the channel, and
+/// tell the client whether it worked before pumping.
+async fn forward_socks(mut tcp: TcpStream, handle: &client::Handle<SshHandler>, peer: SocketAddr) {
+    let Some(request) = socks_handshake(&mut tcp, SOCKS_HANDSHAKE_TIMEOUT).await else {
+        return;
+    };
+    let opened = open_direct_tcpip(handle, request.host, request.port, peer).await;
+    let _ = socks::reply(&mut tcp, request.version, socks_outcome(&opened)).await;
+    match opened {
+        Ok(channel) => pump(tcp, channel).await,
+        Err(_) => socks::close(&mut tcp).await,
+    }
+}
+
+/// Read the client's SOCKS request within `timeout`. A rejected request has
+/// already been answered, so the stream is closed gracefully; a client that
+/// timed out is simply dropped.
+async fn socks_handshake<S>(stream: &mut S, timeout: Duration) -> Option<socks::ConnectRequest>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    match tokio::time::timeout(timeout, socks::accept(stream)).await {
+        Ok(Ok(request)) => Some(request),
+        Ok(Err(_)) => {
+            socks::close(stream).await;
+            None
+        }
+        Err(_) => None,
+    }
+}
+
+/// What to tell the SOCKS client about the `direct-tcpip` open, so it can show
+/// "connection refused" or "not allowed" instead of a generic failure.
+fn socks_outcome<T>(opened: &Result<T, russh::Error>) -> socks::Reply {
+    match opened {
+        Ok(_) => socks::Reply::Granted,
+        Err(russh::Error::ChannelOpenFailure(reason)) => open_failure_reply(reason),
+        Err(_) => socks::Reply::GeneralFailure,
+    }
+}
+
+fn open_failure_reply(reason: &ChannelOpenFailure) -> socks::Reply {
+    match reason {
+        ChannelOpenFailure::ConnectFailed => socks::Reply::ConnectionRefused,
+        ChannelOpenFailure::AdministrativelyProhibited => socks::Reply::NotAllowed,
+        _ => socks::Reply::GeneralFailure,
+    }
+}
+
+async fn open_direct_tcpip(
+    handle: &client::Handle<SshHandler>,
+    host: String,
+    port: u16,
+    peer: SocketAddr,
+) -> Result<Channel<client::Msg>, russh::Error> {
+    handle
         .channel_open_direct_tcpip(
-            remote_host,
-            u32::from(remote_port),
+            host,
+            u32::from(port),
             peer.ip().to_string(),
             u32::from(peer.port()),
         )
         .await
-    {
-        Ok(channel) => channel,
-        Err(_) => return,
-    };
+}
+
+async fn pump(mut tcp: TcpStream, channel: Channel<client::Msg>) {
     let mut stream = channel.into_stream();
     let _ = copy_bidirectional(&mut tcp, &mut stream).await;
 }
@@ -602,6 +717,91 @@ mod tests {
         assert_eq!(value["remoteHost"], "db");
         assert_eq!(value["remotePort"], 5432);
         assert_eq!(value["bound"], true);
+    }
+
+    #[test]
+    fn socks_outcome_maps_channel_open_failures() {
+        let refused: Result<(), _> = Err(russh::Error::ChannelOpenFailure(
+            ChannelOpenFailure::ConnectFailed,
+        ));
+        let prohibited: Result<(), _> = Err(russh::Error::ChannelOpenFailure(
+            ChannelOpenFailure::AdministrativelyProhibited,
+        ));
+        let shortage: Result<(), _> = Err(russh::Error::ChannelOpenFailure(
+            ChannelOpenFailure::ResourceShortage,
+        ));
+        let other: Result<(), _> = Err(russh::Error::SendError);
+        assert_eq!(
+            socks_outcome(&Ok::<(), russh::Error>(())),
+            socks::Reply::Granted
+        );
+        assert_eq!(socks_outcome(&refused), socks::Reply::ConnectionRefused);
+        assert_eq!(socks_outcome(&prohibited), socks::Reply::NotAllowed);
+        assert_eq!(socks_outcome(&shortage), socks::Reply::GeneralFailure);
+        assert_eq!(socks_outcome(&other), socks::Reply::GeneralFailure);
+    }
+
+    #[test]
+    fn only_loopback_addresses_may_be_bound() {
+        assert!(is_loopback("127.0.0.1"));
+        assert!(is_loopback("127.4.5.6"));
+        assert!(is_loopback("::1"));
+        assert!(!is_loopback("0.0.0.0"));
+        assert!(!is_loopback("192.168.1.10"));
+        assert!(!is_loopback("localhost"));
+    }
+
+    fn forward_of(kind: ForwardKind, local_addr: &str) -> Forward {
+        Forward {
+            id: "f1".into(),
+            name: "f".into(),
+            kind,
+            local_addr: local_addr.into(),
+            local_port: 0, // any free port
+            remote_host: "db".into(),
+            remote_port: 5432,
+        }
+    }
+
+    #[tokio::test]
+    async fn listen_refuses_non_loopback_and_unsupported_forwards() {
+        assert!(listen(&forward_of(ForwardKind::Dynamic, "0.0.0.0"))
+            .await
+            .is_none());
+        assert!(listen(&forward_of(ForwardKind::Unsupported, "127.0.0.1"))
+            .await
+            .is_none());
+        assert!(listen(&forward_of(ForwardKind::Dynamic, "127.0.0.1"))
+            .await
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn socks_handshake_drops_a_silent_client_after_the_timeout() {
+        let (_client, mut server) = tokio::io::duplex(64);
+        let handshake = socks_handshake(&mut server, Duration::from_millis(50));
+        let request = tokio::time::timeout(Duration::from_secs(1), handshake)
+            .await
+            .expect("the handshake must time out");
+        assert!(request.is_none());
+    }
+
+    #[tokio::test]
+    async fn socks_handshake_answers_then_closes_a_rejected_request() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut client, mut server) = tokio::io::duplex(64);
+        // SOCKS4 BIND: rejected with 0x5B.
+        client
+            .write_all(&[4, 2, 0, 80, 127, 0, 0, 1, 0])
+            .await
+            .unwrap();
+        let server_side =
+            tokio::spawn(async move { socks_handshake(&mut server, Duration::from_secs(5)).await });
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).await.unwrap();
+        assert_eq!(answer, vec![0, 0x5B, 0, 0, 0, 0, 0, 0]);
+        client.shutdown().await.unwrap();
+        assert!(server_side.await.unwrap().is_none());
     }
 
     #[test]

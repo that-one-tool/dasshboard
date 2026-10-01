@@ -1738,14 +1738,18 @@ body.grid-dragging-row * {
 	background: var(--accent);
 }
 
-/* The main dialogs share one width, wider than the default: port-forward
- * endpoints fit on one line, field hints wrap less, and long host names and
- * fingerprints fit. */
+/* The main dialogs share one width, wider than the default: field hints wrap
+ * less, and long host names and fingerprints fit. */
 .settings-content,
-#device-dialog .dialog-content,
 .known-hosts-content,
 .about-content {
 	max-width: 48rem;
+}
+
+/* The device editor is wider still, so a forward row's host fields are roomy
+ * on one line. */
+#device-dialog .dialog-content {
+	max-width: 56rem;
 }
 
 /* General / Connections tabs: the same segmented pill track as the workspace
@@ -2126,7 +2130,13 @@ body.grid-dragging-row * {
 
 .forward-endpoints {
 	display: grid;
-	grid-template-columns: 1fr 1fr auto 1.3fr 1fr;
+	/* No auto tracks: each row is its own grid, so an auto track would size to
+	 * that row's content (the type label, a dynamic row's missing arrow) and
+	 * misalign the rows. */
+	/* Source and destination mirror each other: same host width, same port width. */
+	grid-template-columns:
+		minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(0, 1fr) 1rem
+		minmax(0, 1.4fr) minmax(0, 1fr);
 	align-items: center;
 	gap: 0.5rem;
 }
@@ -2140,6 +2150,14 @@ body.grid-dragging-row * {
 .forward-arrow {
 	color: var(--text-muted);
 	text-align: center;
+}
+
+/* Stands in for a dynamic forward's (hidden) arrow + remote host + remote port,
+ * spanning their three tracks. */
+.forward-socks-hint {
+	grid-column: span 3;
+	color: var(--text-muted);
+	font-size: 0.85rem;
 }
 
 /* Same height as the inputs beside it. */
@@ -2167,15 +2185,15 @@ body.grid-dragging-row * {
 }
 
 /* One line per forward when the section is wide enough: the two wrapper lines
- * dissolve into a single grid row (name · local addr · local port → remote
- * host · remote port · ×). Narrower, the two-line layout above applies.
+ * dissolve into a single grid row (name · type · local addr · local port →
+ * remote host · remote port · ×). Narrower, the two-line layout above applies.
  * Deleting this block alone restores the two-line layout everywhere. */
 @container (min-width: 40em) {
 	.forward-row {
 		display: grid;
 		grid-template-columns:
-			minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 0.8fr) auto
-			minmax(0, 1.25fr) minmax(0, 0.8fr) auto;
+			minmax(0, 1.3fr) minmax(0, 1.2fr) minmax(0, 1.6fr) minmax(0, 0.7fr) 1rem
+			minmax(0, 1.6fr) minmax(0, 0.7fr) auto;
 		align-items: center;
 		column-gap: 0.5rem;
 		row-gap: 0.25rem;
@@ -2333,6 +2351,7 @@ body.grid-dragging-row * {
  * ============================================================================ */
 
 .form-group select,
+.forward-row select,
 .settings-content select,
 .pane-device-select,
 .sftp-device-select {
@@ -2347,9 +2366,10 @@ body.grid-dragging-row * {
 	cursor: pointer;
 }
 
-/* Box styling for the device-editor selects (Connection type + serial framing),
- * matching `.form-group input`. */
-.form-group select {
+/* Box styling for the device-editor selects (Connection type + serial framing,
+ * forward type), matching `.form-group input`. */
+.form-group select,
+.forward-row select {
 	padding-top: 8px;
 	padding-bottom: 8px;
 	padding-left: 10px;
@@ -2362,7 +2382,8 @@ body.grid-dragging-row * {
 	transition: border-color 150ms ease-in-out;
 }
 
-.form-group select:focus {
+.form-group select:focus,
+.forward-row select:focus {
 	outline: none;
 	border-color: var(--accent);
 	box-shadow: 0 0 0 2px var(--accent-soft);

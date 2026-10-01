@@ -78,15 +78,26 @@ interface DeviceCommon {
 }
 
 /**
- * One local port-forward (`ssh -L`) on an SSH device: bind `localAddr:localPort`
- * locally and tunnel each connection to `remoteHost:remotePort` as resolved from
- * the SSH server. Mirrors the Rust `Forward`. `localAddr` is always a loopback
- * address (enforced by validation). The backend always emits `forwards` (empty
- * as `[]`), so every SSH device the frontend sees carries the field.
+ * How a forward picks its destination: `local` (`ssh -L`) always goes to
+ * `remoteHost:remotePort`; `dynamic` (`ssh -D`) is a SOCKS proxy whose client
+ * names the target per connection. `unsupported` is a kind written by a newer
+ * version (the backend loads it as such rather than failing, and never binds
+ * it). Mirrors the Rust `ForwardKind`.
+ */
+export type ForwardKind = "local" | "dynamic" | "unsupported";
+
+/**
+ * One port-forward on an SSH device: bind `localAddr:localPort` locally and
+ * tunnel each connection over SSH — to `remoteHost:remotePort` (resolved from
+ * the SSH server) for a `local` forward; a `dynamic` one carries `""`/`0` there.
+ * Mirrors the Rust `Forward`. `localAddr` is always a loopback address
+ * (enforced by validation). The backend always emits `forwards` (empty as
+ * `[]`) and every forward's `kind`, so both fields are always present.
  */
 export interface Forward {
   id: string;
   name: string;
+  kind: ForwardKind;
   localAddr: string;
   localPort: number;
   remoteHost: string;

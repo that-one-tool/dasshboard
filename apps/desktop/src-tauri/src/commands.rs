@@ -871,6 +871,9 @@ impl TunnelSink for TauriTunnelSink {
 /// The SSH connection details + forwards of a device, or an error if the device
 /// is serial (no tunnels) or has no forwards configured (nothing to bind).
 fn tunnel_target_of(device: &Device) -> Result<(&str, u16, &str, &[Forward]), AppError> {
+    // Stores load without validating, so a hand-edited devices.json (e.g. a
+    // forward bound to 0.0.0.0) is caught here with a clear message.
+    device.validate()?;
     match &device.connection {
         Connection::Ssh {
             host,
@@ -1521,6 +1524,39 @@ mod tests {
             tags: Vec::new(),
             connect_snippet: None,
         }
+    }
+
+    fn device_with_forward(local_addr: &str) -> Device {
+        let mut device = Device {
+            id: "11111111-1111-4111-8111-111111111111".to_string(),
+            ..sample_device()
+        };
+        if let Connection::Ssh { forwards, .. } = &mut device.connection {
+            forwards.push(Forward {
+                id: "f1".to_string(),
+                name: "Proxy".to_string(),
+                kind: crate::device::ForwardKind::Dynamic,
+                local_addr: local_addr.to_string(),
+                local_port: 1080,
+                remote_host: String::new(),
+                remote_port: 0,
+            });
+        }
+        device
+    }
+
+    #[test]
+    fn tunnel_target_accepts_a_valid_device() {
+        assert!(tunnel_target_of(&device_with_forward("127.0.0.1")).is_ok());
+    }
+
+    #[test]
+    fn tunnel_target_revalidates_a_device_edited_on_disk() {
+        // devices.json is loaded without validation, so a hand-edited
+        // non-loopback forward must be refused when the tunnel starts.
+        let device = device_with_forward("0.0.0.0");
+        let err = tunnel_target_of(&device).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
     }
 
     fn sample_serial_device() -> Device {

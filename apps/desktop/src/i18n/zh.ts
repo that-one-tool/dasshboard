@@ -255,6 +255,10 @@ export const zh: Messages = {
 	"forwards.remoteHost.placeholder": "远程主机",
 	"forwards.remotePort.placeholder": "远程端口",
 	"forwards.remove": "移除转发",
+	"forwards.kind.label": "转发类型",
+	"forwards.kind.local": "本地",
+	"forwards.kind.dynamic": "动态",
+	"forwards.socksProxy": "SOCKS 代理",
 
 	/* -- profiles ----------------------------------------------------------- */
 	"profiles.title": "配置文件",

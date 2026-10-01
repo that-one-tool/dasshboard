@@ -47,6 +47,7 @@ function forward(id: string, localPort: number): Forward {
   return {
     id,
     name: `fwd-${id}`,
+    kind: "local",
     localAddr: "127.0.0.1",
     localPort,
     remoteHost: "db",
@@ -80,12 +81,25 @@ describe("pure helpers", () => {
   it("forwardEndpoint formats local → remote", () => {
     expect(
       forwardEndpoint({
+        kind: "local",
         localAddr: "127.0.0.1",
         localPort: 5432,
         remoteHost: "db",
         remotePort: 6543,
       }),
     ).toBe("127.0.0.1:5432 → db:6543");
+  });
+
+  it("forwardEndpoint shows a dynamic forward as a SOCKS proxy", () => {
+    expect(
+      forwardEndpoint({
+        kind: "dynamic",
+        localAddr: "127.0.0.1",
+        localPort: 1080,
+        remoteHost: "",
+        remotePort: 0,
+      }),
+    ).toBe("127.0.0.1:1080 → SOCKS proxy");
   });
 });
 

@@ -256,6 +256,10 @@ export const ja: Messages = {
 	"forwards.remoteHost.placeholder": "リモートホスト",
 	"forwards.remotePort.placeholder": "リモートポート",
 	"forwards.remove": "転送を削除",
+	"forwards.kind.label": "転送の種類",
+	"forwards.kind.local": "ローカル",
+	"forwards.kind.dynamic": "ダイナミック",
+	"forwards.socksProxy": "SOCKS プロキシ",
 
 	/* -- profiles ----------------------------------------------------------- */
 	"profiles.title": "プロファイル",

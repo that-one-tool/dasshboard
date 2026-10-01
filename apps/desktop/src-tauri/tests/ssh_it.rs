@@ -23,11 +23,11 @@ use std::time::Duration;
 
 use russh::keys::{HashAlg, PrivateKey};
 use russh::server::{self, Auth, Msg, Server as _, Session};
-use russh::{Channel, ChannelId};
+use russh::{Channel, ChannelId, ChannelOpenFailure};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
-use dasshboard_lib::device::Forward;
+use dasshboard_lib::device::{Forward, ForwardKind};
 use dasshboard_lib::error::AppError;
 use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
 use dasshboard_lib::session::{
@@ -52,6 +52,8 @@ tXLMoVSe4szSWqeGKSQwAAAAFGRhc3NoYm9hcmQtdGVzdC1ob3N0AQ==
 
 const TEST_USER: &str = "tester";
 const TEST_PASSWORD: &str = "correct-horse";
+/// A `direct-tcpip` target the test server refuses (`ConnectFailed`).
+const REFUSED_HOST: &str = "refused.test";
 
 /// SHA256 fingerprint of [`TEST_HOST_KEY`], as russh renders it.
 fn server_fingerprint() -> String {
@@ -131,6 +133,11 @@ impl server::Handler for TestServerHandler {
         reply: server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        // Lets the SOCKS tests see how a refused `direct-tcpip` is reported.
+        if host_to_connect == REFUSED_HOST {
+            reply.reject(ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        }
         reply.accept().await;
         if self.bridge_direct_tcpip {
             // Jump-host mode: actually connect to the requested target and pump
@@ -1519,6 +1526,7 @@ async fn tunnel_reports_a_lost_connection_without_keepalive() {
             forwards: vec![Forward {
                 id: "f1".to_string(),
                 name: "echo".to_string(),
+                kind: ForwardKind::Local,
                 local_addr: "127.0.0.1".to_string(),
                 local_port,
                 remote_host: "127.0.0.1".to_string(),
@@ -1550,6 +1558,7 @@ async fn tunnel_forwards_bytes_and_cleans_up() {
     let forward = Forward {
         id: "f1".to_string(),
         name: "echo".to_string(),
+        kind: ForwardKind::Local,
         local_addr: "127.0.0.1".to_string(),
         local_port,
         // The echo server ignores the direct-tcpip target, so any host:port works.
@@ -1623,6 +1632,226 @@ async fn tunnel_forwards_bytes_and_cleans_up() {
     );
 }
 
+/// Connect to a tunnel's local port, retrying briefly until its listener accepts.
+async fn connect_local(port: u16) -> TcpStream {
+    for _ in 0..50 {
+        if let Ok(stream) = TcpStream::connect(("127.0.0.1", port)).await {
+            return stream;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("could not connect to the tunnel's local port {port}");
+}
+
+/// A local TCP echo service; returns its port.
+async fn spawn_echo_service() -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut tcp, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let (mut reader, mut writer) = tcp.split();
+                let _ = tokio::io::copy(&mut reader, &mut writer).await;
+            });
+        }
+    });
+    port
+}
+
+/// A running dynamic (SOCKS) tunnel against a bridging test server.
+struct DynamicTunnel {
+    manager: Arc<TunnelManager>,
+    chans: TunnelSinkChannels,
+    local_port: u16,
+    _dir: tempfile::TempDir,
+}
+
+async fn start_dynamic_tunnel() -> DynamicTunnel {
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_configured_server(TEST_PASSWORD, true).await;
+    seed_trusted(dir.path(), port);
+    let manager = tunnel_manager_with(dir.path());
+    let local_port = free_local_port().await;
+
+    let (sink, mut chans) = new_tunnel_sink();
+    manager.spawn_tunnel(
+        "t1".to_string(),
+        TunnelParams {
+            device_id: "dev-1".to_string(),
+            host: "127.0.0.1".to_string(),
+            port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            forwards: vec![Forward {
+                id: "f1".to_string(),
+                name: "proxy".to_string(),
+                kind: ForwardKind::Dynamic,
+                local_addr: "127.0.0.1".to_string(),
+                local_port,
+                remote_host: String::new(),
+                remote_port: 0,
+            }],
+            keepalive: KeepaliveConfig::disabled(),
+        },
+        sink,
+    );
+    let forwards = await_listening(&mut chans.status_rx).await;
+    assert!(forwards[0].bound, "the SOCKS port must bind");
+    DynamicTunnel {
+        manager,
+        chans,
+        local_port,
+        _dir: dir,
+    }
+}
+
+/// Stop the tunnel and assert it is untracked and its port released.
+async fn stop_and_assert_cleanup(tunnel: &DynamicTunnel) {
+    tunnel.manager.stop_tunnel("t1").await;
+    for _ in 0..50 {
+        if tunnel.manager.tunnel_count() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        tunnel.manager.tunnel_count(),
+        0,
+        "the tunnel must be cleaned up"
+    );
+    assert!(
+        TcpListener::bind(("127.0.0.1", tunnel.local_port))
+            .await
+            .is_ok(),
+        "the SOCKS port must be released"
+    );
+}
+
+async fn read_exactly(stream: &mut TcpStream, len: usize) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = vec![0u8; len];
+    tokio::time::timeout(Duration::from_secs(10), stream.read_exact(&mut buf))
+        .await
+        .expect("bytes within 10s")
+        .unwrap();
+    buf
+}
+
+async fn assert_echoes(stream: &mut TcpStream) {
+    use tokio::io::AsyncWriteExt;
+    stream.write_all(b"PING\n").await.unwrap();
+    assert_eq!(read_exactly(stream, 5).await, b"PING\n");
+}
+
+/// A SOCKS5 greeting + CONNECT to `host` (as a domain name) on `port`.
+fn socks5_request(host: &str, port: u16) -> Vec<u8> {
+    let mut request = vec![5, 1, 0, 5, 1, 0, 3, host.len() as u8];
+    request.extend_from_slice(host.as_bytes());
+    request.extend_from_slice(&port.to_be_bytes());
+    request
+}
+
+/// A dynamic forward is a SOCKS proxy: the client's SOCKS5 request (here by
+/// host name) decides where the SSH server connects. The server bridges
+/// `direct-tcpip` to the requested target — an echo service only reachable at
+/// the port the SOCKS request names — so the echo proves the target came from
+/// the request, not from the forward's config.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dynamic_tunnel_connects_to_the_socks_target() {
+    use tokio::io::AsyncWriteExt;
+
+    let tunnel = start_dynamic_tunnel().await;
+    let echo_port = spawn_echo_service().await;
+
+    let mut stream = connect_local(tunnel.local_port).await;
+    stream
+        .write_all(&socks5_request("127.0.0.1", echo_port))
+        .await
+        .unwrap();
+    let replies = read_exactly(&mut stream, 12).await;
+    assert_eq!(&replies[..2], &[5, 0], "no-auth chosen");
+    assert_eq!(&replies[2..4], &[5, 0], "CONNECT granted");
+    assert_echoes(&mut stream).await;
+
+    drop(stream);
+    stop_and_assert_cleanup(&tunnel).await;
+}
+
+/// SOCKS4a (host name after the user id) works end to end too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dynamic_tunnel_serves_socks4a() {
+    use tokio::io::AsyncWriteExt;
+
+    let tunnel = start_dynamic_tunnel().await;
+    let echo_port = spawn_echo_service().await;
+
+    let mut stream = connect_local(tunnel.local_port).await;
+    let mut request = vec![4, 1];
+    request.extend_from_slice(&echo_port.to_be_bytes());
+    request.extend_from_slice(&[0, 0, 0, 1]);
+    request.extend_from_slice(b"me\x00127.0.0.1\x00");
+    stream.write_all(&request).await.unwrap();
+    assert_eq!(
+        read_exactly(&mut stream, 8).await[..2],
+        [0, 0x5A],
+        "granted"
+    );
+    assert_echoes(&mut stream).await;
+
+    drop(stream);
+    stop_and_assert_cleanup(&tunnel).await;
+}
+
+/// A target the SSH server refuses is reported as "connection refused" to that
+/// one client; the tunnel itself keeps listening.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dynamic_tunnel_reports_a_refused_target_and_keeps_listening() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut tunnel = start_dynamic_tunnel().await;
+
+    let mut stream = connect_local(tunnel.local_port).await;
+    stream
+        .write_all(&socks5_request(REFUSED_HOST, 80))
+        .await
+        .unwrap();
+    let replies = read_exactly(&mut stream, 12).await;
+    assert_eq!(&replies[2..4], &[5, 5], "connection refused");
+    let mut rest = Vec::new();
+    stream.read_to_end(&mut rest).await.unwrap();
+    assert!(
+        rest.is_empty(),
+        "the proxy closes the client after refusing"
+    );
+
+    assert_eq!(tunnel.manager.tunnel_count(), 1, "the tunnel keeps running");
+    assert!(
+        recv_timeout(&mut tunnel.chans.status_rx, Duration::from_millis(300))
+            .await
+            .is_none(),
+        "a refused target must not change the tunnel's status"
+    );
+    stop_and_assert_cleanup(&tunnel).await;
+}
+
+/// Stopping the tunnel while a client is mid-handshake ends that connection
+/// too: nothing outlives the tunnel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_a_dynamic_tunnel_drops_clients_mid_handshake() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let tunnel = start_dynamic_tunnel().await;
+    let mut stream = connect_local(tunnel.local_port).await;
+    stream.write_all(&[5]).await.unwrap(); // greeting started, never finished
+
+    stop_and_assert_cleanup(&tunnel).await;
+    let mut buf = [0u8; 1];
+    let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
+        .await
+        .expect("the half-open client must be dropped when the tunnel stops");
+    assert!(matches!(read, Ok(0) | Err(_)), "expected EOF, got {read:?}");
+}
+
 /// A tunnel whose only forward cannot bind its local port (already in use) ends
 /// with an error and leaves nothing tracked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1639,6 +1868,7 @@ async fn tunnel_bind_failure_errors_and_cleans_up() {
     let forward = Forward {
         id: "f1".to_string(),
         name: "echo".to_string(),
+        kind: ForwardKind::Local,
         local_addr: "127.0.0.1".to_string(),
         local_port,
         remote_host: "127.0.0.1".to_string(),

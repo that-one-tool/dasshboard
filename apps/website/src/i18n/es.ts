@@ -47,7 +47,7 @@ export const es: SiteMessages = {
 			},
 			{
 				title: "Túneles y hosts de salto",
-				body: "Reenvío de puertos local (ssh -L) que se inicia y detiene desde la barra lateral, ProxyJump a través de un bastión guardado y reenvío del agente opcional.",
+				body: "Reenvío de puertos local (ssh -L) y dinámico SOCKS (ssh -D) que se inicia y detiene desde la barra lateral, ProxyJump a través de un bastión guardado y reenvío del agente opcional.",
 			},
 			{
 				title: "Explorador de archivos SFTP",
@@ -111,7 +111,7 @@ export const es: SiteMessages = {
 				title: "Túneles y hosts de salto, sin las opciones",
 				body: "Define una vez los reenvíos de puertos de un dispositivo y luego inícialos y detenlos desde la tarjeta Túneles de la barra lateral. Llega a hosts privados a través de un bastión guardado.",
 				points: [
-					"Reenvío de puertos local (ssh -L) con inicio automático",
+					"Reenvíos locales (ssh -L) y dinámicos SOCKS (ssh -D) con inicio automático",
 					"ProxyJump (ssh -J) a través de un dispositivo guardado",
 					"Reenvío del agente opcional (ssh -A)",
 					"Estado en vivo de cada reenvío",

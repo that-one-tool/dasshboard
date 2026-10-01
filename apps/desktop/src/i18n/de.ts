@@ -257,6 +257,10 @@ export const de: Messages = {
 	"forwards.remoteHost.placeholder": "Remote-Host",
 	"forwards.remotePort.placeholder": "Remote-Port",
 	"forwards.remove": "Weiterleitung entfernen",
+	"forwards.kind.label": "Weiterleitungstyp",
+	"forwards.kind.local": "Lokal",
+	"forwards.kind.dynamic": "Dynamisch",
+	"forwards.socksProxy": "SOCKS-Proxy",
 
 	/* -- profiles ----------------------------------------------------------- */
 	"profiles.title": "Profile",

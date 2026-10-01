@@ -262,6 +262,10 @@ export const en = {
 	"forwards.remoteHost.placeholder": "Remote host",
 	"forwards.remotePort.placeholder": "Remote port",
 	"forwards.remove": "Remove forward",
+	"forwards.kind.label": "Forward type",
+	"forwards.kind.local": "Local",
+	"forwards.kind.dynamic": "Dynamic",
+	"forwards.socksProxy": "SOCKS proxy",
 
 	/* -- profiles (profiles/profileManager.ts) ------------------------------ */
 	"profiles.title": "Profiles",

@@ -92,15 +92,27 @@ function forwardFieldErrors(
 ): ValidationError[] {
   const errors: ValidationError[] = [];
   pushIfEmpty(errors, forward.name, `${prefix}-name`, t("validation.name"));
+  pushIfInvalidPort(errors, forward.localPort, `${prefix}-localPort`);
+  pushIfNotLoopback(errors, forward.localAddr, `${prefix}-localAddr`);
+  if (forward.kind !== "dynamic") {
+    errors.push(...destinationErrors(forward, prefix));
+  }
+  return errors;
+}
+
+/** A local forward's fixed target; a dynamic one gets it from the SOCKS client. */
+function destinationErrors(
+  forward: ForwardFormValues,
+  prefix: string,
+): ValidationError[] {
+  const errors: ValidationError[] = [];
   pushIfEmpty(
     errors,
     forward.remoteHost,
     `${prefix}-remoteHost`,
     t("validation.remoteHost"),
   );
-  pushIfInvalidPort(errors, forward.localPort, `${prefix}-localPort`);
   pushIfInvalidPort(errors, forward.remotePort, `${prefix}-remotePort`);
-  pushIfNotLoopback(errors, forward.localAddr, `${prefix}-localAddr`);
   return errors;
 }
 

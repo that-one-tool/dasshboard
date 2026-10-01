@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import type { Forward } from "../ipc";
+import type { Forward, ForwardKind } from "../ipc";
 import { ForwardsEditor } from "./forwardsEditor";
 
 function makeContainer(): HTMLElement {
@@ -14,6 +14,7 @@ function sampleForward(overrides: Partial<Forward> = {}): Forward {
   return {
     id: "f1",
     name: "Postgres",
+    kind: "local",
     localAddr: "127.0.0.1",
     localPort: 5432,
     remoteHost: "db.internal",
@@ -31,6 +32,13 @@ describe("ForwardsEditor", () => {
     editor = new ForwardsEditor(container);
   });
 
+  /** Pick a type in the first row's dropdown, as the user would. */
+  function selectKind(kind: ForwardKind): void {
+    const select = container.querySelector<HTMLSelectElement>(".forward-kind")!;
+    select.value = kind;
+    select.dispatchEvent(new Event("change"));
+  }
+
   it("starts with no rows and an add button", () => {
     expect(container.querySelectorAll(".forward-row")).toHaveLength(0);
     expect(container.querySelector(".forwards-add")).not.toBeNull();
@@ -44,6 +52,62 @@ describe("ForwardsEditor", () => {
     editor.setForwards(forwards);
     expect(container.querySelectorAll(".forward-row")).toHaveLength(2);
     expect(editor.getForwards()).toEqual(forwards);
+  });
+
+  it("round-trips a dynamic forward without a destination", () => {
+    const forwards = [
+      sampleForward({ kind: "dynamic", localPort: 1080, remoteHost: "", remotePort: 0 }),
+    ];
+    editor.setForwards(forwards);
+    expect(editor.getForwards()).toEqual(forwards);
+  });
+
+  it("drops a stale destination when a row is switched to dynamic", () => {
+    editor.setForwards([sampleForward()]);
+    selectKind("dynamic");
+    expect(editor.getForwards()[0]).toMatchObject({
+      kind: "dynamic",
+      remoteHost: "",
+      remotePort: 0,
+    });
+  });
+
+  it("hides the destination fields of a dynamic row", () => {
+    editor.setForwards([sampleForward()]);
+    const row = container.querySelector<HTMLElement>(".forward-row")!;
+    const destination = [".forward-arrow", ".forward-remote-host", ".forward-remote-port"];
+    const hidden = () =>
+      destination.map((s) => row.querySelector<HTMLElement>(s)!.hidden);
+    const hint = row.querySelector<HTMLElement>(".forward-socks-hint")!;
+    expect(hidden()).toEqual([false, false, false]);
+    expect(hint.hidden).toBe(true);
+    selectKind("dynamic");
+    expect(hidden()).toEqual([true, true, true]);
+    expect(hint.hidden).toBe(false);
+    expect(hint.textContent).toContain("SOCKS proxy");
+    selectKind("local");
+    expect(hidden()).toEqual([false, false, false]);
+    expect(hint.hidden).toBe(true);
+  });
+
+  it("leaves the remote port empty when a saved dynamic row is switched to local", () => {
+    editor.setForwards([
+      sampleForward({ kind: "dynamic", remoteHost: "", remotePort: 0 }),
+    ]);
+    selectKind("local");
+    const port = container.querySelector<HTMLInputElement>(".forward-remote-port")!;
+    expect(port.value).toBe("");
+  });
+
+  it("starts a new row as a local forward", () => {
+    container.querySelector<HTMLButtonElement>(".forwards-add")!.click();
+    expect(editor.getForwards()[0]!.kind).toBe("local");
+  });
+
+  it("validates a dynamic row without a destination as ok", () => {
+    editor.setForwards([sampleForward({ remoteHost: "" })]);
+    selectKind("dynamic");
+    expect(editor.validate()).toBe(true);
   });
 
   it("preserves ids across a round trip", () => {
@@ -80,6 +144,7 @@ describe("ForwardsEditor", () => {
     const endpoints = row.querySelector(":scope > .forward-endpoints")!;
     expect(nameLine.querySelector(".forward-name")).not.toBeNull();
     expect(nameLine.querySelector(".forward-remove")).not.toBeNull();
+    expect(endpoints.querySelector(".forward-kind")).not.toBeNull();
     expect(endpoints.querySelector(".forward-local-addr")).not.toBeNull();
     expect(endpoints.querySelector(".forward-remote-port")).not.toBeNull();
     expect(nameLine.compareDocumentPosition(endpoints)).toBe(

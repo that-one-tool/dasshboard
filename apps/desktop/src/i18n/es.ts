@@ -255,6 +255,10 @@ export const es: Messages = {
 	"forwards.remoteHost.placeholder": "Host remoto",
 	"forwards.remotePort.placeholder": "Puerto remoto",
 	"forwards.remove": "Quitar redirección",
+	"forwards.kind.label": "Tipo de redirección",
+	"forwards.kind.local": "Local",
+	"forwards.kind.dynamic": "Dinámica",
+	"forwards.socksProxy": "proxy SOCKS",
 
 	/* -- profiles ----------------------------------------------------------- */
 	"profiles.title": "Perfiles",

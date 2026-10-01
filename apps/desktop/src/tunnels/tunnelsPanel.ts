@@ -22,6 +22,7 @@ import {
   stopTunnel,
   type AppError,
   type Device,
+  type Forward,
   type ForwardStatus,
   type SshDevice,
   type TunnelStatus,
@@ -73,14 +74,18 @@ export function statusLabel(status: TunnelStatus | "stopped"): string {
   }
 }
 
-/** `127.0.0.1:5432 → db.internal:5432` for a forward's endpoints. */
-export function forwardEndpoint(forward: {
-  localAddr: string;
-  localPort: number;
-  remoteHost: string;
-  remotePort: number;
-}): string {
-  return `${forward.localAddr}:${forward.localPort} → ${forward.remoteHost}:${forward.remotePort}`;
+/**
+ * `127.0.0.1:5432 → db.internal:5432` for a forward's endpoints, or
+ * `127.0.0.1:1080 → SOCKS proxy` for a dynamic one.
+ */
+export function forwardEndpoint(
+  forward: Pick<Forward, "kind" | "localAddr" | "localPort" | "remoteHost" | "remotePort">,
+): string {
+  const target =
+    forward.kind === "dynamic"
+      ? t("forwards.socksProxy")
+      : `${forward.remoteHost}:${forward.remotePort}`;
+  return `${forward.localAddr}:${forward.localPort} → ${target}`;
 }
 
 export class TunnelsPanel {
