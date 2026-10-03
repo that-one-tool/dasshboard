@@ -63,7 +63,7 @@ export interface TabManagerOptions {
   /** The left menu's width to persist (undefined while it has its default). */
   getSidebarWidth?: () => number | undefined;
   /** The tunnels' remembered run state to persist (undefined when empty). */
-  getTunnelState?: () => Record<string, boolean> | undefined;
+  getTunnelState?: () => Record<string, boolean | string[]> | undefined;
   /**
    * The app-action buttons (reload / trusted-hosts / settings / help), mounted
    * into the right side of the tab-strip row so the app has no separate header.

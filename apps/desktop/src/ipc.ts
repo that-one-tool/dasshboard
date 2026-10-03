@@ -506,20 +506,39 @@ export interface TunnelStatusEvent {
 export interface TunnelInfo {
   tunnelId: string;
   deviceId: string;
+  /** The forwards it serves or, while still connecting, will bind. */
+  forwardIds: string[];
+  /** Per-forward bind state as last reported (empty while still connecting). */
+  forwards: ForwardStatus[];
 }
 
 /**
  * Starts a tunnel for a device: opens one SSH connection and binds a local
- * listener for each of the device's forwards. Returns the new `tunnelId`; live
+ * listener for each of the listed forwards. Returns the new `tunnelId`; live
  * state arrives via `onTunnelStatus`.
  */
-export async function startTunnel(deviceId: string, tunnelId: string): Promise<string> {
-  return invokeChecked<string>("start_tunnel", { tunnelId, deviceId });
+export async function startTunnel(
+  deviceId: string,
+  tunnelId: string,
+  forwardIds: string[],
+): Promise<string> {
+  return invokeChecked<string>("start_tunnel", { tunnelId, deviceId, forwardIds });
 }
 
 /** Stops a tunnel by id, releasing its bound local listeners. Idempotent. */
 export async function stopTunnel(tunnelId: string): Promise<void> {
   await invokeChecked<void>("stop_tunnel", { tunnelId });
+}
+
+/** Binds one more forward on a live tunnel's connection; the result arrives
+ * as a new `listening` status. */
+export async function startTunnelForward(tunnelId: string, forwardId: string): Promise<void> {
+  await invokeChecked<void>("start_tunnel_forward", { tunnelId, forwardId });
+}
+
+/** Releases one forward of a live tunnel (the last one ends the tunnel). Idempotent. */
+export async function stopTunnelForward(tunnelId: string, forwardId: string): Promise<void> {
+  await invokeChecked<void>("stop_tunnel_forward", { tunnelId, forwardId });
 }
 
 /** Lists the currently-live tunnels (SPEC tunnels §3). */
@@ -618,9 +637,10 @@ export interface WorkspaceState {
   sftp?: SftpPanelState;
   /** The left menu's width in px, or absent while the CSS default applies. */
   sidebarWidth?: number;
-  /** Device id → whether the user last left its tunnel running (explicit
-   * Start/Stop); absent devices follow their `tunnelAutoStart` flag. */
-  tunnels?: Record<string, boolean>;
+  /** Device id → which of its forwards the user last left running (explicit
+   * Start/Stop): the listed forward ids, or none (`false`); `true` (all) only
+   * in older files. Absent devices follow their `tunnelAutoStart` flag. */
+  tunnels?: Record<string, boolean | string[]>;
 }
 
 /** The saved workspace, or an empty one (no tabs) on first launch / corrupt file. */

@@ -300,6 +300,8 @@ export const zh: Messages = {
 	"tunnels.status.stopped": "已停止",
 	"tunnels.start": "启动",
 	"tunnels.stop": "停止",
+	"tunnels.startAll": "全部启动",
+	"tunnels.stopAll": "全部停止",
 	"tunnels.copy.title": "复制本地地址:端口",
 	"tunnels.copied": "已复制到剪贴板",
 	"tunnels.portInUse": "端口被占用",

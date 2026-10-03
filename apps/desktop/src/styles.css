@@ -2295,6 +2295,28 @@ body.grid-dragging-row * {
 	padding: 4px 0;
 }
 
+/* Per-forward status: gray stopped, yellow connecting, green listening, red
+ * when its local port could not be bound. */
+.tunnel-forward-dot {
+	flex: 0 0 auto;
+	width: 0.5rem;
+	height: 0.5rem;
+	border-radius: 50%;
+	background-color: var(--dot-idle);
+}
+
+.tunnel-forward-dot.is-connecting {
+	background-color: var(--warn);
+}
+
+.tunnel-forward-dot.is-listening {
+	background-color: var(--ok);
+}
+
+.tunnel-forward-dot.is-unbound {
+	background-color: var(--danger);
+}
+
 /* Name over endpoint; `min-width: 0` lets both lines ellipsize. */
 .tunnel-forward-text {
 	flex: 1 1 auto;

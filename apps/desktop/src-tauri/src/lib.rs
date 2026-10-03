@@ -173,6 +173,8 @@ pub fn run() {
             commands::test_connection,
             commands::start_tunnel,
             commands::stop_tunnel,
+            commands::start_tunnel_forward,
+            commands::stop_tunnel_forward,
             commands::list_tunnels,
             commands::list_profiles,
             commands::save_profile,

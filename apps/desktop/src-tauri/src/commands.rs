@@ -895,16 +895,33 @@ fn tunnel_target_of(device: &Device) -> Result<(&str, u16, &str, &[Forward]), Ap
     }
 }
 
+/// The device's forwards named in `ids` (in the device's order); an error when
+/// none of them exists (e.g. deleted from the device meanwhile).
+fn selected_forwards(forwards: &[Forward], ids: &[String]) -> Result<Vec<Forward>, AppError> {
+    let selected: Vec<Forward> = forwards
+        .iter()
+        .filter(|f| ids.contains(&f.id))
+        .cloned()
+        .collect();
+    if selected.is_empty() {
+        return Err(AppError::Validation(
+            "the requested port forward no longer exists on this device".to_string(),
+        ));
+    }
+    Ok(selected)
+}
+
 /// Start a tunnel for a device: open one SSH connection and bind a local
-/// listener for each of the device's forwards (SPEC tunnels §3). Returns the new
-/// `tunnelId`; the tunnel is driven on a background task reporting over
-/// `tunnel_status`.
+/// listener for each of the device's forwards listed in `forward_ids` (SPEC
+/// tunnels §3). Returns the new `tunnelId`; the tunnel is driven on a
+/// background task reporting over `tunnel_status`.
 #[tauri::command]
 pub async fn start_tunnel(
     app: AppHandle,
     state: State<'_, AppState>,
     tunnel_id: String,
     device_id: String,
+    forward_ids: Vec<String>,
 ) -> Result<String, AppError> {
     let tunnel_id = client_chosen_id(tunnel_id, |id| id_in_use(&state, id))?;
     let device = find_device(&state, &device_id)?;
@@ -920,7 +937,7 @@ pub async fn start_tunnel(
     let (host, port, username, forwards) = tunnel_target_of(&device)?;
     let host = host.to_string();
     let username = username.to_string();
-    let forwards = forwards.to_vec();
+    let forwards = selected_forwards(forwards, &forward_ids)?;
 
     let creds = resolve_credentials(&state, &device).await?;
     let sink: Arc<dyn TunnelSink> = Arc::new(TauriTunnelSink {
@@ -948,6 +965,43 @@ pub async fn start_tunnel(
 #[tauri::command]
 pub async fn stop_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<(), AppError> {
     state.tunnel_manager.stop_tunnel(&tunnel_id).await;
+    Ok(())
+}
+
+/// Bind one more of the device's forwards on a live tunnel's SSH connection;
+/// the result arrives as a new `listening` `tunnel_status`.
+#[tauri::command]
+pub async fn start_tunnel_forward(
+    state: State<'_, AppState>,
+    tunnel_id: String,
+    forward_id: String,
+) -> Result<(), AppError> {
+    let not_running = || AppError::Validation("this tunnel is no longer running".to_string());
+    let device_id = state
+        .tunnel_manager
+        .device_of(&tunnel_id)
+        .ok_or_else(not_running)?;
+    let device = find_device(&state, &device_id)?;
+    let (_, _, _, forwards) = tunnel_target_of(&device)?;
+    let forward = selected_forwards(forwards, &[forward_id])?.remove(0);
+    if !state.tunnel_manager.add_forward(&tunnel_id, forward).await {
+        return Err(not_running());
+    }
+    Ok(())
+}
+
+/// Release one forward of a live tunnel; releasing its last bound forward ends
+/// the tunnel. Idempotent: an unknown tunnel or forward is a no-op.
+#[tauri::command]
+pub async fn stop_tunnel_forward(
+    state: State<'_, AppState>,
+    tunnel_id: String,
+    forward_id: String,
+) -> Result<(), AppError> {
+    state
+        .tunnel_manager
+        .remove_forward(&tunnel_id, forward_id)
+        .await;
     Ok(())
 }
 
@@ -1556,6 +1610,18 @@ mod tests {
         // non-loopback forward must be refused when the tunnel starts.
         let device = device_with_forward("0.0.0.0");
         let err = tunnel_target_of(&device).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn selected_forwards_keeps_only_the_requested_existing_ones() {
+        let device = device_with_forward("127.0.0.1");
+        let (_, _, _, forwards) = tunnel_target_of(&device).unwrap();
+        let ids = ["gone".to_string(), "f1".to_string()];
+        let selected = selected_forwards(forwards, &ids).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, "f1");
+        let err = selected_forwards(forwards, &["gone".to_string()]).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
     }
 

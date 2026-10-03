@@ -1632,6 +1632,95 @@ async fn tunnel_forwards_bytes_and_cleans_up() {
     );
 }
 
+fn echo_forward(id: &str, local_port: u16) -> Forward {
+    Forward {
+        id: id.to_string(),
+        name: id.to_string(),
+        kind: ForwardKind::Local,
+        local_addr: "127.0.0.1".to_string(),
+        local_port,
+        remote_host: "127.0.0.1".to_string(),
+        remote_port: 9,
+    }
+}
+
+/// Wait (briefly) until the manager no longer tracks any tunnel.
+async fn await_no_tunnels(manager: &TunnelManager) {
+    for _ in 0..50 {
+        if manager.tunnel_count() == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the tunnel must be cleaned up");
+}
+
+/// Forwards can be bound and released one at a time on a live tunnel's single
+/// SSH connection: each change re-reports the full forward set, `list` mirrors
+/// it, and releasing the last bound forward ends the tunnel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tunnel_adds_and_removes_forwards_while_live() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_test_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), port);
+    let manager = tunnel_manager_with(dir.path());
+    let (first_port, second_port) = (free_local_port().await, free_local_port().await);
+
+    let (sink, mut chans) = new_tunnel_sink();
+    manager.spawn_tunnel(
+        "t1".to_string(),
+        TunnelParams {
+            device_id: "dev-1".to_string(),
+            host: "127.0.0.1".to_string(),
+            port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            forwards: vec![echo_forward("f1", first_port)],
+            keepalive: KeepaliveConfig::disabled(),
+        },
+        sink,
+    );
+    // Even before it has connected, the tunnel reports what it will bind.
+    assert_eq!(manager.list()[0].forward_ids, ["f1"]);
+    await_listening(&mut chans.status_rx).await;
+
+    assert!(
+        manager
+            .add_forward("t1", echo_forward("f2", second_port))
+            .await
+    );
+    let forwards = await_listening(&mut chans.status_rx).await;
+    let ids: Vec<&str> = forwards.iter().map(|f| f.forward_id.as_str()).collect();
+    assert_eq!(ids, ["f1", "f2"]);
+    assert!(forwards.iter().all(|f| f.bound));
+    assert_eq!(manager.list()[0].forwards.len(), 2);
+    assert_eq!(manager.list()[0].forward_ids, ["f1", "f2"]);
+    let mut stream = connect_local(second_port).await;
+    assert_echoes(&mut stream).await;
+    drop(stream);
+
+    manager.remove_forward("t1", "f1".to_string()).await;
+    let forwards = await_listening(&mut chans.status_rx).await;
+    assert_eq!(forwards.len(), 1);
+    assert_eq!(forwards[0].forward_id, "f2");
+    assert!(
+        TcpListener::bind(("127.0.0.1", first_port)).await.is_ok(),
+        "a removed forward's port must be released"
+    );
+
+    manager.remove_forward("t1", "f2".to_string()).await;
+    let (status, _) = recv_timeout(&mut chans.status_rx, Duration::from_secs(5))
+        .await
+        .expect("removing the last forward must end the tunnel");
+    assert_eq!(status, TunnelStatus::Disconnected);
+    await_no_tunnels(&manager).await;
+    assert!(
+        !manager
+            .add_forward("t1", echo_forward("f3", first_port))
+            .await
+    );
+}
+
 /// Connect to a tunnel's local port, retrying briefly until its listener accepts.
 async fn connect_local(port: u16) -> TcpStream {
     for _ in 0..50 {

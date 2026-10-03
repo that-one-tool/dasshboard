@@ -302,6 +302,8 @@ export const de: Messages = {
 	"tunnels.status.stopped": "Gestoppt",
 	"tunnels.start": "Starten",
 	"tunnels.stop": "Stoppen",
+	"tunnels.startAll": "Alle starten",
+	"tunnels.stopAll": "Alle stoppen",
 	"tunnels.copy.title": "Lokale Adresse:Port kopieren",
 	"tunnels.copied": "In die Zwischenablage kopiert",
 	"tunnels.portInUse": "Port belegt",

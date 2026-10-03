@@ -112,7 +112,7 @@ async function initApp(): Promise<void> {
 	let notifySftpIdleChange = (): void => {};
 	let sftpLayoutState = (): SftpPanelState | undefined => undefined;
 	let sidebarWidth = (): number | undefined => undefined;
-	let tunnelState = (): Record<string, boolean> | undefined => undefined;
+	let tunnelState = (): Record<string, boolean | string[]> | undefined => undefined;
 	const tabs = new TabManager(paneRoot, {
 		grid: {
 			onError: (message) => showToast(t("error.prefix", { message }), "error"),

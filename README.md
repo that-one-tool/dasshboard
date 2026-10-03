@@ -18,8 +18,9 @@
 - **Profiles** — save a workspace and set a default that reconnects every pane
   on launch.
 - **SSH extras** — jump hosts (`-J`), agent forwarding (`-A`), named local
-  (`-L`) and dynamic SOCKS (`-D`) port forwards that resume as you left them (or
-  auto-start), keepalive and auto-reconnect.
+  (`-L`) and dynamic SOCKS (`-D`) port forwards, started one by one or all at
+  once, that resume as you left them (or auto-start), keepalive and
+  auto-reconnect.
 - **SFTP browser** — docked file panel with folder transfers, a background queue,
   bulk actions, bookmarks and chmod.
 - **Commands on connect** — a per-device snippet typed in as soon as the shell opens.

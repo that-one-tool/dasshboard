@@ -92,11 +92,21 @@ pub struct WorkspaceState {
     /// default). Same legacy/clean-file handling as `sftp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_width: Option<u32>,
-    /// Device id → whether the user last left its tunnel running (an explicit
+    /// Device id → which of its forwards the user last left running (explicit
     /// Start/Stop), restored on launch; a device absent here follows its
     /// `tunnelAutoStart` flag. Same legacy/clean-file handling as `sftp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tunnels: Option<BTreeMap<String, bool>>,
+    pub tunnels: Option<BTreeMap<String, TunnelRunChoice>>,
+}
+
+/// A device's remembered tunnel run state: exactly the listed forward ids, or
+/// none (`false`). `true` (all of them) is only read, from files written
+/// before per-forward Start/Stop.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TunnelRunChoice {
+    All(bool),
+    Forwards(Vec<String>),
 }
 
 impl WorkspaceState {
@@ -259,12 +269,17 @@ mod tests {
         assert!(serde_json::to_value(&s).unwrap().get("tunnels").is_none());
 
         s.tunnels = Some(BTreeMap::from([
-            ("dev-1".to_string(), true),
-            ("dev-2".to_string(), false),
+            ("dev-1".to_string(), TunnelRunChoice::All(true)),
+            ("dev-2".to_string(), TunnelRunChoice::All(false)),
+            (
+                "dev-3".to_string(),
+                TunnelRunChoice::Forwards(vec!["f1".to_string()]),
+            ),
         ]));
         let value = serde_json::to_value(&s).expect("serialize");
         assert_eq!(value["tunnels"]["dev-1"], true);
         assert_eq!(value["tunnels"]["dev-2"], false);
+        assert_eq!(value["tunnels"]["dev-3"], serde_json::json!(["f1"]));
         let back: WorkspaceState = serde_json::from_value(value).expect("deserialize");
         assert_eq!(back.tunnels, s.tunnels);
     }

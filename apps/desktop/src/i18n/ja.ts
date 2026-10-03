@@ -301,6 +301,8 @@ export const ja: Messages = {
 	"tunnels.status.stopped": "停止",
 	"tunnels.start": "開始",
 	"tunnels.stop": "停止",
+	"tunnels.startAll": "すべて開始",
+	"tunnels.stopAll": "すべて停止",
 	"tunnels.copy.title": "ローカルのアドレス:ポートをコピー",
 	"tunnels.copied": "クリップボードにコピーしました",
 	"tunnels.portInUse": "ポート使用中",

@@ -47,7 +47,9 @@ files, releasing),
       editor; the dialog is split into `deviceManager` (controller: events +
       backend calls + list), `deviceDialogTemplate` (markup), and `deviceForm`
       (form DOM read/populate/toggle helpers)
-    - `tunnels/` — the Tunnels sidebar card (start/stop/status for local forwards)
+    - `tunnels/` — the Tunnels sidebar card (start/stop all or one forward,
+      device status icon + per-forward status dots; backend calls serialized per
+      device; a connection-settings edit restarts the running tunnel)
     - `sftp/` — the docked Files panel (browser + transfer queue)
     - `tabs/` — tab strip + per-tab workspaces (every tab's `Grid` stays alive;
       hidden tabs keep their sessions running and refit on activation);
@@ -90,7 +92,8 @@ files, releasing),
     - `session.rs` — SSH shell sessions via `russh`
     - `tunnel.rs` — SSH local (`ssh -L`) and dynamic (`ssh -D`) port
       forwarding; reuses `session.rs`'s connect + auth + host-key-TOFU path,
-      then binds a local `TcpListener` per forward and pumps each connection
+      then binds a local `TcpListener` per forward (added/removed one at a time
+      on the live connection; the last one removed ends it) and pumps each connection
       over a `direct-tcpip` channel (to the fixed target, or the one a dynamic
       forward's SOCKS client names)
     - `socks.rs` — server side of the SOCKS4/4a/5 handshake (no-auth,

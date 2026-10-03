@@ -307,6 +307,8 @@ export const en = {
 	"tunnels.status.stopped": "Stopped",
 	"tunnels.start": "Start",
 	"tunnels.stop": "Stop",
+	"tunnels.startAll": "Start all",
+	"tunnels.stopAll": "Stop all",
 	"tunnels.copy.title": "Copy the local address:port",
 	"tunnels.copied": "Copied to clipboard",
 	"tunnels.portInUse": "port in use",

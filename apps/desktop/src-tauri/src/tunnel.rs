@@ -16,15 +16,17 @@
 //! ## Concurrency & cleanup (mirrors `session.rs`)
 //!
 //! - One tunnel = **one SSH connection** carrying **one local listener per
-//!   forward** (`ssh -L a -L b host`). The `client::Handle` is shared into each
+//!   forward** (`ssh -L a -L b host`). Forwards can be added to and removed from
+//!   a live tunnel one at a time over its control channel; releasing the last
+//!   bound one ends the tunnel. The `client::Handle` is shared into each
 //!   listener via an `Arc` (it is not `Clone`), which is enough because every
 //!   method the listeners call — `channel_open_direct_tcpip`, `send_keepalive`,
 //!   `disconnect` — takes `&self`.
-//! - Listener tasks live in the tunnel task's [`JoinSet`]; each listener owns a
-//!   nested `JoinSet` of per-connection copy tasks. Dropping a `JoinSet` aborts
-//!   its tasks, so a `listeners.shutdown()` on stop cascades: listeners abort →
-//!   their per-connection `JoinSet`s drop → in-flight copies abort. No handle is
-//!   held across teardown that could leak a socket.
+//! - Each listener task is owned by its [`ActiveForwards`] entry and owns a
+//!   nested `JoinSet` of per-connection copy tasks. Removing a forward (or
+//!   stopping the tunnel) aborts and awaits its listener, which cascades: the
+//!   per-connection `JoinSet` drops → in-flight copies abort. No handle is held
+//!   across teardown that could leak a socket.
 //! - Each tunnel task removes its own map entry on **every** terminal reason
 //!   (auth failure, all binds failing, stop, transport drop). Cleanup has a
 //!   single owner, exactly as `SessionManager` does.
@@ -39,7 +41,7 @@ use serde::Serialize;
 use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::MissedTickBehavior;
 
 use crate::device::{Forward, ForwardKind};
@@ -52,9 +54,9 @@ use crate::session::{
 };
 use crate::socks;
 
-/// Control-channel bound. A tunnel's control channel only ever carries a single
-/// `Stop`; the bound just keeps it from being unbounded (a standing review
-/// concern), mirroring `session.rs`.
+/// Control-channel bound. A tunnel's control channel carries the occasional
+/// user-driven forward add/remove and a final `Stop`; the bound just keeps it
+/// from being unbounded (a standing review concern), mirroring `session.rs`.
 const CONTROL_CHANNEL_CAPACITY: usize = 8;
 
 /// Lifecycle status mirrored to the frontend `tunnel_status` event. Distinct
@@ -100,6 +102,11 @@ pub struct ForwardStatus {
 pub struct TunnelInfo {
     pub tunnel_id: String,
     pub device_id: String,
+    /// The forwards it serves or, while still connecting, will bind.
+    pub forward_ids: Vec<String>,
+    /// Per-forward bind state as last reported on `Listening` (empty while it
+    /// is still connecting).
+    pub forwards: Vec<ForwardStatus>,
 }
 
 /// Sink for everything the tunnel core surfaces to the frontend. The production
@@ -157,20 +164,36 @@ pub struct TunnelParams {
     pub keepalive: KeepaliveConfig,
 }
 
-/// Control messages sent to a tunnel task via its mpsc handle. Currently just a
-/// graceful stop; kept as an enum so more controls can be added without changing
-/// the channel type.
+/// Control messages sent to a tunnel task via its mpsc handle.
 enum TunnelControl {
+    /// End the tunnel gracefully.
     Stop,
+    /// Bind one more forward on the live connection (re-binding it if it is
+    /// already there, e.g. to retry a port that was in use).
+    AddForward(Forward),
+    /// Release one forward's listener, by forward id.
+    RemoveForward(String),
 }
 
-/// The manager's per-tunnel handle: the control `Sender` plus the owning device
-/// id (so `list_tunnels` can report which device each live tunnel belongs to).
-/// Dropping every clone of the sender makes the task's `control_rx.recv()`
-/// return `None`, which the task treats as a stop.
+/// What `list_tunnels` reports about a tunnel's forwards: the ids it serves (or
+/// will bind, while connecting) and their last-reported bind state.
+#[derive(Default)]
+struct TunnelSnapshot {
+    forward_ids: Vec<String>,
+    forwards: Vec<ForwardStatus>,
+}
+
+/// Shared between a tunnel's task (writer) and the manager's `list` (reader).
+type ForwardSnapshot = Arc<Mutex<TunnelSnapshot>>;
+
+/// The manager's per-tunnel handle: the control `Sender`, the owning device id
+/// and the last-reported forwards (so `list_tunnels` can describe each live
+/// tunnel). Dropping every clone of the sender makes the task's
+/// `control_rx.recv()` return `None`, which the task treats as a stop.
 struct TunnelHandle {
     control: mpsc::Sender<TunnelControl>,
     device_id: String,
+    forwards: ForwardSnapshot,
 }
 
 /// Owns all live tunnels. Lives in Tauri managed state behind an `Arc` (see
@@ -230,11 +253,23 @@ impl TunnelManager {
     pub fn list(&self) -> Vec<TunnelInfo> {
         self.lock_tunnels()
             .iter()
-            .map(|(tunnel_id, handle)| TunnelInfo {
-                tunnel_id: tunnel_id.clone(),
-                device_id: handle.device_id.clone(),
+            .map(|(tunnel_id, handle)| {
+                let snapshot = lock_snapshot(&handle.forwards);
+                TunnelInfo {
+                    tunnel_id: tunnel_id.clone(),
+                    device_id: handle.device_id.clone(),
+                    forward_ids: snapshot.forward_ids.clone(),
+                    forwards: snapshot.forwards.clone(),
+                }
             })
             .collect()
+    }
+
+    /// The device a live tunnel belongs to, or `None` for an unknown id.
+    pub fn device_of(&self, tunnel_id: &str) -> Option<String> {
+        self.lock_tunnels()
+            .get(tunnel_id)
+            .map(|h| h.device_id.clone())
     }
 
     /// Whether a live tunnel has this id.
@@ -273,11 +308,14 @@ impl TunnelManager {
         sink: Arc<dyn TunnelSink>,
     ) {
         let (control_tx, control_rx) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
+        let snapshot = ForwardSnapshot::default();
+        lock_snapshot(&snapshot).forward_ids = forward_ids(&params.forwards);
         self.lock_tunnels().insert(
             tunnel_id.clone(),
             TunnelHandle {
                 control: control_tx,
                 device_id: params.device_id.clone(),
+                forwards: Arc::clone(&snapshot),
             },
         );
 
@@ -299,12 +337,16 @@ impl TunnelManager {
         tokio::spawn(async move {
             sink.on_status(TunnelStatus::Connecting, None, Vec::new());
 
+            let publisher = Publisher {
+                sink: Arc::clone(&sink),
+                snapshot,
+            };
             let result = run_tunnel(
                 params,
                 handler,
                 connect_timeout,
                 overall_timeout,
-                Arc::clone(&sink),
+                publisher,
                 control_rx,
             )
             .await;
@@ -322,8 +364,28 @@ impl TunnelManager {
     /// Request a graceful stop. Idempotent: an unknown `tunnel_id` is a no-op.
     /// The task performs the actual map removal when it exits.
     pub async fn stop_tunnel(&self, tunnel_id: &str) {
-        if let Some(control) = self.control_of(tunnel_id) {
-            let _ = control.send(TunnelControl::Stop).await;
+        self.send(tunnel_id, TunnelControl::Stop).await;
+    }
+
+    /// Bind `forward` on a live tunnel's connection; a new `Listening` status
+    /// reports the result. `false` when no live tunnel has this id.
+    pub async fn add_forward(&self, tunnel_id: &str, forward: Forward) -> bool {
+        self.send(tunnel_id, TunnelControl::AddForward(forward))
+            .await
+    }
+
+    /// Release one forward of a live tunnel; releasing its last bound forward
+    /// ends the tunnel. Idempotent: unknown ids are a no-op.
+    pub async fn remove_forward(&self, tunnel_id: &str, forward_id: String) {
+        self.send(tunnel_id, TunnelControl::RemoveForward(forward_id))
+            .await;
+    }
+
+    /// Deliver a control message; `false` when the tunnel is gone.
+    async fn send(&self, tunnel_id: &str, control: TunnelControl) -> bool {
+        match self.control_of(tunnel_id) {
+            Some(sender) => sender.send(control).await.is_ok(),
+            None => false,
         }
     }
 
@@ -344,31 +406,74 @@ impl TunnelManager {
     }
 }
 
-/// The full lifecycle of one tunnel task: connect+auth (racing an early stop),
-/// bind the forwards, then serve until stopped or the transport drops. Returns
-/// `Ok(())` for any clean end and `Err` for a failure that should surface as
-/// `tunnel_status: error`.
+/// Reports a tunnel's `Listening` forward set to the frontend and keeps the
+/// manager's snapshot of it (for `list_tunnels`) in step.
+struct Publisher {
+    sink: Arc<dyn TunnelSink>,
+    snapshot: ForwardSnapshot,
+}
+
+impl Publisher {
+    /// Record the forwards a still-connecting tunnel will bind (not reported to
+    /// the frontend, which asked for them).
+    fn pending(&self, forwards: &[Forward]) {
+        lock_snapshot(&self.snapshot).forward_ids = forward_ids(forwards);
+    }
+
+    fn listening(&self, forwards: Vec<ForwardStatus>) {
+        *lock_snapshot(&self.snapshot) = TunnelSnapshot {
+            forward_ids: forwards.iter().map(|f| f.forward_id.clone()).collect(),
+            forwards: forwards.clone(),
+        };
+        self.sink.on_status(TunnelStatus::Listening, None, forwards);
+    }
+}
+
+fn forward_ids(forwards: &[Forward]) -> Vec<String> {
+    forwards.iter().map(|f| f.id.clone()).collect()
+}
+
+fn lock_snapshot(snapshot: &ForwardSnapshot) -> std::sync::MutexGuard<'_, TunnelSnapshot> {
+    snapshot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The full lifecycle of one tunnel task: connect+auth (racing an early stop,
+/// and queuing forward changes made meanwhile), bind the forwards, then serve
+/// until stopped, the last bound forward is released, or the transport drops.
+/// Returns `Ok(())` for any clean end and `Err` for a failure that should
+/// surface as `tunnel_status: error`.
 async fn run_tunnel(
     params: TunnelParams,
     mut handler: SshHandler,
     connect_timeout: Duration,
     overall_timeout: Duration,
-    sink: Arc<dyn TunnelSink>,
+    publisher: Publisher,
     mut control_rx: mpsc::Receiver<TunnelControl>,
 ) -> Result<(), AppError> {
+    let TunnelParams {
+        host,
+        port,
+        username,
+        creds,
+        mut forwards,
+        keepalive,
+        ..
+    } = params;
     // Abandons a pending host-key prompt if this returns mid-handshake.
     let _owner = handler.take_owner_token();
     let handle = tokio::select! {
         biased;
-        // A stop during the handshake aborts: dropping the `establish` future
-        // drops the handler (and any PromptGuard within), cleaning up a pending
-        // host-key prompt too.
-        _ = wait_for_stop(&mut control_rx) => return Ok(()),
+        // A stop (or every forward released) during the handshake aborts:
+        // dropping the `establish` future drops the handler (and any
+        // PromptGuard within), cleaning up a pending host-key prompt too.
+        _ = queue_until_stop(&mut control_rx, &mut forwards, &publisher) => return Ok(()),
         result = establish_with_deadline(
-            &params.host,
-            params.port,
-            &params.username,
-            &params.creds,
+            &host,
+            port,
+            &username,
+            &creds,
             handler,
             connect_timeout,
             overall_timeout,
@@ -378,22 +483,25 @@ async fn run_tunnel(
     let handle = Arc::new(handle);
 
     // Bind a listener per forward; a failure on one is non-fatal to the others.
-    let mut listeners = JoinSet::new();
-    let statuses = bind_forwards(&params.forwards, &handle, &mut listeners).await;
+    let mut active = ActiveForwards::new(Arc::clone(&handle));
+    for forward in &forwards {
+        active.add(forward).await;
+    }
 
-    if listeners.is_empty() {
+    if !active.any_bound() {
         return Err(AppError::TunnelBind(
             "none of the tunnel's local ports could be bound".to_string(),
         ));
     }
 
-    sink.on_status(TunnelStatus::Listening, None, statuses);
+    publisher.listening(active.statuses());
 
-    let end = serve_until_stopped(&handle, &mut control_rx, params.keepalive).await;
+    let end =
+        serve_until_stopped(&handle, &mut control_rx, keepalive, &mut active, &publisher).await;
 
     // Abort every listener (which cascades to their in-flight connection tasks),
     // then close the SSH transport cleanly.
-    listeners.shutdown().await;
+    active.clear().await;
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
@@ -405,9 +513,40 @@ async fn run_tunnel(
     }
 }
 
+/// Apply forward changes requested while the tunnel is still connecting to the
+/// set it will bind; returns on a stop, a dropped handle, or once no forward is
+/// left to bind.
+async fn queue_until_stop(
+    rx: &mut mpsc::Receiver<TunnelControl>,
+    pending: &mut Vec<Forward>,
+    publisher: &Publisher,
+) {
+    while let Some(control) = rx.recv().await {
+        if !queue(pending, control) {
+            return;
+        }
+        publisher.pending(pending);
+    }
+}
+
+/// Apply one control to the not-yet-bound forward set; `false` means the
+/// tunnel should not go ahead (stopped, or nothing left to bind).
+fn queue(pending: &mut Vec<Forward>, control: TunnelControl) -> bool {
+    match control {
+        TunnelControl::Stop => return false,
+        TunnelControl::AddForward(forward) => {
+            pending.retain(|f| f.id != forward.id);
+            pending.push(forward);
+        }
+        TunnelControl::RemoveForward(id) => pending.retain(|f| f.id != id),
+    }
+    !pending.is_empty()
+}
+
 /// Why `serve_until_stopped` returned.
 enum ServeEnd {
-    /// A stop was requested (or the manager dropped the handle).
+    /// A stop was requested, the manager dropped the handle, or the last bound
+    /// forward was released.
     Stopped,
     /// The SSH transport went away under the tunnel.
     ConnectionLost,
@@ -420,34 +559,114 @@ const TRANSPORT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// descriptors), so a transient failure doesn't end the forward or spin.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(250);
 
-/// Bind a local `TcpListener` for each forward and spawn its accept loop into
-/// `listeners`. Returns a per-forward [`ForwardStatus`] (bound or not) for the
-/// `Listening` event. A bind failure is recorded (`bound: false`) but does not
-/// abort the others.
-async fn bind_forwards(
-    forwards: &[Forward],
-    handle: &Arc<client::Handle<SshHandler>>,
-    listeners: &mut JoinSet<()>,
-) -> Vec<ForwardStatus> {
-    let mut statuses = Vec::with_capacity(forwards.len());
-    for forward in forwards {
-        let bound = match listen(forward).await {
-            Some((listener, destination)) => {
-                listeners.spawn(run_listener(listener, Arc::clone(handle), destination));
-                true
-            }
-            None => false,
-        };
-        statuses.push(ForwardStatus {
-            forward_id: forward.id.clone(),
-            local_addr: forward.local_addr.clone(),
-            local_port: forward.local_port,
-            remote_host: forward.remote_host.clone(),
-            remote_port: forward.remote_port,
-            bound,
+/// One forward a live tunnel serves: its reported status plus, when its local
+/// port bound, the accept-loop task listening on it.
+struct ActiveForward {
+    status: ForwardStatus,
+    listener: Option<JoinHandle<()>>,
+}
+
+impl ActiveForward {
+    /// Abort the accept loop and wait for it to drop its socket, so the port is
+    /// free again by the time the change is reported.
+    async fn release(mut self) {
+        if let Some(listener) = self.listener.take() {
+            listener.abort();
+            let _ = listener.await;
+        }
+    }
+}
+
+/// A dropped `JoinHandle` detaches rather than aborts, so a forward dropped
+/// without `release` (e.g. its tunnel task aborted) must not leave its port
+/// bound.
+impl Drop for ActiveForward {
+    fn drop(&mut self) {
+        if let Some(listener) = &self.listener {
+            listener.abort();
+        }
+    }
+}
+
+/// The forwards a live tunnel currently serves, in the order they were added.
+/// A forward whose port failed to bind stays listed (`bound: false`) so the
+/// frontend can flag it.
+struct ActiveForwards {
+    handle: Arc<client::Handle<SshHandler>>,
+    entries: Vec<ActiveForward>,
+}
+
+impl ActiveForwards {
+    fn new(handle: Arc<client::Handle<SshHandler>>) -> Self {
+        ActiveForwards {
+            handle,
+            entries: Vec::new(),
+        }
+    }
+
+    /// Bind `forward` (re-binding it if already present). A bind failure is
+    /// recorded as `bound: false`; it never affects the other forwards.
+    async fn add(&mut self, forward: &Forward) {
+        self.remove(&forward.id).await;
+        let listener = listen(forward).await.map(|(listener, destination)| {
+            tokio::spawn(run_listener(
+                listener,
+                Arc::clone(&self.handle),
+                destination,
+            ))
+        });
+        self.entries.push(ActiveForward {
+            status: forward_status(forward, listener.is_some()),
+            listener,
         });
     }
-    statuses
+
+    async fn remove(&mut self, forward_id: &str) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|e| e.status.forward_id == forward_id)
+        {
+            self.entries.remove(index).release().await;
+        }
+    }
+
+    async fn clear(&mut self) {
+        for entry in self.entries.drain(..) {
+            entry.release().await;
+        }
+    }
+
+    fn any_bound(&self) -> bool {
+        self.entries.iter().any(|e| e.listener.is_some())
+    }
+
+    fn statuses(&self) -> Vec<ForwardStatus> {
+        self.entries.iter().map(|e| e.status.clone()).collect()
+    }
+
+    /// Apply a control received while serving; `false` means the tunnel should
+    /// end (a stop, a dropped handle, or no bound forward left).
+    async fn apply(&mut self, control: Option<TunnelControl>) -> bool {
+        match control {
+            Some(TunnelControl::AddForward(forward)) => self.add(&forward).await,
+            Some(TunnelControl::RemoveForward(id)) => self.remove(&id).await,
+            Some(TunnelControl::Stop) | None => return false,
+        }
+        self.any_bound()
+    }
+}
+
+/// A forward's entry in a `Listening` status.
+fn forward_status(forward: &Forward, bound: bool) -> ForwardStatus {
+    ForwardStatus {
+        forward_id: forward.id.clone(),
+        local_addr: forward.local_addr.clone(),
+        local_port: forward.local_port,
+        remote_host: forward.remote_host.clone(),
+        remote_port: forward.remote_port,
+        bound,
+    }
 }
 
 /// Where a forward's connections go: one fixed target (`ssh -L`) or wherever
@@ -502,7 +721,7 @@ const SOCKS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// `direct-tcpip` channel and is copied bidirectionally. Per-connection tasks
 /// live in a local `JoinSet` that is reaped as connections finish (bounding
 /// memory) and dropped — aborting any in-flight copies — when this loop ends
-/// (i.e. when the listener is aborted on tunnel stop).
+/// (i.e. when the listener is aborted on forward removal or tunnel stop).
 async fn run_listener(
     listener: TcpListener,
     handle: Arc<client::Handle<SshHandler>>,
@@ -630,7 +849,9 @@ async fn pump(mut tcp: TcpStream, channel: Channel<client::Msg>) {
     let _ = copy_bidirectional(&mut tcp, &mut stream).await;
 }
 
-/// Serve the tunnel until a stop is requested or the transport dies. russh
+/// Serve the tunnel — applying and reporting forward adds/removes as they
+/// arrive — until a stop is requested, no bound forward is left, or the
+/// transport dies. russh
 /// drives the actual keepalive pings and dead-peer detection natively from the
 /// connection's `client::Config` (see `KeepaliveConfig`); this loop additionally
 /// probes the handle at the configured cadence (a failed send means the
@@ -641,6 +862,8 @@ async fn serve_until_stopped(
     handle: &Arc<client::Handle<SshHandler>>,
     control_rx: &mut mpsc::Receiver<TunnelControl>,
     keepalive: KeepaliveConfig,
+    active: &mut ActiveForwards,
+    publisher: &Publisher,
 ) -> ServeEnd {
     let mut probe = keepalive.interval.map(|interval| {
         let mut probe = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
@@ -652,9 +875,12 @@ async fn serve_until_stopped(
 
     loop {
         tokio::select! {
-            // Any control message (currently only `Stop`) or a dropped handle
-            // (`None`) ends the tunnel.
-            _ = control_rx.recv() => return ServeEnd::Stopped,
+            control = control_rx.recv() => {
+                if !active.apply(control).await {
+                    return ServeEnd::Stopped;
+                }
+                publisher.listening(active.statuses());
+            }
             alive = send_probe(handle, probe.as_mut()) => {
                 if !alive {
                     return ServeEnd::ConnectionLost;
@@ -680,12 +906,6 @@ async fn send_probe(
     };
     probe.tick().await;
     handle.send_keepalive(false).await.is_ok()
-}
-
-/// Wait for a stop request (or the manager dropping the handle). Used to race
-/// the handshake so a stop requested mid-handshake tears the task down promptly.
-async fn wait_for_stop(rx: &mut mpsc::Receiver<TunnelControl>) {
-    let _ = rx.recv().await;
 }
 
 #[cfg(test)]
@@ -809,9 +1029,38 @@ mod tests {
         let value = serde_json::to_value(TunnelInfo {
             tunnel_id: "t1".into(),
             device_id: "d1".into(),
+            forward_ids: vec!["f1".into()],
+            forwards: Vec::new(),
         })
         .unwrap();
         assert_eq!(value["tunnelId"], "t1");
         assert_eq!(value["deviceId"], "d1");
+        assert_eq!(value["forwardIds"], serde_json::json!(["f1"]));
+        assert_eq!(value["forwards"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn queue_applies_forward_changes_made_while_connecting() {
+        let mut pending = vec![forward_of(ForwardKind::Local, "127.0.0.1")];
+        let mut second = forward_of(ForwardKind::Local, "127.0.0.1");
+        second.id = "f2".into();
+
+        assert!(queue(&mut pending, TunnelControl::AddForward(second)));
+        assert!(queue(
+            &mut pending,
+            TunnelControl::RemoveForward("f1".into())
+        ));
+        let ids: Vec<&str> = pending.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, ["f2"]);
+    }
+
+    #[test]
+    fn queue_gives_up_on_stop_or_when_no_forward_is_left() {
+        let mut pending = vec![forward_of(ForwardKind::Local, "127.0.0.1")];
+        assert!(!queue(&mut pending.clone(), TunnelControl::Stop));
+        assert!(!queue(
+            &mut pending,
+            TunnelControl::RemoveForward("f1".into())
+        ));
     }
 }
