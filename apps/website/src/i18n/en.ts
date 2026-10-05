@@ -177,7 +177,13 @@ export const en = {
 			{ platform: "macOS", packages: ".dmg (Intel, Apple Silicon)", updates: "Install & restart" },
 			{ platform: "Linux", packages: "AppImage", updates: "Install & restart" },
 			{ platform: "Linux", packages: ".deb, .rpm", updates: "Notification with a download link" },
+			{ platform: "Linux", packages: "Flatpak", updates: "Through flatpak update or your software center" },
 		],
+		flatpak: {
+			title: "Install the Flatpak",
+			body: "On any Linux distribution, run this command, or open the .flatpakref file with your software center. Updates then come through Flatpak.",
+			ref: "Download the .flatpakref",
+		},
 	},
 	faq: {
 		title: "Frequently asked questions",

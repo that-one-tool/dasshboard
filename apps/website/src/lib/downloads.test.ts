@@ -10,6 +10,12 @@ describe("downloadInfo", () => {
 		expect(downloadInfo("1.20.0").releaseNotesUrl).toBe("https://github.com/that-one-tool/dasshboard/releases/tag/v1.20.0");
 	});
 
+	it("points the Flatpak at the .flatpakref served under the site's flatpak/ folder", () => {
+		expect(downloadInfo("1.20.0").flatpakRefUrl).toBe(
+			"https://that-one-tool.github.io/dasshboard/flatpak/dasshboard.flatpakref",
+		);
+	});
+
 	it("carries the version for display", () => {
 		expect(downloadInfo("1.20.0").version).toBe("1.20.0");
 	});

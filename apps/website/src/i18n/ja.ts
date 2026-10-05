@@ -177,7 +177,13 @@ export const ja: SiteMessages = {
 			{ platform: "macOS", packages: ".dmg（Intel、Apple シリコン）", updates: "インストールして再起動" },
 			{ platform: "Linux", packages: "AppImage", updates: "インストールして再起動" },
 			{ platform: "Linux", packages: ".deb、.rpm", updates: "ダウンロードリンク付きの通知" },
+			{ platform: "Linux", packages: "Flatpak", updates: "flatpak update またはソフトウェアセンターで" },
 		],
+		flatpak: {
+			title: "Flatpak をインストール",
+			body: "どの Linux ディストリビューションでも、このコマンドを実行するか、.flatpakref ファイルをソフトウェアセンターで開いてください。以降の更新は Flatpak から届きます。",
+			ref: ".flatpakref をダウンロード",
+		},
 	},
 	faq: {
 		title: "よくある質問",

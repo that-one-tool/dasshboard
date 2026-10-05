@@ -155,7 +155,13 @@ export const zh: SiteMessages = {
 			{ platform: "macOS", packages: ".dmg（Intel、Apple 芯片）", updates: "安装并重启" },
 			{ platform: "Linux", packages: "AppImage", updates: "安装并重启" },
 			{ platform: "Linux", packages: ".deb、.rpm", updates: "通知并提供下载链接" },
+			{ platform: "Linux", packages: "Flatpak", updates: "通过 flatpak update 或软件中心" },
 		],
+		flatpak: {
+			title: "安装 Flatpak",
+			body: "在任意 Linux 发行版上运行此命令，或用软件中心打开 .flatpakref 文件。之后通过 Flatpak 获取更新。",
+			ref: "下载 .flatpakref",
+		},
 	},
 	faq: {
 		title: "常见问题",

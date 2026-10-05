@@ -48,6 +48,11 @@ const { t, download } = Astro.props;
 			</tbody>
 		</table>
 	</div>
+
+	<h3 class="platforms-title">{t.download.flatpak.title}</h3>
+	<p class="flatpak-body">{t.download.flatpak.body}</p>
+	<pre class="flatpak-command"><code>flatpak install --user {download.flatpakRefUrl}</code></pre>
+	<a class="btn" href={download.flatpakRefUrl}>{t.download.flatpak.ref}</a>
 </section>
 
 <style>
@@ -126,6 +131,22 @@ const { t, download } = Astro.props;
 
 	.platforms td {
 		color: var(--text-secondary);
+	}
+
+	.flatpak-body {
+		margin: 0 0 1rem;
+		color: var(--text-secondary);
+	}
+
+	/* The URL is long: scroll it rather than widen the page on a phone. */
+	.flatpak-command {
+		margin: 0 0 1rem;
+		padding: 0.75rem 1rem;
+		overflow-x: auto;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		background: var(--surface-1);
+		color: var(--text-bright);
 	}
 
 	/* On a phone each row becomes a small labelled block instead of three

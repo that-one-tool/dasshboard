@@ -177,7 +177,13 @@ export const es: SiteMessages = {
 			{ platform: "macOS", packages: ".dmg (Intel, Apple Silicon)", updates: "Instalar y reiniciar" },
 			{ platform: "Linux", packages: "AppImage", updates: "Instalar y reiniciar" },
 			{ platform: "Linux", packages: ".deb, .rpm", updates: "Aviso con un enlace de descarga" },
+			{ platform: "Linux", packages: "Flatpak", updates: "Con flatpak update o tu centro de software" },
 		],
+		flatpak: {
+			title: "Instalar el Flatpak",
+			body: "En cualquier distribución Linux, ejecuta este comando o abre el archivo .flatpakref con tu centro de software. Las actualizaciones llegan después a través de Flatpak.",
+			ref: "Descargar el .flatpakref",
+		},
 	},
 	faq: {
 		title: "Preguntas frecuentes",
