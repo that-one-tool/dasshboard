@@ -28,9 +28,12 @@ key_id=${3:-}
 work="${XDG_CACHE_HOME:-$HOME/.cache}/dasshboard-flatpak"
 stage="$work/stage"
 
+# Build dependencies go to the user installation for a host flatpak-builder (its
+# default is the system one, where CI has no Flathub remote). Not for the
+# Builder Flatpak: its --user means a folder inside its own sandbox.
 builder() {
 	if command -v flatpak-builder >/dev/null; then
-		flatpak-builder "$@"
+		flatpak-builder --user "$@"
 	else
 		flatpak run --command=flatpak-builder org.flatpak.Builder "$@"
 	fi

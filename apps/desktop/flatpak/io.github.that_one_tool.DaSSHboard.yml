@@ -7,9 +7,12 @@ runtime: org.gnome.Platform
 runtime-version: "51"
 sdk: org.gnome.Sdk
 command: dasshboard
-# No .Debug extension: it would only grow the repo served from GitHub Pages.
 build-options:
+    # No .Debug extension: it would only grow the repo served from GitHub Pages.
     no-debuginfo: true
+    # Older flatpak-builder (Ubuntu's 1.4.2 in CI) lets CMake modules install
+    # to /app/lib64, which neither pkg-config nor the loader search.
+    libdir: /app/lib
 
 finish-args:
     - --share=ipc
