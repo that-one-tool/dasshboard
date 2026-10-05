@@ -64,6 +64,8 @@ export interface TabManagerOptions {
   getSidebarWidth?: () => number | undefined;
   /** The tunnels' remembered run state to persist (undefined when empty). */
   getTunnelState?: () => Record<string, boolean | string[]> | undefined;
+  /** The device list's collapsed tag sections to persist (undefined when none). */
+  getCollapsedDeviceGroups?: () => string[] | undefined;
   /**
    * The app-action buttons (reload / trusted-hosts / settings / help), mounted
    * into the right side of the tab-strip row so the app has no separate header.
@@ -401,6 +403,7 @@ export class TabManager {
       sftp: this.options.getSftpState?.(),
       sidebarWidth: this.options.getSidebarWidth?.(),
       tunnels: this.options.getTunnelState?.(),
+      collapsedDeviceGroups: this.options.getCollapsedDeviceGroups?.(),
     };
   }
 

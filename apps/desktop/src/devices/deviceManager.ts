@@ -19,7 +19,12 @@ import {
   listAgentIdentities,
 } from "../ipc";
 import { validateDevice } from "./validation";
-import { filterDevices, groupDevicesByFirstTag, type DeviceGroup } from "./deviceFilter";
+import {
+  deviceGroupKey,
+  filterDevices,
+  groupDevicesByFirstTag,
+  type DeviceGroup,
+} from "./deviceFilter";
 import { ForwardsEditor } from "./forwardsEditor";
 import { decideSecretToSend } from "./savePayload";
 import { deviceEndpoint } from "./deviceEndpoint";
@@ -42,12 +47,16 @@ import {
   pickSshConfigOpenPath,
   pickSshConfigSavePath,
 } from "../ui/fileDialog";
-import { pencilIcon, trashIcon } from "../ui/icons";
+import { chevronUpIcon, pencilIcon, trashIcon } from "../ui/icons";
 import { t, tp } from "../i18n";
 
 export interface DeviceManagerOptions {
   onError?: (error: AppError) => void;
   onSuccess?: (message: string) => void;
+  /** Keys (`deviceGroupKey`) of the tag sections to start collapsed. */
+  initialCollapsedGroups?: string[];
+  /** A section was collapsed/expanded: the workspace should be saved. */
+  onPersist?: () => void;
 }
 
 /** Handle returned by `initDeviceManager` for driving it after construction. */
@@ -57,6 +66,8 @@ export interface DeviceManagerHandle {
   reload(): Promise<void>;
   /** Rebuild the sidebar + dialog markup in the current locale (language change). */
   retranslate(): void;
+  /** The collapsed tag sections to persist (undefined when none are). */
+  collapsedGroups(): string[] | undefined;
 }
 
 /**
@@ -72,7 +83,11 @@ export function initDeviceManager(
 
   const manager = new DeviceManagerImpl(deviceListEl, options);
   manager.init();
-  return { reload: () => manager.reload(), retranslate: () => manager.retranslate() };
+  return {
+    reload: () => manager.reload(),
+    retranslate: () => manager.retranslate(),
+    collapsedGroups: () => manager.collapsedGroups(),
+  };
 }
 
 export class DeviceManagerImpl {
@@ -82,6 +97,8 @@ export class DeviceManagerImpl {
   private editingDeviceId: string | null = null;
   /** Current sidebar search query; filters the rendered list (feature #3). */
   private searchQuery = "";
+  /** Keys (`deviceGroupKey`) of the tag sections the user collapsed. */
+  private collapsedGroupKeys: Set<string>;
   /**
    * The "Port forwarding" sub-editor for the SSH device dialog. Populated on
    * open (from the device being edited, or empty for a new device) and read
@@ -92,6 +109,9 @@ export class DeviceManagerImpl {
   constructor(container: HTMLElement, options: DeviceManagerOptions) {
     this.container = container;
     this.options = options;
+    this.collapsedGroupKeys = new Set(
+      (options.initialCollapsedGroups ?? []).map((key) => key.toLowerCase()),
+    );
   }
 
   async init(): Promise<void> {
@@ -118,6 +138,11 @@ export class DeviceManagerImpl {
   retranslate(): void {
     this.renderUI();
     void this.loadDevices();
+  }
+
+  collapsedGroups(): string[] | undefined {
+    if (this.collapsedGroupKeys.size === 0) return undefined;
+    return [...this.collapsedGroupKeys].sort();
   }
 
   private renderUI(): void {
@@ -550,30 +575,73 @@ export class DeviceManagerImpl {
     const flat = groups.length === 1 && groups[0]?.tag === null;
     listItems.innerHTML = flat
       ? groups[0]!.devices.map((d) => this.deviceItemHtml(d)).join("")
-      : groups.map((g) => this.deviceGroupHtml(g)).join("");
+      : groups.map((g, i) => this.deviceGroupHtml(g, i)).join("");
 
     this.attachDeviceListeners();
   }
 
-  /** A tag section: a header (the tag, or "Untagged") over its device rows. */
-  private deviceGroupHtml(group: DeviceGroup): string {
-    const label = group.tag === null ? t("devices.group.untagged") : group.tag;
+  /**
+   * A collapsible tag section: a header button (the tag, or "Untagged", then
+   * the device count and a chevron) over its device rows. While searching every section shows
+   * expanded and its toggle is disabled, so no match is hidden.
+   */
+  private deviceGroupHtml(group: DeviceGroup, index: number): string {
+    const searching = this.searchQuery.trim() !== "";
+    const expanded = searching || !this.collapsedGroupKeys.has(deviceGroupKey(group.tag));
+    const itemsId = `device-group-items-${index}`;
     return `
       <div class="device-group">
-        <div class="device-group-header">${escapeHtml(label)}</div>
-        ${group.devices.map((d) => this.deviceItemHtml(d)).join("")}
+        ${this.deviceGroupHeaderHtml(group, itemsId, expanded, searching)}
+        <div class="device-group-items" id="${itemsId}" ${expanded ? "" : "hidden"}>
+          ${group.devices.map((d) => this.deviceItemHtml(d)).join("")}
+        </div>
       </div>
     `;
   }
 
-  /** One device tile: name + edit/delete actions, then endpoint + tag chips. */
+  private deviceGroupHeaderHtml(
+    group: DeviceGroup,
+    itemsId: string,
+    expanded: boolean,
+    disabled: boolean,
+  ): string {
+    return `
+        <button
+          type="button"
+          class="device-group-header"
+          data-group-key="${escapeHtml(deviceGroupKey(group.tag))}"
+          aria-expanded="${expanded}"
+          aria-controls="${itemsId}"
+          ${disabled ? "disabled" : ""}
+        >
+          <span class="device-group-label">${escapeHtml(groupLabel(group.tag))}</span>
+          <span class="device-group-count">(${group.devices.length})</span>
+          <span class="device-group-chevron">${chevronUpIcon}</span>
+        </button>
+    `;
+  }
+
+
+  /** Collapse or expand a section in place (keeping focus on its header). */
+  private toggleGroup(header: HTMLButtonElement): void {
+    const collapsed = this.flipCollapsed(header.dataset.groupKey ?? "");
+    header.setAttribute("aria-expanded", String(!collapsed));
+    const items = this.container.querySelector<HTMLElement>(
+      `#${header.getAttribute("aria-controls")}`,
+    );
+    if (items) items.hidden = collapsed;
+    this.options.onPersist?.();
+  }
+
+  /** Flip a section's collapsed state; returns whether it is now collapsed. */
+  private flipCollapsed(key: string): boolean {
+    if (this.collapsedGroupKeys.delete(key)) return false;
+    this.collapsedGroupKeys.add(key);
+    return true;
+  }
+
+  /** One device tile: name + edit/delete actions, then the endpoint. */
   private deviceItemHtml(device: Device): string {
-    const chips =
-      device.tags.length > 0
-        ? `<div class="device-tags">${device.tags
-            .map((tag) => `<span class="device-tag">${escapeHtml(tag)}</span>`)
-            .join("")}</div>`
-        : "";
     return `
       <div class="device-item">
         <div class="device-row">
@@ -582,7 +650,6 @@ export class DeviceManagerImpl {
         </div>
         <div class="device-row">
           <div class="device-host">${escapeHtml(deviceEndpoint(device))}</div>
-          ${chips}
         </div>
       </div>
     `;
@@ -612,6 +679,12 @@ export class DeviceManagerImpl {
   }
 
   private attachDeviceListeners(): void {
+    this.container
+      .querySelectorAll<HTMLButtonElement>(".device-group-header")
+      .forEach((header) => {
+        header.addEventListener("click", () => this.toggleGroup(header));
+      });
+
     this.container
       .querySelectorAll<HTMLButtonElement>(".device-item .btn-edit")
       .forEach((btn) => {
@@ -662,4 +735,9 @@ function escapeHtml(text: string): string {
   const div = document.createElement("div");
   div.textContent = text;
   return div.innerHTML;
+}
+
+/** A tag section's header label: the tag, or "Untagged". */
+function groupLabel(tag: string | null): string {
+  return tag ?? t("devices.group.untagged");
 }

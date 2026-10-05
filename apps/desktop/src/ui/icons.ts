@@ -54,6 +54,10 @@ export const filesIcon = `<svg viewBox="0 0 24 24" class="icon icon-lg" fill="no
  * List, toolbar and panel icons (16px).
  * -------------------------------------------------------------------------- */
 
+/** Chevron up — a device-list tag section's collapse toggle (turned down when
+ * the section is collapsed). */
+export const chevronUpIcon = `<svg viewBox="0 0 24 24" class="icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m18 15-6-6-6 6"/></svg>`;
+
 /** Chevron right — "collapse the SFTP panel". */
 export const chevronRightIcon = `<svg viewBox="0 0 24 24" class="icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6"/></svg>`;
 

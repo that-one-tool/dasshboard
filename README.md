@@ -12,7 +12,8 @@
 ## Features
 
 - **Devices** — SSH (password, key file or SSH agent / hardware token), serial/COM
-  ports, and local shells. Tags, search, and import/export (JSON or `~/.ssh/config`).
+  ports, and local shells. Tags (collapsible sections), search, and import/export
+  (JSON or `~/.ssh/config`).
 - **Grid & tabs** — split each tab into up to 3×2 resizable panes, and resize the
   side menu and Files panel; tabs and layouts are restored on launch.
 - **Profiles** — save a workspace and set a default that reconnects every pane

@@ -98,11 +98,17 @@ function q<T extends Element>(root: ParentNode, selector: string): T {
 }
 
 async function setup(): Promise<HTMLElement> {
+  return (await setupManager()).container;
+}
+
+async function setupManager(
+  options: ConstructorParameters<typeof DeviceManagerImpl>[1] = {},
+): Promise<{ container: HTMLElement; manager: DeviceManagerImpl }> {
   document.body.innerHTML = '<div class="device-list"></div>';
-  const el = q<HTMLElement>(document, ".device-list");
-  const manager = new DeviceManagerImpl(el, {});
+  const container = q<HTMLElement>(document, ".device-list");
+  const manager = new DeviceManagerImpl(container, options);
   await manager.init();
-  return el;
+  return { container, manager };
 }
 
 function clickCancel(container: HTMLElement): void {
@@ -591,7 +597,8 @@ describe("ProxyJump editor", () => {
 
 /**
  * Feature #3: the sidebar search box filters the list, and devices are grouped
- * under their first tag (untagged last). Tag chips render on each row.
+ * under their first tag (untagged last) in collapsible sections. The section
+ * header is the only place a tag shows (no per-row chips).
  */
 describe("device search + tag grouping", () => {
   const tagged = (id: string, name: string, host: string, tags: string[]): Device => ({
@@ -623,21 +630,37 @@ describe("device search + tag grouping", () => {
     });
   });
 
-  it("renders tag group headers (untagged last) and per-device chips", async () => {
+  const headerLabels = (container: HTMLElement): (string | undefined)[] =>
+    Array.from(container.querySelectorAll<HTMLElement>(".device-group-label")).map((h) =>
+      h.textContent?.trim(),
+    );
+  const toggleOf = (container: HTMLElement, label: string): HTMLButtonElement => {
+    const toggle = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".device-group-header"),
+    ).find((h) => h.querySelector(".device-group-label")?.textContent?.trim() === label);
+    if (!toggle) throw new Error(`test: no "${label}" section`);
+    return toggle;
+  };
+  const itemsOf = (toggle: HTMLButtonElement): HTMLElement =>
+    q<HTMLElement>(document, `#${toggle.getAttribute("aria-controls")}`);
+  const typeSearch = (container: HTMLElement, value: string): void => {
+    const search = q<HTMLInputElement>(container, ".device-search");
+    search.value = value;
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  it("renders tag section headers (untagged last) and no per-device tag chips", async () => {
     const container = await setup();
-    const headers = Array.from(
-      container.querySelectorAll<HTMLElement>(".device-group-header"),
-    ).map((h) => h.textContent?.trim());
-    expect(headers).toEqual(["db", "web", "Untagged"]);
-    // Chips reflect a device's tags.
-    const chips = Array.from(
-      container.querySelectorAll<HTMLElement>(".device-tag"),
-    ).map((c) => c.textContent);
-    expect(chips).toContain("web");
-    expect(chips).toContain("db");
+    expect(headerLabels(container)).toEqual(["db", "web", "Untagged"]);
+    expect(container.querySelector(".device-tag")).toBeNull();
   });
 
-  it("puts actions beside the name and tag chips beside the endpoint", async () => {
+  it("shows the section's device count in parentheses after its label", async () => {
+    const container = await setup();
+    expect(toggleOf(container, "web").querySelector(".device-group-count")!.textContent).toBe("(1)");
+  });
+
+  it("puts actions beside the name and the endpoint on its own row", async () => {
     const container = await setup();
     const item = container.querySelector<HTMLElement>(".device-item")!;
     const rows = item.querySelectorAll(".device-row");
@@ -646,7 +669,53 @@ describe("device search + tag grouping", () => {
     expect(top.querySelector(".device-name")).not.toBeNull();
     expect(top.querySelector(".device-actions")).not.toBeNull();
     expect(bottom.querySelector(".device-host")).not.toBeNull();
-    expect(bottom.querySelector(".device-tags")).not.toBeNull();
+  });
+
+  it("collapses and expands a section from its header, with a chevron", async () => {
+    const { container, manager } = await setupManager();
+    const toggle = toggleOf(container, "web");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.querySelector(".device-group-chevron svg")).not.toBeNull();
+    expect(itemsOf(toggle).hidden).toBe(false);
+
+    toggle.click();
+    const collapsed = toggleOf(container, "web");
+    expect(collapsed.getAttribute("aria-expanded")).toBe("false");
+    expect(itemsOf(collapsed).hidden).toBe(true);
+    expect(manager.collapsedGroups()).toEqual(["web"]);
+
+    collapsed.click();
+    expect(toggleOf(container, "web").getAttribute("aria-expanded")).toBe("true");
+    expect(manager.collapsedGroups()).toBeUndefined();
+  });
+
+  it("asks for a save on every toggle", async () => {
+    const onPersist = vi.fn();
+    const { container } = await setupManager({ onPersist });
+    toggleOf(container, "Untagged").click();
+    expect(onPersist).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts with the restored sections collapsed, matching tags case-insensitively", async () => {
+    const { container, manager } = await setupManager({ initialCollapsedGroups: ["WEB", ""] });
+    expect(toggleOf(container, "web").getAttribute("aria-expanded")).toBe("false");
+    expect(toggleOf(container, "Untagged").getAttribute("aria-expanded")).toBe("false");
+    expect(toggleOf(container, "db").getAttribute("aria-expanded")).toBe("true");
+    expect(manager.collapsedGroups()).toEqual(["", "web"]);
+  });
+
+  it("shows every matching section expanded while searching", async () => {
+    const { container, manager } = await setupManager({ initialCollapsedGroups: ["web"] });
+
+    typeSearch(container, "web");
+    const toggle = toggleOf(container, "web");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.disabled).toBe(true);
+    expect(itemsOf(toggle).hidden).toBe(false);
+
+    typeSearch(container, "");
+    expect(toggleOf(container, "web").getAttribute("aria-expanded")).toBe("false");
+    expect(manager.collapsedGroups()).toEqual(["web"]);
   });
 
   it("filters the list live as the search box changes", async () => {

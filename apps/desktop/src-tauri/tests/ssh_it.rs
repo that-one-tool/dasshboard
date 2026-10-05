@@ -78,6 +78,9 @@ struct TestServer {
     /// accepted it — used by the agent-forwarding tests to observe the client's
     /// accept/reject gate. `None` for every other test.
     agent_probe: Option<mpsc::UnboundedSender<bool>>,
+    /// When set, echoed bytes go back in packets of at most this many bytes
+    /// (a chatty remote); `None` echoes each received chunk as one packet.
+    echo_chunk: Option<usize>,
 }
 
 impl server::Server for TestServer {
@@ -87,6 +90,7 @@ impl server::Server for TestServer {
             password: self.password.clone(),
             bridge_direct_tcpip: self.bridge_direct_tcpip,
             agent_probe: self.agent_probe.clone(),
+            echo_chunk: self.echo_chunk,
         }
     }
 }
@@ -95,6 +99,7 @@ struct TestServerHandler {
     password: String,
     bridge_direct_tcpip: bool,
     agent_probe: Option<mpsc::UnboundedSender<bool>>,
+    echo_chunk: Option<usize>,
 }
 
 impl server::Handler for TestServerHandler {
@@ -228,7 +233,9 @@ impl server::Handler for TestServerHandler {
             session.close(channel)?;
             return Ok(());
         }
-        session.data(channel, data.to_vec())?;
+        for chunk in data.chunks(self.echo_chunk.unwrap_or(data.len().max(1))) {
+            session.data(channel, chunk.to_vec())?;
+        }
         Ok(())
     }
 }
@@ -281,30 +288,55 @@ async fn spawn_full_server(
     agent_probe: Option<mpsc::UnboundedSender<bool>>,
     inactivity: Duration,
 ) -> u16 {
+    let server = TestServer {
+        password: password.to_string(),
+        bridge_direct_tcpip,
+        agent_probe,
+        echo_chunk: None,
+    };
+    spawn_server(server, server_config(inactivity)).await
+}
+
+/// A server standing in for a remote shell flooding output: it grants the
+/// client a small send window, so a large write has to wait on window adjusts
+/// mid-way, and echoes every received chunk back as a burst of tiny packets.
+async fn spawn_flooding_echo_server(password: &str) -> u16 {
+    let server = TestServer {
+        password: password.to_string(),
+        bridge_direct_tcpip: false,
+        agent_probe: None,
+        echo_chunk: Some(64),
+    };
+    let config = server::Config {
+        window_size: 16 * 1024,
+        ..server_config(Duration::from_secs(30))
+    };
+    spawn_server(server, config).await
+}
+
+fn server_config(inactivity: Duration) -> server::Config {
     let host_key = PrivateKey::from_openssh(TEST_HOST_KEY).expect("valid test host key");
-    let config = Arc::new(server::Config {
+    server::Config {
         keys: vec![host_key],
         // Keep wrong-password rejections snappy in tests.
         auth_rejection_time: Duration::from_millis(10),
         auth_rejection_time_initial: Some(Duration::ZERO),
         inactivity_timeout: Some(inactivity),
         ..Default::default()
-    });
+    }
+}
 
+/// Bind an ephemeral local port and run `server` on it until the test process
+/// exits. Returns the chosen port.
+async fn spawn_server(mut server: TestServer, config: server::Config) -> u16 {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("bind test server");
     let port = listener.local_addr().expect("local addr").port();
 
-    let password = password.to_string();
     tokio::spawn(async move {
-        let mut server = TestServer {
-            password,
-            bridge_direct_tcpip,
-            agent_probe,
-        };
         // `run_on_socket` owns the accept loop and drives each session.
-        let _ = server.run_on_socket(config, &listener).await;
+        let _ = server.run_on_socket(Arc::new(config), &listener).await;
     });
 
     port
@@ -645,6 +677,39 @@ async fn a_shell_that_exits_with_a_failure_code_reports_disconnected() {
         final_status_after_typing(b"exit 1\n").await,
         SessionStatus::Disconnected
     );
+}
+
+/// A write whose output floods back while it is still being sent (a big paste
+/// into a busy remote shell) must round-trip in full. The shell pump used to
+/// stop reading server output while a write waited on russh, so russh's
+/// session loop blocked delivering that output and never got to the window
+/// adjust the write was waiting on: the terminal froze until a reconnect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn output_flooding_back_during_a_write_does_not_freeze_the_session() {
+    const PAYLOAD_LEN: usize = 256 * 1024;
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_flooding_echo_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session(&manager, "s1", port, sink);
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+
+    manager.write_stdin("s1", vec![b'x'; PAYLOAD_LEN]).await;
+
+    let mut received = 0;
+    while received < PAYLOAD_LEN {
+        match recv_timeout(&mut chans.data_rx, Duration::from_secs(5)).await {
+            Some(chunk) => received += chunk.len(),
+            None => break,
+        }
+    }
+    assert_eq!(received, PAYLOAD_LEN, "the echo stalled");
+
+    manager.disconnect("s1").await;
+    await_session_count(&manager, 0).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

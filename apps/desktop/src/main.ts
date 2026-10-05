@@ -113,6 +113,7 @@ async function initApp(): Promise<void> {
 	let sftpLayoutState = (): SftpPanelState | undefined => undefined;
 	let sidebarWidth = (): number | undefined => undefined;
 	let tunnelState = (): Record<string, boolean | string[]> | undefined => undefined;
+	let collapsedDeviceGroups = (): string[] | undefined => undefined;
 	const tabs = new TabManager(paneRoot, {
 		grid: {
 			onError: (message) => showToast(t("error.prefix", { message }), "error"),
@@ -133,6 +134,8 @@ async function initApp(): Promise<void> {
 		getSidebarWidth: () => sidebarWidth(),
 		// …and which tunnels the user left running or stopped.
 		getTunnelState: () => tunnelState(),
+		// …and the device list's collapsed tag sections.
+		getCollapsedDeviceGroups: () => collapsedDeviceGroups(),
 		// The app-action buttons move into the tab-strip row (no separate header).
 		headerActions: document.querySelector<HTMLElement>(".header-actions"),
 	});
@@ -252,7 +255,10 @@ async function initApp(): Promise<void> {
 			void tunnelsPanel.refresh();
 			void sftpPanel.refresh();
 		},
+		initialCollapsedGroups: restoredWorkspace.collapsedDeviceGroups,
+		onPersist: () => tabs.scheduleSave(),
 	});
+	collapsedDeviceGroups = () => deviceManager?.collapsedGroups();
 
 	// Multi-instance config sync (the multi-window follow-up): each app instance
 	// caches the config files in memory at startup, so a change made by another

@@ -85,7 +85,7 @@ The app stores its data in the Tauri app-config directory
 | `settings.json`        | Terminal appearance, language, keepalive, SFTP idle timeout, last profile, update check on launch, close to tray |
 | `known_hosts.json`     | Trusted host keys (TOFU)                                                  |
 | `sftp_bookmarks.json`  | SFTP bookmarks for each device                                            |
-| `workspace_state.json` | Open tabs, Files panel and side-menu widths, tunnels left running/stopped, per instance (not synced) |
+| `workspace_state.json` | Open tabs, Files panel and side-menu widths, tunnels left running/stopped, collapsed device sections, per instance (not synced) |
 
 When another running instance changes `devices.json`, `profiles.json`,
 `settings.json` or `known_hosts.json`, a file watcher reloads them. Passwords and passphrases are stored only in the OS keychain, under the

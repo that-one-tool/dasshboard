@@ -97,6 +97,10 @@ pub struct WorkspaceState {
     /// `tunnelAutoStart` flag. Same legacy/clean-file handling as `sftp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnels: Option<BTreeMap<String, TunnelRunChoice>>,
+    /// The device list's collapsed tag sections, by lowercased tag (`""` for the
+    /// untagged section). Same legacy/clean-file handling as `sftp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapsed_device_groups: Option<Vec<String>>,
 }
 
 /// A device's remembered tunnel run state: exactly the listed forward ids, or
@@ -120,6 +124,7 @@ impl WorkspaceState {
             sftp: None,
             sidebar_width: None,
             tunnels: None,
+            collapsed_device_groups: None,
         }
     }
 
@@ -171,6 +176,7 @@ mod tests {
             sftp: None,
             sidebar_width: None,
             tunnels: None,
+            collapsed_device_groups: None,
         }
     }
 
@@ -289,6 +295,31 @@ mod tests {
         let json = r#"{ "tabs": [], "activeIndex": 0 }"#;
         let back: WorkspaceState = serde_json::from_str(json).expect("deserialize");
         assert_eq!(back.tunnels, None);
+    }
+
+    #[test]
+    fn collapsed_device_groups_round_trip_camel_case_and_are_omitted_when_absent() {
+        let mut s = state();
+        assert!(serde_json::to_value(&s)
+            .unwrap()
+            .get("collapsedDeviceGroups")
+            .is_none());
+
+        s.collapsed_device_groups = Some(vec![String::new(), "web".to_string()]);
+        let value = serde_json::to_value(&s).expect("serialize");
+        assert_eq!(
+            value["collapsedDeviceGroups"],
+            serde_json::json!(["", "web"])
+        );
+        let back: WorkspaceState = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(back.collapsed_device_groups, s.collapsed_device_groups);
+    }
+
+    #[test]
+    fn deserializes_older_file_missing_collapsed_device_groups() {
+        let json = r#"{ "tabs": [], "activeIndex": 0 }"#;
+        let back: WorkspaceState = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(back.collapsed_device_groups, None);
     }
 
     #[test]

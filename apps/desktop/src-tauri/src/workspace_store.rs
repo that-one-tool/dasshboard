@@ -109,6 +109,7 @@ mod tests {
             sftp: None,
             sidebar_width: None,
             tunnels: None,
+            collapsed_device_groups: None,
         }
     }
 

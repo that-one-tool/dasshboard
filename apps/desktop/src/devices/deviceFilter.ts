@@ -54,6 +54,15 @@ export interface DeviceGroup {
 }
 
 /**
+ * A section's stable identity, used to remember which sections are collapsed:
+ * the lowercased tag (sections bucket case-insensitively), or `""` for the
+ * untagged section — `parseTags` never yields an empty tag.
+ */
+export function deviceGroupKey(tag: string | null): string {
+  return tag === null ? "" : tag.toLowerCase();
+}
+
+/**
  * Group devices by their *first* tag (a device belongs to exactly one group, so
  * the list never shows the same device twice). Tagged groups come first, sorted
  * alphabetically (case-insensitive) by tag, with the untagged group (`tag:
@@ -74,7 +83,7 @@ export function groupDevicesByFirstTag(devices: Device[]): DeviceGroup[] {
       untagged.push(device);
       continue;
     }
-    const key = first.toLowerCase();
+    const key = deviceGroupKey(first);
     const bucket = byTag.get(key);
     if (bucket) bucket.devices.push(device);
     else byTag.set(key, { label: first, devices: [device] });

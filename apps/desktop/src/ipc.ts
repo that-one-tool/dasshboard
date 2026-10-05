@@ -641,6 +641,9 @@ export interface WorkspaceState {
    * Start/Stop): the listed forward ids, or none (`false`); `true` (all) only
    * in older files. Absent devices follow their `tunnelAutoStart` flag. */
   tunnels?: Record<string, boolean | string[]>;
+  /** The device list's collapsed tag sections, by lowercased tag (`""` for the
+   * untagged one); absent while none are collapsed. */
+  collapsedDeviceGroups?: string[];
 }
 
 /** The saved workspace, or an empty one (no tabs) on first launch / corrupt file. */

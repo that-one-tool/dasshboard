@@ -35,7 +35,7 @@ use std::time::Duration;
 use russh::client;
 use russh::keys::ssh_key::{HashAlg, PublicKey};
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
-use russh::{ChannelMsg, Pty};
+use russh::{ChannelMsg, ChannelWriteHalf, Pty};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -889,13 +889,13 @@ async fn establish_target(
 async fn run_shell(
     handle: client::Handle<SshHandler>,
     sink: Arc<dyn SessionSink>,
-    mut control_rx: mpsc::Receiver<SessionControl>,
+    control_rx: mpsc::Receiver<SessionControl>,
     cols: u32,
     rows: u32,
     forward_agent: bool,
     connect_snippet: Option<String>,
 ) -> Result<SessionStatus, AppError> {
-    let mut channel = handle
+    let channel = handle
         .channel_open_session()
         .await
         .map_err(|e| AppError::SshChannel(format!("could not open session channel: {e}")))?;
@@ -935,15 +935,37 @@ async fn run_shell(
     // `KeepaliveConfig`): it pings an idle link and drops the connection after
     // `keepalive_max` unanswered pings, which surfaces here as the channel
     // closing — so the pump loop only needs the data and control arms.
+    //
+    // Writes run on their own task so server output keeps being read while a
+    // write waits on russh (a full outbound window, or its small session
+    // queue). Reading only between writes deadlocked under heavy output: russh's
+    // session loop blocked handing us output we weren't reading, so it never
+    // took the rest of our write, and the terminal froze.
+    let (mut reader, writer) = channel.split();
+    let mut writes = tokio::spawn(pump_controls(control_rx, writer));
     // Reported by the server just before it closes the channel (after EOF).
     let mut exit_code = None;
     loop {
         let end = tokio::select! {
-            msg = channel.wait() => handle_channel_msg(msg, &sink, &mut exit_code),
-            ctrl = control_rx.recv() => handle_control(ctrl, &mut channel).await,
+            msg = reader.wait() => handle_channel_msg(msg, &sink, &mut exit_code),
+            ended = &mut writes => Some(ended.unwrap_or(SessionStatus::Disconnected)),
         };
         if let Some(status) = end {
+            writes.abort();
             return Ok(status);
+        }
+    }
+}
+
+/// Apply control messages to the channel until one ends the session; returns
+/// that final status.
+async fn pump_controls(
+    mut control_rx: mpsc::Receiver<SessionControl>,
+    writer: ChannelWriteHalf<client::Msg>,
+) -> SessionStatus {
+    loop {
+        if let Some(status) = handle_control(control_rx.recv().await, &writer).await {
+            return status;
         }
     }
 }
@@ -979,7 +1001,7 @@ fn handle_channel_msg(
 /// channel. Returns the session's final status once it is over.
 async fn handle_control(
     ctrl: Option<SessionControl>,
-    channel: &mut russh::Channel<client::Msg>,
+    channel: &ChannelWriteHalf<client::Msg>,
 ) -> Option<SessionStatus> {
     match ctrl {
         Some(SessionControl::Write(bytes)) => match channel.data(&bytes[..]).await {

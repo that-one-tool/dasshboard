@@ -456,6 +456,12 @@ describe("TabManager persistence (Phase 3)", () => {
     expect(untouched.serialize().sidebarWidth).toBeUndefined();
   });
 
+  it("serialize() includes the device list's collapsed tag sections", async () => {
+    const tm = makeManager({ getCollapsedDeviceGroups: () => ["", "web"] });
+    await tm.init();
+    expect(tm.serialize().collapsedDeviceGroups).toEqual(["", "web"]);
+  });
+
   it("serialize() includes the tunnels' remembered run state", async () => {
     const tm = makeManager({ getTunnelState: () => ({ "dev-1": false }) });
     await tm.init();

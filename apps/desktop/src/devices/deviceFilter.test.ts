@@ -4,6 +4,7 @@ import {
   parseTags,
   deviceMatchesQuery,
   filterDevices,
+  deviceGroupKey,
   groupDevicesByFirstTag,
 } from "./deviceFilter";
 
@@ -115,5 +116,15 @@ describe("groupDevicesByFirstTag", () => {
 
   it("returns no groups for an empty list", () => {
     expect(groupDevicesByFirstTag([])).toEqual([]);
+  });
+});
+
+describe("deviceGroupKey", () => {
+  it("is the lowercased tag, so sections match case-insensitively", () => {
+    expect(deviceGroupKey("Prod")).toBe("prod");
+  });
+
+  it("is empty for the untagged section (a tag is never empty)", () => {
+    expect(deviceGroupKey(null)).toBe("");
   });
 });
