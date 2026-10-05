@@ -28,6 +28,10 @@ const PROFILES_KIND: &str = "dasshboard.profiles";
 /// Envelope schema version written on export (reserved for future migrations;
 /// import currently accepts any version).
 const EXPORT_VERSION: u32 = 1;
+/// Profiles envelope version: 2 = multi-tab profiles. Version-1 files (and
+/// version-1 readers, via the legacy fields each profile also carries) still
+/// work; see `Profile`'s wire format.
+const PROFILES_EXPORT_VERSION: u32 = 2;
 
 /// Self-describing devices file: `{ kind, version, devices: [Device…] }`.
 /// `Device` serializes exactly as it does in `devices.json` (camelCase,
@@ -74,7 +78,7 @@ fn devices_to_export_json(devices: &[Device]) -> String {
 fn profiles_to_export_json(profiles: &[Profile]) -> String {
     let envelope = ProfilesEnvelope {
         kind: PROFILES_KIND.to_string(),
-        version: EXPORT_VERSION,
+        version: PROFILES_EXPORT_VERSION,
         profiles: profiles.to_vec(),
     };
     serde_json::to_string_pretty(&envelope).unwrap_or_default()
@@ -170,7 +174,7 @@ mod tests {
 
     use crate::device::{Auth, Connection, FlowControl, Parity};
     use crate::known_hosts::KnownHostsStore;
-    use crate::profile::{Grid, Pane};
+    use crate::profile::{Grid, Pane, ProfileTab};
     use crate::profile_store::ProfileStore;
     use crate::secret::InMemorySecretStore;
     use crate::serial::SerialSessionManager;
@@ -247,13 +251,16 @@ mod tests {
         Profile {
             id: String::new(),
             name: name.to_string(),
-            grid: Grid {
-                rows: 1,
-                cols: 2,
-                row_sizes: vec![1.0],
-                col_sizes: vec![0.5, 0.5],
-            },
-            panes: vec![Pane { device_id: None }, Pane { device_id: None }],
+            tabs: vec![ProfileTab {
+                name: name.to_string(),
+                grid: Grid {
+                    rows: 1,
+                    cols: 2,
+                    row_sizes: vec![1.0],
+                    col_sizes: vec![0.5, 0.5],
+                },
+                panes: vec![Pane { device_id: None }, Pane { device_id: None }],
+            }],
         }
     }
 
@@ -493,7 +500,7 @@ mod tests {
         let raw = fs::read_to_string(&out).unwrap();
         let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(value["kind"], "dasshboard.profiles");
-        assert_eq!(value["version"], 1);
+        assert_eq!(value["version"], 2);
         assert_eq!(value["profiles"].as_array().unwrap().len(), 1);
         assert!(
             value.get("defaultProfileId").is_none(),
@@ -518,6 +525,33 @@ mod tests {
 
         assert_eq!(count, 2);
         assert_eq!(dst.profile_store.list().profiles, original);
+    }
+
+    #[test]
+    fn profiles_import_accepts_a_file_exported_before_multi_tab_profiles() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        let file = dir.path().join("legacy.json");
+        fs::write(
+            &file,
+            serde_json::json!({
+                "kind": "dasshboard.profiles",
+                "version": 1,
+                "profiles": [{
+                    "id": "p1",
+                    "name": "Homelab",
+                    "grid": { "rows": 1, "cols": 2, "rowSizes": [1.0], "colSizes": [0.5, 0.5] },
+                    "panes": [{ "deviceId": null }, { "deviceId": null }]
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(import_profiles_impl(&state, &file).unwrap(), 1);
+        let imported = &state.profile_store.list().profiles[0];
+        assert_eq!(imported.tabs.len(), 1);
+        assert_eq!(imported.tabs[0].name, "Homelab");
     }
 
     #[test]

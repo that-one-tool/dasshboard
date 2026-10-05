@@ -2,18 +2,20 @@
  * @vitest-environment happy-dom
  *
  * Unit tests for `ProfileManager` (Phase 4) — the sidebar/toolbar orchestration
- * over the profile IPC commands and the `Grid`. Drives the class through its
- * rendered DOM (mirroring `deviceManager.test.ts`), with `../ipc` mocked and a
- * lightweight fake `Grid` (only `snapshot()`/`applyProfile()` are used).
+ * over the profile IPC commands and the tabbed workspace. Drives the class
+ * through its rendered DOM (mirroring `deviceManager.test.ts`), with `../ipc`
+ * mocked and an in-memory fake of the tab set (`fakeTabs`), whose grids only
+ * implement `snapshot()` / `applySnapshot()` / `liveSessionCount()`.
  *
- * Covers the two Phase 4 review focuses that live in this file: that a Save
- * after a device deletion persists exactly the current (nulled) snapshot rather
- * than resurrecting a device id, and that the dirty dot tracks load→edit→save.
+ * A profile is a group of tabs: the open tabs linked to it, in strip order.
+ * Covers loading/saving that group, its dirty state, and that a Save after a
+ * device deletion persists exactly the current (nulled) snapshot rather than
+ * resurrecting a device id.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Grid } from "../grid";
-import type { Profile } from "../ipc";
+import type { Profile, ProfileTab } from "../ipc";
 import type { WorkspaceSnapshot } from "./workspace";
 
 vi.mock("../ipc", () => ({
@@ -43,68 +45,127 @@ import {
   importProfiles,
 } from "../ipc";
 
-/**
- * A minimal stand-in for the tabbed workspace: one grid whose `snapshot()` /
- * `applyProfile()` are exercised, plus a `workspace` bridge that tracks the
- * active tab's linked-profile id in memory (as `TabManager` would).
- */
-function fakeGrid(snapshot: WorkspaceSnapshot): {
+interface FakeTab {
   grid: Grid;
+  name: string;
+  linked: string | null;
+  snap: WorkspaceSnapshot;
+  live: number;
+  applySnapshot: ReturnType<typeof vi.fn>;
+}
+
+type TabSpec = { name?: string; linked?: string | null; panes?: (string | null)[]; live?: number };
+
+/**
+ * An in-memory stand-in for `TabManager`: an ordered tab list with an active
+ * tab, each tab owning a fake grid whose `applySnapshot` replaces its snapshot
+ * (so a load leaves the tab matching the profile, as the real grid would).
+ */
+function fakeTabs(specs: TabSpec[] = [{}]): {
   workspace: ProfileWorkspace;
-  applyProfile: ReturnType<typeof vi.fn>;
-  setSnapshot: (s: WorkspaceSnapshot) => void;
-  linkedProfileId: () => string | null;
+  tabs: FakeTab[];
+  active: () => FakeTab;
+  activate: (index: number) => void;
+  /** Makes every later `applySnapshot` hang on its connects (it applies the
+   * layout, then never resolves), as with a pending host-key prompt. */
+  holdConnects: () => void;
 } {
-  let current = snapshot;
-  let linked: string | null = null;
-  const applyProfile = vi.fn(async () => true);
-  const stub = {
-    snapshot: () => current,
-    applyProfile,
-    liveSessionCount: () => 0,
-  } as unknown as Grid;
+  const tabs: FakeTab[] = [];
+  let connects: Promise<void> = Promise.resolve();
+  const makeTab = (spec: TabSpec): FakeTab => {
+    const tab = {
+      name: spec.name ?? "Tab",
+      linked: spec.linked ?? null,
+      snap: snapshot(spec.panes ?? [null, null]),
+      live: spec.live ?? 0,
+    } as FakeTab;
+    tab.applySnapshot = vi.fn(async (s: WorkspaceSnapshot) => {
+      tab.snap = s;
+      await connects;
+      return true;
+    });
+    tab.grid = {
+      snapshot: () => tab.snap,
+      applySnapshot: tab.applySnapshot,
+      liveSessionCount: () => tab.live,
+    } as unknown as Grid;
+    return tab;
+  };
+  tabs.push(...specs.map(makeTab));
+  let active = tabs[0]!;
+  const groupOf = (id: string): FakeTab[] => tabs.filter((t) => t.linked === id);
   const workspace: ProfileWorkspace = {
-    activeGrid: () => stub,
-    activeLinkedProfileId: () => linked,
-    linkedProfileIdOf: () => linked,
-    linkProfile: (_grid, id) => {
-      linked = id;
+    activeLinkedProfileId: () => active.linked,
+    activeGroupGrids: () =>
+      (active.linked === null ? [active] : groupOf(active.linked)).map((t) => t.grid),
+    groupGrids: (id) => groupOf(id).map((t) => t.grid),
+    linkedProfileIds: () => [...new Set(tabs.flatMap((t) => (t.linked === null ? [] : [t.linked])))],
+    activateGrid: (grid) => {
+      active = tabs.find((t) => t.grid === grid) ?? active;
+    },
+    tabSnapshots: (grids) =>
+      tabs.filter((t) => grids.includes(t.grid)).map((t) => ({ name: t.name, ...t.snap })),
+    linkProfile: (grid, id) => {
+      const tab = tabs.find((t) => t.grid === grid);
+      if (tab) tab.linked = id;
     },
     refreshTabStrip: () => {},
     clearProfileLink: (id) => {
-      if (linked === id) linked = null;
+      for (const tab of groupOf(id)) tab.linked = null;
     },
-    openTab: async (opts) => {
-      linked = opts.linkedProfileId; // mirror TabManager: the new tab is active + linked
-      return stub;
+    openTabs: async (names, linkedProfileId, replacing = []) => {
+      const created = names.map((name) => makeTab({ name, linked: linkedProfileId, panes: [null] }));
+      const at = tabs.findIndex((t) => replacing.includes(t.grid));
+      tabs.splice(at >= 0 ? at : tabs.length, 0, ...created);
+      for (let i = tabs.length - 1; i >= 0; i--) {
+        if (replacing.includes(tabs[i]!.grid)) tabs.splice(i, 1);
+      }
+      active = created[0]!;
+      return created.map((t) => t.grid);
     },
   };
   return {
-    grid: stub,
     workspace,
-    applyProfile,
-    setSnapshot: (s) => {
-      current = s;
+    tabs,
+    active: () => active,
+    activate: (index) => {
+      active = tabs[index]!;
     },
-    linkedProfileId: () => linked,
+    holdConnects: () => {
+      connects = new Promise(() => {});
+    },
   };
 }
 
-function grid2x2(): WorkspaceSnapshot["grid"] {
+function grid1x2(): WorkspaceSnapshot["grid"] {
   return { rows: 1, cols: 2, rowSizes: [1], colSizes: [0.5, 0.5] };
 }
 
 function snapshot(panes: (string | null)[]): WorkspaceSnapshot {
-  return { grid: grid2x2(), panes };
+  return { grid: grid1x2(), panes };
 }
 
+function profileTab(name: string, panes: (string | null)[]): ProfileTab {
+  return { name, grid: grid1x2(), panes: panes.map((deviceId) => ({ deviceId })) };
+}
+
+/** A one-tab profile "Homelab" (id "p1") whose tab is also named "Homelab". */
 function profile(panes: (string | null)[]): Profile {
+  return { id: "p1", name: "Homelab", tabs: [profileTab("Homelab", panes)] };
+}
+
+/** A two-tab profile "Lab" (id "lab"): tabs "Web" and "DB". */
+function labProfile(): Profile {
   return {
-    id: "p1",
-    name: "Homelab",
-    grid: grid2x2(),
-    panes: panes.map((deviceId) => ({ deviceId })),
+    id: "lab",
+    name: "Lab",
+    tabs: [profileTab("Web", ["web-1", "web-2"]), profileTab("DB", ["db-1", null])],
   };
+}
+
+/** The tabs' names and links, in strip order. */
+function strip(tabs: FakeTab[]): string[] {
+  return tabs.map((t) => `${t.name}:${t.linked ?? "-"}`);
 }
 
 /** The loaded profile's status dot shows unsaved changes via the `.dirty`
@@ -120,6 +181,52 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 }
 
+function click(selector: string, index = 0): void {
+  document.querySelectorAll<HTMLButtonElement>(selector)[index]?.click();
+}
+
+/** Clicks the button of the profile item at `index` (sidebar order). */
+function clickItem(action: string, index = 0): void {
+  click(`.profile-item [data-action="${action}"]`, index);
+}
+
+async function answerPrompt(value: string): Promise<void> {
+  const input = document.querySelector<HTMLInputElement>(".prompt-dialog .prompt-input");
+  if (input) input.value = value;
+  click('.prompt-dialog [data-action="ok"]');
+  await flush();
+}
+
+function newManager(workspace: ProfileWorkspace, extra: Partial<ConstructorParameters<typeof ProfileManager>[0]> = {}): ProfileManager {
+  return new ProfileManager({ workspace, onError: vi.fn(), onSuccess: vi.fn(), ...extra });
+}
+
+/**
+ * Wire the two profile commands to a shared mutable backing store so that a
+ * Save is visible to the following `reload()` (as the real backend would be).
+ */
+function wireStore(initial: Profile[], defaultId: string | null, migratedFromV1 = false): void {
+  let backing = initial.map((p) => structuredClone(p));
+  let migrated = migratedFromV1;
+  vi.mocked(listProfiles).mockImplementation(async () => ({
+    defaultProfileId: defaultId,
+    profiles: backing.map((p) => structuredClone(p)),
+    migratedFromV1: migrated,
+  }));
+  vi.mocked(saveProfile).mockImplementation(async (p: Profile) => {
+    migrated = false; // the backend clears the flag on its next write
+    const saved = { ...structuredClone(p), id: p.id || "new-id" };
+    const i = backing.findIndex((x) => x.id === saved.id);
+    if (i >= 0) backing[i] = saved;
+    else backing = [...backing, saved];
+    return saved;
+  });
+}
+
+function lastSaved(): Profile | undefined {
+  return vi.mocked(saveProfile).mock.calls.at(-1)?.[0];
+}
+
 beforeEach(() => {
   document.body.innerHTML = `
     <div class="profile-list"></div>
@@ -129,152 +236,251 @@ beforeEach(() => {
 });
 
 describe("ProfileManager app-start", () => {
-  it("loads the default profile on init and clears the dirty dot", async () => {
-    const g = fakeGrid(snapshot(["dev-1", null]));
-    vi.mocked(listProfiles).mockResolvedValue({
-      defaultProfileId: "p1",
-      profiles: [profile(["dev-1", null])],
-    });
+  it("loads the default profile on init in place of the blank tab, with no teardown confirm", async () => {
+    const ws = fakeTabs();
+    wireStore([profile(["dev-1", null])], "p1");
 
-    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
-    await mgr.init(null);
+    await newManager(ws.workspace).init(null);
     await flush();
 
-    // Default is applied WITHOUT a teardown confirm (nothing live at start).
-    expect(g.applyProfile).toHaveBeenCalledTimes(1);
-    expect(g.applyProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "p1" }),
-      { confirmTeardown: false },
-    );
-    // Workspace matches the loaded profile → not dirty.
+    expect(strip(ws.tabs)).toEqual(["Homelab:p1"]);
+    expect(ws.tabs[0]!.applySnapshot).toHaveBeenCalledWith(snapshot(["dev-1", null]), {
+      confirmTeardown: false,
+    });
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    expect(dirtyShown()).toBe(false);
+  });
+
+  it("opens every tab of a multi-tab default profile", async () => {
+    const ws = fakeTabs();
+    wireStore([labProfile()], "lab");
+
+    await newManager(ws.workspace).init(null);
+    await flush();
+
+    expect(strip(ws.tabs)).toEqual(["Web:lab", "DB:lab"]);
+    expect(ws.tabs[1]!.snap.panes).toEqual(["db-1", null]);
+    expect(ws.active()).toBe(ws.tabs[0]);
     expect(dirtyShown()).toBe(false);
   });
 
   it("loads the last-used profile when there is no default", async () => {
-    const g = fakeGrid(snapshot(["dev-1", null]));
-    vi.mocked(listProfiles).mockResolvedValue({
-      defaultProfileId: null,
-      profiles: [profile(["dev-1", null])],
-    });
-
+    const ws = fakeTabs();
+    wireStore([profile(["dev-1", null])], null);
     const onProfileChange = vi.fn();
-    const mgr = new ProfileManager({
-      workspace: g.workspace,
-      onError: vi.fn(),
-      onSuccess: vi.fn(),
-      onProfileChange,
-    });
-    // No default, but the last-used id points at an existing profile → load it.
-    await mgr.init("p1");
+
+    await newManager(ws.workspace, { onProfileChange }).init("p1");
     await flush();
 
-    expect(g.applyProfile).toHaveBeenCalledTimes(1);
-    expect(g.applyProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "p1" }),
-      { confirmTeardown: false },
-    );
+    expect(strip(ws.tabs)).toEqual(["Homelab:p1"]);
     expect(onProfileChange).toHaveBeenLastCalledWith("p1");
     expect(dirtyShown()).toBe(false);
   });
 
   it("prefers the default profile over the last-used profile", async () => {
-    const g = fakeGrid(snapshot([null, null]));
-    const def = { ...profile([null, null]), id: "def" };
-    const last = { ...profile(["dev-1", null]), id: "last" };
-    vi.mocked(listProfiles).mockResolvedValue({
-      defaultProfileId: "def",
-      profiles: [def, last],
-    });
+    const ws = fakeTabs();
+    wireStore([labProfile(), profile(["dev-1", null])], "lab");
 
-    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
-    await mgr.init("last"); // last-used points elsewhere, but default wins
+    await newManager(ws.workspace).init("p1"); // last-used points elsewhere, but default wins
     await flush();
 
-    expect(g.applyProfile).toHaveBeenCalledTimes(1);
-    expect(g.applyProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "def" }),
-      { confirmTeardown: false },
-    );
+    expect(strip(ws.tabs)).toEqual(["Web:lab", "DB:lab"]);
   });
 
-  it("loads nothing (1x1 empty) when the last-used profile no longer exists", async () => {
-    const g = fakeGrid(snapshot([null, null]));
-    vi.mocked(listProfiles).mockResolvedValue({
-      defaultProfileId: null,
-      profiles: [profile(["dev-1", null])], // id "p1"
-    });
-
+  it("loads nothing when the last-used profile no longer exists", async () => {
+    const ws = fakeTabs([{ name: "Tab 1" }]);
+    wireStore([profile(["dev-1", null])], null);
     const onProfileChange = vi.fn();
-    const mgr = new ProfileManager({
-      workspace: g.workspace,
-      onError: vi.fn(),
-      onSuccess: vi.fn(),
-      onProfileChange,
-    });
+
     // Stale id: the profile was deleted in a previous session.
-    await mgr.init("gone");
+    await newManager(ws.workspace, { onProfileChange }).init("gone");
     await flush();
 
-    expect(g.applyProfile).not.toHaveBeenCalled();
+    expect(strip(ws.tabs)).toEqual(["Tab 1:-"]);
     // The stale id is cleared so it stops being the restore target.
     expect(onProfileChange).toHaveBeenLastCalledWith(null);
     expect(dirtyShown()).toBe(false);
   });
 
-  it("does not load anything and stays clean when there is no default or last profile", async () => {
-    const g = fakeGrid(snapshot([null, null]));
-    vi.mocked(listProfiles).mockResolvedValue({ defaultProfileId: null, profiles: [] });
+  it("does not load anything when the tab set was restored", async () => {
+    const ws = fakeTabs([{ name: "Tab 1" }]);
+    wireStore([profile(["dev-1", null])], "p1");
 
-    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
-    await mgr.init(null);
+    await newManager(ws.workspace).init(null, { loadStart: false });
     await flush();
 
-    expect(g.applyProfile).not.toHaveBeenCalled();
+    expect(strip(ws.tabs)).toEqual(["Tab 1:-"]);
+  });
+});
+
+describe("ProfileManager load", () => {
+  it("replaces the active tab's group, leaving the other tabs in place", async () => {
+    const ws = fakeTabs([
+      { name: "A", linked: "p1" },
+      { name: "Free" },
+      { name: "B", linked: "p1" },
+    ]);
+    wireStore([profile([null, null]), labProfile()], null);
+    const mgr = newManager(ws.workspace);
+    await mgr.init(null, { loadStart: false });
+
+    clickItem("load", 1); // Lab
+    await flush();
+    // Two tabs close, so it asks first even with nothing live — and says so.
+    expect(document.querySelector(".confirm-dialog")?.textContent).toContain("2 tabs will be closed.");
+    click('.confirm-dialog [data-action="confirm"]');
+    await flush();
+
+    expect(strip(ws.tabs)).toEqual(["Web:lab", "DB:lab", "Free:-"]);
+    expect(ws.active()).toBe(ws.tabs[0]);
+  });
+
+  it("does not ask before replacing a single idle tab", async () => {
+    const ws = fakeTabs([{ name: "Free" }]);
+    wireStore([labProfile()], null);
+    await newManager(ws.workspace).init(null, { loadStart: false });
+
+    clickItem("load");
+    await flush();
+
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    expect(strip(ws.tabs)).toEqual(["Web:lab", "DB:lab"]);
+  });
+
+  it("switches to a profile already open in other tabs instead of opening it again", async () => {
+    const ws = fakeTabs([{ name: "Web", linked: "lab" }, { name: "Free" }]);
+    wireStore([labProfile()], null);
+    await newManager(ws.workspace).init(null, { loadStart: false });
+    ws.activate(1);
+
+    clickItem("load");
+    await flush();
+
+    expect(strip(ws.tabs)).toEqual(["Web:lab", "Free:-"]);
+    expect(ws.active()).toBe(ws.tabs[0]);
+  });
+
+  it("reloads the active tab's own profile in place (revert)", async () => {
+    const ws = fakeTabs();
+    wireStore([labProfile()], "lab");
+    await newManager(ws.workspace).init(null);
+    await flush();
+    ws.tabs[0]!.snap = snapshot(["edited", null]);
+
+    clickItem("load");
+    await flush();
+    click('.confirm-dialog [data-action="confirm"]');
+    await flush();
+
+    expect(strip(ws.tabs)).toEqual(["Web:lab", "DB:lab"]);
+    expect(ws.tabs[0]!.snap.panes).toEqual(["web-1", "web-2"]);
     expect(dirtyShown()).toBe(false);
+  });
+
+  it("frees the profile actions without waiting for the panes to connect", async () => {
+    const ws = fakeTabs([{ name: "Free" }]);
+    wireStore([labProfile()], null);
+    await newManager(ws.workspace).init(null, { loadStart: false });
+    ws.holdConnects();
+
+    clickItem("load");
+    await flush();
+    click('[data-action="save"]');
+    await flush();
+
+    expect(strip(ws.tabs)).toEqual(["Web:lab", "DB:lab"]);
+    expect(dirtyShown()).toBe(false);
+    expect(vi.mocked(saveProfile)).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces only the active tab when it is not linked", async () => {
+    const ws = fakeTabs([{ name: "Free" }, { name: "Other", linked: "p1" }]);
+    wireStore([profile([null, null]), labProfile()], null);
+    await newManager(ws.workspace).init(null, { loadStart: false });
+
+    clickItem("load", 1);
+    await flush();
+
+    expect(strip(ws.tabs)).toEqual(["Web:lab", "DB:lab", "Other:p1"]);
+  });
+
+  it("asks first when the replaced tabs have live sessions, and a cancel changes nothing", async () => {
+    const ws = fakeTabs([{ name: "A", linked: "p1", live: 1 }, { name: "B", linked: "p1", live: 2 }]);
+    wireStore([profile([null, null]), labProfile()], null);
+    await newManager(ws.workspace).init(null, { loadStart: false });
+
+    clickItem("load", 1);
+    await flush();
+    expect(document.querySelectorAll(".confirm-dialog")).toHaveLength(1);
+    click('.confirm-dialog [data-action="cancel"]');
+    await flush();
+
+    expect(strip(ws.tabs)).toEqual(["A:p1", "B:p1"]);
+  });
+
+  it("replaces the group it was clicked on, even if the user switched tabs during the confirm", async () => {
+    const ws = fakeTabs([{ name: "A", live: 1 }, { name: "B" }]);
+    wireStore([labProfile()], null);
+    await newManager(ws.workspace).init(null, { loadStart: false });
+
+    clickItem("load");
+    await flush();
+    ws.activate(1); // Ctrl+Tab while the teardown confirm is open
+    click('.confirm-dialog [data-action="confirm"]');
+    await flush();
+
+    expect(strip(ws.tabs)).toEqual(["Web:lab", "DB:lab", "B:-"]);
+  });
+
+  it("Open-in-new-tabs switches to the profile's tabs when it is already open", async () => {
+    const ws = fakeTabs([{ name: "Free" }, { name: "Web", linked: "lab" }]);
+    wireStore([labProfile()], null);
+    await newManager(ws.workspace).init(null, { loadStart: false });
+
+    clickItem("open-tab");
+    await flush();
+
+    expect(strip(ws.tabs)).toEqual(["Free:-", "Web:lab"]);
+    expect(ws.active()).toBe(ws.tabs[1]);
+  });
+
+  it("Open-in-new-tabs appends the profile's tabs, linked, leaving existing tabs", async () => {
+    const ws = fakeTabs([{ name: "Tab 1" }]);
+    const onSuccess = vi.fn();
+    wireStore([labProfile()], null);
+    await newManager(ws.workspace, { onSuccess }).init(null);
+
+    clickItem("open-tab");
+    await flush();
+
+    expect(strip(ws.tabs)).toEqual(["Tab 1:-", "Web:lab", "DB:lab"]);
+    expect(ws.tabs[1]!.applySnapshot).toHaveBeenCalledWith(snapshot(["web-1", "web-2"]), {
+      confirmTeardown: false,
+    });
+    expect(ws.active()).toBe(ws.tabs[1]);
+    expect(onSuccess).toHaveBeenCalled();
   });
 });
 
 describe("ProfileManager dirty state + save", () => {
-  /**
-   * Wire the two profile commands to a shared mutable backing store so that a
-   * Save is visible to the following `reload()` (as the real backend would be).
-   */
-  function wireStore(initial: Profile[], defaultId: string | null): void {
-    let backing = initial.map((p) => structuredClone(p));
-    vi.mocked(listProfiles).mockImplementation(async () => ({
-      defaultProfileId: defaultId,
-      profiles: backing.map((p) => structuredClone(p)),
-    }));
-    vi.mocked(saveProfile).mockImplementation(async (p: Profile) => {
-      const saved = { ...structuredClone(p), id: p.id || "new-id" };
-      const i = backing.findIndex((x) => x.id === saved.id);
-      if (i >= 0) backing[i] = saved;
-      else backing = [...backing, saved];
-      return saved;
-    });
-  }
-
   it("shows the dot after an edit and clears it after Save persists the snapshot", async () => {
-    const g = fakeGrid(snapshot(["dev-1", null]));
+    const ws = fakeTabs();
     wireStore([profile(["dev-1", null])], "p1");
-
-    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
+    const mgr = newManager(ws.workspace);
     await mgr.init(null);
     await flush();
     expect(dirtyShown()).toBe(false);
 
     // Simulate a workspace edit: the second pane now has a device.
-    g.setSnapshot(snapshot(["dev-1", "dev-2"]));
+    ws.tabs[0]!.snap = snapshot(["dev-1", "dev-2"]);
     mgr.refreshDirty();
     expect(dirtyShown()).toBe(true);
 
-    // Save persists exactly the current snapshot; then the dot clears.
-    document.querySelector<HTMLButtonElement>('[data-action="save"]')?.click();
+    click('[data-action="save"]');
     await flush();
 
     expect(vi.mocked(saveProfile)).toHaveBeenCalledTimes(1);
-    const saved = vi.mocked(saveProfile).mock.calls[0]?.[0];
-    expect(saved?.panes).toEqual([{ deviceId: "dev-1" }, { deviceId: "dev-2" }]);
+    expect(lastSaved()?.tabs).toEqual([profileTab("Homelab", ["dev-1", "dev-2"])]);
     expect(dirtyShown()).toBe(false);
   });
 
@@ -282,157 +488,213 @@ describe("ProfileManager dirty state + save", () => {
     // The pane already dropped the deleted device from the snapshot (see
     // pane.ts refreshDevices); the manager must persist that null, never
     // resurrect the id.
-    const g = fakeGrid(snapshot(["dev-1", "dev-2"]));
+    const ws = fakeTabs();
     wireStore([profile(["dev-1", "dev-2"])], "p1");
+    await newManager(ws.workspace).init(null);
+    await flush();
 
-    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
+    ws.tabs[0]!.snap = snapshot(["dev-1", null]);
+    click('[data-action="save"]');
+    await flush();
+
+    expect(lastSaved()?.tabs[0]?.panes).toEqual([{ deviceId: "dev-1" }, { deviceId: null }]);
+  });
+
+  it("Save writes every tab linked to the profile, in strip order, and no other tab", async () => {
+    const ws = fakeTabs([
+      { name: "Web", linked: "lab", panes: ["web-1", "web-2"] },
+      { name: "Free", panes: ["x", null] },
+      { name: "Logs", linked: "lab", panes: ["log-1", null] },
+      { name: "Home", linked: "p1" },
+    ]);
+    wireStore([labProfile(), profile([null, null])], null);
+    await newManager(ws.workspace).init(null, { loadStart: false });
+
+    click('[data-action="save"]');
+    await flush();
+
+    expect(lastSaved()).toEqual({
+      ...labProfile(),
+      tabs: [profileTab("Web", ["web-1", "web-2"]), profileTab("Logs", ["log-1", null])],
+    });
+  });
+
+  it("is dirty when a tab of the group is closed or renamed", async () => {
+    const ws = fakeTabs();
+    wireStore([labProfile()], "lab");
+    const mgr = newManager(ws.workspace);
     await mgr.init(null);
     await flush();
+    expect(dirtyShown()).toBe(false);
 
-    // dev-2 was deleted → its pane is now null in the snapshot.
-    g.setSnapshot(snapshot(["dev-1", null]));
-    document.querySelector<HTMLButtonElement>('[data-action="save"]')?.click();
-    await flush();
+    ws.tabs[1]!.name = "Database";
+    mgr.refreshDirty();
+    expect(dirtyShown()).toBe(true);
 
-    const saved = vi.mocked(saveProfile).mock.calls[0]?.[0];
-    expect(saved?.panes).toEqual([{ deviceId: "dev-1" }, { deviceId: null }]);
+    ws.tabs[1]!.name = "DB";
+    ws.tabs.splice(1, 1);
+    mgr.refreshDirty();
+    expect(dirtyShown()).toBe(true);
   });
 });
 
-describe("ProfileManager per-tab (Tabs Phase 2)", () => {
-  it("resolveTabState reports linked + dirty against the tab's profile", async () => {
-    const g = fakeGrid(snapshot(["dev-1", null]));
-    vi.mocked(listProfiles).mockResolvedValue({
-      defaultProfileId: null,
-      profiles: [profile(["dev-1", null])], // id "p1"
-    });
-    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
+describe("ProfileManager per-tab state", () => {
+  it("resolveTabState reports linked + the group's dirty state", async () => {
+    const ws = fakeTabs();
+    wireStore([labProfile()], "lab");
+    const mgr = newManager(ws.workspace);
     await mgr.init(null);
     await flush();
 
-    // Linked to an existing profile, snapshot matches → not dirty.
-    expect(mgr.resolveTabState("p1", g.grid)).toEqual({ linked: true, dirty: false });
+    expect(mgr.resolveTabState("lab")).toEqual({ linked: true, dirty: false });
     // Unknown id (deleted/dangling) → not linked.
-    expect(mgr.resolveTabState("gone", g.grid)).toEqual({ linked: false, dirty: false });
-    // Linked but the live workspace differs → dirty.
-    g.setSnapshot(snapshot(["dev-1", "dev-2"]));
-    expect(mgr.resolveTabState("p1", g.grid)).toEqual({ linked: true, dirty: true });
-  });
-
-  it("Open-in-new-tab applies the profile into a fresh linked tab", async () => {
-    const g = fakeGrid(snapshot([null, null]));
-    const onSuccess = vi.fn();
-    vi.mocked(listProfiles).mockResolvedValue({
-      defaultProfileId: null,
-      profiles: [profile(["dev-1", null])], // id "p1"
-    });
-    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess });
-    await mgr.init(null); // nothing loaded → active tab unlinked
-    await flush();
-    expect(g.linkedProfileId()).toBeNull();
-
-    document.querySelector<HTMLButtonElement>('[data-action="open-tab"]')?.click();
-    await flush();
-
-    // The profile was applied into the new tab (no teardown confirm) and that
-    // tab is now linked to it.
-    expect(g.applyProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "p1" }),
-      { confirmTeardown: false },
-    );
-    expect(g.linkedProfileId()).toBe("p1");
-    expect(onSuccess).toHaveBeenCalled();
+    expect(mgr.resolveTabState("gone")).toEqual({ linked: false, dirty: false });
+    expect(mgr.resolveTabState(null)).toEqual({ linked: false, dirty: false });
+    // An edit in one tab makes the whole group dirty.
+    ws.tabs[1]!.snap = snapshot(["db-2", null]);
+    expect(mgr.resolveTabState("lab")).toEqual({ linked: true, dirty: true });
   });
 });
 
-/**
- * Two tabs whose active one can be switched mid-action — for the flows that
- * await (a teardown confirm, a name prompt) before linking the tab.
- */
-function twoTabs(): {
-  workspace: ProfileWorkspace;
-  tabA: { grid: Grid; applyProfile: ReturnType<typeof vi.fn>; linked: () => string | null };
-  tabB: { linked: () => string | null };
-  activate: (tab: "A" | "B") => void;
-} {
-  const linked = new Map<Grid, string | null>();
-  const makeGrid = (snap: WorkspaceSnapshot) =>
-    ({ snapshot: () => snap, applyProfile: vi.fn(async () => true), liveSessionCount: () => 0 }) as unknown as Grid;
-  const a = makeGrid(snapshot(["dev-a", null]));
-  const b = makeGrid(snapshot(["dev-b", null]));
-  let active = a;
-  const workspace: ProfileWorkspace = {
-    activeGrid: () => active,
-    activeLinkedProfileId: () => linked.get(active) ?? null,
-    linkedProfileIdOf: (grid) => linked.get(grid) ?? null,
-    linkProfile: (grid, id) => {
-      linked.set(grid, id);
-    },
-    refreshTabStrip: () => {},
-    clearProfileLink: () => {},
-    openTab: async () => a,
-  };
-  return {
-    workspace,
-    tabA: {
-      grid: a,
-      applyProfile: (a as unknown as { applyProfile: ReturnType<typeof vi.fn> }).applyProfile,
-      linked: () => linked.get(a) ?? null,
-    },
-    tabB: { linked: () => linked.get(b) ?? null },
-    activate: (tab) => {
-      active = tab === "A" ? a : b;
-    },
-  };
-}
+describe("ProfileManager Save As", () => {
+  it("saves and links the active group, even if the user switched tabs during the prompt", async () => {
+    const ws = fakeTabs([{ name: "A", panes: ["dev-a", null] }, { name: "B", panes: ["dev-b", null] }]);
+    wireStore([], null);
+    await newManager(ws.workspace).init(null);
 
-describe("ProfileManager links the tab it acted on", () => {
-  it("a load links the tab it loaded into, even if the user switched tabs during the confirm", async () => {
-    const tabs = twoTabs();
-    vi.mocked(listProfiles).mockResolvedValue({ defaultProfileId: null, profiles: [profile(["dev-1", null])] });
-    const mgr = new ProfileManager({ workspace: tabs.workspace, onError: vi.fn(), onSuccess: vi.fn() });
-    await mgr.init(null);
-    let confirmApply: (ok: boolean) => void = () => {};
-    tabs.tabA.applyProfile.mockImplementationOnce(() => new Promise<boolean>((r) => (confirmApply = r)));
-
-    document.querySelector<HTMLButtonElement>('[data-action="load"]')?.click();
+    click('[data-action="save-as"]');
     await flush();
-    tabs.activate("B"); // Ctrl+Tab while the teardown confirm is open
-    confirmApply(true);
-    await flush();
+    ws.activate(1);
+    await answerPrompt("From A");
 
-    expect(tabs.tabA.linked()).toBe("p1");
-    expect(tabs.tabB.linked()).toBeNull();
+    expect(lastSaved()?.tabs).toEqual([profileTab("A", ["dev-a", null])]);
+    expect(strip(ws.tabs)).toEqual(["A:new-id", "B:-"]);
   });
 
-  it("Save As saves and links the tab it started on, even if the user switched tabs during the prompt", async () => {
-    const tabs = twoTabs();
-    vi.mocked(listProfiles).mockResolvedValue({ defaultProfileId: null, profiles: [] });
-    vi.mocked(saveProfile).mockImplementation(async (p: Profile) => ({ ...p, id: "new" }));
-    const mgr = new ProfileManager({ workspace: tabs.workspace, onError: vi.fn(), onSuccess: vi.fn() });
-    await mgr.init(null);
+  it("saves nothing when every captured tab was closed during the prompt", async () => {
+    const ws = fakeTabs([{ name: "A" }, { name: "B" }]);
+    wireStore([], null);
+    const onError = vi.fn();
+    await newManager(ws.workspace, { onError }).init(null);
 
-    document.querySelector<HTMLButtonElement>('[data-action="save-as"]')?.click();
+    click('[data-action="save-as"]');
     await flush();
-    tabs.activate("B");
-    const input = document.querySelector<HTMLInputElement>(".prompt-dialog .prompt-input");
-    if (input) input.value = "From A";
-    document.querySelector<HTMLButtonElement>('.prompt-dialog [data-action="ok"]')?.click();
+    ws.tabs.splice(0, 1);
+    await answerPrompt("Gone");
+
+    expect(vi.mocked(saveProfile)).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("from a linked tab, saves its whole group as the new profile and relinks it", async () => {
+    const ws = fakeTabs([
+      { name: "Web", linked: "lab" },
+      { name: "Free" },
+      { name: "DB", linked: "lab" },
+    ]);
+    wireStore([labProfile()], null);
+    await newManager(ws.workspace).init(null, { loadStart: false });
+
+    click('[data-action="save-as"]');
+    await flush();
+    await answerPrompt("Lab copy");
+
+    expect(lastSaved()?.tabs.map((t) => t.name)).toEqual(["Web", "DB"]);
+    expect(strip(ws.tabs)).toEqual(["Web:new-id", "Free:-", "DB:new-id"]);
+  });
+});
+
+describe("ProfileManager missing profiles", () => {
+  it("unlinks tabs whose profile no longer exists, so they stop acting as a group", async () => {
+    const ws = fakeTabs([{ name: "A", linked: "gone" }, { name: "B", linked: "gone" }]);
+    wireStore([labProfile()], null);
+    const onProfileChange = vi.fn();
+    await newManager(ws.workspace, { onProfileChange }).init(null, { loadStart: false });
+
+    expect(strip(ws.tabs)).toEqual(["A:-", "B:-"]);
+    expect(onProfileChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("keeps the links when the profile list fails to load", async () => {
+    const ws = fakeTabs([{ name: "A", linked: "p1" }]);
+    vi.mocked(listProfiles).mockRejectedValue(new Error("io"));
+    await newManager(ws.workspace).init(null, { loadStart: false });
+
+    expect(strip(ws.tabs)).toEqual(["A:p1"]);
+  });
+});
+
+describe("ProfileManager v1 upgrade", () => {
+  it("renames each converted profile's tab after its open tab and unlinks extra copies", async () => {
+    const ws = fakeTabs([
+      { name: "Tab 1", linked: "p1", panes: ["dev-1", null] },
+      { name: "Tab 2", linked: "p1", panes: ["dev-1", null] },
+    ]);
+    wireStore([profile(["dev-1", null])], null, true);
+
+    await newManager(ws.workspace).init(null, { loadStart: false });
     await flush();
 
-    expect(vi.mocked(saveProfile).mock.calls[0]?.[0].panes).toEqual([{ deviceId: "dev-a" }, { deviceId: null }]);
-    expect(tabs.tabA.linked()).toBe("new");
-    expect(tabs.tabB.linked()).toBeNull();
+    expect(lastSaved()?.tabs).toEqual([profileTab("Tab 1", ["dev-1", null])]);
+    expect(strip(ws.tabs)).toEqual(["Tab 1:p1", "Tab 2:-"]);
+    expect(dirtyShown()).toBe(false);
+  });
+
+  it("saves nothing when the open tab already has the profile's name", async () => {
+    const ws = fakeTabs([{ name: "Homelab", linked: "p1" }]);
+    wireStore([profile([null, null])], null, true);
+
+    await newManager(ws.workspace).init(null, { loadStart: false });
+
+    expect(vi.mocked(saveProfile)).not.toHaveBeenCalled();
+  });
+
+  it("does nothing on a launch that converted nothing", async () => {
+    const ws = fakeTabs([{ name: "Tab 1", linked: "p1" }, { name: "Tab 2", linked: "p1" }]);
+    wireStore([profile([null, null])], null);
+
+    await newManager(ws.workspace).init(null, { loadStart: false });
+
+    expect(vi.mocked(saveProfile)).not.toHaveBeenCalled();
+    expect(strip(ws.tabs)).toEqual(["Tab 1:p1", "Tab 2:p1"]);
+  });
+});
+
+describe("ProfileManager rename", () => {
+  it("renames the profile without linking the active tab to it", async () => {
+    const ws = fakeTabs([{ name: "Free" }]);
+    wireStore([labProfile()], null);
+    await newManager(ws.workspace).init(null, { loadStart: false });
+
+    clickItem("rename");
+    await flush();
+    await answerPrompt("Lab 2");
+
+    expect(lastSaved()).toEqual({ ...labProfile(), name: "Lab 2" });
+    expect(strip(ws.tabs)).toEqual(["Free:-"]);
   });
 });
 
 describe("ProfileManager busy guard (F12)", () => {
-  it("does not open two Save As prompts on a rapid double click", async () => {
-    const g = fakeGrid(snapshot([null, null]));
-    vi.mocked(listProfiles).mockResolvedValue({ defaultProfileId: null, profiles: [] });
+  it("does not open a profile's tabs twice on a rapid double click of Load", async () => {
+    const ws = fakeTabs([{ name: "A", live: 1 }]);
+    wireStore([labProfile()], null);
+    await newManager(ws.workspace).init(null, { loadStart: false });
 
-    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
-    await mgr.init(null);
+    clickItem("load");
+    clickItem("load");
+    await flush();
+    expect(document.querySelectorAll(".confirm-dialog")).toHaveLength(1);
+    click('.confirm-dialog [data-action="confirm"]');
+    await flush();
+
+    expect(strip(ws.tabs)).toEqual(["Web:lab", "DB:lab"]);
+  });
+
+  it("does not open two Save As prompts on a rapid double click", async () => {
+    vi.mocked(listProfiles).mockResolvedValue({ defaultProfileId: null, profiles: [], migratedFromV1: false });
+
+    await newManager(fakeTabs().workspace).init(null);
     await flush();
 
     const btn = document.querySelector<HTMLButtonElement>('[data-action="save-as"]');
@@ -451,10 +713,10 @@ describe("ProfileManager busy guard (F12)", () => {
   });
 
   it("does not persist twice when Save is double-clicked while a profile is loaded", async () => {
-    const g = fakeGrid(snapshot(["dev-1", null]));
     vi.mocked(listProfiles).mockResolvedValue({
       defaultProfileId: "p1",
       profiles: [profile(["dev-1", null])],
+      migratedFromV1: false,
     });
     let resolveSave: (p: Profile) => void = () => {};
     vi.mocked(saveProfile).mockImplementation(
@@ -464,8 +726,7 @@ describe("ProfileManager busy guard (F12)", () => {
         }),
     );
 
-    const mgr = new ProfileManager({ workspace: g.workspace, onError: vi.fn(), onSuccess: vi.fn() });
-    await mgr.init(null);
+    await newManager(fakeTabs().workspace).init(null);
     await flush();
 
     const btn = document.querySelector<HTMLButtonElement>('[data-action="save"]');
@@ -493,16 +754,12 @@ describe("ProfileManager import/export", () => {
     vi.mocked(listProfiles).mockResolvedValue({
       defaultProfileId: null,
       profiles: [profile(["dev-1", null])],
+      migratedFromV1: false,
     });
   });
 
   async function initManager(): Promise<ProfileManager> {
-    const g = fakeGrid(snapshot(["dev-1", null]));
-    const mgr = new ProfileManager({
-      workspace: g.workspace,
-      onError: vi.fn(),
-      onSuccess: vi.fn(),
-    });
+    const mgr = newManager(fakeTabs().workspace);
     await mgr.init(null);
     await flush();
     return mgr;

@@ -27,8 +27,7 @@ pub struct TabState {
 }
 
 impl TabState {
-    /// Same grid/pane consistency rules as `Profile::validate` (minus the
-    /// non-empty-name rule — a tab name is cosmetic and may be blank): rows/cols
+    /// Same grid/pane consistency rules as `ProfileTab::validate`: rows/cols
     /// ≥ 1, one size fraction per row/col, and `panes.len() == rows*cols`.
     fn validate(&self) -> Result<(), AppError> {
         if self.grid.rows == 0 || self.grid.cols == 0 {

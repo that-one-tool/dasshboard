@@ -9,10 +9,12 @@
  * measure it, so {@link Grid.refit} runs on every activation once the panel is
  * shown again.
  *
- * Each tab tracks the profile it is linked to (`linkedProfileId`); the strip
- * renders a per-tab profile-link badge and dirty dot, computed by an injected
- * `resolveTabState` (Phase 2 — `ProfileManager` provides it). `main.ts` targets
- * `activeGrid()` and fans refresh/retranslate calls across `forEachGrid`.
+ * Each tab tracks the profile it is linked to (`linkedProfileId`); the tabs
+ * linked to one profile, in strip order, are that profile's open tabs (its
+ * "group"). The strip renders a per-tab profile-link badge and dirty dot,
+ * computed by an injected `resolveTabState` (Phase 2 — `ProfileManager`
+ * provides it). `main.ts` targets `activeGrid()` and fans refresh/retranslate
+ * calls across `forEachGrid`.
  */
 
 import { Grid, type GridOptions } from "../grid";
@@ -23,6 +25,7 @@ import { closeIcon, plusIcon } from "../ui/icons";
 import { shrinkConfirmMessage } from "../gridModel";
 import { t } from "../i18n";
 import type { SftpPanelState, WorkspaceState } from "../ipc";
+import type { TabSnapshot } from "../profiles/workspace";
 
 /** One open tab: its live grid, the panel it lives in, and its strip button. */
 interface Tab {
@@ -50,7 +53,7 @@ export interface TabManagerOptions {
   /** Fired after the active tab changes (so the profile bar can re-render). */
   onActiveTabChange?: () => void;
   /** Resolves a tab's profile-link + dirty state for the strip (ProfileManager). */
-  resolveTabState?: (linkedProfileId: string | null, grid: Grid) => TabProfileState;
+  resolveTabState?: (linkedProfileId: string | null) => TabProfileState;
   /** Persists the serialized workspace (debounced by the manager). */
   persist?: (state: WorkspaceState) => void;
   /**
@@ -198,24 +201,68 @@ export class TabManager {
    * Tab lifecycle
    * ---------------------------------------------------------------------- */
 
-  /** Opens a new blank 1x1 tab (the chosen new-tab default) and activates it. */
+  /** Opens a new blank 1x1 tab (the chosen new-tab default) and activates it.
+   * It joins the active tab's profile, if any (that's how a profile gains a
+   * tab). */
   async newTab(): Promise<void> {
     await this.createTab(
       t("tabs.untitled", { index: String(this.nextTabNumber++) }),
-      null,
+      this.activeLinkedProfileId(),
     );
   }
 
   /**
-   * Opens a tab pre-linked to a profile and activates it, returning its grid so
-   * the caller (`ProfileManager.openInNewTab`) can apply the profile into it.
+   * Opens blank tabs named `names`, linked to a profile, so the caller
+   * (`ProfileManager`) can apply the profile's tabs into the returned grids. They
+   * take the place of the still-open tabs owning `replacing`, which are closed
+   * without a confirm (the caller asked); with none, they are appended. The
+   * first new tab ends up active.
    */
-  async openTab(opts: { name: string; linkedProfileId: string }): Promise<Grid> {
-    return this.createTab(opts.name, opts.linkedProfileId);
+  async openTabs(
+    names: string[],
+    linkedProfileId: string,
+    replacing: readonly Grid[] = [],
+  ): Promise<Grid[]> {
+    const grids: Grid[] = [];
+    for (const name of names) {
+      grids.push(await this.createTab(name, linkedProfileId, () => this.openSlot(grids, replacing)));
+    }
+    // New tabs first, so replacing every tab never empties the strip.
+    await this.removeTabsOwning(replacing);
+    if (grids[0]) this.activateGrid(grids[0]);
+    return grids;
   }
 
-  /** Builds a tab (panel + grid + strip button), appends it, and activates it. */
-  private async createTab(name: string, linkedProfileId: string | null): Promise<Grid> {
+  /** Closes, without a confirm, the tabs owning `grids` that are still open
+   * (any can have been closed while the caller awaited). */
+  private async removeTabsOwning(grids: readonly Grid[]): Promise<void> {
+    for (const tab of this.tabs.filter((candidate) => grids.includes(candidate.grid))) {
+      if (this.tabs.includes(tab)) await this.removeTab(tab);
+    }
+  }
+
+  /** Where the next tab of an {@link openTabs} batch goes: after the last one it
+   * opened, else where the first still-open replaced tab is, else the end. */
+  private openSlot(opened: readonly Grid[], replacing: readonly Grid[]): number {
+    const last = this.tabs.findIndex((tab) => tab.grid === opened.at(-1));
+    if (last >= 0) return last + 1;
+    return this.indexOrEnd(this.tabs.findIndex((tab) => replacing.includes(tab.grid)));
+  }
+
+  private indexOrEnd(index: number): number {
+    return index >= 0 ? index : this.tabs.length;
+  }
+
+  /**
+   * Builds a tab (panel + grid + strip button), inserts it at `slot()` (the end
+   * by default), and activates it. The slot is resolved once the grid has
+   * initialized, since tabs can open or close while it does.
+   */
+  private async createTab(
+    name: string,
+    linkedProfileId: string | null,
+    slot: () => number = () => this.tabs.length,
+  ): Promise<Grid> {
     const stack = this.stack;
     const stripTabs = this.stripTabs;
     if (!stack || !stripTabs) throw new Error("TabManager.init() has not run");
@@ -248,10 +295,13 @@ export class TabManager {
       name,
       linkedProfileId,
     };
-    this.tabs.push(tab);
-    stripTabs.appendChild(tab.button);
+    const index = slot();
+    const before = this.tabs[index];
+    stack.insertBefore(panel, before?.panel ?? null);
+    this.tabs.splice(index, 0, tab);
+    stripTabs.insertBefore(tab.button, before?.button ?? null);
     this.refreshStrip();
-    this.activate(this.tabs.length - 1);
+    this.activate(index);
     this.schedulePersist();
     return grid;
   }
@@ -307,7 +357,8 @@ export class TabManager {
     this.activeIndex = -1; // force activate() to re-apply visibility
     this.activate(next);
     this.refreshStrip();
-    this.schedulePersist();
+    // A closed tab leaves its profile's group (→ dirty).
+    this.notifyWorkspaceChange();
   }
 
   /**
@@ -332,6 +383,11 @@ export class TabManager {
     this.schedulePersist();
   }
 
+  /** Shows the tab owning `grid` (a no-op once that tab is closed). */
+  activateGrid(grid: Grid): void {
+    this.activate(this.tabs.findIndex((tab) => tab.grid === grid));
+  }
+
   /* -------------------------------------------------------------------------
    * Accessors for main.ts (active-grid targeting + fan-out)
    * ---------------------------------------------------------------------- */
@@ -348,9 +404,30 @@ export class TabManager {
     return this.tabs[this.activeIndex]?.linkedProfileId ?? null;
   }
 
-  /** The linked-profile id of the tab owning `grid` (null if unlinked/closed). */
-  linkedProfileIdOf(grid: Grid): string | null {
-    return this.tabs.find((tab) => tab.grid === grid)?.linkedProfileId ?? null;
+  /** Every profile id some tab links to, once each. */
+  linkedProfileIds(): string[] {
+    const ids = this.tabs.map((tab) => tab.linkedProfileId);
+    return [...new Set(ids.filter((id): id is string => id !== null))];
+  }
+
+  /** The grids of the tabs linked to `profileId`, in strip order. */
+  groupGrids(profileId: string): Grid[] {
+    return this.tabs.filter((tab) => tab.linkedProfileId === profileId).map((tab) => tab.grid);
+  }
+
+  /** The active tab's group: its profile's tabs, or the active tab alone when
+   * it is unlinked. */
+  activeGroupGrids(): Grid[] {
+    const id = this.activeLinkedProfileId();
+    return id === null ? [this.activeGrid()] : this.groupGrids(id);
+  }
+
+  /** Name + workspace snapshot of each still-open tab owning one of `grids`,
+   * in strip order. */
+  tabSnapshots(grids: readonly Grid[]): TabSnapshot[] {
+    return this.tabs
+      .filter((tab) => grids.includes(tab.grid))
+      .map((tab) => ({ name: tab.name, ...tab.grid.snapshot() }));
   }
 
   /** Links the tab owning `grid` (a no-op once that tab is closed) and
@@ -405,6 +482,13 @@ export class TabManager {
       tunnels: this.options.getTunnelState?.(),
       collapsedDeviceGroups: this.options.getCollapsedDeviceGroups?.(),
     };
+  }
+
+  /** A tab-level edit (rename, close) that, like a grid edit, can change a
+   * profile's dirty state: notify the app and schedule a save. */
+  private notifyWorkspaceChange(): void {
+    this.options.grid.onChange?.();
+    this.schedulePersist();
   }
 
   /** Schedule a debounced workspace save from an external contributor (the SFTP
@@ -519,7 +603,7 @@ export class TabManager {
         if (next && next !== tab.name) {
           tab.name = next;
           nameEl.textContent = next;
-          this.schedulePersist();
+          this.notifyWorkspaceChange();
         }
       }
       input.remove();
@@ -544,7 +628,7 @@ export class TabManager {
    */
   refreshStrip(): void {
     for (const tab of this.tabs) {
-      const state = this.options.resolveTabState?.(tab.linkedProfileId, tab.grid) ?? {
+      const state = this.options.resolveTabState?.(tab.linkedProfileId) ?? {
         linked: false,
         dirty: false,
       };

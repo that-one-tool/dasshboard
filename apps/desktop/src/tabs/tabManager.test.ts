@@ -29,12 +29,17 @@ interface FakeGrid {
 // `vi.mock` is hoisted above the file, so the fake Grid and the instance registry
 // it writes to must be created in a `vi.hoisted` block (referencing a top-level
 // class here would hit the TDZ).
-const { gridInstances, FakeGridClass } = vi.hoisted(() => {
+const { gridInstances, FakeGridClass, initGate } = vi.hoisted(() => {
   const gridInstances: FakeGrid[] = [];
+  /** While `promise` is set, every new grid's `init()` waits on it — to act on
+   * the tab set while a tab is still being created. */
+  const initGate: { promise: Promise<void> | null } = { promise: null };
   class FakeGridClass {
     root: HTMLElement;
     live = 0;
-    init = vi.fn(async () => {});
+    init = vi.fn(async () => {
+      await initGate.promise;
+    });
     refit = vi.fn();
     focus = vi.fn();
     dispose = vi.fn();
@@ -54,7 +59,7 @@ const { gridInstances, FakeGridClass } = vi.hoisted(() => {
       gridInstances.push(this as unknown as FakeGrid);
     }
   }
-  return { gridInstances, FakeGridClass };
+  return { gridInstances, FakeGridClass, initGate };
 });
 
 vi.mock("../grid", () => ({ Grid: FakeGridClass }));
@@ -65,6 +70,7 @@ vi.mock("../ui/confirm", () => ({ confirm: confirmMock }));
 
 import { TabManager, type TabManagerOptions } from "./tabManager";
 import type { WorkspaceState } from "../ipc";
+import type { Grid } from "../grid";
 import { setLocale } from "../i18n";
 
 function makeManager(extra: Partial<Omit<TabManagerOptions, "grid">> = {}): TabManager {
@@ -74,6 +80,15 @@ function makeManager(extra: Partial<Omit<TabManagerOptions, "grid">> = {}): TabM
     grid: { onError: vi.fn(), onChange: vi.fn(), getTerminalSettings: vi.fn() },
     ...extra,
   });
+}
+
+/** A fake grid, typed as the real `Grid` the manager's methods take. */
+function asGrid(fake: FakeGrid | undefined): Grid {
+  return fake as unknown as Grid;
+}
+
+function tabNames(): (string | null | undefined)[] {
+  return tabButtons().map((b) => b.querySelector(".tab-name")?.textContent);
 }
 
 function tabButtons(): HTMLElement[] {
@@ -87,6 +102,7 @@ function panels(): HTMLElement[] {
 beforeEach(() => {
   document.body.innerHTML = "";
   gridInstances.length = 0;
+  initGate.promise = null;
   confirmMock.mockClear();
   confirmMock.mockResolvedValue(true);
 });
@@ -333,17 +349,18 @@ describe("TabManager profile strip (Phase 2)", () => {
     expect(dirtyDot(btn).hidden).toBe(true);
   });
 
-  it("openTab creates a named, linked tab and shows badge + dot per resolveTabState", async () => {
+  it("openTabs creates named, linked tabs and shows badge + dot per resolveTabState", async () => {
     const tm = makeManager({
       resolveTabState: (id) => ({ linked: id !== null, dirty: id !== null }),
     });
     await tm.init();
-    await tm.openTab({ name: "Homelab", linkedProfileId: "p1" });
+    await tm.openTabs(["Web", "DB"], "p1");
 
-    const btn = tabButtons()[1]!;
-    expect(btn.querySelector(".tab-name")?.textContent).toBe("Homelab");
-    expect(badge(btn).hidden).toBe(false);
-    expect(dirtyDot(btn).hidden).toBe(false);
+    expect(tabNames()).toEqual(["Tab 1", "Web", "DB"]);
+    for (const btn of tabButtons().slice(1)) {
+      expect(badge(btn).hidden).toBe(false);
+      expect(dirtyDot(btn).hidden).toBe(false);
+    }
     expect(tm.activeLinkedProfileId()).toBe("p1");
   });
 
@@ -351,11 +368,11 @@ describe("TabManager profile strip (Phase 2)", () => {
     const tm = makeManager();
     await tm.init();
     await tm.newTab(); // tab 1 active
-    const background = gridInstances[0] as unknown as Parameters<typeof tm.setLinkedProfileId>[0];
+    const background = asGrid(gridInstances[0]);
 
     tm.setLinkedProfileId(background, "p1");
 
-    expect(tm.linkedProfileIdOf(background)).toBe("p1");
+    expect(tm.groupGrids("p1")).toEqual([background]);
     expect(tm.activeLinkedProfileId()).toBeNull();
   });
 
@@ -363,7 +380,7 @@ describe("TabManager profile strip (Phase 2)", () => {
     const tm = makeManager();
     await tm.init();
     await tm.newTab();
-    const closed = gridInstances[1] as unknown as Parameters<typeof tm.setLinkedProfileId>[0];
+    const closed = asGrid(gridInstances[1]);
     await tm.closeTab(1);
 
     tm.setLinkedProfileId(closed, "p1");
@@ -542,6 +559,178 @@ describe("TabManager review fixes (1-5)", () => {
     } finally {
       setLocale("en");
     }
+  });
+});
+
+describe("TabManager profile groups", () => {
+  async function linkedTabs(links: (string | null)[]): Promise<TabManager> {
+    const tm = makeManager();
+    await tm.init();
+    for (let i = 1; i < links.length; i++) await tm.newTab();
+    links.forEach((id, i) => tm.setLinkedProfileId(asGrid(gridInstances[i]), id));
+    return tm;
+  }
+
+  it("openTabs returns the new grids in order and activates the first", async () => {
+    const tm = makeManager();
+    await tm.init();
+
+    const grids = await tm.openTabs(["Web", "DB"], "p1");
+
+    expect(grids).toEqual([asGrid(gridInstances[1]), asGrid(gridInstances[2])]);
+    expect(tm.activeGrid()).toBe(grids[0]);
+  });
+
+  it("openTabs puts the new tabs where the replaced ones were and disposes those", async () => {
+    const tm = await linkedTabs(["p1", null, "p1"]);
+    const [a, free, b] = [gridInstances[0], gridInstances[1], gridInstances[2]];
+
+    await tm.openTabs(["Web", "DB"], "lab", [asGrid(a), asGrid(b)]);
+
+    expect(tabNames()).toEqual(["Web", "DB", "Tab 2"]);
+    expect(a?.dispose).toHaveBeenCalled();
+    expect(b?.dispose).toHaveBeenCalled();
+    expect(free?.dispose).not.toHaveBeenCalled();
+    expect(tm.activeGrid()).toBe(asGrid(gridInstances[3]));
+    expect(tm.activeLinkedProfileId()).toBe("lab");
+  });
+
+  it("openTabs replacing the only tab never leaves a blank tab behind", async () => {
+    const tm = makeManager();
+    await tm.init();
+
+    await tm.openTabs(["Web"], "p1", [tm.activeGrid()]);
+
+    expect(tabNames()).toEqual(["Web"]);
+  });
+
+  it("openTabs appends when every replaced tab was closed meanwhile", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    const closed = asGrid(gridInstances[1]);
+    await tm.closeTab(1);
+
+    await tm.openTabs(["Web"], "p1", [closed]);
+
+    expect(tabNames()).toEqual(["Tab 1", "Web"]);
+  });
+
+  /** Holds every new grid's `init()` until the returned release is called. */
+  function holdGridInit(): () => void {
+    let release: () => void = () => {};
+    initGate.promise = new Promise((resolve) => (release = resolve));
+    return () => {
+      initGate.promise = null;
+      release();
+    };
+  }
+
+  it("openTabs leaves alone a replaced tab the user closed while it ran", async () => {
+    const tm = await linkedTabs(["p1", null, "p1"]);
+    tm.activate(0);
+    const [a, free, c] = [gridInstances[0], gridInstances[1], gridInstances[2]];
+    const release = holdGridInit();
+
+    const opening = tm.openTabs(["Web"], "lab", [asGrid(a), asGrid(c)]);
+    await tm.closeTab(2); // Ctrl+W on C while the new tab is still initializing
+    release();
+    await opening;
+
+    expect(tabNames()).toEqual(["Web", "Tab 2"]);
+    expect(tm.serialize().tabs.map((t) => t.name)).toEqual(["Web", "Tab 2"]);
+    expect(c?.dispose).toHaveBeenCalledTimes(1);
+    expect(free?.dispose).not.toHaveBeenCalled();
+  });
+
+  it("openTabs still opens every tab when the tab it was to replace closes while it ran", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    tm.activate(0);
+    const release = holdGridInit();
+
+    const opening = tm.openTabs(["Web", "DB"], "lab", [tm.activeGrid()]);
+    await tm.closeTab(0);
+    release();
+    const grids = await opening;
+
+    expect(tabNames()).toEqual(["Tab 2", "Web", "DB"]);
+    expect(tm.serialize().tabs.map((t) => t.name)).toEqual(["Tab 2", "Web", "DB"]);
+    expect(tm.activeGrid()).toBe(grids[0]);
+  });
+
+  it("activateGrid shows the tab owning a grid", async () => {
+    const tm = await linkedTabs([null, null]);
+    tm.activateGrid(asGrid(gridInstances[0]));
+    expect(tm.activeGrid()).toBe(asGrid(gridInstances[0]));
+  });
+
+  it("linkedProfileIds lists each linked profile once", async () => {
+    const tm = await linkedTabs(["p1", null, "p2", "p1"]);
+    expect(tm.linkedProfileIds()).toEqual(["p1", "p2"]);
+  });
+
+  it("groupGrids lists a profile's tabs in strip order", async () => {
+    const tm = await linkedTabs(["p1", "p2", "p1"]);
+    expect(tm.groupGrids("p1")).toEqual([asGrid(gridInstances[0]), asGrid(gridInstances[2])]);
+  });
+
+  it("activeGroupGrids is the active tab's profile group, or the active tab alone when unlinked", async () => {
+    const tm = await linkedTabs(["p1", null, "p1"]);
+    tm.activate(2);
+    expect(tm.activeGroupGrids()).toEqual([asGrid(gridInstances[0]), asGrid(gridInstances[2])]);
+    tm.activate(1);
+    expect(tm.activeGroupGrids()).toEqual([asGrid(gridInstances[1])]);
+  });
+
+  it("tabSnapshots gives each still-open tab's name + workspace in strip order", async () => {
+    const tm = await linkedTabs([null, null]);
+    const grids = [asGrid(gridInstances[1]), asGrid(gridInstances[0])];
+
+    expect(tm.tabSnapshots(grids).map((t) => t.name)).toEqual(["Tab 1", "Tab 2"]);
+    expect(tm.tabSnapshots(grids)[0]).toMatchObject({ panes: [null] });
+    await tm.closeTab(0);
+    expect(tm.tabSnapshots(grids).map((t) => t.name)).toEqual(["Tab 2"]);
+  });
+
+  it("a new tab joins the active tab's profile", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.openTabs(["Web"], "p1");
+
+    await tm.newTab();
+
+    expect(tm.activeLinkedProfileId()).toBe("p1");
+    expect(tm.groupGrids("p1")).toHaveLength(2);
+  });
+
+  it("a new tab opened from an unlinked tab stays unlinked", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    expect(tm.activeLinkedProfileId()).toBeNull();
+  });
+
+  it("renaming a tab or closing a background one reports a workspace change", async () => {
+    const onChange = vi.fn();
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    const tm = new TabManager(root, {
+      grid: { onError: vi.fn(), onChange, getTerminalSettings: vi.fn() },
+    });
+    await tm.init();
+    await tm.newTab();
+    onChange.mockClear();
+
+    tabButtons()[1]!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    const input = document.querySelector<HTMLInputElement>(".tab-rename-input")!;
+    input.value = "Logs";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    await tm.closeTab(0);
+    expect(onChange).toHaveBeenCalledTimes(2);
   });
 });
 

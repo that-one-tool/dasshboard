@@ -45,7 +45,7 @@ vi.mock("./ipc", () => ({
 
 // Imported after the mock is registered so the module graph uses it.
 import { Grid } from "./grid";
-import type { Profile } from "./ipc";
+import type { WorkspaceSnapshot } from "./profiles/workspace";
 import type { TerminalPane } from "./terminal/pane";
 
 /** Narrow, test-only view of `Grid`'s private surface (mirrors pane.test.ts). */
@@ -266,22 +266,16 @@ describe("Grid profiles (Phase 4)", () => {
     connectMock.mockResolvedValue("sess-1");
   });
 
-  function profile(): Profile {
+  /** One profile tab's workspace: a 1x2 grid with only the first pane assigned. */
+  function profileTab(): WorkspaceSnapshot {
     return {
-      id: "p1",
-      name: "Homelab",
       grid: { rows: 1, cols: 2, rowSizes: [1], colSizes: [0.5, 0.5] },
-      panes: [{ deviceId: "dev-1" }, { deviceId: null }],
+      panes: ["dev-1", null],
     };
   }
 
-  function twoDeviceProfile(id: string): Profile {
-    return {
-      id,
-      name: id,
-      grid: { rows: 1, cols: 2, rowSizes: [1], colSizes: [0.5, 0.5] },
-      panes: [{ deviceId: "dev-1" }, { deviceId: "dev-2" }],
-    };
+  function twoDeviceTab(): WorkspaceSnapshot {
+    return { ...profileTab(), panes: ["dev-1", "dev-2"] };
   }
 
   function clickConfirm(): void {
@@ -291,11 +285,11 @@ describe("Grid profiles (Phase 4)", () => {
     btn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   }
 
-  it("applyProfile rebuilds the grid to the profile shape and auto-connects assigned panes", async () => {
+  it("applySnapshot rebuilds the grid to the profile tab's shape and auto-connects assigned panes", async () => {
     const grid = makeGrid();
     await grid.init(); // 1x1
 
-    const applied = await grid.applyProfile(profile(), { confirmTeardown: false });
+    const applied = await grid.applySnapshot(profileTab(), { confirmTeardown: false });
     await flush();
 
     expect(applied).toBe(true);
@@ -308,12 +302,29 @@ describe("Grid profiles (Phase 4)", () => {
   it("snapshot round-trips the applied profile (grid shape + pane device ids)", async () => {
     const grid = makeGrid();
     await grid.init();
-    await grid.applyProfile(profile(), { confirmTeardown: false });
+    await grid.applySnapshot(profileTab(), { confirmTeardown: false });
     await flush();
 
     const snap = grid.snapshot();
-    expect(snap.grid).toEqual(profile().grid);
+    expect(snap.grid).toEqual(profileTab().grid);
     expect(snap.panes).toEqual(["dev-1", null]);
+  });
+
+  it("applySnapshot reports the new layout before its panes finish connecting", async () => {
+    let finishConnect: (id: string) => void = () => {};
+    connectMock.mockImplementation(() => new Promise((resolve) => (finishConnect = resolve)));
+    const onChange = vi.fn();
+    const root = document.querySelector<HTMLElement>("#pane-root")!;
+    const grid = new Grid(root, { onChange });
+    await grid.init();
+
+    const applied = grid.applySnapshot(profileTab(), { confirmTeardown: false });
+
+    await vi.waitFor(() => expect(connectMock).toHaveBeenCalled());
+    expect(onChange).toHaveBeenCalled();
+    expect(grid.snapshot().panes).toEqual(["dev-1", null]);
+    finishConnect("sess-1");
+    expect(await applied).toBe(true);
   });
 
   it("does not orphan cells when loading over an existing grid", async () => {
@@ -322,7 +333,7 @@ describe("Grid profiles (Phase 4)", () => {
     await internals(grid).setPreset("3x2"); // 6 cells
     expect(domCellCount()).toBe(6);
 
-    await grid.applyProfile(profile(), { confirmTeardown: false }); // 2 cells
+    await grid.applySnapshot(profileTab(), { confirmTeardown: false }); // 2 cells
     await flush();
 
     expect(internals(grid).cells.length).toBe(2);
@@ -339,7 +350,7 @@ describe("Grid profiles (Phase 4)", () => {
     const grid = makeGrid();
     await grid.init();
 
-    await grid.applyProfile(twoDeviceProfile("p"), { confirmTeardown: false });
+    await grid.applySnapshot(twoDeviceTab(), { confirmTeardown: false });
     await flush();
 
     expect(connectMock).toHaveBeenCalledTimes(2); // both attempted in parallel
@@ -353,16 +364,16 @@ describe("Grid profiles (Phase 4)", () => {
     const grid = makeGrid();
     await grid.init();
     // Establish one live session so the next load triggers a teardown confirm.
-    await grid.applyProfile(profile(), { confirmTeardown: false });
+    await grid.applySnapshot(profileTab(), { confirmTeardown: false });
     await flush();
     expect(grid.liveSessionCount()).toBe(1);
 
     // First load (default confirmTeardown:true) suspends at the confirm dialog.
-    const pB = grid.applyProfile(twoDeviceProfile("B"));
+    const pB = grid.applySnapshot(twoDeviceTab());
     // Second load fired WHILE the dialog is open must be a no-op — not a second
     // dialog. Before the guard fix this produced two stacked dialogs and a
     // corrupted grid (cells.length != model panes).
-    const pC = grid.applyProfile(twoDeviceProfile("C"));
+    const pC = grid.applySnapshot(twoDeviceTab());
     expect(document.querySelectorAll(".confirm-dialog").length).toBe(1);
     expect(await pC).toBe(false);
 

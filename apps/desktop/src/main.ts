@@ -11,7 +11,6 @@ import {
 } from "./ipc";
 import { initDeviceManager } from "./devices/deviceManager";
 import { TabManager, type TabProfileState } from "./tabs/tabManager";
-import type { Grid } from "./grid";
 import { ProfileManager } from "./profiles/profileManager";
 import { SettingsController } from "./settings/settingsController";
 import { DEFAULT_TERMINAL_SETTINGS } from "./terminal/terminalSettings";
@@ -103,7 +102,7 @@ async function initApp(): Promise<void> {
 	// settings are read live via `settings` (also constructed after the tabs).
 	let onWorkspaceChange = (): void => {};
 	let onActiveTabChange = (): void => {};
-	let resolveTabState = (_id: string | null, _g: Grid): TabProfileState => ({
+	let resolveTabState = (_id: string | null): TabProfileState => ({
 		linked: false,
 		dirty: false,
 	});
@@ -121,7 +120,7 @@ async function initApp(): Promise<void> {
 			getTerminalSettings: () => currentTerminalSettings(),
 		},
 		onActiveTabChange: () => onActiveTabChange(),
-		resolveTabState: (id, g) => resolveTabState(id, g),
+		resolveTabState: (id) => resolveTabState(id),
 		// Per-instance UI state — plain save, not routed through the config watcher.
 		// Surface a failed save like every other IPC call rather than dropping it.
 		persist: (state) =>
@@ -188,13 +187,16 @@ async function initApp(): Promise<void> {
 	// active tab's grid.
 	const profileManager = new ProfileManager({
 		workspace: {
-			activeGrid: () => tabs.activeGrid(),
 			activeLinkedProfileId: () => tabs.activeLinkedProfileId(),
-			linkedProfileIdOf: (grid) => tabs.linkedProfileIdOf(grid),
+			activeGroupGrids: () => tabs.activeGroupGrids(),
+			groupGrids: (id) => tabs.groupGrids(id),
+			linkedProfileIds: () => tabs.linkedProfileIds(),
+			activateGrid: (grid) => tabs.activateGrid(grid),
+			tabSnapshots: (grids) => tabs.tabSnapshots(grids),
 			linkProfile: (grid, id) => tabs.setLinkedProfileId(grid, id),
 			refreshTabStrip: () => tabs.refreshStrip(),
 			clearProfileLink: (id) => tabs.clearProfileLink(id),
-			openTab: (opts) => tabs.openTab(opts),
+			openTabs: (names, id, replacing) => tabs.openTabs(names, id, replacing),
 		},
 		onError: (message) => showToast(t("error.prefix", { message }), "error"),
 		onSuccess: (message) => showToast(message, "success"),
@@ -206,7 +208,7 @@ async function initApp(): Promise<void> {
 	// badge + dot are computed by the profile manager via `resolveTabState`.
 	onWorkspaceChange = () => profileManager.refreshDirty();
 	onActiveTabChange = () => profileManager.onActiveTabChanged();
-	resolveTabState = (id, g) => profileManager.resolveTabState(id, g);
+	resolveTabState = (id) => profileManager.resolveTabState(id);
 	await profileManager.init(settings.lastProfileId(), { loadStart: !workspaceRestored });
 
 	// Tunnels drawer (local port-forwarding): a header-toggled panel listing

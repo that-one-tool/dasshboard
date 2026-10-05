@@ -16,8 +16,8 @@
   (JSON or `~/.ssh/config`).
 - **Grid & tabs** — split each tab into up to 3×2 resizable panes, and resize the
   side menu and Files panel; tabs and layouts are restored on launch.
-- **Profiles** — save a workspace and set a default that reconnects every pane
-  on launch.
+- **Profiles** — save a workspace of one or more tabs and set a default that
+  reconnects every pane on launch.
 - **SSH extras** — jump hosts (`-J`, for shells, SFTP and tunnels), agent
   forwarding (`-A`), named local (`-L`) and dynamic SOCKS (`-D`) port forwards,
   started one by one or all at once, that resume as you left them (or

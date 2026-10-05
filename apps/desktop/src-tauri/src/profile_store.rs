@@ -19,7 +19,9 @@ use crate::error::AppError;
 use crate::profile::Profile;
 
 const PROFILES_FILE: &str = "profiles.json";
-const CURRENT_VERSION: u32 = 1;
+/// 2 = multi-tab profiles (`tabs`); version-1 profiles (one top-level `grid` +
+/// `panes`) still load, as a single tab (see `Profile`'s deserializer).
+const CURRENT_VERSION: u32 = 2;
 
 /// On-disk shape of `profiles.json` (SPEC.md §4).
 #[derive(Debug, Serialize, Deserialize)]
@@ -36,11 +38,16 @@ struct ProfilesFile {
 pub struct ProfileList {
     pub default_profile_id: Option<String>,
     pub profiles: Vec<Profile>,
+    /// True when this run converted a version-1 (single-grid) `profiles.json`
+    /// on load, until the next write: the frontend's cue to adopt the open
+    /// tabs' names into the converted profiles, once.
+    pub migrated_from_v1: bool,
 }
 
 struct ProfilesState {
     default_profile_id: Option<String>,
     profiles: Vec<Profile>,
+    migrated_from_v1: bool,
 }
 
 pub struct ProfileStore {
@@ -56,8 +63,17 @@ impl ProfileStore {
     /// - unreadable/corrupt file → the bad file is renamed to
     ///   `profiles.json.corrupt-<unix-seconds>` (best effort; a failure to
     ///   back it up is logged, not fatal) and the store starts empty.
+    ///
+    /// A version-1 file is rewritten in the current format right away (best
+    /// effort, logged), so the conversion — and `migrated_from_v1` — happens
+    /// on one launch only.
     pub fn load(dir: PathBuf) -> Self {
         let state = Self::read_from_disk(&dir);
+        if state.migrated_from_v1 {
+            if let Err(err) = write_file(&dir, &state) {
+                eprintln!("[DaSSHboard] failed to convert {PROFILES_FILE}: {err}");
+            }
+        }
         ProfileStore {
             dir,
             state: Mutex::new(state),
@@ -83,10 +99,12 @@ impl ProfileStore {
             |file| ProfilesState {
                 default_profile_id: file.default_profile_id,
                 profiles: file.profiles,
+                migrated_from_v1: file.version < CURRENT_VERSION,
             },
             || ProfilesState {
                 default_profile_id: None,
                 profiles: Vec::new(),
+                migrated_from_v1: false,
             },
         )
     }
@@ -97,6 +115,7 @@ impl ProfileStore {
         ProfileList {
             default_profile_id: state.default_profile_id.clone(),
             profiles: state.profiles.clone(),
+            migrated_from_v1: state.migrated_from_v1,
         }
     }
 
@@ -123,6 +142,7 @@ impl ProfileStore {
         let candidate = ProfilesState {
             default_profile_id: guard.default_profile_id.clone(),
             profiles,
+            migrated_from_v1: false,
         };
         self.persist(&candidate)?;
         *guard = candidate;
@@ -152,6 +172,7 @@ impl ProfileStore {
         let candidate = ProfilesState {
             default_profile_id,
             profiles,
+            migrated_from_v1: false,
         };
         self.persist(&candidate)?;
         *guard = candidate;
@@ -175,6 +196,7 @@ impl ProfileStore {
         let candidate = ProfilesState {
             default_profile_id: profile_id,
             profiles: guard.profiles.clone(),
+            migrated_from_v1: false,
         };
         self.persist(&candidate)?;
         *guard = candidate;
@@ -182,20 +204,22 @@ impl ProfileStore {
     }
 
     /// Referential cleanup used by `delete_device` (PLAN.md Phase 4 task 4):
-    /// nulls out `panes[].deviceId` for every pane across every profile that
-    /// references `device_id`. Only persists if something actually changed,
+    /// nulls out `panes[].deviceId` for every pane, in every tab of every
+    /// profile, that references `device_id`. Only persists if something actually changed,
     /// so deleting a device that no profile references doesn't rewrite
     /// `profiles.json` (or create it) needlessly.
     pub fn clear_device(&self, device_id: &str) -> Result<(), AppError> {
         let mut guard = self.lock_state();
         let mut profiles = guard.profiles.clone();
         let mut changed = false;
-        for profile in profiles.iter_mut() {
-            for pane in profile.panes.iter_mut() {
-                if pane.device_id.as_deref() == Some(device_id) {
-                    pane.device_id = None;
-                    changed = true;
-                }
+        let panes = profiles
+            .iter_mut()
+            .flat_map(|profile| profile.tabs.iter_mut())
+            .flat_map(|tab| tab.panes.iter_mut());
+        for pane in panes {
+            if pane.device_id.as_deref() == Some(device_id) {
+                pane.device_id = None;
+                changed = true;
             }
         }
         if changed {
@@ -203,6 +227,7 @@ impl ProfileStore {
             let candidate = ProfilesState {
                 default_profile_id: guard.default_profile_id.clone(),
                 profiles,
+                migrated_from_v1: false,
             };
             self.persist(&candidate)?;
             *guard = candidate;
@@ -214,49 +239,69 @@ impl ProfileStore {
         atomic_file::lock(&self.state)
     }
 
-    /// Atomically persists the whole profile state (see
-    /// [`atomic_file::write_json`]).
     fn persist(&self, state: &ProfilesState) -> Result<(), AppError> {
-        let file = ProfilesFile {
-            version: CURRENT_VERSION,
-            default_profile_id: state.default_profile_id.clone(),
-            profiles: state.profiles.clone(),
-        };
-        atomic_file::write_json(&self.dir, PROFILES_FILE, &file)
+        write_file(&self.dir, state)
     }
+}
+
+/// Atomically writes the whole profile state to `dir/profiles.json` in the
+/// current format (see [`atomic_file::write_json`]).
+fn write_file(dir: &Path, state: &ProfilesState) -> Result<(), AppError> {
+    let file = ProfilesFile {
+        version: CURRENT_VERSION,
+        default_profile_id: state.default_profile_id.clone(),
+        profiles: state.profiles.clone(),
+    };
+    atomic_file::write_json(dir, PROFILES_FILE, &file)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::{Grid, Pane};
+    use crate::profile::{Grid, Pane, ProfileTab};
     use std::fs;
     use tempfile::tempdir;
 
-    fn sample_profile(name: &str) -> Profile {
-        Profile {
-            id: String::new(),
-            name: name.to_string(),
+    fn sample_tab(device_ids: [Option<&str>; 2]) -> ProfileTab {
+        ProfileTab {
+            name: "Tab".to_string(),
             grid: Grid {
                 rows: 1,
                 cols: 2,
                 row_sizes: vec![1.0],
                 col_sizes: vec![0.5, 0.5],
             },
-            panes: vec![Pane { device_id: None }, Pane { device_id: None }],
-        }
-    }
-
-    fn sample_profile_with_devices(name: &str, device_ids: [Option<&str>; 2]) -> Profile {
-        Profile {
             panes: device_ids
                 .into_iter()
                 .map(|id| Pane {
                     device_id: id.map(str::to_string),
                 })
                 .collect(),
+        }
+    }
+
+    fn sample_profile(name: &str) -> Profile {
+        Profile {
+            id: String::new(),
+            name: name.to_string(),
+            tabs: vec![sample_tab([None, None])],
+        }
+    }
+
+    fn sample_profile_with_devices(name: &str, device_ids: [Option<&str>; 2]) -> Profile {
+        Profile {
+            tabs: vec![sample_tab(device_ids)],
             ..sample_profile(name)
         }
+    }
+
+    /// The first tab's pane device ids.
+    fn pane_ids(profile: &Profile) -> Vec<Option<String>> {
+        profile.tabs[0]
+            .panes
+            .iter()
+            .map(|p| p.device_id.clone())
+            .collect()
     }
 
     #[test]
@@ -372,7 +417,7 @@ mod tests {
 
         let raw = fs::read_to_string(dir.path().join(PROFILES_FILE)).unwrap();
         let parsed: ProfilesFile = serde_json::from_str(&raw).unwrap();
-        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.version, 2);
         assert_eq!(parsed.profiles.len(), 2);
     }
 
@@ -512,7 +557,7 @@ mod tests {
 
         let raw = fs::read_to_string(dir.path().join(PROFILES_FILE)).unwrap();
         let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(value["version"], 1);
+        assert_eq!(value["version"], 2);
         assert_eq!(value["defaultProfileId"], saved.id);
         assert!(value["profiles"].is_array());
         assert_eq!(value["profiles"][0]["id"], saved.id);
@@ -609,17 +654,16 @@ mod tests {
 
         let profiles = store.list().profiles;
         let updated = profiles.iter().find(|p| p.id == with_device.id).unwrap();
-        assert_eq!(updated.panes[0].device_id, None, "dev-1 pane nulled");
         assert_eq!(
-            updated.panes[1].device_id,
-            Some("dev-2".to_string()),
-            "dev-2 pane untouched"
+            pane_ids(updated),
+            vec![None, Some("dev-2".to_string())],
+            "dev-1 pane nulled, dev-2 pane untouched"
         );
         let updated_other = profiles
             .iter()
             .find(|p| p.id == also_with_device.id)
             .unwrap();
-        assert_eq!(updated_other.panes[0].device_id, None);
+        assert_eq!(pane_ids(updated_other)[0], None);
 
         // Persisted, not just in-memory.
         let reloaded = ProfileStore::load(dir.path().to_path_buf());
@@ -629,7 +673,27 @@ mod tests {
             .into_iter()
             .find(|p| p.id == with_device.id)
             .unwrap();
-        assert_eq!(reloaded_profile.panes[0].device_id, None);
+        assert_eq!(pane_ids(&reloaded_profile)[0], None);
+    }
+
+    #[test]
+    fn clear_device_nulls_matching_panes_in_every_tab() {
+        let dir = tempdir().unwrap();
+        let store = ProfileStore::load(dir.path().to_path_buf());
+        let mut profile = sample_profile_with_devices("Homelab", [Some("dev-2"), None]);
+        profile.tabs.push(sample_tab([None, Some("dev-1")]));
+        let saved = store.upsert(profile).unwrap();
+
+        store.clear_device("dev-1").unwrap();
+
+        let updated = store
+            .list()
+            .profiles
+            .into_iter()
+            .find(|p| p.id == saved.id)
+            .unwrap();
+        assert_eq!(updated.tabs[1].panes[1].device_id, None);
+        assert_eq!(pane_ids(&updated)[0], Some("dev-2".to_string()));
     }
 
     #[test]
@@ -644,7 +708,7 @@ mod tests {
 
         let profiles = store.list().profiles;
         let still = profiles.iter().find(|p| p.id == unrelated.id).unwrap();
-        assert_eq!(still.panes[0].device_id, Some("dev-2".to_string()));
+        assert_eq!(pane_ids(still)[0], Some("dev-2".to_string()));
     }
 
     #[test]
@@ -657,6 +721,85 @@ mod tests {
         store.clear_device("dev-1").unwrap();
 
         assert!(!dir.path().join(PROFILES_FILE).exists());
+    }
+
+    #[test]
+    fn a_version_1_file_loads_each_profile_as_one_tab() {
+        let dir = tempdir().unwrap();
+        let legacy = r#"{
+            "version": 1,
+            "defaultProfileId": "p1",
+            "profiles": [{
+                "id": "p1",
+                "name": "Homelab",
+                "grid": { "rows": 1, "cols": 2, "rowSizes": [1.0], "colSizes": [0.5, 0.5] },
+                "panes": [{ "deviceId": "dev-1" }, { "deviceId": null }]
+            }]
+        }"#;
+        fs::write(dir.path().join(PROFILES_FILE), legacy).unwrap();
+
+        let list = ProfileStore::load(dir.path().to_path_buf()).list();
+
+        assert_eq!(list.default_profile_id, Some("p1".to_string()));
+        let tabs = &list.profiles[0].tabs;
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].name, "Homelab");
+        assert_eq!(tabs[0].panes[0].device_id, Some("dev-1".to_string()));
+        assert!(list.migrated_from_v1);
+    }
+
+    #[test]
+    fn a_version_1_file_is_converted_on_load_once() {
+        let dir = tempdir().unwrap();
+        let legacy = serde_json::json!({
+            "version": 1,
+            "defaultProfileId": null,
+            "profiles": [{
+                "id": "p1",
+                "name": "Homelab",
+                "grid": { "rows": 1, "cols": 1, "rowSizes": [1.0], "colSizes": [1.0] },
+                "panes": [{ "deviceId": null }]
+            }]
+        });
+        fs::write(dir.path().join(PROFILES_FILE), legacy.to_string()).unwrap();
+
+        ProfileStore::load(dir.path().to_path_buf());
+
+        let raw = fs::read_to_string(dir.path().join(PROFILES_FILE)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["version"], 2);
+        assert_eq!(value["profiles"][0]["tabs"][0]["name"], "Homelab");
+        let again = ProfileStore::load(dir.path().to_path_buf()).list();
+        assert!(
+            !again.migrated_from_v1,
+            "converted once, not on every launch"
+        );
+    }
+
+    #[test]
+    fn the_migration_flag_clears_on_the_next_write() {
+        let dir = tempdir().unwrap();
+        let legacy = r#"{ "version": 1, "defaultProfileId": null, "profiles": [] }"#;
+        fs::write(dir.path().join(PROFILES_FILE), legacy).unwrap();
+        let store = ProfileStore::load(dir.path().to_path_buf());
+        assert!(store.list().migrated_from_v1);
+
+        store.upsert(sample_profile("Homelab")).unwrap();
+
+        assert!(!store.list().migrated_from_v1);
+    }
+
+    #[test]
+    fn a_current_or_missing_file_is_not_flagged_as_migrated() {
+        let dir = tempdir().unwrap();
+        let store = ProfileStore::load(dir.path().to_path_buf());
+        assert!(!store.list().migrated_from_v1);
+        store.upsert(sample_profile("Homelab")).unwrap();
+        assert!(
+            !ProfileStore::load(dir.path().to_path_buf())
+                .list()
+                .migrated_from_v1
+        );
     }
 
     // -- reload: multi-instance sync ---------------------------------------

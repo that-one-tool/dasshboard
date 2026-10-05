@@ -563,21 +563,30 @@ export interface ProfilePane {
 }
 
 /**
- * A saved workspace layout (SPEC §4). `grid` reuses the frontend `GridModel`
+ * One tab of a saved profile (SPEC §4). `grid` reuses the frontend `GridModel`
  * shape (`{ rows, cols, rowSizes, colSizes }`), which matches the backend's
- * `profile.grid` field exactly. `panes` is row-major, length `rows*cols`.
+ * `ProfileTab.grid` field exactly. `panes` is row-major, length `rows*cols`.
  */
-export interface Profile {
-  id: string;
+export interface ProfileTab {
   name: string;
   grid: GridModel;
   panes: ProfilePane[];
+}
+
+/** A saved workspace (SPEC §4): its tabs in strip order, at least one. */
+export interface Profile {
+  id: string;
+  name: string;
+  tabs: ProfileTab[];
 }
 
 /** Return shape of `list_profiles` (SPEC §5). */
 export interface ProfileList {
   defaultProfileId: string | null;
   profiles: Profile[];
+  /** True on the launch that converted a single-grid (v1) `profiles.json`,
+   * until the next write. */
+  migratedFromV1: boolean;
 }
 
 /** Lists all saved profiles plus the current default id (SPEC §5). */

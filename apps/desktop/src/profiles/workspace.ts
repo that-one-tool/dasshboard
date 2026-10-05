@@ -7,12 +7,13 @@
  */
 
 import type { GridModel } from "../gridModel";
-import type { Profile } from "../ipc";
+import type { Profile, ProfileTab } from "../ipc";
+import { t, tp } from "../i18n";
 
 /**
  * A comparable snapshot of the live workspace: the grid shape/sizes plus the
  * per-pane device assignment in row-major order (`null` = empty pane). This is
- * exactly the information a `Profile` persists (SPEC §4), minus id/name.
+ * exactly the information a profile tab persists (SPEC §4), minus its name.
  */
 export interface WorkspaceSnapshot {
   grid: GridModel;
@@ -63,38 +64,61 @@ export function panesEqual(
   return true;
 }
 
-/** A profile as a comparable snapshot (drops id/name). */
-export function profileToSnapshot(profile: Profile): WorkspaceSnapshot {
-  return { grid: profile.grid, panes: profile.panes.map((p) => p.deviceId) };
+/** An open tab as a comparable snapshot: its name plus its workspace. */
+export interface TabSnapshot extends WorkspaceSnapshot {
+  name: string;
 }
 
-/** The grid + panes half of a `Profile`, ready to attach an id/name and save. */
-export function snapshotToProfileFields(
-  snapshot: WorkspaceSnapshot,
-): Pick<Profile, "grid" | "panes"> {
+/** A profile tab as a comparable workspace snapshot (drops the name). */
+export function profileTabToSnapshot(tab: ProfileTab): WorkspaceSnapshot {
+  return { grid: tab.grid, panes: tab.panes.map((p) => p.deviceId) };
+}
+
+/** An open tab's snapshot as a profile tab, ready to save. */
+export function snapshotToProfileTab(tab: TabSnapshot): ProfileTab {
   return {
-    grid: snapshot.grid,
-    panes: snapshot.panes.map((deviceId) => ({ deviceId })),
+    name: tab.name,
+    grid: tab.grid,
+    panes: tab.panes.map((deviceId) => ({ deviceId })),
   };
 }
 
-/** True when the live snapshot matches the profile's grid + pane assignments. */
-export function workspaceMatchesProfile(
-  snapshot: WorkspaceSnapshot,
-  profile: Profile,
-): boolean {
-  const other = profileToSnapshot(profile);
-  return gridsEqual(snapshot.grid, other.grid) && panesEqual(snapshot.panes, other.panes);
+function tabMatches(tab: TabSnapshot, saved: ProfileTab): boolean {
+  const other = profileTabToSnapshot(saved);
+  return (
+    tab.name === saved.name &&
+    gridsEqual(tab.grid, other.grid) &&
+    panesEqual(tab.panes, other.panes)
+  );
+}
+
+/** True when the open tabs (in strip order) match the profile's tabs one for
+ * one: same count, order, names, grids and pane assignments. */
+export function tabsMatchProfile(tabs: readonly TabSnapshot[], profile: Profile): boolean {
+  if (tabs.length !== profile.tabs.length) return false;
+  return tabs.every((tab, i) => {
+    const saved = profile.tabs[i];
+    return saved !== undefined && tabMatches(tab, saved);
+  });
 }
 
 /**
- * Whether the workspace is "dirty" relative to the loaded profile. With no
- * profile loaded (fresh 1x1 start) there is nothing to diff against, so the
- * workspace is never dirty (the toolbar simply shows no profile name).
+ * Whether a profile's open tabs are "dirty" relative to it. With no profile
+ * loaded, or none of its tabs open, there is nothing to diff against, so it is
+ * never dirty.
  */
-export function isDirty(snapshot: WorkspaceSnapshot, loaded: Profile | null): boolean {
-  if (!loaded) return false;
-  return !workspaceMatchesProfile(snapshot, loaded);
+export function isDirty(tabs: readonly TabSnapshot[], loaded: Profile | null): boolean {
+  if (!loaded || tabs.length === 0) return false;
+  return !tabsMatchProfile(tabs, loaded);
+}
+
+/** The profile with its first tab renamed (for the v1 upgrade, see
+ * `ProfileManager`). */
+export function withFirstTabName(profile: Profile, name: string): Profile {
+  return {
+    ...profile,
+    tabs: profile.tabs.map((tab, i) => (i === 0 ? { ...tab, name } : tab)),
+  };
 }
 
 /**
@@ -103,4 +127,20 @@ export function isDirty(snapshot: WorkspaceSnapshot, loaded: Profile | null): bo
  */
 export function shouldConfirmTeardown(liveSessionCount: number): boolean {
   return liveSessionCount > 0;
+}
+
+/**
+ * Loading a profile over tabs closes them: confirm when any has a live session,
+ * or when it closes more than one (a whole group, possibly in the background,
+ * which the user may not see).
+ */
+export function shouldConfirmReplace(tabCount: number, liveSessionCount: number): boolean {
+  return liveSessionCount > 0 || tabCount > 1;
+}
+
+/** The replace confirm's text: how many tabs close, then how many live sessions. */
+export function replaceConfirmMessage(tabCount: number, liveSessionCount: number): string {
+  const sessions =
+    liveSessionCount > 0 ? tp("grid.shrink", liveSessionCount) : t("profiles.replace.continue");
+  return `${tp("profiles.replace.tabs", tabCount)} ${sessions}`;
 }

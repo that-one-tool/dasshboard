@@ -1506,7 +1506,7 @@ mod tests {
     use super::*;
     use crate::device::{Auth, Connection};
     use crate::known_hosts::KnownHostsStore;
-    use crate::profile::{Grid, Pane};
+    use crate::profile::{Grid, Pane, ProfileTab};
     use crate::profile_store::ProfileStore;
     use crate::secret::{FailingSecretStore, InMemorySecretStore};
     use crate::serial::SerialSessionManager;
@@ -2075,18 +2075,21 @@ mod tests {
         Profile {
             id: String::new(),
             name: "Homelab".to_string(),
-            grid: Grid {
-                rows: 1,
-                cols: 2,
-                row_sizes: vec![1.0],
-                col_sizes: vec![0.5, 0.5],
-            },
-            panes: vec![
-                Pane {
-                    device_id: Some(device_id.to_string()),
+            tabs: vec![ProfileTab {
+                name: "Homelab".to_string(),
+                grid: Grid {
+                    rows: 1,
+                    cols: 2,
+                    row_sizes: vec![1.0],
+                    col_sizes: vec![0.5, 0.5],
                 },
-                Pane { device_id: None },
-            ],
+                panes: vec![
+                    Pane {
+                        device_id: Some(device_id.to_string()),
+                    },
+                    Pane { device_id: None },
+                ],
+            }],
         }
     }
 
@@ -2101,7 +2104,7 @@ mod tests {
         let device = save_device_impl(&state, sample_device(), Some("pw".to_string())).unwrap();
         let profile = save_profile_impl(&state, profile_referencing(&device.id)).unwrap();
         assert_eq!(
-            state.profile_store.list().profiles[0].panes[0].device_id,
+            state.profile_store.list().profiles[0].tabs[0].panes[0].device_id,
             Some(device.id.clone())
         );
 
@@ -2115,7 +2118,7 @@ mod tests {
             .find(|p| p.id == profile.id)
             .unwrap();
         assert_eq!(
-            cleaned.panes[0].device_id, None,
+            cleaned.tabs[0].panes[0].device_id, None,
             "the deleted device must be nulled out of the profile pane"
         );
     }

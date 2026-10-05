@@ -256,7 +256,11 @@ describe("IPC command wrapper argument shapes", () => {
 	});
 
 	it("saveProfile sends { profile }", async () => {
-		const profile = { id: "p1", name: "Home", grid: { rows: 1, cols: 1, rowSizes: [1], colSizes: [1] }, panes: [{ deviceId: null }] };
+		const profile = {
+			id: "p1",
+			name: "Home",
+			tabs: [{ name: "Home", grid: { rows: 1, cols: 1, rowSizes: [1], colSizes: [1] }, panes: [{ deviceId: null }] }],
+		};
 		invokeMock.mockResolvedValue(profile);
 		await saveProfile(profile);
 		expect(invokeMock).toHaveBeenCalledWith("save_profile", { profile });
@@ -449,8 +453,7 @@ describe("config-write echo suppression (invokeMutation vs invokeChecked)", () =
 	const profile = {
 		id: "p1",
 		name: "Home",
-		grid: { rows: 1, cols: 1, rowSizes: [1], colSizes: [1] },
-		panes: [{ deviceId: null }],
+		tabs: [{ name: "Home", grid: { rows: 1, cols: 1, rowSizes: [1], colSizes: [1] }, panes: [{ deviceId: null }] }],
 	};
 
 	it("a successful mutation arms isLocalConfigWriteRecent()", async () => {

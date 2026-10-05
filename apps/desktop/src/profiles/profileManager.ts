@@ -1,9 +1,10 @@
 /**
- * Profile sidebar + toolbar (SPEC §7, Phase 4): the saved-layout list (Load /
- * rename / delete / set-default) and the toolbar bar showing the current
- * profile name with a dirty-state dot and Save / Save As. Thin DOM glue over
- * the profile IPC commands and the `Grid`; the diff/decision logic it relies on
- * lives in the pure, tested `workspace.ts`.
+ * Profile sidebar (SPEC §7, Phase 4): the saved-workspace list (Load / open in
+ * new tabs / rename / delete / set-default) with a dirty-state dot and Save /
+ * Save As. A profile holds one or more tabs; its open tabs are the tabs linked
+ * to it, in strip order (its "group"). Thin DOM glue over the profile IPC
+ * commands and the tab set; the diff/decision logic it relies on lives in the
+ * pure, tested `workspace.ts`.
  */
 
 import type { Grid } from "../grid";
@@ -15,8 +16,18 @@ import {
   exportProfiles,
   importProfiles,
   type Profile,
+  type ProfileList,
+  type ProfileTab,
 } from "../ipc";
-import { isDirty, snapshotToProfileFields } from "./workspace";
+import {
+  isDirty,
+  profileTabToSnapshot,
+  replaceConfirmMessage,
+  shouldConfirmReplace,
+  snapshotToProfileTab,
+  withFirstTabName,
+  type TabSnapshot,
+} from "./workspace";
 import { confirm, prompt } from "../ui/confirm";
 import { pickJsonSavePath, pickJsonOpenPath } from "../ui/fileDialog";
 import {
@@ -33,30 +44,40 @@ import {
 import { t, tp } from "../i18n";
 
 /**
- * Bridge to the tabbed workspace (Tabs, Phase 2). The "loaded profile" is no
- * longer ProfileManager state — it lives on the active tab as its
- * `linkedProfileId`, so switching tabs switches which profile the bar reflects.
- * ProfileManager reads/writes it through this bridge and resolves the actual
- * `Profile` from its own list.
+ * Bridge to the tabbed workspace (Tabs, Phase 2). The "loaded profile" is not
+ * ProfileManager state — it lives on each tab as its `linkedProfileId`, so
+ * switching tabs switches which profile the list highlights. ProfileManager
+ * reads/writes it through this bridge and resolves the actual `Profile` from
+ * its own list. Tabs are identified by their grid: flows that await (a
+ * confirm, a prompt) capture the grids first and act on them, so a tab switch
+ * in the meantime can't redirect the action to the wrong tabs.
  */
 export interface ProfileWorkspace {
-  /** The active tab's grid (what load/save/dirty act on). */
-  activeGrid(): Grid;
   /** The active tab's linked-profile id, or null. */
   activeLinkedProfileId(): string | null;
-  /** The linked-profile id of the tab owning `grid`, or null. */
-  linkedProfileIdOf(grid: Grid): string | null;
-  /** Link the tab owning `grid` to a profile id (or null to unlink). Flows that
-   * await (a confirm, a prompt) capture the grid first and link by it, so a tab
-   * switch in the meantime can't link the wrong tab. A no-op if that tab has
-   * since been closed. */
+  /** The active tab's group: every tab linked to its profile, in strip order,
+   * or just the active tab when it is unlinked. */
+  activeGroupGrids(): Grid[];
+  /** The tabs linked to `profileId`, in strip order. */
+  groupGrids(profileId: string): Grid[];
+  /** Every profile id some tab links to, once each. */
+  linkedProfileIds(): string[];
+  /** Show the tab owning `grid`. */
+  activateGrid(grid: Grid): void;
+  /** Name + workspace of each still-open tab owning one of `grids`, in strip
+   * order. */
+  tabSnapshots(grids: readonly Grid[]): TabSnapshot[];
+  /** Link the tab owning `grid` to a profile id (or null to unlink). A no-op if
+   * that tab has since been closed. */
   linkProfile(grid: Grid, id: string | null): void;
   /** Re-render every tab's strip badge + dirty dot. */
   refreshTabStrip(): void;
   /** Unlink every tab pointing at `profileId` (used when it is deleted). */
   clearProfileLink(profileId: string): void;
-  /** Open a new tab pre-linked to a profile; returns its grid to apply into. */
-  openTab(opts: { name: string; linkedProfileId: string }): Promise<Grid>;
+  /** Open blank tabs named `names`, linked to a profile, in place of the
+   * still-open tabs owning `replacing` (appended when there are none); the
+   * first is activated. Returns their grids, in order, to apply into. */
+  openTabs(names: string[], linkedProfileId: string, replacing?: readonly Grid[]): Promise<Grid[]>;
 }
 
 export interface ProfileManagerOptions {
@@ -79,11 +100,14 @@ export class ProfileManager {
 
   private profiles: Profile[] = [];
   private defaultProfileId: string | null = null;
+  /** The backend converted a v1 `profiles.json` on this launch (see
+   * {@link adoptV1TabNames}). */
+  private migratedFromV1 = false;
   /**
-   * Re-entrancy guard for Save / Save As / Rename (F12, same class as the
-   * `Grid.transitioning` guard): each opens a `prompt()`/persists across an
+   * Re-entrancy guard for Load / Save / Save As / Rename (F12, same class as
+   * the `Grid.transitioning` guard): each opens a dialog/persists across an
    * `await`, so a double-click could otherwise stack two prompts and create
-   * two profiles from one intended save.
+   * two profiles from one intended save, or open a profile's tabs twice.
    */
   private busy = false;
 
@@ -116,19 +140,56 @@ export class ProfileManager {
     opts: { loadStart?: boolean } = {},
   ): Promise<void> {
     await this.reload();
-    if (opts.loadStart ?? true) {
-      // Default wins; else fall back to the last-used profile if it still exists.
-      const start = this.findProfile(this.defaultProfileId) ?? this.findProfile(lastProfileId);
-      if (start) {
-        // App-start load: no teardown confirm (nothing is live yet).
-        const grid = this.ws.activeGrid();
-        await grid.applyProfile(start, { confirmTeardown: false });
-        this.ws.linkProfile(grid, start.id);
-      }
-    }
+    await this.adoptV1TabNames();
+    if (opts.loadStart ?? true) await this.openStartProfile(lastProfileId);
     this.render();
     this.refreshDirty();
     this.notifyProfileChange();
+  }
+
+  /** Opens the default profile, else the last-used one if it still exists, into
+   * the initial blank tab: no teardown confirm (nothing is live yet). */
+  private async openStartProfile(lastProfileId: string | null): Promise<void> {
+    const start = this.findProfile(this.defaultProfileId) ?? this.findProfile(lastProfileId);
+    if (start) await this.openProfile(start, this.ws.activeGroupGrids());
+  }
+
+  /**
+   * One-time upgrade from single-grid (v1) profiles, whose Load linked a tab
+   * without renaming it and could link several tabs to one profile: each
+   * converted profile keeps its first linked tab (the others are unlinked) and
+   * takes that tab's name, so restored tabs don't all read as unsaved.
+   */
+  private async adoptV1TabNames(): Promise<void> {
+    if (!this.migratedFromV1) return;
+    const renamed = this.profiles
+      .map((profile) => this.adoptV1Tab(profile))
+      .filter((profile): profile is Profile => profile !== null);
+    if (renamed.length === 0) return;
+    await this.saveAll(renamed);
+    await this.reload();
+  }
+
+  /** The profile renamed after its first open tab, or null if nothing changes. */
+  private adoptV1Tab(profile: Profile): Profile | null {
+    const name = this.keepFirstTab(profile.id);
+    if (name === undefined || name === profile.tabs[0]?.name) return null;
+    return withFirstTabName(profile, name);
+  }
+
+  /** Unlinks all but the first open tab of a profile; returns that tab's name. */
+  private keepFirstTab(profileId: string): string | undefined {
+    const [first, ...extra] = this.ws.groupGrids(profileId);
+    for (const grid of extra) this.ws.linkProfile(grid, null);
+    return this.ws.tabSnapshots(first ? [first] : [])[0]?.name;
+  }
+
+  private async saveAll(profiles: readonly Profile[]): Promise<void> {
+    try {
+      for (const profile of profiles) await saveProfile(profile);
+    } catch (err) {
+      this.options.onError(errorMessage(err));
+    }
   }
 
   /** Looks up a profile by id in the loaded list; `null` for a missing/blank id. */
@@ -143,12 +204,10 @@ export class ProfileManager {
   }
 
   /** Re-fetches profiles + default id from the backend. The active tab's linked
-   * profile is resolved from this list on demand, so nothing to re-sync here. */
+   * profile is resolved from this list on demand. */
   async reload(): Promise<void> {
     try {
-      const list = await listProfiles();
-      this.profiles = list.profiles;
-      this.defaultProfileId = list.defaultProfileId;
+      this.applyList(await listProfiles());
     } catch (err) {
       this.options.onError(errorMessage(err));
     }
@@ -156,10 +215,35 @@ export class ProfileManager {
     this.refreshDirty();
   }
 
+  private applyList(list: ProfileList): void {
+    this.profiles = list.profiles;
+    this.defaultProfileId = list.defaultProfileId;
+    this.migratedFromV1 = list.migratedFromV1;
+    this.unlinkMissingProfiles();
+  }
+
+  /** Unlinks the tabs of profiles that no longer exist (deleted by another
+   * instance), so they stop acting as a group. */
+  private unlinkMissingProfiles(): void {
+    const missing = this.ws.linkedProfileIds().filter((id) => !this.findProfile(id));
+    for (const id of missing) this.ws.clearProfileLink(id);
+    if (missing.length > 0) this.notifyProfileChange();
+  }
+
+  /** Whether the profile's open tabs differ from what it saved. */
+  private groupDirty(profile: Profile): boolean {
+    return isDirty(this.ws.tabSnapshots(this.ws.groupGrids(profile.id)), profile);
+  }
+
+  /** The profile's open tabs, in strip order, as profile tabs to save. */
+  private groupTabs(profileId: string): ProfileTab[] {
+    return this.ws.tabSnapshots(this.ws.groupGrids(profileId)).map(snapshotToProfileTab);
+  }
+
   /** Recolors the loaded profile's status dot (green → gold when the active
-   * tab's workspace is dirty) and refreshes the tab strip. */
+   * tab's group is dirty) and refreshes the tab strip. */
   refreshDirty(): void {
-    const dirty = isDirty(this.ws.activeGrid().snapshot(), this.activeLoaded());
+    const dirty = this.activeDirty();
     const dot = this.listEl?.querySelector<HTMLElement>(
       ".profile-item-loaded .profile-status-dot",
     );
@@ -168,6 +252,11 @@ export class ProfileManager {
       dot.title = dirty ? t("profiles.bar.dirty") : t("profiles.item.current");
     }
     this.ws.refreshTabStrip();
+  }
+
+  private activeDirty(): boolean {
+    const loaded = this.activeLoaded();
+    return loaded !== null && this.groupDirty(loaded);
   }
 
   /** Re-render the bar + list and dirty state for the newly active tab. */
@@ -179,17 +268,14 @@ export class ProfileManager {
 
   /**
    * The strip badge/dot state for a tab: `linked` when its id resolves to a
-   * profile, `dirty` when the tab's live workspace differs from it. Injected
-   * into `TabManager.resolveTabState`.
+   * profile, `dirty` when that profile's open tabs differ from it (so every tab
+   * of a group shows the same dot). Injected into `TabManager.resolveTabState`.
    */
-  resolveTabState(
-    linkedProfileId: string | null,
-    grid: Grid,
-  ): { linked: boolean; dirty: boolean } {
+  resolveTabState(linkedProfileId: string | null): { linked: boolean; dirty: boolean } {
     const profile = this.findProfile(linkedProfileId);
     return {
       linked: profile !== null,
-      dirty: profile !== null && isDirty(grid.snapshot(), profile),
+      dirty: profile !== null && this.groupDirty(profile),
     };
   }
 
@@ -224,10 +310,10 @@ export class ProfileManager {
     `;
     list
       .querySelector<HTMLButtonElement>('[data-action="save"]')
-      ?.addEventListener("click", () => void this.save());
+      ?.addEventListener("click", () => void this.exclusive(() => this.save()));
     list
       .querySelector<HTMLButtonElement>('[data-action="save-as"]')
-      ?.addEventListener("click", () => void this.saveAs());
+      ?.addEventListener("click", () => void this.exclusive(() => this.saveAs()));
     list
       .querySelector<HTMLButtonElement>(".profile-export-btn")
       ?.addEventListener("click", () => void this.exportAll());
@@ -275,16 +361,16 @@ export class ProfileManager {
 
       item
         .querySelector<HTMLButtonElement>('[data-action="load"]')
-        ?.addEventListener("click", () => void this.load(profile));
+        ?.addEventListener("click", () => void this.exclusive(() => this.load(profile)));
       item
         .querySelector<HTMLButtonElement>('[data-action="open-tab"]')
-        ?.addEventListener("click", () => void this.openInNewTab(profile));
+        ?.addEventListener("click", () => void this.exclusive(() => this.openInNewTab(profile)));
       item
         .querySelector<HTMLButtonElement>('[data-action="default"]')
         ?.addEventListener("click", () => void this.toggleDefault(profile, isDefault));
       item
         .querySelector<HTMLButtonElement>('[data-action="rename"]')
-        ?.addEventListener("click", () => void this.rename(profile));
+        ?.addEventListener("click", () => void this.exclusive(() => this.rename(profile)));
       item
         .querySelector<HTMLButtonElement>('[data-action="delete"]')
         ?.addEventListener("click", () => void this.remove(profile));
@@ -294,116 +380,135 @@ export class ProfileManager {
 
   /* ---------------------------------------------------------------------- */
 
+  /** Runs `action` unless another guarded action is still running (see
+   * {@link busy}). */
+  private async exclusive(action: () => Promise<void>): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      await action();
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /**
+   * Loads a profile in place of the active tab's group (just the active tab
+   * when it is unlinked), confirming first (see `shouldConfirmReplace`). Other
+   * tabs are left alone. A profile already open in other tabs is switched to
+   * instead.
+   */
   private async load(profile: Profile): Promise<void> {
-    const grid = this.ws.activeGrid();
-    const applied = await grid.applyProfile(profile);
-    if (!applied) return; // user cancelled the teardown confirm
-    this.ws.linkProfile(grid, profile.id);
-    this.render();
-    this.refreshDirty();
-    this.notifyProfileChange();
+    if (this.switchToOtherCopy(profile)) return;
+    const replacing = this.ws.activeGroupGrids();
+    if (!(await this.confirmReplace(replacing))) return;
+    await this.openProfile(profile, replacing);
+    this.options.onSuccess(t("profiles.loaded", { name: profile.name }));
+  }
+
+  /** Like {@link switchToOpenCopy}, except that loading the active tab's own
+   * profile reloads it in place (revert + reconnect). */
+  private switchToOtherCopy(profile: Profile): boolean {
+    if (this.ws.activeLinkedProfileId() === profile.id) return false;
+    return this.switchToOpenCopy(profile);
+  }
+
+  /** Shows the profile's already-open tabs, if any: a second copy would merge
+   * into the same group (twice the tabs, dirty, saved doubled). */
+  private switchToOpenCopy(profile: Profile): boolean {
+    const first = this.ws.groupGrids(profile.id)[0];
+    if (!first) return false;
+    this.ws.activateGrid(first);
+    return true;
+  }
+
+  /** Asks before closing the tabs owning `grids` (see `shouldConfirmReplace`). */
+  private async confirmReplace(grids: readonly Grid[]): Promise<boolean> {
+    const live = grids.reduce((sum, grid) => sum + grid.liveSessionCount(), 0);
+    if (!shouldConfirmReplace(grids.length, live)) return true;
+    return confirm(replaceConfirmMessage(grids.length, live), {
+      title: t("profiles.replace.title"),
+      confirmLabel: t("common.continue"),
+      danger: true,
+    });
+  }
+
+  /**
+   * Opens a profile's tabs in NEW tabs (leaving existing tabs untouched), linked
+   * to it, and connects their panes; switches to them if already open.
+   */
+  private async openInNewTab(profile: Profile): Promise<void> {
+    if (this.switchToOpenCopy(profile)) return;
+    await this.openProfile(profile, []);
     this.options.onSuccess(t("profiles.loaded", { name: profile.name }));
   }
 
   /**
-   * Opens a profile in a NEW tab (leaving existing tabs untouched), links that
-   * tab to it, and connects its panes. The new tab is empty, so no teardown
-   * confirm is needed.
+   * Opens one linked tab per profile tab in place of `replacing` (appended when
+   * empty) and starts connecting each one's panes. The connects aren't awaited
+   * (host-key prompts, timeouts), so the profile actions free up as soon as the
+   * tabs exist. The tabs are fresh, so there is no teardown confirm here.
    */
-  private async openInNewTab(profile: Profile): Promise<void> {
-    // Behind the busy guard so a rapid double-click can't open two identical
-    // tabs (each `openTab` makes a fresh grid, so the Grid transition guard that
-    // protects `load` doesn't apply here).
-    if (this.busy) return;
-    this.busy = true;
-    try {
-      const grid = await this.ws.openTab({ name: profile.name, linkedProfileId: profile.id });
-      await grid.applyProfile(profile, { confirmTeardown: false });
-      this.render();
-      this.refreshDirty();
-      this.notifyProfileChange();
-      this.options.onSuccess(t("profiles.loaded", { name: profile.name }));
-    } finally {
-      this.busy = false;
-    }
-  }
-
-  private async save(): Promise<void> {
-    if (this.busy) return;
-    this.busy = true;
-    try {
-      const grid = this.ws.activeGrid();
-      const loaded = this.activeLoaded();
-      if (!loaded) {
-        // Nothing loaded yet → behave as Save As.
-        await this.performSaveAs(grid);
-        return;
-      }
-      await this.persist({ ...loaded, ...snapshotToProfileFields(grid.snapshot()) }, "profiles.savedProfile", grid);
-    } finally {
-      this.busy = false;
-    }
-  }
-
-  private async saveAs(): Promise<void> {
-    if (this.busy) return;
-    this.busy = true;
-    try {
-      await this.performSaveAs(this.ws.activeGrid());
-    } finally {
-      this.busy = false;
-    }
-  }
-
-  /** Shared Save-As body for the tab owning `grid` (captured before the name
-   * prompt); callers (`save`, `saveAs`) hold the `busy` guard. */
-  private async performSaveAs(grid: Grid): Promise<void> {
-    const name = await prompt(t("profiles.saveAs.title"), t("profiles.saveAs.placeholder"));
-    if (name === null) return;
-    const trimmed = name.trim();
-    if (!trimmed) {
-      this.options.onError(t("profiles.nameEmpty"));
-      return;
-    }
-    await this.persist(
-      { id: "", name: trimmed, ...snapshotToProfileFields(grid.snapshot()) },
-      "profiles.savedProfile",
-      grid,
+  private async openProfile(profile: Profile, replacing: readonly Grid[]): Promise<void> {
+    const names = profile.tabs.map((tab) => tab.name);
+    const grids = await this.ws.openTabs(names, profile.id, replacing);
+    profile.tabs.forEach(
+      (tab, i) =>
+        void grids[i]?.applySnapshot(profileTabToSnapshot(tab), { confirmTeardown: false }),
     );
+    this.render();
+    this.refreshDirty();
+    this.notifyProfileChange();
+  }
+
+  /** Saves the active tab's profile from all of its open tabs; an unlinked
+   * active tab behaves as Save As. */
+  private async save(): Promise<void> {
+    const loaded = this.activeLoaded();
+    if (!loaded) return this.saveAs();
+    await this.persist({ ...loaded, tabs: this.groupTabs(loaded.id) }, "profiles.savedProfile");
+  }
+
+  /** Saves the active tab's group (captured before the name prompt) as a new
+   * profile and links those tabs to it. */
+  private async saveAs(): Promise<void> {
+    const grids = this.ws.activeGroupGrids();
+    const name = await this.promptName(t("profiles.saveAs.title"), t("profiles.saveAs.placeholder"));
+    const tabs = this.ws.tabSnapshots(grids).map(snapshotToProfileTab);
+    // The tabs may all have been closed during the prompt: nothing to save.
+    if (name === null || tabs.length === 0) return;
+    await this.persist({ id: "", name, tabs }, "profiles.savedProfile", grids);
+  }
+
+  /** Asks for a profile name: the trimmed name, or null when cancelled or blank
+   * (a blank one is reported). */
+  private async promptName(title: string, placeholder: string, initial?: string): Promise<string | null> {
+    const name = (await prompt(title, placeholder, initial))?.trim();
+    if (name === "") this.options.onError(t("profiles.nameEmpty"));
+    return name || null;
   }
 
   private async rename(profile: Profile): Promise<void> {
-    if (this.busy) return;
-    this.busy = true;
-    try {
-      const name = await prompt(t("profiles.rename.title"), t("profiles.rename.placeholder"), profile.name);
-      if (name === null) return;
-      const trimmed = name.trim();
-      if (!trimmed) {
-        this.options.onError(t("profiles.nameEmpty"));
-        return;
-      }
-      // Rename keeps the profile's stored layout; only the name changes.
-      await this.persist({ ...profile, name: trimmed }, "profiles.renamedProfile", this.ws.activeGrid());
-    } finally {
-      this.busy = false;
-    }
+    const name = await this.promptName(
+      t("profiles.rename.title"),
+      t("profiles.rename.placeholder"),
+      profile.name,
+    );
+    if (name === null) return;
+    // Rename keeps the profile's stored tabs; only the name changes.
+    await this.persist({ ...profile, name }, "profiles.renamedProfile");
   }
 
+  /** Saves `profile`, then links the tabs owning `linkGrids` to it (the tabs a
+   * Save As was made from). */
   private async persist(
     profile: Profile,
     successKey: "profiles.savedProfile" | "profiles.renamedProfile",
-    grid: Grid,
+    linkGrids: readonly Grid[] = [],
   ): Promise<void> {
     try {
       const saved = await saveProfile(profile);
-      // If we saved the tab's loaded profile (or just created one via Save As
-      // from its live workspace), link that tab to it so the dirty dot clears.
-      // A rename of some *other* profile leaves the link alone.
-      const link = this.ws.linkedProfileIdOf(grid);
-      if (link === null || link === saved.id || profile.id === "") {
-        this.ws.linkProfile(grid, saved.id);
-      }
+      for (const grid of linkGrids) this.ws.linkProfile(grid, saved.id);
       await this.reload();
       this.notifyProfileChange();
       this.options.onSuccess(t(successKey, { name: saved.name }));

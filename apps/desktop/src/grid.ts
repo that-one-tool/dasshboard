@@ -20,11 +20,11 @@ import {
   type PaneRemap,
   type PresetId,
 } from "./gridModel";
-import { profileToSnapshot, shouldConfirmTeardown, type WorkspaceSnapshot } from "./profiles/workspace";
+import { shouldConfirmTeardown, type WorkspaceSnapshot } from "./profiles/workspace";
 import { confirm } from "./ui/confirm";
 import { requireEl } from "./ui/dom";
 import { t } from "./i18n";
-import type { Profile, TerminalSettings } from "./ipc";
+import type { TerminalSettings } from "./ipc";
 
 export interface GridOptions {
   onError?: (message: string) => void;
@@ -58,7 +58,7 @@ export class Grid {
   // during which the toolbar would otherwise stay clickable — see `setPreset`.
   private transitioning = false;
   // While a profile load is applying, per-pane changes are suppressed so the
-  // dirty dot doesn't flicker; `applyProfile` emits a single change at the end.
+  // dirty dot doesn't flicker; `applySnapshot` emits a single change at the end.
   private loading = false;
   // Broadcast mode: when on, input typed into any connected pane is mirrored to
   // every *other* connected pane, so one command runs across all of them. A
@@ -228,7 +228,7 @@ export class Grid {
    * Marks a layout transition as in flight and returns the container to operate
    * on, or `null` if one can't start right now — either there's no container
    * yet, or a transition is already running. Claiming exclusivity here, before
-   * any `await`, is what stops overlapping `setPreset`/`applyProfile` calls from
+   * any `await`, is what stops overlapping `setPreset`/`applySnapshot` calls from
    * interleaving mutations of `this.cells`/`this.model`: without it, whichever
    * call finished last would overwrite `this.cells` and orphan cells the other
    * appended to the DOM — their ResizeObserver / `session_status` listener /
@@ -346,24 +346,9 @@ export class Grid {
   }
 
   /**
-   * Load a profile (SPEC §7): if any session is live, confirm the teardown
-   * first (unless `confirmTeardown` is false, e.g. the app-start default load);
-   * then rebuild the grid to the profile's shape and auto-connect every assigned
-   * pane in parallel. Per-pane connect failures surface in that pane's own error
-   * overlay and never block the others. Returns `false` if the user cancelled.
-   */
-  async applyProfile(
-    profile: Profile,
-    opts: { confirmTeardown?: boolean } = {},
-  ): Promise<boolean> {
-    return this.applyWorkspace(profileToSnapshot(profile), opts);
-  }
-
-  /**
-   * Rebuild the grid from a raw workspace snapshot (grid shape + row-major
-   * device ids), rather than a named profile. Used to restore a tab's saved
-   * workspace on launch (Tabs, Phase 3); same teardown-confirm + auto-connect
-   * behaviour as {@link applyProfile}.
+   * Rebuild the grid from a workspace snapshot (grid shape + row-major device
+   * ids): one tab of a profile being loaded (SPEC §7), or a tab's saved
+   * workspace restored on launch (Tabs, Phase 3). See {@link applyWorkspace}.
    */
   async applySnapshot(
     snapshot: WorkspaceSnapshot,
@@ -373,7 +358,7 @@ export class Grid {
   }
 
   /**
-   * Shared body of {@link applyProfile} / {@link applySnapshot}: if any session
+   * Body of {@link applySnapshot}: if any session
    * is live, confirm the teardown first (unless `confirmTeardown` is false, e.g.
    * an app-start restore); then rebuild the grid to the snapshot's shape and
    * auto-connect every assigned pane in parallel. Per-pane connect failures
@@ -445,7 +430,12 @@ export class Grid {
       this.focusedIndex = 0;
       this.setFocus(0, false);
 
-      await this.connectSnapshotPanes(snapshot);
+      const connects = this.assignSnapshotDevices(snapshot);
+      // The layout and devices already match the snapshot: report it now rather
+      // than after every connect settles (host-key prompts, timeouts), so a
+      // just-loaded profile tab doesn't read as unsaved meanwhile.
+      this.options.onChange?.();
+      await Promise.allSettled(connects);
     } finally {
       this.loading = false;
     }
@@ -460,15 +450,16 @@ export class Grid {
     this.cells = [];
   }
 
-  /** Assigns each cell's device from the snapshot, then connects the assigned ones in parallel. */
-  private async connectSnapshotPanes(snapshot: WorkspaceSnapshot): Promise<void> {
+  /** Assigns each cell's device from the snapshot and starts connecting the
+   * assigned ones in parallel; returns those connects. */
+  private assignSnapshotDevices(snapshot: WorkspaceSnapshot): Promise<void>[] {
     const connects: Promise<void>[] = [];
     this.cells.forEach((cell, i) => {
       const deviceId = snapshot.panes[i] ?? null;
       cell.pane.assignDevice(deviceId);
       if (deviceId) connects.push(cell.pane.connectAssigned());
     });
-    await Promise.allSettled(connects);
+    return connects;
   }
 
   /** Enables/disables the preset buttons for the duration of a transition. */
