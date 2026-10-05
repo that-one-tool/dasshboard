@@ -1,0 +1,4 @@
+# LF in the repo and in every checkout, whatever the OS or core.autocrlf:
+# the repo lives on a disk shared with Windows, where saved files turned CRLF.
+# Binary files are detected and left alone.
+* text=auto eol=lf
