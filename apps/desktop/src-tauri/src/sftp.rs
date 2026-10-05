@@ -2,9 +2,9 @@
 //!
 //! The SFTP analogue of [`crate::session`] / [`crate::tunnel`]: an
 //! [`SftpManager`] owns a `HashMap<device_id, SftpConn>` of live connections and
-//! **reuses `session.rs`'s connect + auth + host-key-TOFU path verbatim**
-//! ([`establish_with_deadline`]), diverging only after the handshake — instead
-//! of a PTY/shell (session) or `direct-tcpip` listeners (tunnel), it opens one
+//! **reuses `session.rs`'s connect + auth + host-key-TOFU path verbatim**, jump
+//! host included ([`establish_target`]), diverging only after the handshake —
+//! instead of a PTY/shell (session) or `direct-tcpip` listeners (tunnel), it opens one
 //! `session` channel, requests the `sftp` subsystem, and wraps the channel
 //! stream in a [`russh_sftp`] client [`SftpSession`].
 //!
@@ -51,9 +51,9 @@ const TRANSFER_CHUNK: usize = 32 * 1024;
 use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
 use crate::session::{
-    establish_with_deadline, AuthCredentials, HostKeyPromptPayload, KeepaliveConfig,
-    PromptRegistry, SessionSink, SessionStatus, SshHandler, DEFAULT_CONNECT_TIMEOUT,
-    DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
+    close_jump, establish_target, AuthCredentials, Endpoint, HostKeyPromptPayload, JumpHop,
+    KeepaliveConfig, PromptRegistry, SessionSink, SessionStatus, SshHandler,
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
 };
 
 /// One directory entry returned to the frontend for the file browser. Non-secret
@@ -93,6 +93,9 @@ pub struct SftpParams {
     pub creds: AuthCredentials,
     /// SSH keepalive resolved from user settings, applied to the SFTP connection.
     pub keepalive: KeepaliveConfig,
+    /// Optional jump host (`ProxyJump`): the SFTP connection to `host:port`
+    /// rides a direct-tcpip channel over it. `None` ⇒ direct.
+    pub jump: Option<JumpHop>,
 }
 
 /// Sink for the one thing the SFTP handshake surfaces to the frontend: a
@@ -121,10 +124,12 @@ impl SessionSink for HandshakeSink {
 }
 
 /// A live SFTP connection: the authenticated SSH `Handle` (kept alive only to
-/// hold the transport open — dropping it disconnects) plus the `SftpSession`
-/// speaking the subsystem over one channel.
+/// hold the transport open — dropping it disconnects), the jump host's handle
+/// the transport rides on (for a jumped connection; same reason), plus the
+/// `SftpSession` speaking the subsystem over one channel.
 struct SftpConn {
     handle: client::Handle<SshHandler>,
+    jump: Option<client::Handle<SshHandler>>,
     session: SftpSession,
 }
 
@@ -280,11 +285,15 @@ impl SftpManager {
             false,
         );
 
-        let handle = establish_with_deadline(
-            &params.host,
-            params.port,
-            &params.username,
-            &params.creds,
+        let target = Endpoint {
+            host: &params.host,
+            port: params.port,
+            username: &params.username,
+            creds: &params.creds,
+        };
+        let (handle, jump) = establish_target(
+            target,
+            params.jump.as_ref(),
             handler,
             self.connect_timeout,
             self.overall_establish_timeout(),
@@ -311,8 +320,14 @@ impl SftpManager {
             .await
             .map_err(|e| sftp_err("could not resolve the home directory", e))?;
 
-        self.lock_conns()
-            .insert(params.device_id, Arc::new(SftpConn { handle, session }));
+        self.lock_conns().insert(
+            params.device_id,
+            Arc::new(SftpConn {
+                handle,
+                jump,
+                session,
+            }),
+        );
         Ok(start_dir)
     }
 
@@ -611,6 +626,7 @@ async fn close_conn(conn: &SftpConn) {
         .handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
+    close_jump(conn.jump.as_ref()).await;
 }
 
 /// Join a POSIX parent path and a child name for remote paths (root stays a

@@ -517,6 +517,7 @@ async fn password_auth_succeeds() {
             port,
             TEST_USER.to_string(),
             password_creds(),
+            None,
             sink,
         )
         .await;
@@ -543,6 +544,7 @@ async fn wrong_password_is_ssh_auth() {
             port,
             TEST_USER.to_string(),
             AuthCredentials::Password("wrong".to_string()),
+            None,
             sink,
         )
         .await;
@@ -578,6 +580,7 @@ async fn unreachable_host_is_ssh_connect() {
             port,
             TEST_USER.to_string(),
             password_creds(),
+            None,
             sink,
         )
         .await;
@@ -627,6 +630,7 @@ async fn peer_accepts_tcp_but_never_speaks_ssh_times_out() {
             port,
             TEST_USER.to_string(),
             password_creds(),
+            None,
             sink,
         ),
     )
@@ -990,6 +994,50 @@ async fn jump_host_auth_failure_is_attributed_to_the_jump_host() {
     );
 }
 
+fn jump_hop(port: u16, password: &str) -> JumpHop {
+    JumpHop {
+        host: "127.0.0.1".to_string(),
+        port,
+        username: TEST_USER.to_string(),
+        creds: AuthCredentials::Password(password.to_string()),
+    }
+}
+
+/// "Test connection" on a device behind a jump host goes through it, like a
+/// real connect: it succeeds over the jump, and a wrong jump password is
+/// reported against the jump host (the target's credentials are correct).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_connection_goes_through_the_jump_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let target_port = spawn_test_server(TEST_PASSWORD).await;
+    let jump_port = spawn_jump_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), target_port);
+    seed_trusted(dir.path(), jump_port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let test = |jump_password: &str| {
+        let (sink, _chans) = new_sink();
+        manager.test_connection(
+            "127.0.0.1".to_string(),
+            target_port,
+            TEST_USER.to_string(),
+            password_creds(),
+            Some(jump_hop(jump_port, jump_password)),
+            sink,
+        )
+    };
+
+    test(TEST_PASSWORD)
+        .await
+        .expect("test connection through the jump host");
+    let err = test("wrong")
+        .await
+        .expect_err("a wrong jump password must fail the test");
+    assert!(
+        err.to_string().contains("jump host"),
+        "error should name the jump host, got: {err}"
+    );
+}
+
 /* ------------------------------------------------------------------------- *
  * Host-key TOFU: accept / reject / mismatch / timeout
  * ------------------------------------------------------------------------- */
@@ -1163,6 +1211,7 @@ async fn test_connection_host_key_reject_is_host_key_rejected() {
             port,
             TEST_USER.to_string(),
             password_creds(),
+            None,
             sink,
         )
         .await
@@ -1492,6 +1541,7 @@ async fn connect_disconnect_churn_leaks_nothing() {
 /// bind state) into a channel.
 struct TestTunnelSink {
     status_tx: mpsc::UnboundedSender<(TunnelStatus, Vec<ForwardStatus>)>,
+    message_tx: mpsc::UnboundedSender<Option<String>>,
     prompt_tx: mpsc::UnboundedSender<HostKeyPromptPayload>,
 }
 
@@ -1499,9 +1549,10 @@ impl TunnelSink for TestTunnelSink {
     fn on_status(
         &self,
         status: TunnelStatus,
-        _message: Option<String>,
+        message: Option<String>,
         forwards: Vec<ForwardStatus>,
     ) {
+        let _ = self.message_tx.send(message);
         let _ = self.status_tx.send((status, forwards));
     }
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
@@ -1511,21 +1562,26 @@ impl TunnelSink for TestTunnelSink {
 
 struct TunnelSinkChannels {
     status_rx: mpsc::UnboundedReceiver<(TunnelStatus, Vec<ForwardStatus>)>,
+    /// The message of each status, in the same order as `status_rx`.
+    message_rx: mpsc::UnboundedReceiver<Option<String>>,
     #[allow(dead_code)]
     prompt_rx: mpsc::UnboundedReceiver<HostKeyPromptPayload>,
 }
 
 fn new_tunnel_sink() -> (Arc<dyn TunnelSink>, TunnelSinkChannels) {
     let (status_tx, status_rx) = mpsc::unbounded_channel();
+    let (message_tx, message_rx) = mpsc::unbounded_channel();
     let (prompt_tx, prompt_rx) = mpsc::unbounded_channel();
     let sink: Arc<dyn TunnelSink> = Arc::new(TestTunnelSink {
         status_tx,
+        message_tx,
         prompt_tx,
     });
     (
         sink,
         TunnelSinkChannels {
             status_rx,
+            message_rx,
             prompt_rx,
         },
     )
@@ -1598,6 +1654,7 @@ async fn tunnel_reports_a_lost_connection_without_keepalive() {
                 remote_port: 9,
             }],
             keepalive: KeepaliveConfig::disabled(),
+            jump: None,
         },
         sink,
     );
@@ -1642,6 +1699,7 @@ async fn tunnel_forwards_bytes_and_cleans_up() {
             creds: password_creds(),
             forwards: vec![forward],
             keepalive: KeepaliveConfig::disabled(),
+            jump: None,
         },
         sink,
     );
@@ -1709,6 +1767,96 @@ fn echo_forward(id: &str, local_port: u16) -> Forward {
     }
 }
 
+/// Start a one-forward echo tunnel to `target_port` through the jump host on
+/// `jump_port`, authenticating to the jump host with `jump_password`.
+fn spawn_jumped_tunnel(
+    manager: &Arc<TunnelManager>,
+    target_port: u16,
+    jump_port: u16,
+    jump_password: &str,
+    local_port: u16,
+) -> TunnelSinkChannels {
+    let (sink, chans) = new_tunnel_sink();
+    manager.spawn_tunnel(
+        "t1".to_string(),
+        TunnelParams {
+            device_id: "dev-1".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: target_port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            forwards: vec![echo_forward("f1", local_port)],
+            keepalive: KeepaliveConfig::disabled(),
+            jump: Some(JumpHop {
+                host: "127.0.0.1".to_string(),
+                port: jump_port,
+                username: TEST_USER.to_string(),
+                creds: AuthCredentials::Password(jump_password.to_string()),
+            }),
+        },
+        sink,
+    );
+    chans
+}
+
+/// ProxyJump for tunnels: the tunnel's SSH connection to the target rides a
+/// `direct-tcpip` channel over the jump host, and forwarded bytes still
+/// round-trip through the target (whose echo stands in for the remote service).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tunnel_forwards_bytes_through_a_jump_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let target_port = spawn_test_server(TEST_PASSWORD).await;
+    let jump_port = spawn_jump_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), target_port);
+    seed_trusted(dir.path(), jump_port);
+    let manager = tunnel_manager_with(dir.path());
+    let local_port = free_local_port().await;
+
+    let mut chans =
+        spawn_jumped_tunnel(&manager, target_port, jump_port, TEST_PASSWORD, local_port);
+    let forwards = await_listening(&mut chans.status_rx).await;
+    assert!(forwards[0].bound, "the forward's local port must bind");
+
+    let mut stream = connect_local(local_port).await;
+    assert_echoes(&mut stream).await;
+    drop(stream);
+
+    manager.stop_tunnel("t1").await;
+    await_no_tunnels(&manager).await;
+}
+
+/// A jump-host auth failure ends the tunnel with an error naming the jump host,
+/// which also proves the tunnel really went through it (the target's own
+/// credentials are correct).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tunnel_jump_host_auth_failure_is_attributed_to_the_jump_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let target_port = spawn_test_server(TEST_PASSWORD).await;
+    let jump_port = spawn_jump_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), target_port);
+    seed_trusted(dir.path(), jump_port);
+    let manager = tunnel_manager_with(dir.path());
+    let local_port = free_local_port().await;
+
+    let mut chans = spawn_jumped_tunnel(&manager, target_port, jump_port, "wrong", local_port);
+    loop {
+        let (status, _) = recv_timeout(&mut chans.status_rx, Duration::from_secs(10))
+            .await
+            .expect("a tunnel status within 10s");
+        let message = chans.message_rx.recv().await.flatten().unwrap_or_default();
+        if status == TunnelStatus::Connecting {
+            continue;
+        }
+        assert_eq!(status, TunnelStatus::Error);
+        assert!(
+            message.contains("jump host"),
+            "error should name the jump host, got: {message}"
+        );
+        break;
+    }
+    await_no_tunnels(&manager).await;
+}
+
 /// Wait (briefly) until the manager no longer tracks any tunnel.
 async fn await_no_tunnels(manager: &TunnelManager) {
     for _ in 0..50 {
@@ -1742,6 +1890,7 @@ async fn tunnel_adds_and_removes_forwards_while_live() {
             creds: password_creds(),
             forwards: vec![echo_forward("f1", first_port)],
             keepalive: KeepaliveConfig::disabled(),
+            jump: None,
         },
         sink,
     );
@@ -1846,6 +1995,7 @@ async fn start_dynamic_tunnel() -> DynamicTunnel {
                 remote_port: 0,
             }],
             keepalive: KeepaliveConfig::disabled(),
+            jump: None,
         },
         sink,
     );
@@ -2040,6 +2190,7 @@ async fn tunnel_bind_failure_errors_and_cleans_up() {
             creds: password_creds(),
             forwards: vec![forward],
             keepalive: KeepaliveConfig::disabled(),
+            jump: None,
         },
         sink,
     );

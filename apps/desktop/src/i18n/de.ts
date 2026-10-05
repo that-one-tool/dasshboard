@@ -309,6 +309,7 @@ export const de: Messages = {
 	"tunnels.copied": "In die Zwischenablage kopiert",
 	"tunnels.portInUse": "Port belegt",
 	"tunnels.error.generic": "der Tunnel wurde mit einem Fehler beendet",
+	"tunnels.error.jumpRemoved": "die Tunnel von {name} wurden gestoppt: sein Sprunghost wurde entfernt",
 
 	/* -- files / SFTP ------------------------------------------------------- */
 	"sftp.panelTitle": "SFTP",

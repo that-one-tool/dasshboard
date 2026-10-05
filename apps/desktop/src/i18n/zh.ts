@@ -307,6 +307,7 @@ export const zh: Messages = {
 	"tunnels.copied": "已复制到剪贴板",
 	"tunnels.portInUse": "端口被占用",
 	"tunnels.error.generic": "隧道因错误而停止",
+	"tunnels.error.jumpRemoved": "{name} 的隧道已停止：其跳板主机已被删除",
 
 	/* -- files / SFTP ------------------------------------------------------- */
 	"sftp.panelTitle": "SFTP",

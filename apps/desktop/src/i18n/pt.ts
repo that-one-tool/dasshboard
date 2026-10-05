@@ -308,6 +308,7 @@ export const pt: Messages = {
 	"tunnels.copied": "Copiado para a área de transferência",
 	"tunnels.portInUse": "porta em uso",
 	"tunnels.error.generic": "o túnel parou com um erro",
+	"tunnels.error.jumpRemoved": "os túneis de {name} foram parados: o seu host de salto foi removido",
 
 	/* -- files / SFTP ------------------------------------------------------- */
 	"sftp.panelTitle": "SFTP",

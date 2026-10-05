@@ -20,11 +20,11 @@ use russh::{Channel, ChannelId};
 use russh_sftp::protocol::{
     File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
 };
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as TokioMutex;
 
 use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
-use dasshboard_lib::session::{AuthCredentials, KeepaliveConfig};
+use dasshboard_lib::session::{AuthCredentials, JumpHop, KeepaliveConfig};
 use dasshboard_lib::sftp::{SftpManager, SftpParams, SftpSink};
 
 const TEST_USER: &str = "tester";
@@ -517,6 +517,70 @@ async fn spawn_sftp_server_with_inactivity(inactivity: Duration) -> (u16, String
     (port, fingerprint)
 }
 
+/// A jump host (`ProxyJump`): accepts the test user and bridges every
+/// `direct-tcpip` channel to a real TCP connection to the requested target, so
+/// the client can run its SSH + SFTP session with the target over the channel.
+#[derive(Clone)]
+struct JumpTestServer;
+
+impl server::Server for JumpTestServer {
+    type Handler = JumpTestServer;
+    fn new_client(&mut self, _peer: Option<SocketAddr>) -> JumpTestServer {
+        JumpTestServer
+    }
+}
+
+impl server::Handler for JumpTestServer {
+    type Error = russh::Error;
+
+    async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
+        if user == TEST_USER && password == TEST_PASSWORD {
+            Ok(Auth::Accept)
+        } else {
+            Ok(Auth::reject())
+        }
+    }
+
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: server::ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        reply.accept().await;
+        let target = (host_to_connect.to_string(), port_to_connect as u16);
+        tokio::spawn(async move {
+            if let Ok(mut tcp) = TcpStream::connect(target).await {
+                let mut stream = channel.into_stream();
+                let _ = tokio::io::copy_bidirectional(&mut stream, &mut tcp).await;
+            }
+        });
+        Ok(())
+    }
+}
+
+/// Run a jump host on an ephemeral port (same host key as the SFTP server, so
+/// the one fingerprint trusts both). Returns the port.
+async fn spawn_jump_server() -> u16 {
+    let host_key = PrivateKey::from_openssh(TEST_HOST_KEY).expect("valid test host key");
+    let config = Arc::new(server::Config {
+        keys: vec![host_key],
+        auth_rejection_time: Duration::from_millis(10),
+        auth_rejection_time_initial: Some(Duration::ZERO),
+        ..Default::default()
+    });
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    tokio::spawn(async move {
+        let _ = JumpTestServer.run_on_socket(config, &listener).await;
+    });
+    port
+}
+
 /* ------------------------------------------------------------------------- *
  * Test scaffolding: a no-op sink + a pre-trusted manager
  * ------------------------------------------------------------------------- */
@@ -530,17 +594,23 @@ impl SftpSink for NoopSftpSink {
 use dasshboard_lib::session::HostKeyPromptPayload;
 
 fn manager_with_trust(dir: &std::path::Path, port: u16, fingerprint: &str) -> SftpManager {
+    manager_trusting(dir, &[port], fingerprint)
+}
+
+fn manager_trusting(dir: &std::path::Path, ports: &[u16], fingerprint: &str) -> SftpManager {
     let known_hosts = KnownHostsStore::load(dir.to_path_buf());
-    known_hosts
-        .trust(
-            "127.0.0.1",
-            port,
-            KnownHost {
-                key_type: "ssh-ed25519".to_string(),
-                fingerprint: fingerprint.to_string(),
-            },
-        )
-        .expect("seed trusted host key");
+    for &port in ports {
+        known_hosts
+            .trust(
+                "127.0.0.1",
+                port,
+                KnownHost {
+                    key_type: "ssh-ed25519".to_string(),
+                    fingerprint: fingerprint.to_string(),
+                },
+            )
+            .expect("seed trusted host key");
+    }
     SftpManager::new(
         Arc::new(known_hosts),
         Duration::from_secs(10),
@@ -559,11 +629,41 @@ async fn connect(manager: &SftpManager, device_id: &str, port: u16) -> String {
                 username: TEST_USER.to_string(),
                 creds: AuthCredentials::Password(TEST_PASSWORD.to_string()),
                 keepalive: KeepaliveConfig::disabled(),
+                jump: None,
             },
             Arc::new(NoopSftpSink),
         )
         .await
         .expect("SFTP connect")
+}
+
+/// Connect `device_id` to the SFTP server on `port` through the jump host on
+/// `jump_port`, authenticating to the jump host with `jump_password`.
+async fn connect_via_jump(
+    manager: &SftpManager,
+    port: u16,
+    jump_port: u16,
+    jump_password: &str,
+) -> Result<String, AppError> {
+    manager
+        .connect(
+            SftpParams {
+                device_id: "dev-1".to_string(),
+                host: "127.0.0.1".to_string(),
+                port,
+                username: TEST_USER.to_string(),
+                creds: AuthCredentials::Password(TEST_PASSWORD.to_string()),
+                keepalive: KeepaliveConfig::disabled(),
+                jump: Some(JumpHop {
+                    host: "127.0.0.1".to_string(),
+                    port: jump_port,
+                    username: TEST_USER.to_string(),
+                    creds: AuthCredentials::Password(jump_password.to_string()),
+                }),
+            },
+            Arc::new(NoopSftpSink),
+        )
+        .await
 }
 
 fn noop_progress() -> Box<dyn Fn(u64, u64) + Send + Sync> {
@@ -591,6 +691,53 @@ async fn connect_resolves_home_and_lists_empty_root() {
     assert!(entries.is_empty(), "a fresh in-memory root is empty");
 
     manager.disconnect("dev-1").await;
+    assert_eq!(manager.connection_count(), 0);
+}
+
+/// ProxyJump for SFTP: the SFTP session to the target rides a `direct-tcpip`
+/// channel over the jump host, and requests round-trip normally.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connects_and_browses_through_a_jump_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let jump_port = spawn_jump_server().await;
+    let manager = manager_trusting(dir.path(), &[port, jump_port], &fp);
+
+    let start = connect_via_jump(&manager, port, jump_port, TEST_PASSWORD)
+        .await
+        .expect("SFTP connect through the jump host");
+    assert_eq!(start, "/");
+    manager.mkdir("dev-1", "/via-jump").await.unwrap();
+    let names: Vec<String> = manager
+        .list("dev-1", "/")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(names, ["via-jump"]);
+
+    manager.disconnect("dev-1").await;
+    assert_eq!(manager.connection_count(), 0);
+}
+
+/// A jump-host auth failure is reported against the jump host, which also
+/// proves the connection really went through it (the target's credentials are
+/// correct).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jump_host_auth_failure_is_attributed_to_the_jump_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let jump_port = spawn_jump_server().await;
+    let manager = manager_trusting(dir.path(), &[port, jump_port], &fp);
+
+    let err = connect_via_jump(&manager, port, jump_port, "wrong")
+        .await
+        .expect_err("a wrong jump password must fail the connect");
+    assert!(
+        err.to_string().contains("jump host"),
+        "error should name the jump host, got: {err}"
+    );
     assert_eq!(manager.connection_count(), 0);
 }
 

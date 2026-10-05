@@ -308,6 +308,7 @@ export const ja: Messages = {
 	"tunnels.copied": "クリップボードにコピーしました",
 	"tunnels.portInUse": "ポート使用中",
 	"tunnels.error.generic": "トンネルはエラーで停止しました",
+	"tunnels.error.jumpRemoved": "{name} のトンネルを停止しました：踏み台ホストが削除されました",
 
 	/* -- files / SFTP ------------------------------------------------------- */
 	"sftp.panelTitle": "SFTP",

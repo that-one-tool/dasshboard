@@ -266,10 +266,30 @@ pub struct ConnectParams {
     pub connect_snippet: Option<String>,
 }
 
+impl ConnectParams {
+    fn endpoint(&self) -> Endpoint<'_> {
+        Endpoint {
+            host: &self.host,
+            port: self.port,
+            username: &self.username,
+            creds: &self.creds,
+        }
+    }
+}
+
+/// The SSH server a connection authenticates to, as [`establish_target`] takes
+/// it — borrowed from a shell's, tunnel's or SFTP connection's own params.
+pub(crate) struct Endpoint<'a> {
+    pub(crate) host: &'a str,
+    pub(crate) port: u16,
+    pub(crate) username: &'a str,
+    pub(crate) creds: &'a AuthCredentials,
+}
+
 /// The resolved connection parameters for a single jump hop (`ProxyJump`),
-/// built by the `connect` command from the referenced jump device + its keyring
-/// secret. Deliberately has no `Debug` impl, so the secret inside `creds` can't
-/// be `{:?}`-printed (the secret would still be redacted by `AuthCredentials`'s
+/// built by the `connect`, `test_connection`, `start_tunnel` and `sftp_connect`
+/// commands from the referenced jump device + its keyring secret. Deliberately
+/// has no `Debug` impl, so the secret inside `creds` can't be `{:?}`-printed (the secret would still be redacted by `AuthCredentials`'s
 /// own `Debug` were one ever derived here).
 ///
 /// `pub` + `#[doc(hidden)]` for the same integration-test reason as
@@ -374,9 +394,10 @@ impl PromptRegistry {
 /// host-key trust prompt; terminal I/O is handled via the `Channel` in the
 /// session task, not the handler's data callbacks.
 ///
-/// `pub(crate)` so the tunnel layer (`tunnel.rs`) can reuse the exact same
-/// host-key-TOFU handshake path via [`establish_with_deadline`], rather than
-/// duplicating it — the shared-connect-path reuse called out in SPEC §2.
+/// `pub(crate)` so the tunnel and SFTP layers (`tunnel.rs`, `sftp.rs`) can
+/// reuse the exact same host-key-TOFU handshake path via [`establish_target`],
+/// rather than duplicating it — the shared-connect-path reuse called out in
+/// SPEC §2.
 pub(crate) struct SshHandler {
     sink: Arc<dyn SessionSink>,
     known_hosts: Arc<KnownHostsStore>,
@@ -446,6 +467,22 @@ impl SshHandler {
     /// prompt. Hold it for as long as the handshake is wanted.
     pub(crate) fn take_owner_token(&mut self) -> Option<HandshakeOwner> {
         self.owner_token.take()
+    }
+
+    /// A handler for the jump host this connection goes through: same sink,
+    /// trust store, prompt registry and keepalive, but the jump host's own
+    /// address (its host-key prompt is keyed by it) and never agent forwarding.
+    fn for_jump_host(&self, jump: &JumpHop) -> SshHandler {
+        SshHandler::new(
+            Arc::clone(&self.sink),
+            Arc::clone(&self.known_hosts),
+            Arc::clone(&self.prompts),
+            jump.host.clone(),
+            jump.port,
+            self.prompt_timeout,
+            self.keepalive,
+            false,
+        )
     }
 
     /// Emit the host-key prompt event and await the user's decision, bounded
@@ -628,7 +665,7 @@ async fn establish(
 /// key exchange and authentication over an already-connected byte stream, then
 /// return the authenticated client handle. Used directly (over a `TcpStream`)
 /// by [`establish`] and over a jump host's direct-tcpip channel by
-/// [`establish_via_jump`], so the host-key-TOFU handler path is identical for a
+/// [`connect_through_jump`], so the host-key-TOFU handler path is identical for a
 /// direct and a jumped connection. Error messages describe only the
 /// format/crypto problem, never secret material.
 async fn establish_over_stream<S>(
@@ -737,7 +774,7 @@ where
 /// on the host-key prompt is never cut off early — see
 /// `SessionManager::overall_establish_timeout`, which builds it from
 /// `connect_timeout + prompt_timeout + handshake_timeout`.
-pub(crate) async fn establish_with_deadline(
+async fn establish_with_deadline(
     host: &str,
     port: u16,
     username: &str,
@@ -778,22 +815,24 @@ fn annotate_jump_error(err: AppError, host: &str, port: u16) -> AppError {
 /// Connect to the target through a single jump host (`ProxyJump`): authenticate
 /// to the jump host, ask it to open a direct-tcpip channel to the target, then
 /// run the target's SSH handshake over that channel as a byte stream. Returns
-/// both handles; the jump handle must be kept alive for the session's lifetime
-/// (dropping it tears down the channel the target rides on). Only the TCP
-/// connect to the jump host is bounded here (by `connect_timeout`); the caller
-/// wraps this whole function in the single overall deadline (see
+/// both handles; the jump handle must be kept alive for the connection's
+/// lifetime (dropping it tears down the channel the target rides on). Only the
+/// TCP connect to the jump host is bounded here (by `connect_timeout`); the
+/// caller wraps this whole function in the single overall deadline (see
 /// `establish_target`), which is what bounds the channel-open and the target
 /// handshake too.
 async fn connect_through_jump(
-    params: &ConnectParams,
+    target: &Endpoint<'_>,
     target_handler: SshHandler,
-    jump_handler: SshHandler,
     jump: &JumpHop,
     connect_timeout: Duration,
 ) -> Result<(client::Handle<SshHandler>, client::Handle<SshHandler>), AppError> {
     // Hop 1: connect + authenticate to the jump host (its own host-key TOFU
-    // prompt, since `jump_handler` carries the jump host's addr). Errors are
-    // attributed to the jump host.
+    // prompt, since its handler carries the jump host's addr). Errors are
+    // attributed to the jump host. The owner token lives in this future, so
+    // dropping it abandons a pending jump-host prompt.
+    let mut jump_handler = target_handler.for_jump_host(jump);
+    let _jump_owner = jump_handler.take_owner_token();
     let jump_handle = establish(
         &jump.host,
         jump.port,
@@ -808,19 +847,19 @@ async fn connect_through_jump(
     // Hop 2: ask the jump host to open a TCP connection to the target, then run
     // the target's SSH handshake over that channel.
     let channel = jump_handle
-        .channel_open_direct_tcpip(params.host.clone(), params.port as u32, "127.0.0.1", 0)
+        .channel_open_direct_tcpip(target.host, target.port as u32, "127.0.0.1", 0)
         .await
         .map_err(|e| {
             AppError::SshConnect(format!(
                 "jump host could not open a channel to {}:{}: {e}",
-                params.host, params.port
+                target.host, target.port
             ))
         })?;
 
     let target_handle = establish_over_stream(
         channel.into_stream(),
-        &params.username,
-        &params.creds,
+        target.username,
+        target.creds,
         target_handler,
     )
     .await?;
@@ -828,15 +867,16 @@ async fn connect_through_jump(
     Ok((target_handle, jump_handle))
 }
 
-/// Establish the connection to the session's target, either directly or through
-/// a single jump host (`ProxyJump`). Returns the authenticated target handle
-/// plus, for a jumped connection, the jump host's handle — which the caller
-/// **must keep alive** for the lifetime of the session, since dropping it tears
-/// down the direct-tcpip channel the target session rides on.
-async fn establish_target(
-    params: &ConnectParams,
+/// Establish a connection to `target`, either directly or through a single
+/// jump host (`ProxyJump`) — the one connect path shells, tunnels and SFTP
+/// share. Returns the authenticated target handle plus, for a jumped
+/// connection, the jump host's handle — which the caller **must keep alive**
+/// for as long as it uses the target, since dropping it tears down the
+/// direct-tcpip channel the target rides on (then [`close_jump`] it).
+pub(crate) async fn establish_target(
+    target: Endpoint<'_>,
+    jump: Option<&JumpHop>,
     target_handler: SshHandler,
-    jump_handler: Option<SshHandler>,
     connect_timeout: Duration,
     overall_timeout: Duration,
 ) -> Result<
@@ -846,41 +886,46 @@ async fn establish_target(
     ),
     AppError,
 > {
-    match (&params.jump, jump_handler) {
-        (Some(jump), Some(jump_handler)) => {
-            // A SINGLE overall deadline covers the whole two-hop establish —
-            // both handshakes AND the channel-open between them — so a jumped
-            // connect can never exceed the same budget a direct one gets, and a
-            // jump host that accepts but black-holes the channel-open to an
-            // unreachable target can't hang the session in "Connecting".
-            match timeout(
-                overall_timeout,
-                connect_through_jump(params, target_handler, jump_handler, jump, connect_timeout),
-            )
-            .await
-            {
-                Ok(Ok((target_handle, jump_handle))) => Ok((target_handle, Some(jump_handle))),
-                Ok(Err(e)) => Err(e),
-                Err(_) => Err(AppError::SshConnect(format!(
-                    "connecting to {}:{} through jump host {}:{} timed out",
-                    params.host, params.port, jump.host, jump.port
-                ))),
-            }
-        }
-        // Direct connection (no jump, or — defensively — no jump handler built).
-        _ => {
-            let handle = establish_with_deadline(
-                &params.host,
-                params.port,
-                &params.username,
-                &params.creds,
-                target_handler,
-                connect_timeout,
-                overall_timeout,
-            )
-            .await?;
-            Ok((handle, None))
-        }
+    let Some(jump) = jump else {
+        let handle = establish_with_deadline(
+            target.host,
+            target.port,
+            target.username,
+            target.creds,
+            target_handler,
+            connect_timeout,
+            overall_timeout,
+        )
+        .await?;
+        return Ok((handle, None));
+    };
+    // A SINGLE overall deadline covers the whole two-hop establish — both
+    // handshakes AND the channel-open between them — so a jumped connect can
+    // never exceed the same budget a direct one gets, and a jump host that
+    // accepts but black-holes the channel-open to an unreachable target can't
+    // hang the connection in "Connecting".
+    match timeout(
+        overall_timeout,
+        connect_through_jump(&target, target_handler, jump, connect_timeout),
+    )
+    .await
+    {
+        Ok(Ok((target_handle, jump_handle))) => Ok((target_handle, Some(jump_handle))),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(AppError::SshConnect(format!(
+            "connecting to {}:{} through jump host {}:{} timed out",
+            target.host, target.port, jump.host, jump.port
+        ))),
+    }
+}
+
+/// Close the jump host's connection (if any) once the target riding on it has
+/// been disconnected. Best-effort, like every other teardown.
+pub(crate) async fn close_jump(jump: Option<&client::Handle<SshHandler>>) {
+    if let Some(jump) = jump {
+        let _ = jump
+            .disconnect(russh::Disconnect::ByApplication, "", "")
+            .await;
     }
 }
 
@@ -1043,11 +1088,10 @@ async fn wait_for_disconnect(rx: &mut mpsc::Receiver<SessionControl>, size: &mut
 /// (`Disconnected` or `Exited`) and `Err` for a failure that should surface as
 /// `session_status: error`. `overall_timeout`
 /// is the B3 backstop covering the whole handshake+auth flow — see
-/// `establish_with_deadline`.
+/// `establish_target`.
 async fn run_session(
     params: ConnectParams,
     mut handler: SshHandler,
-    mut jump_handler: Option<SshHandler>,
     connect_timeout: Duration,
     overall_timeout: Duration,
     sink: Arc<dyn SessionSink>,
@@ -1055,7 +1099,6 @@ async fn run_session(
 ) -> Result<SessionStatus, AppError> {
     // Abandons a pending host-key prompt if this returns mid-handshake.
     let _owner = handler.take_owner_token();
-    let _jump_owner = jump_handler.as_mut().and_then(SshHandler::take_owner_token);
     let mut pty_size = (params.cols, params.rows);
     let (handle, _jump_keepalive) = tokio::select! {
         biased;
@@ -1065,9 +1108,9 @@ async fn run_session(
         // jump connection are cleaned up too.
         _ = wait_for_disconnect(&mut control_rx, &mut pty_size) => return Ok(SessionStatus::Disconnected),
         result = establish_target(
-            &params,
+            params.endpoint(),
+            params.jump.as_ref(),
             handler,
-            jump_handler,
             connect_timeout,
             overall_timeout,
         ) => result?,
@@ -1219,18 +1262,6 @@ impl SessionManager {
             params.keepalive,
             params.forward_agent,
         );
-        // A jumped connection needs a second handler for the jump host's own
-        // host-key TOFU prompt (keyed by the jump host's address). The jump host
-        // never forwards the agent — only the target session does.
-        let jump_handler = params.jump.as_ref().map(|jump| {
-            self.build_handler(
-                jump.host.clone(),
-                jump.port,
-                Arc::clone(&sink),
-                params.keepalive,
-                false,
-            )
-        });
         let manager = Arc::clone(self);
         let connect_timeout = self.connect_timeout;
         let overall_timeout = self.overall_establish_timeout();
@@ -1241,7 +1272,6 @@ impl SessionManager {
             let result = run_session(
                 params,
                 handler,
-                jump_handler,
                 connect_timeout,
                 overall_timeout,
                 Arc::clone(&sink),
@@ -1311,21 +1341,27 @@ impl SessionManager {
     /// can raise a trust prompt just like a live session. Bounded by the same
     /// overall `establish` deadline as a live session (B3), so an
     /// unresponsive-but-TCP-accepting host can no longer hang this forever.
+    /// Goes through `jump` when the device has one, exactly like a connect.
     pub async fn test_connection(
         &self,
         host: String,
         port: u16,
         username: String,
         creds: AuthCredentials,
+        jump: Option<JumpHop>,
         sink: Arc<dyn SessionSink>,
     ) -> Result<(), AppError> {
         let handler =
             self.build_handler(host.clone(), port, sink, KeepaliveConfig::disabled(), false);
-        let handle = establish_with_deadline(
-            &host,
+        let target = Endpoint {
+            host: &host,
             port,
-            &username,
-            &creds,
+            username: &username,
+            creds: &creds,
+        };
+        let (handle, jump_handle) = establish_target(
+            target,
+            jump.as_ref(),
             handler,
             self.connect_timeout,
             self.overall_establish_timeout(),
@@ -1336,6 +1372,7 @@ impl SessionManager {
         let _ = handle
             .disconnect(russh::Disconnect::ByApplication, "", "")
             .await;
+        close_jump(jump_handle.as_ref()).await;
         Ok(())
     }
 }

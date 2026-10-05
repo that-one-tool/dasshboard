@@ -300,6 +300,10 @@ export class TunnelsPanel {
   }
 
   private applyEdit(before: SshDevice, after: SshDevice, state: DeviceTunnelState): void {
+    if (before.proxyJump && !after.proxyJump) {
+      this.stopForLostJumpHost(after);
+      return;
+    }
     if (connectionKey(before) !== connectionKey(after)) {
       this.restart(after.id, state);
       return;
@@ -307,6 +311,16 @@ export class TunnelsPanel {
     for (const id of state.requested) {
       if (forwardEdited(before, after, id)) this.bindForward(after.id, state, id);
     }
+  }
+
+  /** The device's jump host was removed (deleted): restarting would now reach
+   * the target directly, so stop the tunnel instead and say why. */
+  private stopForLostJumpHost(device: SshDevice): void {
+    this.stopAll(device.id);
+    this.options.onError?.({
+      code: "Validation",
+      message: t("tunnels.error.jumpRemoved", { name: device.name }),
+    });
   }
 
   /** Stop the tunnel now; `onEnded` starts its replacement once it is gone. */

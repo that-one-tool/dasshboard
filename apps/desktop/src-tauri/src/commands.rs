@@ -516,7 +516,7 @@ async fn resolve_credentials(
 }
 
 /// Resolve a device's optional jump host (`ProxyJump`) into the connection
-/// parameters the session task needs. `Ok(None)` for a device with no jump
+/// parameters a shell, tunnel or SFTP connection needs. `Ok(None)` for a device with no jump
 /// configured. Errors (surfaced as a connect failure) when the referenced jump
 /// device is missing or is a serial device, which cannot be a jump host. The
 /// jump device's own keyring secret is read here, the same way the target's is.
@@ -536,7 +536,9 @@ async fn resolve_jump_hop(state: &AppState, device: &Device) -> Result<Option<Ju
             username,
             ..
         } => {
-            let creds = resolve_credentials(state, &jump_device).await?;
+            let creds = resolve_credentials(state, &jump_device)
+                .await
+                .map_err(|e| name_jump_device(e, &jump_device.name))?;
             Ok(Some(JumpHop {
                 host: host.clone(),
                 port: *port,
@@ -548,6 +550,17 @@ async fn resolve_jump_hop(state: &AppState, device: &Device) -> Result<Option<Ju
             "the configured jump host is not an SSH device and cannot be used as a jump host"
                 .to_string(),
         )),
+    }
+}
+
+/// Prefix a jump device's credential error with its name, so the user fixes
+/// that device rather than the one they connected to.
+fn name_jump_device(err: AppError, name: &str) -> AppError {
+    let prefix = format!("jump host \"{name}\": ");
+    match err {
+        AppError::SshAuth(m) => AppError::SshAuth(prefix + &m),
+        AppError::Keyring(m) => AppError::Keyring(prefix + &m),
+        other => other,
     }
 }
 
@@ -791,6 +804,7 @@ pub async fn test_connection(
             ..
         } => {
             let creds = resolve_credentials(&state, &device).await?;
+            let jump = resolve_jump_hop(&state, &device).await?;
             let manager = Arc::clone(&state.session_manager);
             let sink: Arc<dyn SessionSink> = Arc::new(TauriSessionSink {
                 app,
@@ -798,7 +812,7 @@ pub async fn test_connection(
                 channel: None,
             });
             manager
-                .test_connection(host.clone(), *port, username.clone(), creds, sink)
+                .test_connection(host.clone(), *port, username.clone(), creds, jump, sink)
                 .await
         }
         // Serial has no auth or host key: "connected" simply means the port
@@ -925,21 +939,13 @@ pub async fn start_tunnel(
 ) -> Result<String, AppError> {
     let tunnel_id = client_chosen_id(tunnel_id, |id| id_in_use(&state, id))?;
     let device = find_device(&state, &device_id)?;
-    // ProxyJump is wired for shell sessions only (v1). Rather than silently
-    // ignore the jump and bind a forward straight to the target — which in a
-    // bastion setup is unreachable, or worse reaches an unrelated host on the
-    // local network — refuse with a clear message.
-    if device.proxy_jump_id().is_some() {
-        return Err(AppError::Validation(
-            "port forwarding through a jump host (ProxyJump) is not supported yet; open a shell session to this device instead".to_string(),
-        ));
-    }
     let (host, port, username, forwards) = tunnel_target_of(&device)?;
     let host = host.to_string();
     let username = username.to_string();
     let forwards = selected_forwards(forwards, &forward_ids)?;
 
     let creds = resolve_credentials(&state, &device).await?;
+    let jump = resolve_jump_hop(&state, &device).await?;
     let sink: Arc<dyn TunnelSink> = Arc::new(TauriTunnelSink {
         app,
         tunnel_id: tunnel_id.clone(),
@@ -954,6 +960,7 @@ pub async fn start_tunnel(
             creds,
             forwards,
             keepalive: keepalive_config(&state),
+            jump,
         },
         sink,
     );
@@ -1108,18 +1115,12 @@ pub async fn sftp_connect(
     device_id: String,
 ) -> Result<String, AppError> {
     let device = find_device(&state, &device_id)?;
-    // ProxyJump is wired for shell sessions only (v1) — see the same guard in
-    // `start_tunnel`. Refuse rather than silently connect straight to the target.
-    if device.proxy_jump_id().is_some() {
-        return Err(AppError::Validation(
-            "the SFTP file browser through a jump host (ProxyJump) is not supported yet; open a shell session to this device instead".to_string(),
-        ));
-    }
     let (host, port, username) = ssh_endpoint_of(&device)?;
     let host = host.to_string();
     let username = username.to_string();
 
     let creds = resolve_credentials(&state, &device).await?;
+    let jump = resolve_jump_hop(&state, &device).await?;
     let sink: Arc<dyn SftpSink> = Arc::new(TauriSftpSink { app });
     state
         .sftp_manager
@@ -1131,6 +1132,7 @@ pub async fn sftp_connect(
                 username,
                 creds,
                 keepalive: keepalive_config(&state),
+                jump,
             },
             sink,
         )
@@ -1945,6 +1947,30 @@ mod tests {
         if let AppError::SshAuth(msg) = err {
             assert!(msg.to_lowercase().contains("device editor"));
         }
+    }
+
+    #[tokio::test]
+    async fn a_jump_host_with_no_stored_password_is_named_in_the_error() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        let bastion = Device {
+            name: "bastion".to_string(),
+            ..sample_device()
+        };
+        let bastion = save_device_impl(&state, bastion, None).unwrap();
+        let mut target = sample_device();
+        if let Connection::Ssh { proxy_jump, .. } = &mut target.connection {
+            *proxy_jump = Some(bastion.id.clone());
+        }
+        let target = save_device_impl(&state, target, Some("hunter2".to_string())).unwrap();
+
+        let Err(AppError::SshAuth(message)) = resolve_jump_hop(&state, &target).await else {
+            panic!("a jump host with no stored password must fail with SshAuth");
+        };
+        assert!(
+            message.starts_with("jump host \"bastion\": "),
+            "the error must name the jump host, got: {message}"
+        );
     }
 
     #[tokio::test]

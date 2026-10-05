@@ -1,9 +1,10 @@
 //! SSH port-forwarding (`ssh -L` / `ssh -D`) — the tunnel analogue of `session.rs`
 //! (SPEC tunnels §2). A [`TunnelManager`] owns a `HashMap<TunnelId, TunnelHandle>`,
 //! one `tokio` task per live tunnel, and reuses `session.rs`'s connect + auth +
-//! host-key-TOFU path verbatim ([`establish_with_deadline`]). It diverges only
-//! *after* authentication: instead of requesting a PTY + shell, it binds a local
-//! `TcpListener` for each configured forward and pumps every accepted connection
+//! host-key-TOFU path verbatim, jump host included ([`establish_target`]). It
+//! diverges only *after* authentication: instead of requesting a PTY + shell,
+//! it binds a local `TcpListener` for each configured forward and pumps every
+//! accepted connection
 //! over a `direct-tcpip` channel to `remoteHost:remotePort` (resolved from the
 //! SSH server) — or, for a dynamic forward (`ssh -D`), to whatever target the
 //! connection's SOCKS request names (see `socks.rs`).
@@ -48,9 +49,9 @@ use crate::device::{Forward, ForwardKind};
 use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
 use crate::session::{
-    establish_with_deadline, AuthCredentials, HostKeyPromptPayload, KeepaliveConfig,
-    PromptRegistry, SessionSink, SessionStatus, SshHandler, DEFAULT_CONNECT_TIMEOUT,
-    DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
+    close_jump, establish_target, AuthCredentials, Endpoint, HostKeyPromptPayload, JumpHop,
+    KeepaliveConfig, PromptRegistry, SessionSink, SessionStatus, SshHandler,
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
 };
 use crate::socks;
 
@@ -162,6 +163,9 @@ pub struct TunnelParams {
     /// SSH keepalive resolved from user settings, applied to the tunnel's
     /// connection (same semantics as a shell session).
     pub keepalive: KeepaliveConfig,
+    /// Optional jump host (`ProxyJump`): the tunnel's connection to `host:port`
+    /// rides a direct-tcpip channel over it. `None` ⇒ direct.
+    pub jump: Option<JumpHop>,
 }
 
 /// Control messages sent to a tunnel task via its mpsc handle.
@@ -459,21 +463,28 @@ async fn run_tunnel(
         creds,
         mut forwards,
         keepalive,
+        jump,
         ..
     } = params;
     // Abandons a pending host-key prompt if this returns mid-handshake.
     let _owner = handler.take_owner_token();
-    let handle = tokio::select! {
+    let target = Endpoint {
+        host: &host,
+        port,
+        username: &username,
+        creds: &creds,
+    };
+    // `jump_handle` (for a jumped tunnel) must outlive the forwards: the
+    // tunnel's connection rides a channel over it.
+    let (handle, jump_handle) = tokio::select! {
         biased;
         // A stop (or every forward released) during the handshake aborts:
         // dropping the `establish` future drops the handler (and any
         // PromptGuard within), cleaning up a pending host-key prompt too.
         _ = queue_until_stop(&mut control_rx, &mut forwards, &publisher) => return Ok(()),
-        result = establish_with_deadline(
-            &host,
-            port,
-            &username,
-            &creds,
+        result = establish_target(
+            target,
+            jump.as_ref(),
             handler,
             connect_timeout,
             overall_timeout,
@@ -505,6 +516,7 @@ async fn run_tunnel(
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
+    close_jump(jump_handle.as_ref()).await;
     match end {
         ServeEnd::Stopped => Ok(()),
         ServeEnd::ConnectionLost => Err(AppError::SshConnect(

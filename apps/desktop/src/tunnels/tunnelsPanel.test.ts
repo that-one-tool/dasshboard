@@ -3,6 +3,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Device, Forward, TunnelStatusEvent } from "../ipc";
+import { t } from "../i18n";
 
 const h = vi.hoisted(() => ({
   devices: [] as Device[],
@@ -858,6 +859,30 @@ describe("TunnelsPanel", () => {
     await flush();
     expect(startTunnel).toHaveBeenLastCalledWith("dev-1", "t2", ["f2"]);
     expect(dot("f2").classList.contains("is-connecting")).toBe(true);
+  });
+
+  it("stops, never restarts direct, a running tunnel whose jump host was removed", async () => {
+    const jumped = { ...twoForwards(), proxyJump: "bastion" } as Device;
+    h.devices = [jumped];
+    const onError = vi.fn();
+    const panel = new TunnelsPanel({ onError, onPersist: vi.fn() });
+    await panel.init();
+    forwardButton("f2").click();
+    await flush();
+    listening(bound("f2"));
+
+    panel.setDevices([{ ...jumped, proxyJump: null } as Device]);
+    await flush();
+    expect(stopTunnel).toHaveBeenCalledWith("t1");
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: t("tunnels.error.jumpRemoved", { name: "NAS" }) }),
+    );
+
+    h.statusHandler!({ tunnelId: "t1", status: "disconnected", forwards: [] });
+    await flush();
+    expect(startTunnel).toHaveBeenCalledTimes(1);
+    expect(dot("f2").classList.contains("is-listening")).toBe(false);
+    expect(panel.layoutState()).toEqual({ "dev-1": false });
   });
 
   it("a forward stopped while restarting is left out of the restart", async () => {
