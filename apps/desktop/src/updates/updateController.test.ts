@@ -20,7 +20,7 @@ import { UpdateController, type UpdateControllerOptions } from "./updateControll
 import { checkUpdate, downloadUpdate, installUpdate } from "../ipc";
 import { confirm } from "../ui/confirm";
 
-const found: UpdateInfo = { version: "1.21.0", notes: "Fixes", pubDate: null, canInstall: true };
+const found: UpdateInfo = { version: "1.21.0", notes: "Fixes", pubDate: null, canInstall: true, viaFlatpak: false };
 
 function controller(overrides: Partial<UpdateControllerOptions> = {}): UpdateController {
 	return new UpdateController({

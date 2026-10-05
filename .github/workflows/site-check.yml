@@ -37,6 +37,23 @@ jobs:
             - name: check (astro check, Vitest, build)
               run: npm run check
 
+            # The Flatpak repo (dist/flatpak/repo, .flatpakref, .flatpakrepo)
+            # comes from the newest release carrying one, so a site-only deploy
+            # or a release whose Flatpak upload failed keeps serving it.
+            - name: add the Flatpak repo
+              if: ${{ inputs.upload-pages-artifact }}
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  mkdir -p dist/flatpak
+                  for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 20 --json tagName --jq '.[].tagName'); do
+                    if gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern dasshboard-flatpak.tar.gz --output - | tar -xz -C dist/flatpak; then
+                      echo "Flatpak repo from $tag"
+                      exit 0
+                    fi
+                  done
+                  echo "::warning::No release carries a Flatpak repo; the site deploys without one."
+
             - name: upload Pages artifact
               if: ${{ inputs.upload-pages-artifact }}
               uses: actions/upload-pages-artifact@v4

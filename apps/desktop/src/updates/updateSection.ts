@@ -3,7 +3,7 @@
  * status line, the release date and notes, and — once a newer release is known — Check
  * is replaced by either Install & restart (Windows installers, Linux AppImage)
  * or a Download link to the website (a .deb/.rpm install can't replace
- * itself). After a failed install, Check comes back (the release may have been
+ * itself; a Flatpak install gets a hint to update through Flatpak instead). After a failed install, Check comes back (the release may have been
  * pulled) along with a link to download it manually. Renders from the
  * controller's state and follows its changes, so it is right even when the
  * dialog is reopened mid-install.
@@ -93,7 +93,7 @@ function showRelease(els: SectionElements, info: UpdateInfo | null): void {
 	// A known release's action (Install or Download) takes Check's place.
 	els.check.hidden = info !== null;
 	els.install.hidden = !info?.canInstall;
-	els.download.hidden = !info || info.canInstall;
+	els.download.hidden = !info || info.canInstall || info.viaFlatpak;
 }
 
 function showReleaseDate(el: HTMLElement, pubDate: string | null | undefined): void {
@@ -125,7 +125,8 @@ function statusFor(updates: UpdateController): string | null {
 
 function availableText(info: UpdateInfo): string {
 	const available = t("updates.available", { version: info.version });
-	return info.canInstall ? available : `${available} ${t("updates.notifyOnly")}`;
+	if (info.canInstall) return available;
+	return `${available} ${t(info.viaFlatpak ? "updates.notifyOnlyFlatpak" : "updates.notifyOnly")}`;
 }
 
 async function runCheck(els: SectionElements, updates: UpdateController): Promise<void> {

@@ -52,6 +52,12 @@ Windows, macOS (Intel and Apple Silicon) and Linux builds are on
 [CrabNebula Cloud](https://web.crabnebula.cloud/that-one-tool/dasshboard/releases/)
 and the [website](https://that-one-tool.github.io/dasshboard/).
 
+On Linux you can also install the Flatpak, which then updates with `flatpak update`:
+
+```sh
+flatpak install --user https://that-one-tool.github.io/dasshboard/flatpak/dasshboard.flatpakref
+```
+
 The macOS app isn't notarized by Apple, so the first launch is blocked. Move
 DaSSHboard to Applications, then either open it once and click **Open Anyway**
 in System Settings → Privacy & Security, or run:

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- build-repo.sh fills in @VERSION@ and @DATE@ from tauri.conf.json. -->
+<component type="desktop-application">
+  <id>io.github.that_one_tool.DaSSHboard</id>
+  <name>DaSSHboard</name>
+  <summary>Dashboard for your SSH devices</summary>
+  <developer id="io.github.that_one_tool">
+    <name>That one tool</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      Save your SSH devices once, arrange live terminals in a grid, and reload
+      the whole workspace with a click.
+    </p>
+    <ul>
+      <li>SSH (password, key file or SSH agent), serial ports and local shells</li>
+      <li>Tabs split into resizable panes, restored on launch</li>
+      <li>Jump hosts, agent forwarding, local and SOCKS port forwards</li>
+      <li>Docked SFTP browser with a background transfer queue</li>
+      <li>Passwords stay in the system keyring; host keys are trusted on first use</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.that_one_tool.DaSSHboard.desktop</launchable>
+  <url type="homepage">https://that-one-tool.github.io/dasshboard/</url>
+  <url type="vcs-browser">https://github.com/that-one-tool/dasshboard</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

@@ -53,7 +53,7 @@ function q<T extends HTMLElement>(selector: string): T {
 	return el;
 }
 
-const installable: UpdateInfo = { version: "1.21.0", notes: "Fixes", pubDate: null, canInstall: true };
+const installable: UpdateInfo = { version: "1.21.0", notes: "Fixes", pubDate: null, canInstall: true, viaFlatpak: false };
 const notifyOnly: UpdateInfo = { ...installable, notes: null, canInstall: false };
 
 beforeEach(() => {
@@ -173,6 +173,18 @@ describe("mountUpdateSection", () => {
 		expect(link.getAttribute("target")).toBe("_blank");
 		expect(q(".about-update-notes").hidden).toBe(true);
 		expect(q('[data-update="check"]').hidden).toBe(true);
+	});
+
+	it("points a Flatpak install to its software center, with no download link", () => {
+		const fake = new FakeUpdates();
+		fake.found = { ...notifyOnly, viaFlatpak: true };
+		mount(fake);
+		expect(q('[data-update="install"]').hidden).toBe(true);
+		expect(q('[data-update="download"]').hidden).toBe(true);
+		expect(q('[data-update="check"]').hidden).toBe(true);
+		expect(q(".about-update-status").textContent).toBe(
+			"Version 1.21.0 is available. Update it with your software center or flatpak update.",
+		);
 	});
 
 	it("shows the error when a check fails", async () => {

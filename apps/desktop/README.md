@@ -76,7 +76,9 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands.rs  ──�
 The app stores its data in the Tauri app-config directory
 (`%APPDATA%\com.dasshboard.app\` on Windows,
 `~/Library/Application Support/com.dasshboard.app/` on macOS,
-`~/.config/com.dasshboard.app/` on Linux):
+`~/.config/com.dasshboard.app/` on Linux,
+`~/.var/app/io.github.that_one_tool.DaSSHboard/config/com.dasshboard.app/` in
+the Flatpak):
 
 | File                   | Contents                                                                  |
 | ---------------------- | ------------------------------------------------------------------------- |
@@ -111,7 +113,47 @@ release version, which `@tauri-apps/cli` writes from 2.11.5 on, so keep the CLI
 at 2.11.5 or later. The app checks for updates only on demand (About) or at
 startup when the user opts in. The NSIS/MSI installers, the macOS `.app` and
 the Linux AppImage install updates in place; `.deb`/`.rpm` installs only get a
-link to the download page.
+link to the download page, and the Flatpak points to `flatpak update`.
+
+## Flatpak
+
+`flatpak/` holds the manifest, `.desktop` file and metainfo of the Flatpak
+(app id `io.github.that_one_tool.DaSSHboard`). It differs from the Tauri
+identifier (`com.dasshboard.app`) on purpose: Flatpak forbids hyphens in
+`that-one-tool` and Tauri forbids underscores, and changing the Tauri identifier
+would move every existing install's config folder. `flatpak/build-repo.sh` repackages
+a release `.deb` on the GNOME runtime into a signed OSTree repo plus the
+`dasshboard.flatpakref`/`.flatpakrepo` files. In `desktop-release.yml` the
+`flatpak` job runs it with the `FLATPAK_GPG_PRIVATE_KEY` secret (a dedicated,
+passphrase-less key), and `flatpak-upload` attaches the result to the GitHub
+release as `dasshboard-flatpak.tar.gz`. `site-deploy` unpacks the newest one into
+the website, which serves it at `https://that-one-tool.github.io/dasshboard/flatpak/`.
+There is one commit per release; the repo keeps no history.
+
+To try a local build (needs `flatpak-builder` or the `org.flatpak.Builder`
+Flatpak; no GPG key means an unsigned repo):
+
+```sh
+npm run tauri build -- --bundles deb --no-sign   # the updater key lives only in CI
+flatpak/build-repo.sh src-tauri/target/release/bundle/deb/*.deb ~/.cache/dasshboard-flatpak/out
+flatpak --user remote-add --no-gpg-verify dasshboard-local ~/.cache/dasshboard-flatpak/out/repo
+flatpak --user install dasshboard-local io.github.that_one_tool.DaSSHboard
+```
+
+Inside the sandbox, local shells run on the host through `flatpak-spawn --host`.
+The PTY must not become the sandbox side's controlling terminal, so the host
+shell can claim it (`set_controlling_tty(false)`); otherwise it gets no job
+control or resize signals. The tray icon image goes to `$XDG_RUNTIME_DIR/app/<id>`,
+the only runtime directory the host's panel can read.
+
+On Linux (all bundles, not just the Flatpak) the app sets
+`__NV_DISABLE_EXPLICIT_SYNC=1` at startup, unless already set: without it
+WebKitGTK on NVIDIA under Wayland dies with "Error 71 (Protocol error)". Under
+Wayland it also doesn't save or restore the window size and position
+(`wayland.rs`). The
+window-state plugin restores a physical size before the window is on a screen,
+so on a scaled screen the window doubled every launch, until GDK's buffer size
+overflowed and the app segfaulted. Maximized and fullscreen are still remembered.
 
 macOS builds are ad-hoc signed (`bundle.macOS.signingIdentity: "-"`), not
 Developer ID signed or notarized, so Gatekeeper blocks the first launch of a

@@ -736,6 +736,9 @@ export interface UpdateInfo {
    * AppImage); `false` for a .deb/.rpm install, which links to the download
    * page instead. */
   canInstall: boolean;
+  /** Whether Flatpak delivers the update; the dialog then points the user to
+   * their software center instead of the download page. */
+  viaFlatpak: boolean;
 }
 
 /** Asks the update server for a newer release; `null` when up to date. */

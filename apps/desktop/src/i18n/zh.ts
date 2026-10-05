@@ -126,6 +126,7 @@ export const zh: Messages = {
 	"updates.released": "发布于 {date}",
 	"updates.available": "版本 {version} 可用。",
 	"updates.notifyOnly": "此安装无法自行更新；请从网站下载新版本。",
+	"updates.notifyOnlyFlatpak": "请通过软件中心或 flatpak update 更新。",
 	"updates.install": "安装并重启",
 	"updates.download": "下载",
 	"updates.releasesLink": "手动下载",

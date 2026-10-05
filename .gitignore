@@ -31,3 +31,6 @@ apps/desktop/src-tauri/target
 
 # Agents
 .claude
+
+# Local working notes for continuing on another machine (never committed)
+HANDOVER.md

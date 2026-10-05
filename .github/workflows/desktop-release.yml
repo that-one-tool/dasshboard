@@ -2,7 +2,8 @@ name: release
 
 # Draft -> build -> publish a CrabNebula Cloud release with Windows (msi, nsis),
 # Linux (deb, rpm, AppImage) and macOS (dmg + updater .app, Intel and Apple
-# Silicon) installers. Adapted from
+# Silicon) installers, plus a signed Flatpak repo (built from the .deb) attached
+# to the GitHub release, which site-deploy serves under /flatpak/. Adapted from
 # https://docs.crabnebula.dev/cloud/ci/tauri-v2-workflow/ (desktop-only: no
 # Android/iOS jobs). macOS builds are ad-hoc signed only (no Apple Developer ID,
 # no notarization), so users clear Gatekeeper once by hand — see README.
@@ -11,6 +12,7 @@ name: release
 #   CN_API_KEY                         - CrabNebula Cloud API key for that-one-tool/dasshboard
 #   TAURI_SIGNING_PRIVATE_KEY          - updater signing private key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD - password for the private key above
+#   FLATPAK_GPG_PRIVATE_KEY            - passphrase-less armored GPG key signing the Flatpak repo
 
 # Only desktop-app changes start this workflow: website-only pushes
 # (apps/website/**) never reach the release chain. The commit-scope rule in
@@ -150,12 +152,59 @@ jobs:
                   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
                   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
+            # The flatpak job repackages this exact .deb.
+            - name: keep the .deb for the Flatpak build
+              if: matrix.os == 'ubuntu-22.04'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: linux-deb
+                  path: apps/desktop/src-tauri/target/release/bundle/deb/*.deb
+                  if-no-files-found: error
+
             - name: upload assets
               uses: crabnebula-dev/cloud-release@v0
               with:
                   command: release upload ${{ env.CN_APPLICATION }} --framework tauri
                   api-key: ${{ secrets.CN_API_KEY }}
                   working-directory: apps/desktop
+
+    # The signed Flatpak repo (apps/desktop/flatpak/build-repo.sh), kept as an
+    # artifact until the GitHub release exists (flatpak-upload).
+    flatpak:
+        needs: build-and-upload
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/checkout@v5
+
+            - uses: actions/download-artifact@v4
+              with:
+                  name: linux-deb
+                  path: deb
+
+            - name: install flatpak-builder
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y flatpak flatpak-builder
+                  # Ubuntu 24.04's AppArmor blocks the unprivileged user
+                  # namespaces bubblewrap needs to sandbox the build.
+                  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+                  flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+            - name: build the signed repo
+              env:
+                  FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+              run: |
+                  echo "$FLATPAK_GPG_PRIVATE_KEY" | gpg --batch --import
+                  KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ { print $10; exit }')
+                  DEB=$(find deb -name '*.deb' | head -1)
+                  apps/desktop/flatpak/build-repo.sh "$DEB" flatpak-out "$KEY_ID"
+                  tar -czf dasshboard-flatpak.tar.gz -C flatpak-out .
+
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: flatpak-repo
+                  path: dasshboard-flatpak.tar.gz
+                  if-no-files-found: error
 
     publish:
         needs: build-and-upload
@@ -199,3 +248,25 @@ jobs:
                     --target "$GITHUB_SHA" \
                     --title "$TAG" \
                     --generate-notes
+
+    # Attaches the Flatpak repo to the version's GitHub release; site-deploy
+    # (which runs once this whole workflow succeeds) unpacks it into the site.
+    # --clobber keeps a re-run idempotent.
+    flatpak-upload:
+        needs: [tag-and-release, flatpak]
+        runs-on: ubuntu-22.04
+        permissions:
+            contents: write # upload release assets with GITHUB_TOKEN
+        steps:
+            - uses: actions/checkout@v5
+
+            - uses: actions/download-artifact@v4
+              with:
+                  name: flatpak-repo
+
+            - name: attach the repo to the GitHub release
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  VERSION=$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)
+                  gh release upload "v${VERSION}" dasshboard-flatpak.tar.gz --clobber

@@ -30,9 +30,11 @@ files, releasing),
       `site-check.yml`; `ci-ok` always runs and is the single required check.
     - `desktop-release.yml` — push to `main` under `apps/desktop/**`; release
       decision in `.github/scripts/release-gate.sh` (tested by
-      `release-gate.test.sh`).
+      `release-gate.test.sh`); its `flatpak` job turns the Linux `.deb` into a
+      signed Flatpak repo, attached to the GitHub release by `flatpak-upload`.
     - `site-deploy.yml` — push to `main` under `apps/website/**`, or after a
-      successful desktop `release` run; deploys to GitHub Pages.
+      successful desktop `release` run; deploys to GitHub Pages, with the
+      newest release's Flatpak repo unpacked under `flatpak/` (`site-check.yml`).
 - Commit scopes: `(site)` for website changes — it never cuts a desktop
   release; `(desktop)`, unscoped, or any other scope for the desktop app.
 
@@ -111,14 +113,22 @@ files, releasing),
       reusing the same `SessionSink`/`SessionStatus` seam; bridges the crate's
       blocking reader/writer to the async sink with reader/writer threads + a
       control task; on macOS the default shell runs as a login shell with a
-      UTF-8 `LANG` fallback
+      UTF-8 `LANG` fallback; inside Flatpak the shell runs on the host via
+      `flatpak-spawn --host`, the PTY left free to be its controlling tty
+    - `flatpak.rs` — Flatpak sandbox detection and the host-visible runtime dir
+      (where the tray icon image goes)
+    - `wayland.rs` — Linux Wayland workarounds: the window-state flags (no
+      size/position on Wayland, where the plugin's restore made the window
+      grow every launch until GDK crashed) and `__NV_DISABLE_EXPLICIT_SYNC`
+      (NVIDIA + WebKitGTK "Error 71"), set first thing in `run()`
     - `transfer.rs` — devices/profiles import-export
     - `updater.rs` — in-app updates via `tauri-plugin-updater` (CrabNebula
       endpoints): check → download → install, each naming the confirmed
       version; runs only on user request or opt-in launch check; self-install
       for NSIS/MSI + AppImage + a real macOS `.app` (keyed on the bundle type;
       an unbundled macOS dev binary is notify-only), notify-only for
-      `.deb`/`.rpm`; the install closes live sessions first
+      `.deb`/`.rpm` (and Flatpak, which says `flatpak update`); the install
+      closes live sessions first
       (`AppState::shutdown_live_sessions`, shared with app close and quit)
     - `tray.rs` — opt-in close-to-tray: a lazily built tray icon (disabled
       live-connection count, Show, Quit; a monochrome template image on macOS,
@@ -132,6 +142,10 @@ files, releasing),
     - `state.rs` — `AppState` (managed Tauri state), `error.rs` — `AppError`
 - `src-tauri/tests/` — `ssh_it.rs`, `sftp_it.rs`: integration tests against an
   in-process throwaway `russh` server, no Docker/external daemon needed
+- `flatpak/` — Flatpak manifest (repackages the release `.deb` on the GNOME
+  runtime, plus libayatana-appindicator from Flathub's shared-modules), the
+  `.desktop` file, metainfo, and `build-repo.sh` (signed OSTree repo +
+  `.flatpakref`/`.flatpakrepo`); app id `io.github.that_one_tool.DaSSHboard`
 
 ## Commands
 

@@ -24,6 +24,7 @@ use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use crate::flatpak;
 use crate::state::AppState;
 
 /// Emitted with the new count whenever the number of live sessions changes.
@@ -283,12 +284,21 @@ fn build<R: Runtime>(app: &AppHandle<R>, labels: &TrayLabels) -> tauri::Result<T
         .on_menu_event(on_menu_event)
         .on_tray_icon_event(on_icon_event);
     // Registered in Tauri's state (see the module doc); nothing is kept here.
-    with_icon(app, builder).build(app)?;
+    with_icon(app, with_host_visible_icon_dir(builder)).build(app)?;
     Ok(TrayMenu {
         connections,
         show,
         quit,
     })
+}
+
+/// The host's panel loads the icon image by path, so from inside the Flatpak
+/// sandbox it must be written where the host can see it.
+fn with_host_visible_icon_dir<R: Runtime>(builder: TrayIconBuilder<R>) -> TrayIconBuilder<R> {
+    match flatpak::host_visible_runtime_dir() {
+        Some(dir) => builder.temp_dir_path(dir),
+        None => builder,
+    }
 }
 
 /// macOS: a monochrome template image the menu bar tints for light/dark.

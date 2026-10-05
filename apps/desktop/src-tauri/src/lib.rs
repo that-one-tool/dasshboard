@@ -8,6 +8,7 @@ mod atomic_file;
 mod bookmark_store;
 mod commands;
 mod config_watch;
+mod flatpak;
 mod local_shell;
 mod profile;
 mod profile_store;
@@ -21,6 +22,7 @@ mod store;
 mod transfer;
 mod tray;
 mod updater;
+mod wayland;
 mod workspace;
 mod workspace_store;
 
@@ -74,6 +76,8 @@ pub(crate) fn app_version() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before GTK starts and before any thread exists.
+    wayland::disable_nvidia_explicit_sync();
     // Before anything can run an update check (which may set TLS env vars).
     local_shell::record_startup_env();
     let builder = tauri::Builder::default();
@@ -85,8 +89,13 @@ pub fn run() {
     };
     builder
         .plugin(tauri_plugin_opener::init())
-        // Persist and restore the window size/position across restarts (Phase 5).
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // Persist and restore the window state across restarts (Phase 5); on
+        // Wayland without size and position (see `wayland::window_state_flags`).
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(wayland::window_state_flags())
+                .build(),
+        )
         // Native save/open file pickers backing devices/profiles import/export.
         .plugin(tauri_plugin_dialog::init())
         // In-app updates; only ever invoked by `check_update`/`install_update`.

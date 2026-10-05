@@ -132,6 +132,7 @@ export const en = {
 	"updates.released": "Released {date}",
 	"updates.available": "Version {version} is available.",
 	"updates.notifyOnly": "This installation can't update itself; download the new version from the website.",
+	"updates.notifyOnlyFlatpak": "Update it with your software center or flatpak update.",
 	"updates.install": "Install & restart",
 	"updates.download": "Download",
 	"updates.releasesLink": "Download manually",

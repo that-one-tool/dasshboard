@@ -29,6 +29,7 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, Pt
 use tokio::sync::mpsc;
 
 use crate::error::AppError;
+use crate::flatpak;
 use crate::session::{SessionSink, SessionStatus};
 
 /// Bound on the per-session control channel — same rationale as the SSH/serial
@@ -193,11 +194,38 @@ fn scrub_env(cmd: &mut CommandBuilder, vars: &[&str]) {
     }
 }
 
-/// Build the `CommandBuilder` for the shell: the resolved program, the resolved
-/// startup directory (when known), `TERM=xterm-256color` so full-screen
-/// programs behave (matching the SSH session's `TERM`), and the app's own
-/// environment minus the updater's TLS overrides.
 fn build_command(params: &LocalShellParams) -> CommandBuilder {
+    if flatpak::is_sandboxed() {
+        return host_command(&resolve_program(&params.shell), resolve_cwd(&params.cwd));
+    }
+    native_command(params)
+}
+
+/// Inside the Flatpak sandbox a shell would only see the runtime, not the
+/// user's system, so it runs on the host through `flatpak-spawn --host`. The
+/// PTY stays ours (its fds are forwarded) and the host shell gets the host's
+/// environment; only `TERM` is passed along. `--watch-bus` kills it if the app
+/// goes away.
+///
+/// A tty can be the controlling terminal of one session only. If the sandboxed
+/// `flatpak-spawn` took it, the host shell would run without one: no job
+/// control and no SIGWINCH on resize. Left free, the host side claims it.
+fn host_command(program: &str, cwd: Option<String>) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new("flatpak-spawn");
+    cmd.set_controlling_tty(false);
+    cmd.args(["--host", "--watch-bus", "--env=TERM=xterm-256color"]);
+    if let Some(dir) = cwd {
+        cmd.arg(format!("--directory={dir}"));
+    }
+    cmd.arg(program);
+    cmd
+}
+
+/// The shell as a direct child: the resolved program, the resolved startup
+/// directory (when known), `TERM=xterm-256color` so full-screen programs behave
+/// (matching the SSH session's `TERM`), and the app's own environment minus the
+/// updater's TLS overrides.
+fn native_command(params: &LocalShellParams) -> CommandBuilder {
     let mut cmd = CommandBuilder::new(resolve_program(&params.shell));
     if let Some(dir) = resolve_cwd(&params.cwd) {
         cmd.cwd(dir);
@@ -605,6 +633,46 @@ mod tests {
         );
         // Blank ⇒ home or None, never the blank string.
         assert_ne!(resolve_cwd(&Some("  ".to_string())), Some("  ".to_string()));
+    }
+
+    #[test]
+    fn in_a_flatpak_the_shell_runs_on_the_host_via_flatpak_spawn() {
+        let cmd = host_command("/bin/bash", Some("/home/j/work".to_string()));
+
+        assert_eq!(
+            cmd.get_argv(),
+            &vec![
+                "flatpak-spawn",
+                "--host",
+                "--watch-bus",
+                "--env=TERM=xterm-256color",
+                "--directory=/home/j/work",
+                "/bin/bash",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_host_shell_leaves_the_pty_free_to_be_its_controlling_terminal() {
+        let cmd = host_command("/bin/bash", None);
+
+        assert!(!cmd.get_controlling_tty());
+    }
+
+    #[test]
+    fn a_host_shell_without_a_known_dir_starts_where_the_host_decides() {
+        let cmd = host_command("/bin/zsh", None);
+
+        assert_eq!(
+            cmd.get_argv(),
+            &vec![
+                "flatpak-spawn",
+                "--host",
+                "--watch-bus",
+                "--env=TERM=xterm-256color",
+                "/bin/zsh",
+            ]
+        );
     }
 
     #[test]

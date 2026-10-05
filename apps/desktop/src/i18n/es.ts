@@ -125,6 +125,7 @@ export const es: Messages = {
 	"updates.released": "Publicada el {date}",
 	"updates.available": "La versión {version} está disponible.",
 	"updates.notifyOnly": "Esta instalación no puede actualizarse sola; descarga la nueva versión desde el sitio web.",
+	"updates.notifyOnlyFlatpak": "Actualízala desde tu centro de software o con flatpak update.",
 	"updates.install": "Instalar y reiniciar",
 	"updates.download": "Descargar",
 	"updates.releasesLink": "Descargar manualmente",

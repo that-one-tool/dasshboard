@@ -19,12 +19,14 @@ use tauri::utils::config::BundleType;
 use tauri::utils::platform::bundle_type;
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_updater::{Update, UpdaterExt};
-use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+use tauri_plugin_window_state::AppHandleExt;
 
 use crate::atomic_file;
 use crate::error::AppError;
+use crate::flatpak;
 use crate::local_shell;
 use crate::state::AppState;
+use crate::wayland;
 
 /// Bounds each update-check request (so two endpoints can take up to twice
 /// this); the plugin never applies it to the download. Keeps a captive portal
@@ -51,6 +53,9 @@ pub struct UpdateInfo {
     pub pub_date: Option<String>,
     /// Whether this build can download and install the update itself.
     pub can_install: bool,
+    /// Whether Flatpak delivers the update (the app can't, and the website's
+    /// installers are the wrong place to send the user).
+    pub via_flatpak: bool,
 }
 
 /// A release that knows its version — the plugin's `Update`, or a test fake
@@ -204,6 +209,7 @@ pub async fn check<R: Runtime>(
         notes: notes_or_none(update.body.clone()),
         pub_date: pub_date_of(&update.raw_json),
         can_install: this_build_can_self_install(),
+        via_flatpak: flatpak::is_sandboxed(),
     });
     pending.lock().replace(found);
     Ok(info)
@@ -246,7 +252,7 @@ pub async fn install<R: Runtime>(
 /// installer's exit / the restart skip the normal close path.
 async fn prepare_to_exit<R: Runtime>(app: &AppHandle<R>) {
     app.state::<AppState>().shutdown_live_sessions().await;
-    let _ = app.save_window_state(StateFlags::all()); // best-effort
+    let _ = app.save_window_state(wayland::window_state_flags()); // best-effort
 }
 
 fn ensure_self_install() -> Result<(), AppError> {
@@ -349,12 +355,14 @@ mod tests {
             notes: Some("Fixes".into()),
             pub_date: Some("2026-09-29T00:26:49.821Z".into()),
             can_install: true,
+            via_flatpak: false,
         };
         let value = serde_json::to_value(&info).unwrap();
         assert_eq!(value["version"], "1.21.0");
         assert_eq!(value["notes"], "Fixes");
         assert_eq!(value["pubDate"], "2026-09-29T00:26:49.821Z");
         assert_eq!(value["canInstall"], true);
+        assert_eq!(value["viaFlatpak"], false);
     }
 
     #[test]

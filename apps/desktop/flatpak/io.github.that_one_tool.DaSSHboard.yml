@@ -1,0 +1,57 @@
+# Flatpak manifest. Repackages the binary and icons of the release .deb (built
+# by `tauri build`) on the GNOME runtime, which already ships WebKitGTK 4.1 and
+# every library the binary links. Built by build-repo.sh, which stages
+# dasshboard.deb, the metainfo and Flathub's shared-modules next to this file.
+id: io.github.that_one_tool.DaSSHboard
+runtime: org.gnome.Platform
+runtime-version: "51"
+sdk: org.gnome.Sdk
+command: dasshboard
+# No .Debug extension: it would only grow the repo served from GitHub Pages.
+build-options:
+    no-debuginfo: true
+
+finish-args:
+    - --share=ipc
+    - --socket=wayland
+    - --socket=fallback-x11
+    - --device=dri
+    # SSH, SFTP, tunnels, update checks.
+    - --share=network
+    # Passwords and passphrases (keyring's Secret Service backend).
+    - --talk-name=org.freedesktop.secrets
+    # SSH agent auth and agent forwarding ($SSH_AUTH_SOCK).
+    - --socket=ssh-auth
+    # Key files, ~/.ssh/config import/export, SFTP transfers and import/export
+    # through the (non-portal) GTK file dialogs.
+    - --filesystem=home
+    # Serial/COM ports (/dev/ttyUSB*, /dev/ttyACM*).
+    - --device=all
+    # Local shells run on the host via `flatpak-spawn --host`.
+    - --talk-name=org.freedesktop.Flatpak
+    # Opt-in system tray.
+    - --talk-name=org.kde.StatusNotifierWatcher
+
+modules:
+    # tray.rs loads libayatana-appindicator3 at runtime; the GNOME runtime
+    # doesn't ship it.
+    - shared-modules/libayatana-appindicator/libayatana-appindicator-gtk3.json
+
+    - name: dasshboard
+      buildsystem: simple
+      sources:
+          - type: file
+            path: dasshboard.deb
+          - type: file
+            path: io.github.that_one_tool.DaSSHboard.metainfo.xml
+          - type: file
+            path: io.github.that_one_tool.DaSSHboard.desktop
+      build-commands:
+          - ar -x dasshboard.deb
+          - tar -xf data.tar.gz
+          - install -Dm755 usr/bin/dasshboard /app/bin/dasshboard
+          - install -Dm644 usr/share/icons/hicolor/32x32/apps/dasshboard.png /app/share/icons/hicolor/32x32/apps/${FLATPAK_ID}.png
+          - install -Dm644 usr/share/icons/hicolor/128x128/apps/dasshboard.png /app/share/icons/hicolor/128x128/apps/${FLATPAK_ID}.png
+          - install -Dm644 usr/share/icons/hicolor/256x256@2/apps/dasshboard.png /app/share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png
+          - install -Dm644 ${FLATPAK_ID}.desktop /app/share/applications/${FLATPAK_ID}.desktop
+          - install -Dm644 ${FLATPAK_ID}.metainfo.xml /app/share/metainfo/${FLATPAK_ID}.metainfo.xml

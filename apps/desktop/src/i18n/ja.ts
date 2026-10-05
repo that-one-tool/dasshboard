@@ -126,6 +126,7 @@ export const ja: Messages = {
 	"updates.released": "{date} リリース",
 	"updates.available": "バージョン {version} が利用可能です。",
 	"updates.notifyOnly": "このインストールは自動更新できません。Web サイトから新しいバージョンをダウンロードしてください。",
+	"updates.notifyOnlyFlatpak": "ソフトウェアセンターまたは flatpak update で更新してください。",
 	"updates.install": "インストールして再起動",
 	"updates.download": "ダウンロード",
 	"updates.releasesLink": "手動でダウンロード",

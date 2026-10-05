@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DaSSHboard
+Comment=Multi-pane SSH & serial terminal dashboard with SFTP file transfer
+Exec=dasshboard
+Icon=io.github.that_one_tool.DaSSHboard
+StartupWMClass=dasshboard
+Terminal=false
+Categories=Network;RemoteAccess;System;
+Keywords=ssh;sftp;serial;terminal;tunnel;
