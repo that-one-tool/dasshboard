@@ -6,7 +6,29 @@ import {
   formatMtime,
   formatMode,
   modeToOctal,
+  isLocalFileName,
+  skippedSummary,
 } from "./sftpFormat";
+
+describe("skippedSummary", () => {
+  it("names up to three skipped entries by their last component", () => {
+    expect(skippedSummary(["/top/a", "/top/sub/b"])).toBe("a, b");
+    expect(skippedSummary(["/t/a", "/t/b", "/t/c", "/t/d"])).toBe("a, b, c, …");
+  });
+});
+
+describe("isLocalFileName", () => {
+  it("accepts ordinary names, including dots, spaces and unicode", () => {
+    for (const name of ["readme.txt", ".bashrc", "a b", "..hidden", "file:1", "été 🙂"]) {
+      expect(isLocalFileName(name), name).toBe(true);
+    }
+  });
+  it("rejects names that would leave the chosen folder on any OS", () => {
+    for (const name of ["", ".", "..", "../x", "a/b", "/etc", "..\\x", "a\\b", "C:x", "c:\\x", "\\\\srv\\s", "a\0b"]) {
+      expect(isLocalFileName(name), name).toBe(false);
+    }
+  });
+});
 
 describe("joinRemote", () => {
   it("joins under a normal directory", () => {

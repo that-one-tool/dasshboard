@@ -69,6 +69,27 @@ describe("readFormValues", () => {
     });
   });
 
+  it("sends the passphrase field as the secret for key auth", () => {
+    q<HTMLInputElement>('input[name="auth-method"][value="key"]').checked = true;
+    q<HTMLInputElement>("#device-passphrase").value = "key-pass";
+
+    expect(readFormValues(root, "", []).secret).toBe("key-pass");
+  });
+
+  it("ignores a password left in the hidden password field for key auth", () => {
+    q<HTMLInputElement>("#device-secret").value = "typed-before-switching";
+    q<HTMLInputElement>('input[name="auth-method"][value="key"]').checked = true;
+
+    expect(readFormValues(root, "", []).secret).toBe("");
+  });
+
+  it("ignores a passphrase left in the hidden passphrase field for password auth", () => {
+    q<HTMLInputElement>("#device-passphrase").value = "stale-pass";
+    q<HTMLInputElement>("#device-secret").value = "hunter2";
+
+    expect(readFormValues(root, "", []).secret).toBe("hunter2");
+  });
+
   it("reads the selected fingerprint when agent auth is chosen", () => {
     q<HTMLInputElement>('input[name="auth-method"][value="agent"]').checked = true;
     // A live refresh would fill these; simulate a selection.

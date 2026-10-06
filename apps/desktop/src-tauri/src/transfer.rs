@@ -16,7 +16,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::device::Device;
+use crate::device::{Auth, Connection, Device};
 use crate::error::AppError;
 use crate::profile::Profile;
 use crate::state::AppState;
@@ -136,15 +136,74 @@ pub(crate) fn export_devices_impl(state: &AppState, path: &Path) -> Result<u32, 
 /// Read/validate/upsert devices from `path`. Every device is validated before
 /// anything is written (all-or-nothing); each keeps its `id` (empty ⇒ a fresh
 /// UUID, existing ⇒ replaced in place), so re-importing the same file is
-/// idempotent. Returns the count imported.
+/// idempotent. Stored secrets an imported device must not inherit are dropped
+/// first, for every device, so a keyring failure aborts the import before any
+/// device is saved (see [`drop_inherited_secret`]). Returns the count imported.
 pub(crate) fn import_devices_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
     let contents = fs::read_to_string(path)?;
     let devices = parse_devices_import(&contents)?;
     let count = devices.len() as u32;
+    let saved = state.device_store.list();
+    for device in &devices {
+        drop_inherited_secret(state, &saved, device)?;
+    }
     for device in devices {
         state.device_store.upsert(device)?;
     }
     Ok(count)
+}
+
+/// What a device's stored secret is sent to: the SSH endpoint, account, auth
+/// method and jump host (`None` for kinds that store no secret).
+type SecretTarget<'a> = Option<(&'a str, u16, &'a str, &'a Auth, Option<&'a str>)>;
+
+fn secret_target(device: &Device) -> SecretTarget<'_> {
+    match &device.connection {
+        Connection::Ssh {
+            host,
+            port,
+            username,
+            auth,
+            proxy_jump,
+            ..
+        } => Some((host, *port, username, auth, proxy_jump.as_deref())),
+        _ => None,
+    }
+}
+
+/// Keychain secrets are keyed by device id, so an import file reusing an id
+/// would hand that id's secret to the imported device — e.g. a crafted "team
+/// devices" file pointing a saved device at another host or jump host, which
+/// gets the password after a mere first-contact host-key prompt.
+///
+/// - A saved device whose target changed: its secret is deleted, and a keyring
+///   failure aborts the import (the user re-enters the secret).
+/// - An id no saved device has: any orphaned secret (a failed keyring delete, a
+///   reset devices.json) is deleted best-effort — a keyring that isn't there
+///   (Linux without Secret Service) can't hold one, and must not block imports.
+/// - An empty id gets a fresh UUID on save: nothing to inherit.
+fn drop_inherited_secret(
+    state: &AppState,
+    saved: &[Device],
+    incoming: &Device,
+) -> Result<(), AppError> {
+    match saved.iter().find(|d| d.id == incoming.id) {
+        Some(existing) if secret_target(existing) == secret_target(incoming) => Ok(()),
+        Some(_) => state.secret_store.delete(&incoming.id),
+        None => {
+            drop_orphaned_secret(state, &incoming.id);
+            Ok(())
+        }
+    }
+}
+
+fn drop_orphaned_secret(state: &AppState, id: &str) {
+    if id.is_empty() {
+        return;
+    }
+    if let Err(err) = state.secret_store.delete(id) {
+        eprintln!("[DaSSHboard] import: could not clear a stale secret ({err})");
+    }
 }
 
 /// Write all profiles to `path` as the export envelope (excludes
@@ -176,7 +235,7 @@ mod tests {
     use crate::known_hosts::KnownHostsStore;
     use crate::profile::{Grid, Pane, ProfileTab};
     use crate::profile_store::ProfileStore;
-    use crate::secret::InMemorySecretStore;
+    use crate::secret::{FailingSecretStore, InMemorySecretStore};
     use crate::serial::SerialSessionManager;
     use crate::session::SessionManager;
     use crate::settings::SettingsStore;
@@ -388,6 +447,109 @@ mod tests {
         let after = dst.device_store.list();
         assert_eq!(after.len(), 1, "re-import must not create duplicates");
         assert_eq!(after, original, "ids and fields preserved across import");
+    }
+
+    /* -- devices import: stored secrets ---------------------------------- */
+
+    /// A saved device with a stored password, plus an import file holding the
+    /// same id with `edit` applied (as a crafted "team devices" file could).
+    fn import_over_saved_device(edit: impl FnOnce(&mut Device)) -> (AppState, String) {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        let saved = state.device_store.upsert(sample_device("NAS")).unwrap();
+        state.secret_store.set(&saved.id, "hunter2").unwrap();
+        let mut incoming = saved.clone();
+        edit(&mut incoming);
+        let file = dir.path().join("in.json");
+        fs::write(&file, devices_to_export_json(&[incoming])).unwrap();
+        import_devices_impl(&state, &file).unwrap();
+        (state, saved.id)
+    }
+
+    fn ssh_fields(device: &mut Device) -> (&mut String, &mut u16, &mut String, &mut Auth) {
+        match &mut device.connection {
+            Connection::Ssh {
+                host,
+                port,
+                username,
+                auth,
+                ..
+            } => (host, port, username, auth),
+            _ => unreachable!("sample_device is SSH"),
+        }
+    }
+
+    fn set_proxy_jump(device: &mut Device, jump: &str) {
+        if let Connection::Ssh { proxy_jump, .. } = &mut device.connection {
+            *proxy_jump = Some(jump.to_string());
+        }
+    }
+
+    #[test]
+    fn import_drops_the_stored_secret_when_the_device_points_elsewhere() {
+        let edits: [fn(&mut Device); 5] = [
+            // Same target, reached through a (hostile) jump host: on a target
+            // not in known_hosts yet, only first-contact prompts would show.
+            |d| set_proxy_jump(d, "attacker-jump"),
+            |d| *ssh_fields(d).0 = "attacker.example".to_string(),
+            |d| *ssh_fields(d).1 = 2222,
+            |d| *ssh_fields(d).2 = "root".to_string(),
+            |d| {
+                *ssh_fields(d).3 = Auth::Key {
+                    key_path: "/k".to_string(),
+                }
+            },
+        ];
+        for edit in edits {
+            let (state, id) = import_over_saved_device(edit);
+            assert_eq!(state.secret_store.get(&id).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn import_drops_an_orphaned_secret_under_an_id_no_saved_device_has() {
+        // A failed keyring delete or a reset devices.json can leave a secret
+        // behind; an imported device reusing that id must not inherit it.
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        state.secret_store.set("orphan-id", "hunter2").unwrap();
+        let mut incoming = sample_device("NAS");
+        incoming.id = "orphan-id".to_string();
+        let file = dir.path().join("in.json");
+        fs::write(&file, devices_to_export_json(&[incoming])).unwrap();
+
+        import_devices_impl(&state, &file).unwrap();
+
+        assert_eq!(state.secret_store.get("orphan-id").unwrap(), None);
+    }
+
+    #[test]
+    fn a_failed_secret_delete_aborts_the_import_before_saving_anything() {
+        let dir = tempdir().unwrap();
+        let mut state = test_state(dir.path());
+        let secrets = Arc::new(FailingSecretStore::new());
+        state.secret_store = secrets.clone();
+        let saved = state.device_store.upsert(sample_device("NAS")).unwrap();
+        let mut new_one = sample_device("New");
+        new_one.id = "new-id".to_string();
+        let mut retargeted = saved.clone();
+        *ssh_fields(&mut retargeted).0 = "attacker.example".to_string();
+        let file = dir.path().join("in.json");
+        // The retargeted device's delete fails; the new one comes after it.
+        fs::write(&file, devices_to_export_json(&[retargeted, new_one])).unwrap();
+        secrets.fail_next_delete();
+
+        assert!(import_devices_impl(&state, &file).is_err());
+        assert_eq!(state.device_store.list(), vec![saved], "nothing saved");
+    }
+
+    #[test]
+    fn import_keeps_the_stored_secret_when_the_target_is_unchanged() {
+        let (state, id) = import_over_saved_device(|d| d.name = "Renamed".to_string());
+        assert_eq!(
+            state.secret_store.get(&id).unwrap().as_deref(),
+            Some("hunter2")
+        );
     }
 
     #[test]

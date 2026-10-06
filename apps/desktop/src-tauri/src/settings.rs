@@ -253,7 +253,7 @@ impl SettingsStore {
     /// defaults (created on first save); a corrupt file is backed up to
     /// `settings.json.corrupt-<unix-seconds>` and defaults are used.
     pub fn load(dir: PathBuf) -> Self {
-        let settings = Self::read_from_disk(&dir);
+        let settings = Self::read_from_disk(&dir).unwrap_or_default();
         SettingsStore {
             dir,
             settings: Mutex::new(settings),
@@ -264,18 +264,21 @@ impl SettingsStore {
     /// Lets a second running app instance pick up terminal appearance another
     /// instance changed (see `reload_config`). Same recovery semantics as
     /// [`load`](Self::load): a missing file yields defaults and a corrupt file
-    /// is backed up and defaults are used.
+    /// is backed up and defaults are used; an unreadable one keeps the current
+    /// settings.
     pub fn reload(&self) {
-        let settings = Self::read_from_disk(&self.dir);
-        *self.lock() = settings;
+        if let Some(settings) = Self::read_from_disk(&self.dir) {
+            *self.lock() = settings;
+        }
     }
 
     /// Reads, parses, and sanitizes `dir/settings.json`, applying the
     /// missing-file and corrupt-file recovery shared by `load` and `reload`
-    /// (see [`atomic_file::read_recovering`]). The `map` sanitizes loaded
-    /// settings so a hand-edited or stale file can't persist a bad value.
-    fn read_from_disk(dir: &Path) -> Settings {
-        atomic_file::read_recovering::<Settings, _>(
+    /// (see [`atomic_file::reread_recovering`]); `None` when unreadable. The
+    /// `map` sanitizes loaded settings so a hand-edited or stale file can't
+    /// persist a bad value.
+    fn read_from_disk(dir: &Path) -> Option<Settings> {
+        atomic_file::reread_recovering::<Settings, _>(
             dir,
             SETTINGS_FILE,
             Settings::sanitized,

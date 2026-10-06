@@ -13,6 +13,7 @@
 import { forgetHost, listKnownHosts, type KnownHostEntry } from "../ipc";
 import { confirm } from "../ui/confirm";
 import { requireEl } from "../ui/dom";
+import { consumeKey, isTopDialog, pushDialog, removeDialog } from "../ui/dialogStack";
 import { t } from "../i18n";
 
 export interface KnownHostsDialogOptions {
@@ -73,6 +74,7 @@ export function openKnownHostsDialog(options: KnownHostsDialogOptions): void {
   const previouslyFocused = document.activeElement;
   const close = (): void => {
     document.removeEventListener("keydown", onKey, true);
+    removeDialog(root);
     root.remove();
     if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) {
       previouslyFocused.focus();
@@ -87,14 +89,15 @@ export function openKnownHostsDialog(options: KnownHostsDialogOptions): void {
     }
   });
   const onKey = (e: KeyboardEvent): void => {
-    if (e.key === "Escape") {
-      e.preventDefault();
+    if (e.key === "Escape" && isTopDialog(root)) {
+      consumeKey(e);
       close();
     }
   };
   document.addEventListener("keydown", onKey, true);
 
   document.body.appendChild(root);
+  pushDialog(root);
   closeBtn.focus();
   void refresh();
 }

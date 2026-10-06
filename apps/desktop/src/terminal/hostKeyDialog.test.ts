@@ -201,6 +201,26 @@ describe("initHostKeyDialog", () => {
     expect(h.respond).toHaveBeenCalledWith("p1", false);
   });
 
+  it("shows over a confirm opened before it, and takes its keys", async () => {
+    const { confirm } = await import("../ui/confirm");
+    let pasteAnswer: boolean | null = null;
+    const paste = confirm("Paste 3 lines?").then((r) => (pasteAnswer = r));
+    h.promptHandler?.(promptEvent());
+
+    // Every dialog shares one z-index, so the later sibling paints on top: the
+    // prompt must be the last one, or the keys would go to a hidden dialog.
+    expect(document.body.lastElementChild).toBe(q(".hostkey-dialog"));
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flush();
+
+    expect(h.respond).toHaveBeenCalledWith("p1", false);
+    expect(pasteAnswer).toBeNull();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await paste;
+    expect(pasteAnswer).toBe(false);
+  });
+
   it("Escape is a no-op when no prompt is currently showing", async () => {
     document.dispatchEvent(
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),

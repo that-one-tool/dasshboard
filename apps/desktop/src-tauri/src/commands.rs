@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::ipc::{Channel, InvokeResponseBody};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::device::{Auth, Connection, Device, Forward};
@@ -302,16 +302,32 @@ pub fn save_workspace_state(
 }
 
 /// Reloads every persisted config file from disk into memory (multi-instance
-/// sync — see [`reload_config_impl`]). Returns `()`; it cannot fail. The
-/// frontend invokes this before re-fetching its lists so the list commands
-/// serve the freshly-read data rather than the startup cache.
+/// sync — see [`reload_config_impl`]). The frontend invokes this before
+/// re-fetching its lists so the list commands serve the freshly-read data
+/// rather than the startup cache. The reads run on a blocking worker: they
+/// retry a locked file with short sleeps, which must not freeze the UI.
 #[tauri::command]
-pub fn reload_config(app: AppHandle, state: State<'_, AppState>) {
-    reload_config_impl(&state);
+pub async fn reload_config(app: AppHandle) -> Result<(), AppError> {
+    let reload_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        reload_config_impl(&reload_app.state::<AppState>())
+    })
+    .await
+    .map_err(|e| AppError::Io(format!("reload task failed: {e}")))?;
     // Another instance may have toggled close-to-tray. Only reflected, never
     // written back, so a reload can't clobber the other instance's setting.
-    let close_to_tray = state.settings_store.get().tray.close_to_tray;
-    crate::tray::set_enabled(&app, close_to_tray);
+    // The tray is only ever touched on the main thread.
+    let close_to_tray = app
+        .state::<AppState>()
+        .settings_store
+        .get()
+        .tray
+        .close_to_tray;
+    let tray_app = app.clone();
+    app.run_on_main_thread(move || {
+        crate::tray::set_enabled(&tray_app, close_to_tray);
+    })
+    .map_err(|e| AppError::Io(format!("tray update failed: {e}")))
 }
 
 /* ============================================================================
@@ -380,6 +396,9 @@ struct SessionStatusPayload {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
+    /// The `AppError` code of an `error` status (absent otherwise).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
 
 /// Production [`SessionSink`]: streams terminal bytes over the per-session IPC
@@ -391,6 +410,25 @@ struct TauriSessionSink {
     /// `Some` for a live session (its per-session data channel); `None` for
     /// `test_connection`, which has no shell and streams no data.
     channel: Option<Channel<InvokeResponseBody>>,
+}
+
+impl TauriSessionSink {
+    fn emit_status(
+        &self,
+        status: SessionStatus,
+        message: Option<String>,
+        code: Option<&'static str>,
+    ) {
+        let _ = self.app.emit(
+            SESSION_STATUS_EVENT,
+            SessionStatusPayload {
+                session_id: self.session_id.clone(),
+                status: status.as_str(),
+                message,
+                code,
+            },
+        );
+    }
 }
 
 impl SessionSink for TauriSessionSink {
@@ -405,13 +443,14 @@ impl SessionSink for TauriSessionSink {
     }
 
     fn on_status(&self, status: SessionStatus, message: Option<String>) {
-        let _ = self.app.emit(
-            SESSION_STATUS_EVENT,
-            SessionStatusPayload {
-                session_id: self.session_id.clone(),
-                status: status.as_str(),
-                message,
-            },
+        self.emit_status(status, message, None);
+    }
+
+    fn on_error(&self, err: &AppError) {
+        self.emit_status(
+            SessionStatus::Error,
+            Some(err.to_string()),
+            Some(err.code()),
         );
     }
 
@@ -462,6 +501,13 @@ fn find_device(state: &AppState, device_id: &str) -> Result<Device, AppError> {
         .ok_or_else(|| AppError::NotFound(format!("no device with id {device_id}")))
 }
 
+/// The key file a typed key path names: trimmed, with a leading `~` expanded
+/// as a shell would (the stored path keeps the `~`, so an exported device
+/// still works on another machine).
+fn key_file_path(key_path: &str) -> String {
+    crate::ssh_config::expand_tilde(key_path.trim(), crate::ssh_config::home_dir().as_deref())
+}
+
 /// Pure part of credential-building (SPEC §6): combine a device's auth method
 /// with the secret already fetched from the keyring. No I/O — kept separate so
 /// it is trivially unit-testable and so the blocking keyring read can happen
@@ -483,7 +529,7 @@ fn credentials_from(auth: &Auth, stored: Option<String>) -> Result<AuthCredentia
             // A missing keyring secret means an unencrypted key (SPEC §4), which
             // is valid — not an error.
             Ok(AuthCredentials::Key {
-                path: key_path.clone(),
+                path: key_file_path(key_path),
                 passphrase: stored,
             })
         }
@@ -1195,10 +1241,12 @@ pub async fn sftp_download(
     remote_path: String,
     local_path: String,
 ) -> Result<u64, AppError> {
+    let local_path = Path::new(&local_path);
+    crate::sftp::ensure_storable_target(local_path)?;
     let progress = sftp_progress_emitter(app, device_id.clone(), "download");
     state
         .sftp_manager
-        .download_to_path(&device_id, &remote_path, Path::new(&local_path), &progress)
+        .download_to_path(&device_id, &remote_path, local_path, &progress)
         .await
 }
 
@@ -1252,9 +1300,10 @@ pub async fn sftp_download_dir(
     remote_path: String,
     local_path: String,
     policy: String,
-) -> Result<(), AppError> {
+) -> Result<Vec<String>, AppError> {
     let skip = policy == "skip";
     let mut target = PathBuf::from(local_path);
+    crate::sftp::ensure_storable_target(&target)?;
     if policy == "rename" {
         let base = target.clone();
         target = tokio::task::spawn_blocking(move || fresh_local_path(base))
@@ -1668,6 +1717,21 @@ mod tests {
     use crate::store::DeviceStore;
     use crate::tunnel::TunnelManager;
     use tempfile::tempdir;
+
+    #[test]
+    fn session_status_payload_carries_the_error_code_only_when_set() {
+        let payload = |code| SessionStatusPayload {
+            session_id: "s1".to_string(),
+            status: "error",
+            message: Some("authentication failed".to_string()),
+            code,
+        };
+        let with_code = serde_json::to_value(payload(Some("SshAuth"))).unwrap();
+        assert_eq!(with_code["code"], "SshAuth");
+        assert_eq!(with_code["sessionId"], "s1");
+        let without = serde_json::to_value(payload(None)).unwrap();
+        assert!(without.get("code").is_none());
+    }
 
     fn test_state(dir: &std::path::Path) -> AppState {
         let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
@@ -2148,6 +2212,32 @@ mod tests {
             }
             other => panic!("expected key credentials, got {other:?}"),
         }
+    }
+
+    fn key_path_of(key_path: &str) -> String {
+        let auth = Auth::Key {
+            key_path: key_path.to_string(),
+        };
+        match credentials_from(&auth, None).unwrap() {
+            AuthCredentials::Key { path, .. } => path,
+            other => panic!("expected key credentials, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn key_path_is_trimmed() {
+        assert_eq!(key_path_of("  /keys/id_ed25519 \t"), "/keys/id_ed25519");
+    }
+
+    #[test]
+    fn key_path_expands_a_leading_tilde_to_the_home_dir() {
+        let home = crate::ssh_config::home_dir().expect("tests run with a home dir");
+        let path = key_path_of("~/.ssh/id_ed25519");
+        assert!(
+            path.starts_with(&home),
+            "{path:?} should start with {home:?}"
+        );
+        assert!(path.ends_with("id_ed25519"));
     }
 
     #[tokio::test]

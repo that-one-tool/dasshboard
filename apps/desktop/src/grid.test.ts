@@ -348,6 +348,28 @@ describe("Grid profiles (Phase 4)", () => {
     expect(grid.isSnapshotComplete()).toBe(true);
   });
 
+  it("connects nothing when disposed while a load is still building its panes", async () => {
+    const grid = makeGrid();
+    await grid.init();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    vi.mocked(listDevices).mockImplementationOnce(async () => {
+      await gate;
+      return [];
+    });
+
+    const applied = grid.applySnapshot(profileTab(), { confirmTeardown: false });
+    await vi.waitFor(() => expect(internals(grid).model.cols).toBe(2));
+    grid.dispose(); // the tab closed mid-load
+    release();
+    await applied;
+    await flush();
+
+    expect(connectMock).not.toHaveBeenCalled();
+    expect(internals(grid).cells).toEqual([]);
+    expect(domCellCount()).toBe(0);
+  });
+
   it("lists the devices of the panes showing connected", async () => {
     const grid = makeGrid();
     await grid.init();

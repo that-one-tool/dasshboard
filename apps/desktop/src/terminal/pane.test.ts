@@ -86,7 +86,7 @@ import {
   saveTextFile,
   writeStdin,
 } from "../ipc";
-import type { Device } from "../ipc";
+import type { Device, ErrorCode } from "../ipc";
 import { setLocale } from "../i18n";
 
 const readText = vi.fn(async () => "PASTED");
@@ -257,6 +257,14 @@ describe("TerminalPane native paste (Cmd+V / Edit → Paste)", () => {
     expect(confirmMock).not.toHaveBeenCalled();
     expect(paste).toHaveBeenCalledWith("uptime");
   });
+
+  it("pastes without control characters, so ESC can't end bracketed paste", async () => {
+    const { root, paste } = await connectedPane();
+    nativePaste(q<HTMLElement>(root, ".xterm-helper-textarea"), "ls\x1b[201~id");
+    await flush();
+
+    expect(paste).toHaveBeenCalledWith("ls[201~id");
+  });
 });
 
 describe("TerminalPane.startSession re-entrancy guard", () => {
@@ -394,6 +402,72 @@ describe("TerminalPane auto-reconnect (Phase 5)", () => {
     await vi.advanceTimersByTimeAsync(2000); // first backoff delay
     await flush();
     expect(vi.mocked(connect)).toHaveBeenCalledTimes(1); // reconnect attempt fired
+  });
+
+  async function failFirstConnect(pane: TerminalPane, code: ErrorCode): Promise<void> {
+    await pane.init();
+    pane.assignDevice(h.device.id);
+    await start(pane);
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "error", message: "it failed", code });
+  }
+
+  it("does not reconnect a wrong password or a rejected host key (lockout, re-prompts)", async () => {
+    for (const code of ["SshAuth", "HostKeyRejected"] as const) {
+      document.body.innerHTML = '<div id="pane-root"></div>';
+      const root = q<HTMLElement>(document, "#pane-root");
+      await failFirstConnect(new TerminalPane(root), code);
+
+      expect(q<HTMLElement>(root, ".overlay-detail").textContent).toContain("it failed");
+      vi.mocked(connect).mockClear();
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(vi.mocked(connect), code).not.toHaveBeenCalled();
+    }
+  });
+
+  it("retries a first connect that couldn't reach the server (e.g. down at launch)", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    await failFirstConnect(new TerminalPane(root), "SshConnect");
+
+    expect(q<HTMLElement>(root, ".overlay-detail").textContent).toContain("Attempt 1 of 5");
+  });
+
+  it("retries a keychain failure once, then stops", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    await failFirstConnect(new TerminalPane(root), "Keyring");
+    expect(q<HTMLElement>(root, ".overlay-detail").textContent).toContain("Attempt 1 of 5");
+
+    await vi.advanceTimersByTimeAsync(2000); // the one retry fires
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "error", message: "locked", code: "Keyring" });
+
+    vi.mocked(connect).mockClear();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(vi.mocked(connect)).not.toHaveBeenCalled();
+  });
+
+  it("keeps reconnecting when a reconnect attempt can't reach the server", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await connectThenDrop(pane);
+    await vi.advanceTimersByTimeAsync(2000); // attempt 1 fires
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "error", message: "refused", code: "SshConnect" });
+
+    expect(q<HTMLElement>(root, ".overlay-detail").textContent).toContain("Attempt 2 of 5");
+  });
+
+  it("stops reconnecting when an attempt is refused by the server's auth", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await connectThenDrop(pane);
+    await vi.advanceTimersByTimeAsync(2000); // attempt 1 fires
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "error", message: "auth failed", code: "SshAuth" });
+
+    vi.mocked(connect).mockClear();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(vi.mocked(connect)).not.toHaveBeenCalled();
   });
 
   it("Cancel stops a pending reconnect (no further attempts)", async () => {

@@ -85,7 +85,15 @@ import {
   bookmarkIcon,
   bookmarkFilledIcon,
 } from "../ui/icons";
-import { joinRemote, parentOf, formatSize, formatMtime, formatMode } from "./sftpFormat";
+import {
+  joinRemote,
+  parentOf,
+  formatSize,
+  formatMtime,
+  formatMode,
+  isLocalFileName,
+  skippedSummary,
+} from "./sftpFormat";
 import { TransferQueue, type TransferItem } from "./transferQueue";
 import { EditSessions, type EditTransferSpec } from "./editSessions";
 import { renderEditList } from "./editList";
@@ -118,6 +126,9 @@ export interface SftpPanelOptions {
    * last device). Applied at the end of `init`; never auto-reconnects. */
   initialState?: SftpPanelState;
 }
+
+/** "Keep both" tries `name (2)` … `name (101)` before giving up. */
+const MAX_FREE_NAME_TRIES = 100;
 
 /** The SSH devices — the only ones that can be browsed over SFTP. */
 export function browsableDevices(devices: Device[]): SshDevice[] {
@@ -1139,6 +1150,7 @@ export class SftpPanel {
   private async handleDownload(entry: SftpEntry): Promise<void> {
     if (this.activeDeviceId === null) return;
     this.clearHover();
+    if (this.refuseUnsafeNames([entry])) return;
     const local = await pickDownloadSavePath(entry.name);
     if (local === null) return; // cancelled
     const deviceId = this.activeDeviceId;
@@ -1151,6 +1163,31 @@ export class SftpPanel {
       run: () => sftpDownload(deviceId, remote, local),
       successToast: t("sftp.downloadedToast", { name: entry.name }),
     });
+  }
+
+  /** Downloads a folder tree, then reports any entries it had to skip (one
+   * odd entry doesn't stop the rest). */
+  private async downloadFolder(
+    deviceId: string,
+    remote: string,
+    target: string,
+    policy: ConflictPolicy,
+  ): Promise<void> {
+    const skipped = await sftpDownloadDir(deviceId, remote, target, policy);
+    if (skipped.length === 0) return;
+    const name = remote.split("/").pop() ?? remote;
+    const message = tp("sftp.download.skipped", skipped.length, { name, items: skippedSummary(skipped) });
+    this.options.onError?.({ code: "Sftp", message });
+  }
+
+  /** Reports the first entry whose name can't be a local file name (see
+   * `isLocalFileName`); true when the download must not go ahead. */
+  private refuseUnsafeNames(entries: SftpEntry[]): boolean {
+    const unsafe = entries.find((entry) => !isLocalFileName(entry.name));
+    if (!unsafe) return false;
+    const message = t("sftp.download.unsafeName", { name: unsafe.name });
+    this.options.onError?.({ code: "Validation", message });
+    return true;
   }
 
   /** Open a remote file in the external editor (edit in place). */
@@ -1208,7 +1245,7 @@ export class SftpPanel {
       direction: "upload",
       isDir: false,
       name,
-      run: () => sftpUpload(deviceId, local, remote),
+      run: () => this.uploadFile(deviceId, local, remote, name),
       successToast: t("sftp.uploadedToast", { name }),
       refreshDir: dir,
     });
@@ -1219,6 +1256,7 @@ export class SftpPanel {
   private async handleDownloadFolder(entry: SftpEntry): Promise<void> {
     if (this.activeDeviceId === null) return;
     this.clearHover();
+    if (this.refuseUnsafeNames([entry])) return;
     const destParent = await pickDownloadDirPath();
     if (destParent === null) return; // cancelled
     const deviceId = this.activeDeviceId;
@@ -1234,7 +1272,7 @@ export class SftpPanel {
       direction: "download",
       isDir: true,
       name: entry.name,
-      run: () => sftpDownloadDir(deviceId, remote, target, policy),
+      run: () => this.downloadFolder(deviceId, remote, target, policy),
       successToast: t("sftp.downloadedFolderToast", { name: entry.name }),
     });
   }
@@ -1272,6 +1310,38 @@ export class SftpPanel {
   private async resolvePolicy(conflict: boolean, message: string): Promise<ConflictPolicy | null> {
     if (!conflict) return "overwrite";
     return chooseConflict(message);
+  }
+
+  /** Uploads one file, choosing where when its turn comes, not when it was
+   * picked: a transfer ahead in the queue may create a file of that name
+   * meanwhile. Skipping or cancelling the conflict dialog ends the item as a
+   * quiet cancel. */
+  private async uploadFile(deviceId: string, local: string, remote: string, name: string): Promise<void> {
+    const target = await this.uploadTarget(deviceId, remote, name);
+    if (target === null) throw { code: "Cancelled", message: "" } satisfies AppError;
+    await sftpUpload(deviceId, local, target);
+  }
+
+  /** Where a single-file upload goes: `remote` itself, or — when a file of
+   * that name is already there — what the conflict dialog picks (`null` to
+   * upload nothing). */
+  private async uploadTarget(deviceId: string, remote: string, name: string): Promise<string | null> {
+    const exists = await sftpExists(deviceId, remote);
+    const policy = await this.resolvePolicy(exists, t("sftp.conflict.message", { name }));
+    if (policy === "rename") return this.freshRemoteName(deviceId, remote, name);
+    return policy === "overwrite" ? remote : null;
+  }
+
+  /** First `<path> (2)` / `<path> (3)` / … that doesn't exist on the server
+   * (`path` itself is known to exist). Same naming as {@link freshLocalName}.
+   * Gives up after {@link MAX_FREE_NAME_TRIES}: a server answering every stat
+   * with success would otherwise keep it looping. */
+  private async freshRemoteName(deviceId: string, path: string, name: string): Promise<string> {
+    for (let i = 2; i < 2 + MAX_FREE_NAME_TRIES; i++) {
+      const candidate = `${path} (${i})`;
+      if (!(await sftpExists(deviceId, candidate))) return candidate;
+    }
+    throw { code: "Sftp", message: t("sftp.upload.noFreeName", { name }) } satisfies AppError;
   }
 
   /** First `<path>` / `<path> (2)` / … that doesn't exist locally (for the
@@ -1561,6 +1631,7 @@ export class SftpPanel {
     const entries = this.selectedEntries();
     if (entries.length === 0) return;
     this.clearHover();
+    if (this.refuseUnsafeNames(entries)) return;
     const dest = await pickDownloadDirPath();
     if (dest === null) return; // cancelled
     const deviceId = this.activeDeviceId;
@@ -1594,7 +1665,7 @@ export class SftpPanel {
           direction: "download",
           isDir: true,
           name: entry.name,
-          run: () => sftpDownloadDir(deviceId, remote, target, policy),
+          run: () => this.downloadFolder(deviceId, remote, target, policy),
         });
       } else {
         this.queue.enqueue({

@@ -297,9 +297,23 @@ describe("ProfileManager app-start", () => {
     await flush();
 
     expect(strip(ws.tabs)).toEqual(["Tab 1:-"]);
-    // The stale id is cleared so it stops being the restore target.
-    expect(onProfileChange).toHaveBeenLastCalledWith(null);
+    // Nothing was loaded or saved: no settings write (another running instance
+    // would reload everything). A stale id is harmless, never found again.
+    expect(onProfileChange).not.toHaveBeenCalled();
     expect(dirtyShown()).toBe(false);
+  });
+
+  it("does not report a profile change on a tab switch or a restored start", async () => {
+    const ws = fakeTabs([{ name: "Web", linked: "lab" }, { name: "Free" }]);
+    wireStore([labProfile()], null);
+    const onProfileChange = vi.fn();
+    const manager = newManager(ws.workspace, { onProfileChange });
+    await manager.init(null, { loadStart: false });
+
+    ws.activate(1);
+    manager.onActiveTabChanged();
+
+    expect(onProfileChange).not.toHaveBeenCalled();
   });
 
   it("does not load anything when the tab set was restored", async () => {
@@ -612,7 +626,9 @@ describe("ProfileManager missing profiles", () => {
     await newManager(ws.workspace, { onProfileChange }).init(null, { loadStart: false });
 
     expect(strip(ws.tabs)).toEqual(["A:-", "B:-"]);
-    expect(onProfileChange).toHaveBeenLastCalledWith(null);
+    // Another instance deleted it; reacting with a settings write would ping
+    // that instance back.
+    expect(onProfileChange).not.toHaveBeenCalled();
   });
 
   it("keeps the links when the profile list fails to load", async () => {

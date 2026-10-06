@@ -226,6 +226,13 @@ pub trait SessionSink: Send + Sync {
     fn on_data(&self, bytes: &[u8]);
     /// A lifecycle change → `session_status` event.
     fn on_status(&self, status: SessionStatus, message: Option<String>);
+    /// The session ended on `err` → an `error` `session_status` event. The
+    /// production sink adds the error's code, so the frontend can tell a drop
+    /// worth retrying from a failure a retry would only repeat (a wrong
+    /// password, a rejected host key).
+    fn on_error(&self, err: &AppError) {
+        self.on_status(SessionStatus::Error, Some(err.to_string()));
+    }
     /// An unknown/changed host key needs the user's decision →
     /// `host_key_prompt` event.
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload);
@@ -1313,7 +1320,7 @@ impl SessionManager {
             match result {
                 Ok(status) => sink.on_status(status, None),
                 // AppError messages are always secret-free (see error.rs).
-                Err(err) => sink.on_status(SessionStatus::Error, Some(err.to_string())),
+                Err(err) => sink.on_error(&err),
             }
 
             // Single owner of cleanup: the task removes its own entry for every

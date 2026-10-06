@@ -418,7 +418,7 @@ fn parse_port(suffix: &str) -> Option<Option<u16>> {
 /// Expand a leading `~` (as `~/` or `~\`, or a bare `~`) to `home`. Any other
 /// use of `~` (mid-path, or `~user`) is left untouched — we only special-case
 /// the current user's home, which is what an `IdentityFile` overwhelmingly uses.
-fn expand_tilde(path: &str, home: Option<&str>) -> String {
+pub(crate) fn expand_tilde(path: &str, home: Option<&str>) -> String {
     let Some(home) = home else {
         return path.to_string();
     };
@@ -509,8 +509,8 @@ fn dedup_key(device: &Device) -> Option<HostKey> {
  * ============================================================================ */
 
 /// The current user's home directory from the environment: `USERPROFILE` on
-/// Windows, `HOME` elsewhere. Used only to expand `~` in an `IdentityFile`.
-fn home_dir() -> Option<String> {
+/// Windows, `HOME` elsewhere. Used only to expand `~` in a key path.
+pub(crate) fn home_dir() -> Option<String> {
     std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .ok()
@@ -803,11 +803,17 @@ impl<'a> ImportBook<'a> {
  * Export: DaSSHboard devices → OpenSSH client config (the reverse of import).
  * ============================================================================ */
 
+/// Characters OpenSSH reads as more than a name in a `Host` alias: pattern
+/// wildcards and negation (`Host *` would apply the block to every host), the
+/// `ProxyJump` hop separator and its `[user@]host[:port]` / `[addr]` syntax, a
+/// comment start, and the quote/escape characters.
+const ALIAS_SPECIAL_CHARS: [char; 11] = ['*', '?', '!', ',', '@', ':', '[', ']', '#', '\'', '\\'];
+
 /// Turn a device name into a safe `Host` alias token: SSH config splits `Host`
 /// patterns on whitespace, so a name with spaces (`"My NAS"`) would become two
-/// patterns. Collapse whitespace runs to `-`, and fall back to `"device"` for a
-/// name that is empty once trimmed (never happens for a validated device, but
-/// keeps the output well-formed regardless).
+/// patterns. Collapse whitespace runs and special characters to `-`, trim
+/// `-` from both ends, and fall back to `"device"` for a name left empty
+/// (`"*"`).
 fn sanitize_alias(name: &str) -> String {
     let joined = name.split_whitespace().collect::<Vec<_>>().join("-");
     // Drop any remaining control chars / double-quotes so the `Host` line is a
@@ -816,11 +822,17 @@ fn sanitize_alias(name: &str) -> String {
     let cleaned: String = joined
         .chars()
         .filter(|c| !c.is_control() && *c != '"')
+        .map(|c| {
+            if ALIAS_SPECIAL_CHARS.contains(&c) {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect();
-    if cleaned.is_empty() {
-        "device".to_string()
-    } else {
-        cleaned
+    match cleaned.trim_matches('-') {
+        "" => "device".to_string(),
+        alias => alias.to_string(),
     }
 }
 
@@ -850,9 +862,9 @@ fn quote_config_value(value: &str) -> String {
 }
 
 /// Assign each SSH device a unique `Host` alias, keyed by device id. Aliases are
-/// sanitized names (see [`sanitize_alias`]); a collision gets a `-2`, `-3`, …
-/// suffix so every block names a distinct host and `ProxyJump` references
-/// resolve unambiguously. Non-SSH devices get no alias (they aren't exported).
+/// sanitized names (see [`sanitize_alias`]); a collision — ignoring case, as
+/// OpenSSH matches `Host` — gets a `-2`, `-3`, … suffix so every block names a
+/// distinct host and `ProxyJump` references resolve unambiguously. Non-SSH devices get no alias (they aren't exported).
 fn assign_aliases(devices: &[Device]) -> HashMap<String, String> {
     let mut used: HashSet<String> = HashSet::new();
     let mut by_id: HashMap<String, String> = HashMap::new();
@@ -863,7 +875,7 @@ fn assign_aliases(devices: &[Device]) -> HashMap<String, String> {
         let base = sanitize_alias(&device.name);
         let mut alias = base.clone();
         let mut n = 2;
-        while !used.insert(alias.clone()) {
+        while !used.insert(alias.to_lowercase()) {
             alias = format!("{base}-{n}");
             n += 1;
         }
@@ -1930,6 +1942,43 @@ Host app
         let out = devices_to_ssh_config(&[a, b]);
         assert!(out.contains("Host My-NAS\n"), "spaces collapse to dashes");
         assert!(out.contains("Host My-NAS-2\n"), "a collision is suffixed");
+    }
+
+    fn exported_host_lines(names: &[&str]) -> Vec<String> {
+        let devices: Vec<Device> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let conn = ssh_conn("h", 22, "u", Auth::Password, None, false);
+                ssh_device(&format!("id{i}"), name, conn)
+            })
+            .collect();
+        devices_to_ssh_config(&devices)
+            .lines()
+            .filter_map(|l| l.strip_prefix("Host ").map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn export_never_writes_a_pattern_as_a_host_alias() {
+        // `Host *` would apply this device's HostName/User/ProxyJump to every
+        // host the user's ssh connects to; `,` would split a ProxyJump value.
+        let hosts = exported_host_lines(&["*", "web*", "a?b", "!x", "a,b", "#1", "o'k"]);
+        assert_eq!(hosts, ["device", "web", "a-b", "x", "a-b-2", "1", "o-k"]);
+    }
+
+    #[test]
+    fn export_never_writes_a_user_or_port_into_a_host_alias() {
+        // OpenSSH reads `[user@]host[:port]` in a ProxyJump: `root@bastion`
+        // would jump as `root` to whatever `bastion` resolves to.
+        let hosts = exported_host_lines(&["root@bastion", "web:8080", "[::1]"]);
+        assert_eq!(hosts, ["root-bastion", "web-8080", "1"]);
+    }
+
+    #[test]
+    fn export_deduplicates_aliases_ignoring_case() {
+        // OpenSSH matches Host case-insensitively: `nas` would be shadowed.
+        assert_eq!(exported_host_lines(&["NAS", "nas"]), ["NAS", "nas-2"]);
     }
 
     #[test]

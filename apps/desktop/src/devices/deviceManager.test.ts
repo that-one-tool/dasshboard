@@ -478,6 +478,35 @@ describe("SSH config import", () => {
   });
 });
 
+/** A double-click on Save (or a second Enter) while the first save is still in
+ * flight must not save twice: for a new device that made two devices. */
+describe("device save re-entrancy", () => {
+  it("ignores a second submit while the first save is in flight", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string, payload?: Record<string, unknown>) => {
+      if (cmd === "list_devices") return [deviceA, deviceB];
+      if (cmd === "save_device") {
+        await gate;
+        return payload?.device;
+      }
+      return undefined;
+    });
+    const container = await setup();
+    q<HTMLButtonElement>(container, `.btn-edit[data-device-id="${deviceA.id}"]`).click();
+    const form = q<HTMLFormElement>(container, "#device-form");
+
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const saves = invokeMock.mock.calls.filter(([cmd]) => cmd === "save_device");
+    expect(saves).toHaveLength(1);
+  });
+});
+
 /**
  * F10 regression: a save failure used to route through `displayFieldErrors`
  * with `field: "general"`, which maps to a `#device-general` selector that

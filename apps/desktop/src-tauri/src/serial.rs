@@ -274,7 +274,7 @@ impl SerialSessionManager {
             match result {
                 Ok(()) => sink.on_status(SessionStatus::Disconnected, None),
                 // AppError messages are always secret-free (serial has none).
-                Err(err) => sink.on_status(SessionStatus::Error, Some(err.to_string())),
+                Err(err) => sink.on_error(&err),
             }
 
             // Single owner of cleanup: the task removes its own entry for every

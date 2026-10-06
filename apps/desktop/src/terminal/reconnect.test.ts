@@ -1,5 +1,46 @@
 import { describe, it, expect } from "vitest";
-import { MAX_RECONNECT_ATTEMPTS, canReconnect, reconnectDelayMs } from "./reconnect";
+import {
+  MAX_RECONNECT_ATTEMPTS,
+  canReconnect,
+  countKeyringFailure,
+  errorCodeOf,
+  isRetryableFailure,
+  reconnectDelayMs,
+} from "./reconnect";
+
+describe("isRetryableFailure", () => {
+  it("retries a plain drop and a failure to reach or keep the server", () => {
+    for (const code of [undefined, "SshConnect", "SshChannel", "Io"] as const) {
+      expect(isRetryableFailure(code), String(code)).toBe(true);
+    }
+  });
+  it("never retries what a retry would only repeat (lockouts, re-prompts)", () => {
+    for (const code of ["SshAuth", "HostKeyRejected", "Validation", "NotFound"] as const) {
+      expect(isRetryableFailure(code), code).toBe(false);
+    }
+  });
+});
+
+describe("keychain failures", () => {
+  it("retries a keychain failure once (locked or not ready yet), then gives up", () => {
+    const first = countKeyringFailure("Keyring", 0);
+    expect(isRetryableFailure("Keyring", first)).toBe(true);
+    const second = countKeyringFailure("Keyring", first);
+    expect(isRetryableFailure("Keyring", second)).toBe(false);
+  });
+  it("counts only keychain failures", () => {
+    expect(countKeyringFailure("SshConnect", 1)).toBe(1);
+    expect(countKeyringFailure(undefined, 0)).toBe(0);
+  });
+});
+
+describe("errorCodeOf", () => {
+  it("reads an AppError's code, or nothing for anything else", () => {
+    expect(errorCodeOf({ code: "SshAuth", message: "x" })).toBe("SshAuth");
+    expect(errorCodeOf(new Error("boom"))).toBeUndefined();
+    expect(errorCodeOf("boom")).toBeUndefined();
+  });
+});
 
 describe("reconnectDelayMs", () => {
   it("follows 2s / 4s / 8s then caps at 8s", () => {

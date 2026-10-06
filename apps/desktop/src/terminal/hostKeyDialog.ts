@@ -20,6 +20,7 @@ import {
 } from "../ipc";
 import { hostKeyDialogText } from "./overlay";
 import { requireEl } from "../ui/dom";
+import { consumeKey, isTopDialog, pushDialog, removeDialog } from "../ui/dialogStack";
 import { t } from "../i18n";
 
 export function initHostKeyDialog(): () => void {
@@ -72,6 +73,7 @@ export function initHostKeyDialog(): () => void {
       current = null;
       root.classList.add("dialog-hidden");
       root.setAttribute("aria-hidden", "true");
+      removeDialog(root);
       return;
     }
     current = next;
@@ -84,6 +86,12 @@ export function initHostKeyDialog(): () => void {
     content.classList.toggle("hostkey-danger", text.danger);
     root.classList.remove("dialog-hidden");
     root.setAttribute("aria-hidden", "false");
+    // Dialogs share one z-index, so the last in the DOM paints on top: one
+    // opened after this root was created would hide the prompt while it holds
+    // focus and the keys. Moving it last keeps what is seen and what is
+    // answered the same.
+    document.body.appendChild(root);
+    pushDialog(root);
     // Focus the safe default (Reject), not Trust — so a stray Enter/Space never
     // trusts an unknown or changed key.
     rejectBtn.focus();
@@ -140,8 +148,8 @@ export function initHostKeyDialog(): () => void {
 
   // Escape rejects the prompt (safe default) — never leaves it wedged open.
   const onKey = (e: KeyboardEvent): void => {
-    if (current && e.key === "Escape") {
-      e.preventDefault();
+    if (current && e.key === "Escape" && isTopDialog(root)) {
+      consumeKey(e);
       void respond(false);
     }
   };
@@ -156,6 +164,7 @@ export function initHostKeyDialog(): () => void {
   return () => {
     root.removeEventListener("click", onClick);
     document.removeEventListener("keydown", onKey, true);
+    removeDialog(root);
     void unlistenPromise.then((unlisten) => unlisten());
     void unlistenClosedPromise.then((unlisten) => unlisten());
     root.remove();

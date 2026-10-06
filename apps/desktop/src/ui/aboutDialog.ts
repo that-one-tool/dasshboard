@@ -15,6 +15,7 @@ import { formatPingMessage } from "../version";
 import { t } from "../i18n";
 import type { UpdateController } from "../updates/updateController";
 import { mountUpdateSection } from "../updates/updateSection";
+import { consumeKey, isTopDialog, pushDialog, removeDialog } from "./dialogStack";
 
 /** Open the About dialog. Returns immediately; the version fills in when the
  * `ping` round trip resolves. With `updates`, it also hosts the Check for
@@ -59,6 +60,7 @@ export function openAboutDialog(updates?: UpdateController): void {
 	const previouslyFocused = document.activeElement;
 	const close = (): void => {
 		document.removeEventListener("keydown", onKey, true);
+		removeDialog(root);
 		unmountUpdates?.();
 		root.remove();
 		if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) {
@@ -74,14 +76,15 @@ export function openAboutDialog(updates?: UpdateController): void {
 		}
 	});
 	const onKey = (e: KeyboardEvent): void => {
-		if (e.key === "Escape") {
-			e.preventDefault();
+		if (e.key === "Escape" && isTopDialog(root)) {
+			consumeKey(e);
 			close();
 		}
 	};
 	document.addEventListener("keydown", onKey, true);
 
 	document.body.appendChild(root);
+	pushDialog(root);
 	closeBtn?.focus();
 
 	// Fill in the version once the backend answers; a failed ping leaves a plain

@@ -92,7 +92,7 @@ impl KnownHostsStore {
     /// re-prompted via TOFU). Neither the file nor these log lines ever
     /// contain secret material.
     pub fn load(dir: PathBuf) -> Self {
-        let hosts = Self::read_from_disk(&dir);
+        let hosts = Self::read_from_disk(&dir).unwrap_or_default();
         KnownHostsStore {
             dir,
             hosts: Mutex::new(hosts),
@@ -104,19 +104,21 @@ impl KnownHostsStore {
     /// instance trusted or forgot, so its next connection's TOFU check consults
     /// fresh data (see `reload_config`). Same recovery semantics as
     /// [`load`](Self::load): a corrupt file is backed up and treated as empty
-    /// (the user is simply re-prompted via TOFU).
+    /// (the user is simply re-prompted via TOFU); an unreadable one keeps the
+    /// current map.
     pub fn reload(&self) {
-        let hosts = Self::read_from_disk(&self.dir);
-        *self.lock_hosts() = hosts;
+        if let Some(hosts) = Self::read_from_disk(&self.dir) {
+            *self.lock_hosts() = hosts;
+        }
     }
 
     /// Reads and parses `dir/known_hosts.json` into the trust map, applying the
     /// missing-file and corrupt-file recovery shared by `load` and `reload`
-    /// (see [`atomic_file::read_recovering`]). A corrupt trust store must not
-    /// brick connecting — the map simply starts empty and the user is
-    /// re-prompted via TOFU.
-    fn read_from_disk(dir: &Path) -> HashMap<String, KnownHost> {
-        atomic_file::read_recovering::<KnownHostsFile, _>(
+    /// (see [`atomic_file::reread_recovering`]); `None` when unreadable. A
+    /// corrupt trust store must not brick connecting — the map simply starts
+    /// empty and the user is re-prompted via TOFU.
+    fn read_from_disk(dir: &Path) -> Option<HashMap<String, KnownHost>> {
+        atomic_file::reread_recovering::<KnownHostsFile, _>(
             dir,
             KNOWN_HOSTS_FILE,
             |file| file.hosts,

@@ -95,6 +95,9 @@ export class DeviceManagerImpl {
   private options: DeviceManagerOptions;
   private devices: Device[] = [];
   private editingDeviceId: string | null = null;
+  // A save in flight: a double-click on Save (or a second Enter) must not save
+  // twice — for a new device (empty id) that created two devices.
+  private saving = false;
   /** Current sidebar search query; filters the rendered list (feature #3). */
   private searchQuery = "";
   /** Keys (`deviceGroupKey`) of the tag sections the user collapsed. */
@@ -368,6 +371,7 @@ export class DeviceManagerImpl {
 
   private async handleFormSubmit(e: Event): Promise<void> {
     e.preventDefault();
+    if (this.saving) return;
 
     const values = readFormValues(
       this.container,
@@ -386,6 +390,17 @@ export class DeviceManagerImpl {
       return;
     }
 
+    this.saving = true;
+    try {
+      await this.saveFormValues(values);
+    } finally {
+      this.saving = false;
+    }
+  }
+
+  /** Saves validated form values, then closes the dialog and reloads the list;
+   * a failure reaches the user as a toast and leaves the dialog open. */
+  private async saveFormValues(values: ReturnType<typeof readFormValues>): Promise<void> {
     try {
       const kind = values.kind ?? "ssh";
       // Serial/local-shell saves and agent-auth SSH devices never carry a secret

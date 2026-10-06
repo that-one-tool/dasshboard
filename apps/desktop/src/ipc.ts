@@ -350,6 +350,8 @@ export interface SessionStatusEvent {
   sessionId: string;
   status: SessionStatus;
   message?: string;
+  /** The error's code, on an `error` status (see `isRetryableFailure`). */
+  code?: ErrorCode;
 }
 
 /** Payload of the `host_key_prompt` event (SPEC §5–6). */
@@ -1005,14 +1007,16 @@ export async function sftpUpload(
 export type ConflictPolicy = "overwrite" | "skip" | "rename";
 
 /** Recursively downloads a remote directory tree into `localPath` (the target
- * directory), applying `policy` to entries that already exist. */
+ * directory), applying `policy` to entries that already exist. Resolves the
+ * remote paths it skipped: links to folders, broken links, special files
+ * (devices, FIFOs), and names this computer can't store. */
 export async function sftpDownloadDir(
   deviceId: string,
   remotePath: string,
   localPath: string,
   policy: ConflictPolicy,
-): Promise<void> {
-  await invokeChecked<void>("sftp_download_dir", { deviceId, remotePath, localPath, policy });
+): Promise<string[]> {
+  return invokeChecked<string[]>("sftp_download_dir", { deviceId, remotePath, localPath, policy });
 }
 
 /** Recursively uploads a local directory tree into `remotePath` (the target

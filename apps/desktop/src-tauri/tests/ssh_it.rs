@@ -475,6 +475,7 @@ struct TestSink {
     status_tx: mpsc::UnboundedSender<(SessionStatus, Option<String>)>,
     prompt_tx: mpsc::UnboundedSender<HostKeyPromptPayload>,
     prompt_closed_tx: mpsc::UnboundedSender<String>,
+    error_code_tx: mpsc::UnboundedSender<&'static str>,
 }
 
 impl SessionSink for TestSink {
@@ -490,6 +491,10 @@ impl SessionSink for TestSink {
     fn on_host_key_prompt_closed(&self, prompt_id: &str) {
         let _ = self.prompt_closed_tx.send(prompt_id.to_string());
     }
+    fn on_error(&self, err: &AppError) {
+        let _ = self.error_code_tx.send(err.code());
+        self.on_status(SessionStatus::Error, Some(err.to_string()));
+    }
 }
 
 struct SinkChannels {
@@ -497,6 +502,7 @@ struct SinkChannels {
     status_rx: mpsc::UnboundedReceiver<(SessionStatus, Option<String>)>,
     prompt_rx: mpsc::UnboundedReceiver<HostKeyPromptPayload>,
     prompt_closed_rx: mpsc::UnboundedReceiver<String>,
+    error_code_rx: mpsc::UnboundedReceiver<&'static str>,
 }
 
 fn new_sink() -> (Arc<dyn SessionSink>, SinkChannels) {
@@ -504,11 +510,13 @@ fn new_sink() -> (Arc<dyn SessionSink>, SinkChannels) {
     let (status_tx, status_rx) = mpsc::unbounded_channel();
     let (prompt_tx, prompt_rx) = mpsc::unbounded_channel();
     let (prompt_closed_tx, prompt_closed_rx) = mpsc::unbounded_channel();
+    let (error_code_tx, error_code_rx) = mpsc::unbounded_channel();
     let sink: Arc<dyn SessionSink> = Arc::new(TestSink {
         data_tx,
         status_tx,
         prompt_tx,
         prompt_closed_tx,
+        error_code_tx,
     });
     (
         sink,
@@ -517,6 +525,7 @@ fn new_sink() -> (Arc<dyn SessionSink>, SinkChannels) {
             status_rx,
             prompt_rx,
             prompt_closed_rx,
+            error_code_rx,
         },
     )
 }
@@ -1116,6 +1125,8 @@ async fn jump_host_auth_failure_is_attributed_to_the_jump_host() {
         message.contains("jump host"),
         "error should name the jump host, got: {message}"
     );
+    // The code lets the frontend skip auto-reconnect (no lockout retries).
+    assert_eq!(chans.error_code_rx.try_recv(), Ok("SshAuth"));
 }
 
 fn jump_hop(port: u16, password: &str) -> JumpHop {
@@ -1228,6 +1239,8 @@ async fn host_key_reject_fails_with_host_key_rejected() {
 
     let (status, _message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Error);
+    // The code lets the frontend skip auto-reconnect (no re-prompting).
+    assert_eq!(chans.error_code_rx.try_recv(), Ok("HostKeyRejected"));
     // Nothing must have been persisted on a rejected key.
     let reloaded = KnownHostsStore::load(dir.path().to_path_buf());
     assert!(reloaded.get("127.0.0.1", port).is_none());

@@ -85,10 +85,13 @@ export interface ProfileManagerOptions {
   onError: (message: string) => void;
   onSuccess: (message: string) => void;
   /**
-   * Fired whenever the profile loaded into the active tab changes (a load, a
-   * save/save-as, the app-start restore, a tab switch, or the loaded profile
-   * being deleted → `null`). Wired to persist the id as the "last-used profile"
-   * so the next start can reload it when no default profile is set (SPEC §7).
+   * Fired with the active tab's profile id after an explicit profile action:
+   * a load (including the start profile), a save / save-as / rename, or
+   * deleting the active tab's profile (→ `null`). Wired to persist the id as
+   * the "last-used profile" so the next start can reload it when no default
+   * profile is set (SPEC §7). Not fired on a tab switch, a restored start, or a
+   * profile another instance deleted: each persist rewrites settings.json, and
+   * every other running instance reloads all its config on that.
    */
   onProfileChange?: (profileId: string | null) => void;
 }
@@ -127,7 +130,7 @@ export class ProfileManager {
    * on start (SPEC §7): the default profile if one is set, otherwise the
    * last-used profile (`lastProfileId`, from settings) when it still exists.
    * When neither applies nothing is loaded and the initial 1x1 empty grid
-   * stands. `onProfileChange` fires with the resulting profile id (or `null`).
+   * stands. `onProfileChange` fires only when a start profile is loaded.
    *
    * `loadStart` is false when the tab set was restored from `workspace_state`
    * (Tabs, Phase 3): the active tab already carries its own layout + link, so
@@ -144,7 +147,6 @@ export class ProfileManager {
     if (opts.loadStart ?? true) await this.openStartProfile(lastProfileId);
     this.render();
     this.refreshDirty();
-    this.notifyProfileChange();
   }
 
   /** Opens the default profile, else the last-used one if it still exists, into
@@ -227,7 +229,6 @@ export class ProfileManager {
   private unlinkMissingProfiles(): void {
     const missing = this.ws.linkedProfileIds().filter((id) => !this.findProfile(id));
     for (const id of missing) this.ws.clearProfileLink(id);
-    if (missing.length > 0) this.notifyProfileChange();
   }
 
   /** Whether the profile's open tabs differ from what it saved. */
@@ -263,7 +264,6 @@ export class ProfileManager {
   onActiveTabChanged(): void {
     this.render();
     this.refreshDirty();
-    this.notifyProfileChange();
   }
 
   /**

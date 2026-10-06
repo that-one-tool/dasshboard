@@ -13,6 +13,7 @@ const { pingMock } = vi.hoisted(() => ({ pingMock: vi.fn() }));
 vi.mock("../ipc", () => ({ ping: (...args: unknown[]) => pingMock(...args) }));
 
 import { openAboutDialog } from "./aboutDialog";
+import { pushDialog, removeDialog } from "./dialogStack";
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
@@ -110,6 +111,16 @@ describe("openAboutDialog", () => {
     openAboutDialog();
     dialog()?.querySelector<HTMLElement>(".dialog-overlay")?.click();
     expect(dialog()).toBeNull();
+  });
+
+  it("leaves Escape to a dialog opened over it (e.g. the update confirm)", () => {
+    openAboutDialog();
+    const over = document.createElement("div");
+    pushDialog(over);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(dialog()).not.toBeNull();
+    removeDialog(over);
   });
 
   it("closes on Escape and restores focus to the trigger", () => {

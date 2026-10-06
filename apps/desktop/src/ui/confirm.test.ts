@@ -52,6 +52,28 @@ describe("confirm", () => {
     expect(await p2).toBe(false);
   });
 
+  it("Enter on the focused Cancel button cancels instead of accepting", async () => {
+    const p = confirm("delete everything?");
+    document.querySelector<HTMLButtonElement>('.confirm-dialog [data-action="cancel"]')?.focus();
+    press("Enter");
+    expect(await p).toBe(false);
+  });
+
+  it("a key reaches only the newest of two stacked dialogs", async () => {
+    let firstResult: boolean | null = null;
+    const first = confirm("paste 3 lines?").then((r) => (firstResult = r));
+    const second = confirm("trust this key?");
+
+    press("Escape");
+    expect(await second).toBe(false);
+    await Promise.resolve();
+    expect(firstResult).toBeNull(); // untouched by the key meant for the top one
+
+    press("Enter");
+    await first;
+    expect(firstResult).toBe(true);
+  });
+
   it("renders the message and options via textContent", async () => {
     const p = confirm("Delete \"A & B\"?", {
       title: "Delete device?",

@@ -58,7 +58,8 @@ pub enum AppError {
 }
 
 impl AppError {
-    fn code(&self) -> &'static str {
+    /// The wire `code` (SPEC.md §5), one per variant.
+    pub fn code(&self) -> &'static str {
         match self {
             AppError::NotFound(_) => "NotFound",
             AppError::Io(_) => "Io",

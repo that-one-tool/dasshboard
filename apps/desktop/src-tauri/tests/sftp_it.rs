@@ -55,6 +55,35 @@ struct FsState {
     /// Absolute path → its `0o7777` permission bits, set by `SETSTAT` (chmod).
     /// A path absent here reports the default mode (0o644 file / 0o755 dir).
     modes: HashMap<String, u32>,
+    /// Absolute symlink path → absolute target (which may not exist). `lstat`
+    /// reports the link; `stat`, `open` and listings follow it one level.
+    symlinks: HashMap<String, String>,
+    /// Absolute paths of special files (a device, a FIFO): listed and stat'ed
+    /// with no file-type bits, never readable as a regular file.
+    specials: HashSet<String>,
+}
+
+impl FsState {
+    /// The path a symlink points to, or `path` itself.
+    fn follow(&self, path: &str) -> String {
+        self.symlinks
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| path.to_string())
+    }
+
+    fn attrs_of(&self, path: &str) -> Option<FileAttributes> {
+        let mode = self.modes.get(path).copied();
+        if self.dirs.contains(path) {
+            return Some(dir_attrs(mode));
+        }
+        if self.specials.contains(path) {
+            return Some(special_attrs());
+        }
+        self.files
+            .get(path)
+            .map(|bytes| file_attrs(bytes.len() as u64, mode))
+    }
 }
 
 #[derive(Clone)]
@@ -115,6 +144,20 @@ fn file_attrs(size: u64, mode: Option<u32>) -> FileAttributes {
     };
     a.set_regular(true); // sets the REG type bit in `permissions`
     a.permissions = Some(a.permissions.unwrap_or(0) | (mode.unwrap_or(0o644) & 0o7777));
+    a
+}
+
+fn special_attrs() -> FileAttributes {
+    FileAttributes {
+        permissions: Some(0o666),
+        ..Default::default()
+    }
+}
+
+fn symlink_attrs() -> FileAttributes {
+    let mut a = FileAttributes::default();
+    a.set_symlink(true);
+    a.permissions = Some(a.permissions.unwrap_or(0) | 0o777);
     a
 }
 
@@ -202,7 +245,10 @@ impl russh_sftp::server::Handler for SftpFsHandler {
         id: u32,
         path: String,
     ) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
-        self.lstat(id, path).await
+        let fs = self.fs.lock();
+        let target = fs.follow(&norm(&path));
+        let attrs = fs.attrs_of(&target).ok_or(StatusCode::NoSuchFile)?;
+        Ok(russh_sftp::protocol::Attrs { id, attrs })
     }
 
     async fn lstat(
@@ -212,6 +258,12 @@ impl russh_sftp::server::Handler for SftpFsHandler {
     ) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
         let path = norm(&path);
         let fs = self.fs.lock();
+        if fs.symlinks.contains_key(&path) {
+            return Ok(russh_sftp::protocol::Attrs {
+                id,
+                attrs: symlink_attrs(),
+            });
+        }
         let mode = fs.modes.get(&path).copied();
         if fs.dirs.contains(&path) {
             Ok(russh_sftp::protocol::Attrs {
@@ -252,6 +304,16 @@ impl russh_sftp::server::Handler for SftpFsHandler {
                     ));
                 }
             }
+            for link in fs.symlinks.keys() {
+                if parent_of(link) == path {
+                    files.push(File::new(base_name(link), symlink_attrs()));
+                }
+            }
+            for special in &fs.specials {
+                if parent_of(special) == path {
+                    files.push(File::new(base_name(special), special_attrs()));
+                }
+            }
             files
         };
         let handle = self.fresh_handle();
@@ -282,17 +344,18 @@ impl russh_sftp::server::Handler for SftpFsHandler {
         pflags: OpenFlags,
         _attrs: FileAttributes,
     ) -> Result<Handle, Self::Error> {
-        let path = norm(&filename);
         let creating = pflags.contains(OpenFlags::CREATE) || pflags.contains(OpenFlags::WRITE);
-        {
+        let path = {
             let mut fs = self.fs.lock();
+            let path = fs.follow(&norm(&filename));
             if creating {
                 // create/truncate
                 fs.files.insert(path.clone(), Vec::new());
             } else if !fs.files.contains_key(&path) {
                 return Err(StatusCode::NoSuchFile);
             }
-        }
+            path
+        };
         let handle = self.fresh_handle();
         self.file_handles.insert(handle.clone(), path);
         Ok(Handle { id, handle })
@@ -492,6 +555,12 @@ async fn spawn_sftp_server() -> (u16, String) {
 /// Like `spawn_sftp_server`, but the server drops a connection idle for
 /// `inactivity` — a stand-in for a server that goes away on its own.
 async fn spawn_sftp_server_with_inactivity(inactivity: Duration) -> (u16, String) {
+    spawn_sftp_server_on(MemFs::new(), inactivity).await
+}
+
+/// Like `spawn_sftp_server`, serving `fs` (seeded by the test, e.g. with
+/// symlinks the client API can't create).
+async fn spawn_sftp_server_on(fs: MemFs, inactivity: Duration) -> (u16, String) {
     let host_key = PrivateKey::from_openssh(TEST_HOST_KEY).expect("valid test host key");
     let fingerprint = host_key
         .public_key()
@@ -510,7 +579,7 @@ async fn spawn_sftp_server_with_inactivity(inactivity: Duration) -> (u16, String
     let port = listener.local_addr().expect("addr").port();
 
     tokio::spawn(async move {
-        let mut server = SftpTestServer { fs: MemFs::new() };
+        let mut server = SftpTestServer { fs };
         let _ = server.run_on_socket(config, &listener).await;
     });
 
@@ -1101,6 +1170,67 @@ async fn download_dir_skip_existing_merges_without_overwriting() {
         .unwrap();
     assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"local-a");
     assert_eq!(std::fs::read(out.join("c.txt")).unwrap(), b"remote-c");
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn download_dir_skips_and_reports_folder_links_and_broken_links() {
+    // /top: a.txt, file-link -> /top/a.txt, dir-link -> /other (a folder),
+    // broken -> /nowhere, zero-link -> /dev/zero, and a FIFO. Links to folders
+    // aren't followed (no cycles, no duplicate trees); a broken link has
+    // nothing to fetch; a device or FIFO would fill the disk or hang. None of
+    // them may stop the rest of the download.
+    let fs = MemFs::new();
+    {
+        let mut state = fs.lock();
+        state
+            .dirs
+            .extend(["/top".to_string(), "/other".to_string()]);
+        state
+            .files
+            .insert("/top/a.txt".to_string(), b"aaa".to_vec());
+        state
+            .files
+            .insert("/other/x.txt".to_string(), b"x".to_vec());
+        for (link, target) in [
+            ("/top/file-link", "/top/a.txt"),
+            ("/top/dir-link", "/other"),
+            ("/top/broken", "/nowhere"),
+            ("/top/zero-link", "/dev/zero"),
+        ] {
+            state.symlinks.insert(link.to_string(), target.to_string());
+        }
+        state
+            .specials
+            .extend(["/dev/zero".to_string(), "/top/fifo".to_string()]);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server_on(fs, Duration::from_secs(30)).await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+
+    let dst = tempfile::tempdir().unwrap();
+    let out = dst.path().join("top");
+    let mut skipped = manager
+        .download_dir("dev-1", "/top", &out, false, &noop_progress())
+        .await
+        .unwrap();
+    skipped.sort();
+
+    assert_eq!(
+        skipped,
+        [
+            "/top/broken",
+            "/top/dir-link",
+            "/top/fifo",
+            "/top/zero-link"
+        ]
+    );
+    assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"aaa");
+    assert_eq!(std::fs::read(out.join("file-link")).unwrap(), b"aaa");
+    assert!(!out.join("dir-link").exists());
+    assert!(!out.join("broken").exists());
 
     manager.disconnect("dev-1").await;
 }

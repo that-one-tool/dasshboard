@@ -227,8 +227,8 @@ function ensureBaudOption(root: ParentNode, baudRate: number): void {
 /**
  * Read every dialog input into a form-values object. `forwards` is supplied by
  * the caller (the forwards sub-editor lives in the controller); `secret` is
- * always read (the input is hidden, not removed, for a serial device — the save
- * path drops it via `decideSecretToSend`).
+ * always read (the inputs are hidden, not removed, for a serial device — the
+ * save path drops it via `decideSecretToSend`).
  */
 export function readFormValues(
 	root: ParentNode,
@@ -244,7 +244,7 @@ export function readFormValues(
 		tags: parseTags(requireEl<HTMLInputElement>(form, "#device-tags").value),
 		autoReconnect: requireEl<HTMLInputElement>(form, "#device-auto-reconnect").checked,
 		connectSnippet: blankToNull(requireEl<HTMLTextAreaElement>(form, "#device-connect-snippet").value),
-		secret: requireEl<HTMLInputElement>(form, "#device-secret").value,
+		secret: readSecret(form),
 	};
 
 	const kind = selectedKind(form);
@@ -255,6 +255,15 @@ export function readFormValues(
 		return { ...base, ...readLocalShellValues(form) };
 	}
 	return { ...base, ...readSshValues(form, forwards) };
+}
+
+/** The secret input matching the selected auth method: the key passphrase for
+ * key auth, else the password. The other input is only hidden, so a value typed
+ * there before switching methods must not be saved as this method's secret. */
+function readSecret(form: ParentNode): string {
+	const method = form.querySelector<HTMLInputElement>('input[name="auth-method"]:checked')?.value;
+	const input = method === "key" ? "#device-passphrase" : "#device-secret";
+	return requireEl<HTMLInputElement>(form, input).value;
 }
 
 /** Read the local-shell inputs (shell + cwd) into a form-values fragment. A

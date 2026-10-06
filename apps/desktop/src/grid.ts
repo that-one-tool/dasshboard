@@ -63,6 +63,9 @@ export class Grid {
   // While a profile load is applying, per-pane changes are suppressed so the
   // dirty dot doesn't flicker; `applySnapshot` emits a single change at the end.
   private loading = false;
+  // Set by `dispose()` (its tab closed). Cell creation awaits, so a build in
+  // flight must stop there rather than add (and connect) panes nobody can close.
+  private disposed = false;
   // Broadcast mode: when on, input typed into any connected pane is mirrored to
   // every *other* connected pane, so one command runs across all of them. A
   // pure view state (not part of the saved workspace), toggled from the toolbar.
@@ -94,10 +97,9 @@ export class Grid {
     this.container = requireEl<HTMLElement>(this.root, ".grid-container");
     this.renderToolbar();
 
-    for (let i = 0; i < paneCount(this.model); i++) {
-      const cell = await this.createCell();
-      this.cells.push(cell);
-    }
+    const cells = await this.createLiveCells(paneCount(this.model));
+    if (!cells) return;
+    this.cells = cells;
     this.container.append(...this.cells.map((c) => c.wrapper));
     this.applyLayout();
     this.setFocus(0, false);
@@ -282,10 +284,8 @@ export class Grid {
     }
 
     const kept = this.cells.slice(0, paneCount(next));
-    const added: Cell[] = [];
-    for (let i = 0; i < remap.added.length; i++) {
-      added.push(await this.createCell());
-    }
+    const added = await this.createLiveCells(remap.added.length);
+    if (!added) return;
     this.cells = [...kept, ...added];
     this.model = next;
 
@@ -437,10 +437,9 @@ export class Grid {
         colSizes: [...snapshot.grid.colSizes],
       };
 
-      const count = paneCount(this.model);
-      for (let i = 0; i < count; i++) {
-        this.cells.push(await this.createCell());
-      }
+      const cells = await this.createLiveCells(paneCount(this.model));
+      if (!cells) return;
+      this.cells = cells;
       container.append(...this.cells.map((c) => c.wrapper));
       this.applyLayout();
       this.updateToolbarActive();
@@ -493,6 +492,21 @@ export class Grid {
   /* -------------------------------------------------------------------------
    * Cells
    * ---------------------------------------------------------------------- */
+
+  /** Creates `count` cells, or `null` when the grid is disposed meanwhile:
+   * those cells were never in `cells`, so `dispose()` missed them and they are
+   * disposed here instead. */
+  private async createLiveCells(count: number): Promise<Cell[] | null> {
+    const cells: Cell[] = [];
+    for (let i = 0; i < count; i++) {
+      cells.push(await this.createCell());
+      if (this.disposed) {
+        for (const cell of cells) cell.pane.dispose();
+        return null;
+      }
+    }
+    return cells;
+  }
 
   private async createCell(): Promise<Cell> {
     const wrapper = document.createElement("div");
@@ -681,17 +695,17 @@ export class Grid {
   };
 
   /**
-   * Full teardown: disposes every pane (which closes any live backend session)
-   * and removes the grid-level drag listeners.
+   * Full teardown when its tab closes: disposes every pane (which closes any
+   * live backend session) and removes the grid-level drag listeners. A pane
+   * build still in flight stops at its next await (see `createLiveCells`).
    *
    * NOTE: app-close clean disconnect (SPEC §7) is handled on the *backend* — a
    * Tauri `CloseRequested` handler calls `SessionManager::disconnect_all()`
    * before the window is destroyed (see `src-tauri/src/lib.rs`), which is robust
-   * even if the webview is already tearing down. This frontend `dispose()` is
-   * retained for a future Vite HMR dispose hook and is exercised by
-   * `grid.test.ts`; it is not currently wired to a lifecycle event.
+   * even if the webview is already tearing down.
    */
   dispose(): void {
+    this.disposed = true;
     window.removeEventListener("mousemove", this.onDragMove);
     window.removeEventListener("mouseup", this.onDragEnd);
     if (this.dragRaf !== 0) {

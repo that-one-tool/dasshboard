@@ -6,7 +6,7 @@
  * clicking a file downloads, collapsing keeps the connection while hiding /
  * disconnecting drops it, and an idle collapsed panel auto-disconnects.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Device, SftpEntry, SftpProgressEvent } from "../ipc";
 
 const h = vi.hoisted(() => ({
@@ -45,7 +45,7 @@ vi.mock("../ipc", () => ({
   }),
   sftpDownload: vi.fn(async () => 123),
   sftpUpload: vi.fn(async () => 10),
-  sftpDownloadDir: vi.fn(async () => {}),
+  sftpDownloadDir: vi.fn(async (): Promise<string[]> => []),
   sftpUploadDir: vi.fn(async () => {}),
   sftpLocalExists: vi.fn(async () => h.localExists),
   sftpExists: vi.fn(async () => h.remoteExists),
@@ -114,7 +114,9 @@ import {
   sftpConnectedDevices,
   sftpDownload,
   sftpDownloadDir,
+  sftpUpload,
   sftpUploadDir,
+  sftpExists,
   sftpRemove,
   sftpRename,
   sftpCancelTransfer,
@@ -125,7 +127,7 @@ import {
   sftpEditUpload,
   sftpEditClose,
 } from "../ipc";
-import { confirm } from "../ui/confirm";
+import { chooseConflict, confirm } from "../ui/confirm";
 import type { AppError } from "../ipc";
 import { connectIcon, disconnectIcon } from "../ui/icons";
 
@@ -850,6 +852,79 @@ describe("SftpPanel", () => {
     expect(sftpDownloadDir).toHaveBeenCalledWith("a", "/home/j/sub", "C:/dest/sub", "overwrite");
   });
 
+  describe("a name that can't be a local file name (path traversal)", () => {
+    const unsafe = "..\\..\\Startup\\x.bat";
+
+    it("refuses a bulk download that includes it, downloading nothing", async () => {
+      h.dirResult = "C:/dest";
+      h.listResult = [
+        { name: "ok.txt", kind: "file", size: 1 },
+        { name: unsafe, kind: "file", size: 1 },
+      ];
+      const onError = vi.fn();
+      await setup({ onError });
+      await browse();
+      q<HTMLButtonElement>('[data-action="select-all"]').click();
+
+      q<HTMLButtonElement>('[data-action="bulk-download"]').click();
+      await flush();
+
+      expect(sftpDownload).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining(unsafe) }),
+      );
+    });
+
+    it("refuses a folder download", async () => {
+      h.dirResult = "C:/dest";
+      h.listResult = [{ name: unsafe, kind: "dir", size: 0 }];
+      const onError = vi.fn();
+      await setup({ onError });
+      await browse();
+
+      document
+        .querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-actions .btn")
+        ?.click();
+      await flush();
+
+      expect(sftpDownloadDir).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalledOnce();
+    });
+
+    it("refuses a single-file download before opening the save dialog", async () => {
+      h.saveResult = "C:/local/x.bat";
+      h.listResult = [{ name: unsafe, kind: "file", size: 1 }];
+      const onError = vi.fn();
+      await setup({ onError });
+      await browse();
+
+      document
+        .querySelector<HTMLButtonElement>(".sftp-entry.is-file .sftp-entry-name")
+        ?.click();
+      await flush();
+
+      expect(sftpDownload).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("reports the entries a folder download skipped", async () => {
+    h.dirResult = "C:/dest";
+    vi.mocked(sftpDownloadDir).mockResolvedValueOnce(["/home/j/sub/current", "/home/j/sub/broken"]);
+    const onError = vi.fn();
+    await setup({ onError });
+    await browse();
+
+    document
+      .querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-actions .btn")
+      ?.click();
+    await flush();
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("current, broken") }),
+    );
+  });
+
   it("per-row folder download recurses into a chosen destination", async () => {
     h.dirResult = "C:/dest";
     await setup();
@@ -862,6 +937,104 @@ describe("SftpPanel", () => {
     await flush();
 
     expect(sftpDownloadDir).toHaveBeenCalledWith("a", "/home/j/sub", "C:/dest/sub", "overwrite");
+  });
+
+  describe("single-file upload over an existing remote file", () => {
+    afterEach(() => {
+      vi.mocked(sftpExists).mockImplementation(async () => h.remoteExists);
+    });
+
+    async function upload(): Promise<void> {
+      h.openResult = "C:/local/readme.txt";
+      await setup();
+      await browse();
+      q<HTMLButtonElement>('.sftp-panel [data-action="upload"]').click();
+      await flush();
+    }
+
+    it("uploads straight away when nothing is in the way", async () => {
+      await upload();
+
+      expect(chooseConflict).not.toHaveBeenCalled();
+      expect(sftpUpload).toHaveBeenCalledWith("a", "C:/local/readme.txt", "/home/j/readme.txt");
+    });
+
+    it("asks first, and overwrites only when told to", async () => {
+      h.remoteExists = true;
+      h.conflictChoice = "overwrite";
+      await upload();
+
+      expect(chooseConflict).toHaveBeenCalledOnce();
+      expect(sftpUpload).toHaveBeenCalledWith("a", "C:/local/readme.txt", "/home/j/readme.txt");
+    });
+
+    it("uploads nothing on skip or cancel", async () => {
+      h.remoteExists = true;
+      for (const choice of ["skip", null] as const) {
+        h.conflictChoice = choice;
+        vi.mocked(sftpUpload).mockClear();
+        await upload();
+        expect(sftpUpload, String(choice)).not.toHaveBeenCalled();
+      }
+    });
+
+    it("checks for a clash when the upload starts, not when it is picked", async () => {
+      // A transfer ahead in the queue may still create that very file (two
+      // quick uploads of one name): checking at pick time would miss it.
+      await setup();
+      await browse();
+      let finishDownload!: (bytes: number) => void;
+      vi.mocked(sftpDownload).mockReturnValueOnce(
+        new Promise<number>((resolve) => (finishDownload = resolve)),
+      );
+      h.saveResult = "C:/local/readme.txt";
+      document.querySelector<HTMLButtonElement>(".sftp-entry.is-file .sftp-entry-name")?.click();
+      await flush();
+      h.openResult = "C:/local/readme.txt";
+      q<HTMLButtonElement>('.sftp-panel [data-action="upload"]').click();
+      await flush();
+      expect(sftpExists).not.toHaveBeenCalled();
+
+      finishDownload(1);
+      await flush();
+      expect(sftpExists).toHaveBeenCalledWith("a", "/home/j/readme.txt");
+    });
+
+    it("reports a clash check that fails instead of doing nothing", async () => {
+      vi.mocked(sftpExists).mockRejectedValueOnce({ code: "Sftp", message: "not connected" });
+      const onError = vi.fn();
+      h.openResult = "C:/local/readme.txt";
+      await setup({ onError });
+      await browse();
+      q<HTMLButtonElement>('.sftp-panel [data-action="upload"]').click();
+      await flush();
+
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: "not connected" }));
+      expect(sftpUpload).not.toHaveBeenCalled();
+    });
+
+    it("gives up looking for a free name on a server that says every name exists", async () => {
+      vi.mocked(sftpExists).mockImplementation(async () => true);
+      h.conflictChoice = "rename";
+      const onError = vi.fn();
+      h.openResult = "C:/local/readme.txt";
+      await setup({ onError });
+      await browse();
+      q<HTMLButtonElement>('.sftp-panel [data-action="upload"]').click();
+      await vi.waitFor(() => expect(onError).toHaveBeenCalled());
+
+      expect(sftpUpload).not.toHaveBeenCalled();
+    });
+
+    it("keeps both under the first free name", async () => {
+      vi.mocked(sftpExists).mockImplementation(
+        async (_id: string, path: string) => path === "/home/j/readme.txt",
+      );
+      h.conflictChoice = "rename";
+      await upload();
+
+      expect(sftpUpload).toHaveBeenCalledWith("a", "C:/local/readme.txt", "/home/j/readme.txt (2)");
+    });
   });
 
   it("Upload folder recurses a local folder into the current directory", async () => {

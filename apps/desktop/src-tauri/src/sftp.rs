@@ -40,6 +40,7 @@ use std::time::Duration;
 
 use russh::client;
 use russh_sftp::client::SftpSession;
+use russh_sftp::protocol::FileType;
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -358,7 +359,8 @@ impl SftpManager {
     }
 
     /// List one remote directory, directories first then files, each group sorted
-    /// case-insensitively by name. `.`/`..` are never included.
+    /// case-insensitively by name. `.`/`..` and impossible names are never
+    /// included (see [`is_listable_name`]).
     pub async fn list(&self, device_id: &str, path: &str) -> Result<Vec<SftpEntry>, AppError> {
         let conn = self.conn_of(device_id)?;
         let read_dir = conn
@@ -368,10 +370,7 @@ impl SftpManager {
             .map_err(|e| sftp_err(&format!("could not list {path}"), e))?;
 
         let mut entries: Vec<SftpEntry> = read_dir
-            .filter(|e| {
-                let name = e.file_name();
-                name != "." && name != ".."
-            })
+            .filter(|e| is_listable_name(&e.file_name()))
             .map(|e| {
                 let file_type = e.file_type();
                 let kind = if file_type.is_dir() {
@@ -566,8 +565,9 @@ impl SftpManager {
     /// caller has already created/renamed per the chosen conflict policy). With
     /// `skip_existing`, local files that already exist are left untouched (a
     /// merge); otherwise they are overwritten. One cancel flag covers the whole
-    /// walk. Symlinked directories are not descended (a symlink is treated as a
-    /// file), mirroring `remove_recursive`.
+    /// walk. Returns the remote paths of the entries skipped: links to folders
+    /// (not descended, mirroring `remove_recursive`), broken links, special
+    /// files (devices, FIFOs), and names this computer can't store.
     pub async fn download_dir(
         &self,
         device_id: &str,
@@ -575,7 +575,7 @@ impl SftpManager {
         local_dir: &Path,
         skip_existing: bool,
         on_progress: &(dyn Fn(u64, u64) + Send + Sync),
-    ) -> Result<(), AppError> {
+    ) -> Result<Vec<String>, AppError> {
         let conn = self.conn_of(device_id)?;
         let cancel = self.begin_transfer(device_id);
         let _guard = TransferGuard {
@@ -725,6 +725,15 @@ async fn close_conn(conn: &SftpConn) {
 /// single leading slash, never `//child`).
 fn join_remote(parent: &str, name: &str) -> String {
     format!("{}/{}", parent.trim_end_matches('/'), name)
+}
+
+/// Whether a directory entry belongs in a listing: not `.`/`..`, and no `/`,
+/// which no real file name can contain — only a hostile server sends one, to
+/// steer a download out of the chosen folder (`../../.config/autostart/x`).
+/// Names that are only invalid on *this* OS (`a\b` on Windows) stay listed so
+/// they can be renamed or deleted; the frontend refuses to download them.
+fn is_listable_name(name: &str) -> bool {
+    name != "." && name != ".." && !name.contains('/')
 }
 
 /// Whether a server-supplied directory-entry name is a single, ordinary path
@@ -1026,6 +1035,8 @@ async fn upload_from_file(
 /// Recursively download `remote_dir` into `local_dir`, boxed so the `async fn`
 /// can recurse. Creates each local directory, then downloads files (skipping
 /// existing ones when `skip_existing`). Checks `cancel` before each entry.
+/// Returns the remote paths of the entries it skipped (see [`entry_action`]),
+/// so one odd entry never stops the rest of the download.
 fn download_tree<'a>(
     conn: &'a Arc<SftpConn>,
     remote_dir: &'a str,
@@ -1033,7 +1044,8 @@ fn download_tree<'a>(
     skip_existing: bool,
     cancel: &'a Arc<AtomicBool>,
     on_progress: &'a (dyn Fn(u64, u64) + Send + Sync),
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AppError>> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, AppError>> + Send + 'a>>
+{
     Box::pin(async move {
         // Ensure the target directory exists (blocking FS off the async runtime).
         let make = local_dir.to_path_buf();
@@ -1048,6 +1060,7 @@ fn download_tree<'a>(
             .read_dir(remote_dir.to_string())
             .await
             .map_err(|e| sftp_err(&format!("could not list {remote_dir}"), e))?;
+        let mut skipped = Vec::new();
         for entry in read_dir {
             if cancel.load(Ordering::Relaxed) {
                 return Err(cancelled());
@@ -1056,41 +1069,127 @@ fn download_tree<'a>(
             if name == "." || name == ".." {
                 continue;
             }
-            // Never let a server-chosen name escape the destination directory (a
-            // traversal like `../../x` or an absolute path). Fail closed.
-            if !is_safe_name(&name) {
-                return Err(AppError::Sftp(format!(
-                    "server returned an unsafe entry name {name:?} while downloading {remote_dir}"
-                )));
-            }
             let remote_child = join_remote(remote_dir, &name);
             let local_child = local_dir.join(&name);
-            if entry.file_type().is_dir() {
-                download_tree(
-                    conn,
-                    &remote_child,
-                    &local_child,
-                    skip_existing,
-                    cancel,
-                    on_progress,
-                )
-                .await?;
-            } else {
-                if skip_existing {
-                    let probe = local_child.clone();
-                    let exists = tokio::task::spawn_blocking(move || probe.exists())
-                        .await
-                        .map_err(|e| AppError::Io(format!("stat task failed: {e}")))?;
-                    if exists {
-                        continue;
-                    }
+            match entry_action(conn, entry.file_type(), &name, &remote_child).await {
+                EntryAction::Skip => skipped.push(remote_child),
+                EntryAction::Descend => skipped.extend(
+                    download_tree(
+                        conn,
+                        &remote_child,
+                        &local_child,
+                        skip_existing,
+                        cancel,
+                        on_progress,
+                    )
+                    .await?,
+                ),
+                EntryAction::Fetch => {
+                    fetch_file(
+                        conn,
+                        &remote_child,
+                        &local_child,
+                        skip_existing,
+                        cancel,
+                        on_progress,
+                    )
+                    .await?
                 }
-                // Stream straight to disk — no whole-file buffer per entry.
-                download_to_file(conn, &remote_child, &local_child, cancel, on_progress).await?;
             }
         }
-        Ok(())
+        Ok(skipped)
     })
+}
+
+/// What a folder download does with one directory entry.
+enum EntryAction {
+    Descend,
+    Fetch,
+    Skip,
+}
+
+/// Skips a name this computer can't store as is (see [`is_storable_name`]);
+/// otherwise acts on the entry's type, following a symlink one level.
+async fn entry_action(
+    conn: &SftpConn,
+    file_type: FileType,
+    name: &str,
+    remote_child: &str,
+) -> EntryAction {
+    if !is_storable_name(name) {
+        return EntryAction::Skip;
+    }
+    if file_type.is_symlink() {
+        return link_action(conn, remote_child).await;
+    }
+    type_action(&file_type)
+}
+
+/// Folders are descended and regular files fetched; anything else (a device,
+/// a FIFO, a socket) is skipped: `/dev/zero` would fill the disk, a FIFO hang
+/// the transfer.
+fn type_action(file_type: &FileType) -> EntryAction {
+    match file_type {
+        FileType::Dir => EntryAction::Descend,
+        FileType::File => EntryAction::Fetch,
+        _ => EntryAction::Skip,
+    }
+}
+
+/// A symlink is fetched as the regular file it points to. One pointing to a
+/// folder (not followed: no cycles, no tree copied twice), to a special file,
+/// or nowhere is skipped.
+async fn link_action(conn: &SftpConn, remote_child: &str) -> EntryAction {
+    match conn.session.metadata(remote_child.to_string()).await {
+        Ok(target) if target.is_regular() => EntryAction::Fetch,
+        _ => EntryAction::Skip,
+    }
+}
+
+/// Whether a server-supplied name can be written into the download folder as
+/// is: a single safe component ([`is_safe_name`]) that, on Windows, Windows can
+/// store (`a:b`, `aux`, `x?` or `name.` can't be created there).
+fn is_storable_name(name: &str) -> bool {
+    is_safe_name(name) && (!cfg!(windows) || crate::sftp_edit::is_windows_portable_name(name))
+}
+
+/// Refuses a download target whose file name this computer can't store (see
+/// [`is_storable_name`]). The frontend names a folder or bulk download's
+/// target after the server's entry, so on Windows `aux` would open a device
+/// and `x::$DATA` write an alternate data stream.
+pub(crate) fn ensure_storable_target(local: &Path) -> Result<(), AppError> {
+    let name = local.file_name().and_then(|n| n.to_str());
+    if name.is_some_and(is_storable_name) {
+        return Ok(());
+    }
+    Err(AppError::Validation(format!(
+        "{} is not a file name this computer can store",
+        local.display()
+    )))
+}
+
+/// Downloads one file of a folder download, leaving an existing local file
+/// alone when `skip_existing`.
+async fn fetch_file(
+    conn: &Arc<SftpConn>,
+    remote_path: &str,
+    local_path: &Path,
+    skip_existing: bool,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<(), AppError> {
+    if skip_existing {
+        let probe = local_path.to_path_buf();
+        let exists = tokio::task::spawn_blocking(move || probe.exists())
+            .await
+            .map_err(|e| AppError::Io(format!("stat task failed: {e}")))?;
+        if exists {
+            return Ok(());
+        }
+    }
+    // Stream straight to disk — no whole-file buffer per entry.
+    download_to_file(conn, remote_path, local_path, cancel, on_progress).await?;
+    Ok(())
 }
 
 /// One local entry discovered while walking a directory to upload — a POSIX-style
@@ -1205,7 +1304,40 @@ impl Drop for TransferGuard<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_safe_name, join_remote};
+    use super::{ensure_storable_target, is_listable_name, is_safe_name, join_remote};
+    use std::path::Path;
+
+    #[test]
+    fn a_download_target_needs_a_storable_file_name() {
+        assert!(ensure_storable_target(Path::new("/home/me/Downloads/report.pdf")).is_ok());
+        assert!(ensure_storable_target(Path::new("/")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_download_target_windows_cant_store_is_refused() {
+        // `x::$DATA` would write an alternate data stream; `aux` opens a device.
+        for name in ["aux", "x::$DATA", "a:b", "name."] {
+            let target = Path::new("C:\\Users\\me\\Downloads").join(name);
+            assert!(ensure_storable_target(&target).is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn is_listable_name_keeps_names_a_real_file_can_have() {
+        for name in ["file.txt", ".hidden", r"a\b", "c:x", "..x"] {
+            assert!(is_listable_name(name), "{name:?} should be listed");
+        }
+    }
+
+    #[test]
+    fn is_listable_name_drops_dot_entries_and_names_with_a_slash() {
+        // No real directory entry contains `/`: only a hostile server sends one,
+        // e.g. to steer a download with `../../.config/autostart/x`.
+        for name in [".", "..", "a/b", "../evil", "/etc/passwd"] {
+            assert!(!is_listable_name(name), "{name:?} must not be listed");
+        }
+    }
 
     #[test]
     fn join_remote_keeps_a_single_root_slash() {

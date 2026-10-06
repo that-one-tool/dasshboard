@@ -44,6 +44,7 @@ pub struct ProfileList {
     pub migrated_from_v1: bool,
 }
 
+#[derive(Default)]
 struct ProfilesState {
     default_profile_id: Option<String>,
     profiles: Vec<Profile>,
@@ -68,7 +69,7 @@ impl ProfileStore {
     /// effort, logged), so the conversion — and `migrated_from_v1` — happens
     /// on one launch only.
     pub fn load(dir: PathBuf) -> Self {
-        let state = Self::read_from_disk(&dir);
+        let state = Self::read_from_disk(&dir).unwrap_or_default();
         if state.migrated_from_v1 {
             if let Err(err) = write_file(&dir, &state) {
                 eprintln!("[DaSSHboard] failed to convert {PROFILES_FILE}: {err}");
@@ -83,17 +84,19 @@ impl ProfileStore {
     /// Re-reads `profiles.json` from disk, replacing the in-memory profile list
     /// and default id. Lets a second running app instance pick up profiles
     /// another instance saved, renamed, or deleted (see `reload_config`). Same
-    /// recovery semantics as [`load`](Self::load).
+    /// recovery semantics as [`load`](Self::load), except an unreadable file
+    /// keeps the current state.
     pub fn reload(&self) {
-        let state = Self::read_from_disk(&self.dir);
-        *self.lock_state() = state;
+        if let Some(state) = Self::read_from_disk(&self.dir) {
+            *self.lock_state() = state;
+        }
     }
 
     /// Reads and parses `dir/profiles.json` into a [`ProfilesState`], applying
     /// the missing-file and corrupt-file recovery shared by `load` and `reload`
-    /// (see [`atomic_file::read_recovering`]).
-    fn read_from_disk(dir: &Path) -> ProfilesState {
-        atomic_file::read_recovering::<ProfilesFile, _>(
+    /// (see [`atomic_file::reread_recovering`]); `None` when unreadable.
+    fn read_from_disk(dir: &Path) -> Option<ProfilesState> {
+        atomic_file::reread_recovering::<ProfilesFile, _>(
             dir,
             PROFILES_FILE,
             |file| ProfilesState {
@@ -101,11 +104,7 @@ impl ProfileStore {
                 profiles: file.profiles,
                 migrated_from_v1: file.version < CURRENT_VERSION,
             },
-            || ProfilesState {
-                default_profile_id: None,
-                profiles: Vec::new(),
-                migrated_from_v1: false,
-            },
+            ProfilesState::default,
         )
     }
 

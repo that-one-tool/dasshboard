@@ -634,6 +634,12 @@ fn local_edit_name(remote_name: &str) -> String {
     trimmed.to_string()
 }
 
+/// Whether Windows can store a file under `name` as is: the name
+/// [`local_edit_name`] would leave unchanged.
+pub(crate) fn is_windows_portable_name(name: &str) -> bool {
+    local_edit_name(name) == name
+}
+
 fn portable_char(c: char) -> char {
     if c.is_control() || "<>:\"/\\|?*".contains(c) {
         '_'
@@ -668,6 +674,21 @@ mod tests {
             kind,
             paths: vec![PathBuf::from(path)],
             attrs: Default::default(),
+        }
+    }
+
+    #[test]
+    fn windows_portable_names_are_the_ones_windows_can_store() {
+        for name in ["report.pdf", ".bashrc", "a b", "console.log", "résumé"] {
+            assert!(
+                is_windows_portable_name(name),
+                "{name:?} should be portable"
+            );
+        }
+        for name in [
+            "a:b", "x?", "aux", "NUL.txt", "com1", "name.", "trail ", "a\\b", "",
+        ] {
+            assert!(!is_windows_portable_name(name), "{name:?} must not be");
         }
     }
 

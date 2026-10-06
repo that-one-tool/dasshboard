@@ -1,11 +1,36 @@
 /**
- * Pure helpers for the SFTP browser: POSIX remote-path joining and the
- * human-readable size / modified-time formatting shown in the file list. Kept
+ * Pure helpers for the SFTP browser: POSIX remote-path joining, the
+ * local-file-name check for downloads, and the human-readable size /
+ * modified-time formatting shown in the file list. Kept
  * separate from the panel DOM so they're unit-testable without a document.
  *
  * Remote paths are always POSIX (`/`-separated), regardless of the local OS —
  * the server is what matters — so these never touch the platform separator.
  */
+
+const DOT_ENTRIES: ReadonlySet<string> = new Set(["", ".", ".."]);
+/** A path separator or NUL anywhere, or a drive prefix (`C:`). */
+const NOT_A_FILE_NAME = /[/\\\0]|^[A-Za-z]:/;
+
+/**
+ * Whether a server-supplied name can be joined onto a local folder and stay
+ * inside it, on every OS: not `.`/`..`, no `/` or `\` (Tauri's `join` would
+ * resolve `..\..\x` on Windows), no drive prefix. A hostile server, or any
+ * user who can name a file on an honest one, must not steer a download.
+ */
+export function isLocalFileName(name: string): boolean {
+  return !DOT_ENTRIES.has(name) && !NOT_A_FILE_NAME.test(name);
+}
+
+const SKIPPED_NAMES_SHOWN = 3;
+
+/** The skipped entries of a folder download as a short list of their names
+ * (the first few, then `…`). */
+export function skippedSummary(remotePaths: string[]): string {
+  const names = remotePaths.slice(0, SKIPPED_NAMES_SHOWN).map((p) => p.split("/").pop() ?? p);
+  if (remotePaths.length > SKIPPED_NAMES_SHOWN) names.push("…");
+  return names.join(", ");
+}
 
 /**
  * Join a remote directory and a child name into a POSIX path, collapsing any

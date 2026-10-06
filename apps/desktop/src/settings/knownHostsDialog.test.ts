@@ -27,6 +27,7 @@ vi.mock("../ui/confirm", () => ({
 }));
 
 import { openKnownHostsDialog } from "./knownHostsDialog";
+import { pushDialog, removeDialog } from "../ui/dialogStack";
 
 function q<T extends Element>(selector: string): T {
   const el = document.querySelector<T>(selector);
@@ -131,6 +132,18 @@ describe("openKnownHostsDialog", () => {
 
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(document.querySelector(".known-hosts-dialog")).toBeNull();
+  });
+
+  it("leaves Escape to a dialog opened over it (e.g. the forget confirm)", async () => {
+    h.list.mockResolvedValue([]);
+    openKnownHostsDialog({ onError });
+    await flush();
+    const over = document.createElement("div");
+    pushDialog(over);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(document.querySelector(".known-hosts-dialog")).not.toBeNull();
+    removeDialog(over);
   });
 
   it("surfaces a load failure via onError", async () => {

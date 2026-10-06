@@ -41,7 +41,7 @@ impl DeviceStore {
     /// secret material — `devices.json` never holds secrets in the first
     /// place, per SPEC.md §4).
     pub fn load(dir: PathBuf) -> Self {
-        let devices = Self::read_from_disk(&dir);
+        let devices = Self::read_from_disk(&dir).unwrap_or_default();
         DeviceStore {
             dir,
             devices: Mutex::new(devices),
@@ -53,17 +53,19 @@ impl DeviceStore {
     /// edited, or removed (each instance caches the file in memory at startup,
     /// so without this its view goes stale — see `reload_config`). Same
     /// recovery semantics as [`load`](Self::load): a missing file yields an
-    /// empty list and a corrupt file is backed up and treated as empty.
+    /// empty list and a corrupt file is backed up and treated as empty; an
+    /// unreadable one keeps the current list.
     pub fn reload(&self) {
-        let devices = Self::read_from_disk(&self.dir);
-        *self.lock_devices() = devices;
+        if let Some(devices) = Self::read_from_disk(&self.dir) {
+            *self.lock_devices() = devices;
+        }
     }
 
     /// Reads and parses `dir/devices.json` into a device list, applying the
     /// missing-file and corrupt-file recovery shared by `load` and `reload`
-    /// (see [`atomic_file::read_recovering`]).
-    fn read_from_disk(dir: &Path) -> Vec<Device> {
-        atomic_file::read_recovering::<DevicesFile, _>(
+    /// (see [`atomic_file::reread_recovering`]); `None` when unreadable.
+    fn read_from_disk(dir: &Path) -> Option<Vec<Device>> {
+        atomic_file::reread_recovering::<DevicesFile, _>(
             dir,
             DEVICES_FILE,
             |file| file.devices,
@@ -454,6 +456,23 @@ mod tests {
         assert_eq!(names.len(), 2);
         assert!(names.contains(&"NAS".to_string()));
         assert!(names.contains(&"Router".to_string()));
+    }
+
+    #[test]
+    fn reload_keeps_the_devices_when_the_file_cannot_be_read() {
+        let dir = tempdir().unwrap();
+        let store = DeviceStore::load(dir.path().to_path_buf());
+        store.upsert(sample_device("NAS")).unwrap();
+
+        // Not "missing" nor "corrupt": an I/O error (a directory here; an
+        // antivirus lock on Windows) must not empty the in-memory list, or the
+        // next save would rewrite devices.json with only the new device.
+        let path = dir.path().join(DEVICES_FILE);
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        store.reload();
+
+        assert_eq!(store.list().len(), 1);
     }
 
     #[test]

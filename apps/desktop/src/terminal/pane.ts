@@ -27,6 +27,7 @@ import {
   saveTextFile,
   writeStdin,
   type Device,
+  type ErrorCode,
   type SessionStatus,
   type TerminalSettings,
 } from "../ipc";
@@ -40,9 +41,12 @@ import {
 import {
   MAX_RECONNECT_ATTEMPTS,
   canReconnect,
+  countKeyringFailure,
+  errorCodeOf,
+  isRetryableFailure,
   reconnectDelayMs,
 } from "./reconnect";
-import { isMultilinePaste, isPasteShortcut, pasteConfirmMessage } from "./paste";
+import { isMultilinePaste, isPasteShortcut, pasteConfirmMessage, sanitizePaste } from "./paste";
 import { linkHandlers } from "./links";
 import {
   SEARCH_HIGHLIGHT_LIMIT,
@@ -151,6 +155,8 @@ export class TerminalPane {
   private userInitiated = false;
   private reconnecting = false;
   private reconnectAttempts = 0;
+  // Keychain failures in the current reconnect sequence (one retry allowed).
+  private keyringFailures = 0;
   private reconnectTimer: number | null = null;
   /** Set by `dispose()`: a connect resolving afterwards must close its session. */
   private disposed = false;
@@ -171,7 +177,7 @@ export class TerminalPane {
     this.renderUI();
     this.unlistenStatus = await onSessionStatus((event) => {
       if (this.ownsSession(event.sessionId)) {
-        this.applyStatus(event.status, event.message);
+        this.applyStatus(event.status, event.message, event.code);
       }
     });
     await this.refreshDevices();
@@ -224,7 +230,7 @@ export class TerminalPane {
   private abandonSessionForDeletedDevice(): void {
     this.cancelReconnectTimer();
     this.reconnecting = false;
-    this.reconnectAttempts = 0;
+    this.resetReconnectBudget();
     this.userInitiated = true;
     if (this.sessionId) void disconnect(this.sessionId);
     this.connected = false;
@@ -472,7 +478,7 @@ export class TerminalPane {
     if (deviceId) return deviceId;
     if (fromReconnect) {
       this.reconnecting = false;
-      this.reconnectAttempts = 0;
+      this.resetReconnectBudget();
       this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus("error", t("pane.overlay.deviceGone"))));
     }
     return null;
@@ -585,7 +591,7 @@ export class TerminalPane {
       if (this.pendingSessionId !== sessionId) return;
       this.pendingSessionId = null;
       const message = err instanceof Error ? err.message : errorMessage(err);
-      this.applyStatus("error", message);
+      this.applyStatus("error", message, errorCodeOf(err));
       this.options.onError?.(message);
     }
   }
@@ -622,13 +628,13 @@ export class TerminalPane {
     this.userInitiated = true;
     this.cancelReconnectTimer();
     this.reconnecting = false;
-    this.reconnectAttempts = 0;
+    this.resetReconnectBudget();
     if (this.sessionId) {
       await disconnect(this.sessionId);
     }
   }
 
-  private applyStatus(status: SessionStatus, message?: string): void {
+  private applyStatus(status: SessionStatus, message?: string, code?: ErrorCode): void {
     this.setStatus(status);
 
     if (status === "connecting") {
@@ -636,7 +642,7 @@ export class TerminalPane {
     } else if (status === "connected") {
       this.applyConnectedStatus(status, message);
     } else {
-      this.applyTerminatedStatus(status, message);
+      this.applyTerminatedStatus(status, message, code);
     }
   }
 
@@ -655,7 +661,7 @@ export class TerminalPane {
     // A successful connect ends any reconnect sequence. Clear `userInitiated`
     // (a cancel-then-connect must not suppress reconnecting a *future* drop).
     this.reconnecting = false;
-    this.reconnectAttempts = 0;
+    this.resetReconnectBudget();
     this.userInitiated = false;
     this.cancelReconnectTimer();
     this.terminal?.focus();
@@ -669,25 +675,39 @@ export class TerminalPane {
    * the frontend mirror; the terminal stays visible (frozen) under the overlay.
    * Schedules a backoff reconnect instead of the normal error overlay when the
    * drop was unexpected and the device opted into auto-reconnect. */
-  private applyTerminatedStatus(status: SessionStatus, message?: string): void {
+  private applyTerminatedStatus(status: SessionStatus, message?: string, code?: ErrorCode): void {
+    const unexpected = this.isUnexpectedDrop(status, code);
     this.connected = false;
     this.sessionId = null;
     this.pendingSessionId = null;
     this.stopResizeObserver();
     this.updateControls();
-
-    // Neither a drop the user asked for nor a shell they exited is unexpected.
-    const expected = this.userInitiated || status === "exited";
     this.userInitiated = false;
 
-    if (!expected && canReconnect(this.deviceAutoReconnect(), this.reconnectAttempts)) {
+    if (unexpected && canReconnect(this.deviceAutoReconnect(), this.reconnectAttempts)) {
       this.scheduleReconnect();
       return;
     }
 
     this.reconnecting = false;
-    this.reconnectAttempts = 0;
+    this.resetReconnectBudget();
     this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus(status, message)));
+  }
+
+  /** Whether a session end should start (or continue) an auto-reconnect.
+   * Neither a drop the user asked for nor a shell they exited is unexpected,
+   * and a failure a retry would only repeat (wrong password, rejected host
+   * key) is final: retrying would re-prompt and risk a lockout. */
+  private isUnexpectedDrop(status: SessionStatus, code?: ErrorCode): boolean {
+    if (this.userInitiated || status === "exited") return false;
+    this.keyringFailures = countKeyringFailure(code, this.keyringFailures);
+    return isRetryableFailure(code, this.keyringFailures);
+  }
+
+  /** A new reconnect sequence starts from a full budget. */
+  private resetReconnectBudget(): void {
+    this.reconnectAttempts = 0;
+    this.keyringFailures = 0;
   }
 
   /** Whether this pane's assigned device opted into auto-reconnect (Phase 5). */
@@ -748,7 +768,7 @@ export class TerminalPane {
   private stopReconnecting(): void {
     this.cancelReconnectTimer();
     this.reconnecting = false;
-    this.reconnectAttempts = 0;
+    this.resetReconnectBudget();
   }
 
   /** The six overlay nodes both overlay-rendering paths manipulate. */
@@ -958,7 +978,8 @@ export class TerminalPane {
     await this.pasteText(await readClipboard());
   }
 
-  private async pasteText(text: string): Promise<void> {
+  private async pasteText(clipboardText: string): Promise<void> {
+    const text = sanitizePaste(clipboardText);
     if (!text || !this.connected || !this.terminal) return;
     // Multi-line paste can run several commands at once — confirm first (Phase 5).
     if (isMultilinePaste(text)) {

@@ -13,6 +13,7 @@
  */
 
 import { t } from "../i18n";
+import { consumeKey, isTopDialog, pushDialog, removeDialog } from "./dialogStack";
 
 export interface ConfirmOptions {
   title?: string;
@@ -56,6 +57,7 @@ export function confirm(message: string, options: ConfirmOptions = {}): Promise<
     const previouslyFocused = document.activeElement;
     const finish = (result: boolean): void => {
       document.removeEventListener("keydown", onKey, true);
+      removeDialog(root);
       root.remove();
       restoreFocus(previouslyFocused);
       resolve(result);
@@ -68,16 +70,14 @@ export function confirm(message: string, options: ConfirmOptions = {}): Promise<
       else if (action === "cancel" || target.classList.contains("dialog-overlay")) finish(false);
     });
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        finish(false);
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        finish(true);
-      }
+      const result = isTopDialog(root) ? confirmKeyResult(e.key, root) : undefined;
+      if (result === undefined) return;
+      consumeKey(e);
+      finish(result);
     };
     document.addEventListener("keydown", onKey, true);
     document.body.appendChild(root);
+    pushDialog(root);
     root.querySelector<HTMLButtonElement>('[data-action="confirm"]')?.focus();
   });
 }
@@ -113,6 +113,7 @@ export function prompt(
 
     const previouslyFocused = document.activeElement;
     const finish = (result: string | null): void => {
+      removeDialog(root);
       root.remove();
       restoreFocus(previouslyFocused);
       resolve(result);
@@ -129,6 +130,7 @@ export function prompt(
       else if (e.key === "Escape") finish(null);
     });
     document.body.appendChild(root);
+    pushDialog(root);
     input?.focus();
     input?.select();
   });
@@ -176,6 +178,7 @@ export function chooseConflict(message: string): Promise<ConflictChoice | null> 
     const previouslyFocused = document.activeElement;
     const finish = (result: ConflictChoice | null): void => {
       document.removeEventListener("keydown", onKey, true);
+      removeDialog(root);
       root.remove();
       restoreFocus(previouslyFocused);
       resolve(result);
@@ -188,13 +191,14 @@ export function chooseConflict(message: string): Promise<ConflictChoice | null> 
       else if (action === "cancel" || target.classList.contains("dialog-overlay")) finish(null);
     });
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") {
-        e.preventDefault();
+      if (e.key === "Escape" && isTopDialog(root)) {
+        consumeKey(e);
         finish(null);
       }
     };
     document.addEventListener("keydown", onKey, true);
     document.body.appendChild(root);
+    pushDialog(root);
     root.querySelector<HTMLButtonElement>('[data-action="overwrite"]')?.focus();
   });
 }
@@ -239,6 +243,7 @@ export function chooseEditConflict(name: string): Promise<EditConflictChoice | n
     const previouslyFocused = document.activeElement;
     const finish = (result: EditConflictChoice | null): void => {
       document.removeEventListener("keydown", onKey, true);
+      removeDialog(root);
       root.remove();
       restoreFocus(previouslyFocused);
       resolve(result);
@@ -248,13 +253,14 @@ export function chooseEditConflict(name: string): Promise<EditConflictChoice | n
       if (choice !== undefined) finish(choice);
     });
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") {
-        e.preventDefault();
+      if (e.key === "Escape" && isTopDialog(root)) {
+        consumeKey(e);
         finish(null);
       }
     };
     document.addEventListener("keydown", onKey, true);
     document.body.appendChild(root);
+    pushDialog(root);
     root.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.focus();
   });
 }
@@ -356,6 +362,7 @@ export function choosePermissions(name: string, mode: number): Promise<number | 
     const previouslyFocused = document.activeElement;
     const finish = (result: number | null): void => {
       document.removeEventListener("keydown", onKey, true);
+      removeDialog(root);
       root.remove();
       restoreFocus(previouslyFocused);
       resolve(result);
@@ -369,15 +376,32 @@ export function choosePermissions(name: string, mode: number): Promise<number | 
       else if (action === "cancel" || target.classList.contains("dialog-overlay")) finish(null);
     });
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") {
-        e.preventDefault();
+      if (e.key === "Escape" && isTopDialog(root)) {
+        consumeKey(e);
         finish(null);
       }
     };
     document.addEventListener("keydown", onKey, true);
     document.body.appendChild(root);
+    pushDialog(root);
     root.querySelector<HTMLButtonElement>('[data-action="ok"]')?.focus();
   });
+}
+
+/** What a key does in a confirm: `false` = cancel (Escape), `true` = accept,
+ * `undefined` = nothing. */
+function confirmKeyResult(key: string, root: HTMLElement): boolean | undefined {
+  if (key === "Escape") return false;
+  if (key === "Enter") return enterAccepts(root);
+  return undefined;
+}
+
+/** Enter answers as the focused dialog button would — Enter on Cancel cancels —
+ * and accepts when focus is elsewhere (e.g. fell back to the body). */
+function enterAccepts(root: HTMLElement): boolean {
+  const focused = document.activeElement;
+  const onButton = focused instanceof HTMLButtonElement && root.contains(focused);
+  return !onButton || focused.dataset.action === "confirm";
 }
 
 /** Restore focus to the element that had it before the dialog opened. */

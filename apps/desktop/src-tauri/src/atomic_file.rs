@@ -7,16 +7,18 @@
 //!
 //! - [`write_json`] — atomic write-then-rename;
 //! - [`backup_corrupt`] — move an unreadable/unparseable file out of the way;
-//! - [`read_recovering`] — the missing-file/corrupt-file read-recovery flow;
+//! - [`read_recovering`] / [`reread_recovering`] — the missing-file /
+//!   corrupt-file / unreadable-file read-recovery flow (load / reload);
 //! - [`lock`] — a poison-recovering mutex lock.
 //!
 //! None of these ever touch secret material — secrets live in the OS keyring
 //! (`crate::secret`), never in these JSON files.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use uuid::Uuid;
@@ -69,12 +71,20 @@ pub fn backup_corrupt(path: &Path) {
     }
 }
 
+/// How many times a read failing with an I/O error is tried before giving
+/// up, and the pause between tries: on Windows an antivirus scan, the indexer
+/// or a backup tool briefly holds a just-written file.
+const READ_ATTEMPTS: u32 = 3;
+const READ_RETRY_DELAY: Duration = Duration::from_millis(100);
+
 /// Reads and parses `dir/file_name` into a store's in-memory state, recovering
 /// rather than failing on a missing or corrupt file:
 ///
 /// - missing file → `default()` (the file is created on the first save);
-/// - unreadable or unparseable file → the bad file is backed up (see
-///   [`backup_corrupt`]) and `default()` is used.
+/// - unparseable file → the bad file is backed up (see [`backup_corrupt`])
+///   and `default()` is used;
+/// - unreadable file (any other I/O error, after retries) → `default()`, the
+///   file left untouched: the error says nothing about its content.
 ///
 /// `map` converts the parsed on-disk shape `D` into the in-memory state `T`
 /// (e.g. unwrapping a `{ version, devices }` envelope to its `devices`, or
@@ -84,29 +94,77 @@ pub fn read_recovering<D, T>(
     dir: &Path,
     file_name: &str,
     map: impl FnOnce(D) -> T,
-    default: impl FnOnce() -> T,
+    default: impl Fn() -> T,
 ) -> T
 where
     D: serde::de::DeserializeOwned,
 {
+    reread_recovering(dir, file_name, map, &default).unwrap_or_else(default)
+}
+
+/// [`read_recovering`] for a store that already holds state (a reload): an
+/// unreadable file yields `None`, so the caller keeps what it has instead of
+/// emptying itself — its next save would otherwise overwrite the good file.
+pub fn reread_recovering<D, T>(
+    dir: &Path,
+    file_name: &str,
+    map: impl FnOnce(D) -> T,
+    default: impl Fn() -> T,
+) -> Option<T>
+where
+    D: serde::de::DeserializeOwned,
+{
     let path = dir.join(file_name);
-    match fs::read_to_string(&path) {
-        Ok(contents) => match serde_json::from_str::<D>(&contents) {
-            Ok(parsed) => map(parsed),
-            Err(err) => {
-                eprintln!(
-                    "[DaSSHboard] {file_name} is corrupt ({err}); backing it up and starting fresh"
-                );
-                backup_corrupt(&path);
-                default()
-            }
-        },
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => default(),
+    match read_with_retries(&path) {
+        Ok(Some(contents)) => Some(parse_or_backup(&path, file_name, &contents, map, default)),
+        Ok(None) => Some(default()),
+        Err(err) => {
+            eprintln!("[DaSSHboard] could not read {file_name} ({err}); leaving it untouched");
+            None
+        }
+    }
+}
+
+/// The file's content, `None` if it doesn't exist, or the I/O error that
+/// outlasted [`READ_ATTEMPTS`] tries.
+fn read_with_retries(path: &Path) -> std::io::Result<Option<String>> {
+    let mut result = read_once(path);
+    for _ in 1..READ_ATTEMPTS {
+        if result.is_ok() {
+            break;
+        }
+        std::thread::sleep(READ_RETRY_DELAY);
+        result = read_once(path);
+    }
+    result
+}
+
+/// The file's content, or `None` if it doesn't exist.
+fn read_once(path: &Path) -> std::io::Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+fn parse_or_backup<D, T>(
+    path: &Path,
+    file_name: &str,
+    contents: &str,
+    map: impl FnOnce(D) -> T,
+    default: impl Fn() -> T,
+) -> T
+where
+    D: serde::de::DeserializeOwned,
+{
+    match serde_json::from_str::<D>(contents) {
+        Ok(parsed) => map(parsed),
         Err(err) => {
             eprintln!(
-                "[DaSSHboard] could not read {file_name} ({err}); backing it up and starting fresh"
+                "[DaSSHboard] {file_name} is corrupt ({err}); backing it up and starting fresh"
             );
-            backup_corrupt(&path);
+            backup_corrupt(path);
             default()
         }
     }
@@ -239,6 +297,57 @@ mod tests {
             })
             .count();
         assert_eq!(backups, 1);
+    }
+
+    /// A read error that isn't "not found" (here: a directory where the file
+    /// should be; in the wild, an antivirus lock on Windows) says nothing about
+    /// the file's content, so it must never be moved aside as corrupt.
+    fn unreadable_file(dir: &Path) {
+        fs::create_dir(dir.join(FILE)).unwrap();
+    }
+
+    fn has_corrupt_backup(dir: &Path) -> bool {
+        fs::read_dir(dir).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".corrupt-")
+        })
+    }
+
+    #[test]
+    fn read_recovering_leaves_an_unreadable_file_in_place_and_defaults() {
+        let dir = tempdir().unwrap();
+        unreadable_file(dir.path());
+
+        let out: Vec<String> =
+            read_recovering::<Sample, _>(dir.path(), FILE, |s| s.items, Vec::new);
+
+        assert!(out.is_empty());
+        assert!(dir.path().join(FILE).exists(), "must not be moved aside");
+        assert!(!has_corrupt_backup(dir.path()));
+    }
+
+    #[test]
+    fn reread_recovering_reports_an_unreadable_file_as_none() {
+        let dir = tempdir().unwrap();
+        unreadable_file(dir.path());
+
+        let out: Option<Vec<String>> =
+            reread_recovering::<Sample, _>(dir.path(), FILE, |s| s.items, Vec::new);
+
+        assert_eq!(out, None);
+        assert!(!has_corrupt_backup(dir.path()));
+    }
+
+    #[test]
+    fn reread_recovering_still_defaults_on_a_missing_or_corrupt_file() {
+        let dir = tempdir().unwrap();
+        let read = || reread_recovering::<Sample, _>(dir.path(), FILE, |s| s.items, Vec::new);
+        assert_eq!(read(), Some(Vec::new()));
+        fs::write(dir.path().join(FILE), "{ not json").unwrap();
+        assert_eq!(read(), Some(Vec::new()));
+        assert!(has_corrupt_backup(dir.path()));
     }
 
     #[test]

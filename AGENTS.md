@@ -81,7 +81,9 @@ files, releasing),
     - `ui/` — confirm dialogs, file dialog, icons, toast notifications (`toast.ts`),
       shared DOM helpers (`dom.ts`), the resize handle shared by the left menu and
       the Files panel (`splitter.ts`: drag, arrow keys, double-click reset),
-      shortcut modifiers (`keyboard.ts`: Ctrl, or Cmd on macOS)
+      shortcut modifiers (`keyboard.ts`: Ctrl, or Cmd on macOS), the open-dialog
+      stack (`dialogStack.ts`: only the newest open dialog acts on a
+      document-level Escape/Enter, then consumes it)
     - `ipc.ts` — typed `invoke` wrappers; every payload type here must mirror the
       matching Rust `serde` struct (camelCase on the wire)
 - `src-tauri/src/` — backend (Rust):
