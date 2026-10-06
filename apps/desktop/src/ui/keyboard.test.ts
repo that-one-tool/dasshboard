@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isMacPlatform, isShortcutModifier } from "./keyboard";
+import { heldModifiers, isMacPlatform, isOnlyShortcutModifier, isShortcutModifier } from "./keyboard";
 
 const key = (mods: { ctrlKey?: boolean; metaKey?: boolean }) =>
   ({ ctrlKey: false, metaKey: false, ...mods }) as KeyboardEvent;
@@ -30,5 +30,31 @@ describe("isShortcutModifier", () => {
 
   it("rejects a key without either modifier", () => {
     expect(isShortcutModifier(key({}), true)).toBe(false);
+  });
+});
+
+describe("heldModifiers", () => {
+  it("lists the modifiers held, in a fixed order", () => {
+    const e = { ctrlKey: true, altKey: false, shiftKey: true, metaKey: false } as KeyboardEvent;
+    expect(heldModifiers(e)).toBe("ctrlKey+shiftKey");
+    expect(heldModifiers({ ...e, ctrlKey: false, shiftKey: false } as KeyboardEvent)).toBe("");
+  });
+});
+
+describe("isOnlyShortcutModifier", () => {
+  const key = (mods: Partial<KeyboardEvent>) =>
+    ({ ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods }) as KeyboardEvent;
+
+  it("is Ctrl alone elsewhere, Cmd alone on macOS", () => {
+    expect(isOnlyShortcutModifier(key({ ctrlKey: true }), false)).toBe(true);
+    expect(isOnlyShortcutModifier(key({ metaKey: true }), true)).toBe(true);
+    expect(isOnlyShortcutModifier(key({ ctrlKey: true }), true)).toBe(false);
+    expect(isOnlyShortcutModifier(key({ metaKey: true }), false)).toBe(false);
+  });
+
+  it("is false with any other modifier held (Shift, or Alt: Ctrl+Alt is AltGr)", () => {
+    expect(isOnlyShortcutModifier(key({ ctrlKey: true, shiftKey: true }), false)).toBe(false);
+    expect(isOnlyShortcutModifier(key({ ctrlKey: true, altKey: true }), false)).toBe(false);
+    expect(isOnlyShortcutModifier(key({ metaKey: true, ctrlKey: true }), true)).toBe(false);
   });
 });

@@ -31,6 +31,13 @@ export const en = {
 	"header.help.updateAvailable": "About DaSSHboard (update available)",
 	"layout.resizeSidebar": "Resize the side menu",
 	"layout.resizeFiles": "Resize the Files panel",
+	"layout.collapseSidebar": "Collapse the side menu",
+	"layout.expandSidebar": "Expand the side menu",
+	"layout.rail.aria": "Side menu (collapsed)",
+	"layout.rail.devices.one": "{count} connected device",
+	"layout.rail.devices.other": "{count} connected devices",
+	"layout.rail.forwards.one": "{count} running port forward",
+	"layout.rail.forwards.other": "{count} running port forwards",
 	"header.paneRoot.aria": "SSH terminal",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -63,6 +70,7 @@ export const en = {
 	"tabs.rename": "Rename tab",
 	"tabs.untitled": "Tab {index}",
 	"tabs.linked": "Linked to a profile",
+	"tabs.copyName": "{name} (copy)",
 
 	/* -- terminal pane (terminal/pane.ts, terminal/overlay.ts) -------------- */
 	"pane.connect": "Connect",

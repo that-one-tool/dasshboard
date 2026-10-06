@@ -27,6 +27,10 @@ export interface SidebarResizeOptions {
 export interface SidebarResize {
 	/** The width to persist, or `undefined` while the CSS default applies. */
 	persistedWidth(): number | undefined;
+	/** Re-limits the width to the room there is now (also run on every window
+	 * resize), keeping the persisted width to give back once there is room, and
+	 * refreshes the handle's ARIA values. A no-op while the menu is hidden. */
+	reclamp(): void;
 }
 
 export function initSidebarResize(opts: SidebarResizeOptions): SidebarResize {
@@ -63,5 +67,12 @@ export function initSidebarResize(opts: SidebarResizeOptions): SidebarResize {
 		apply(persisted);
 	}
 	sync();
-	return { persistedWidth: () => persisted };
+
+	const reclamp = (): void => {
+		if (opts.sidebar.hidden) return;
+		if (persisted !== undefined) apply(clampWidth(persisted, bounds()));
+		sync();
+	};
+	window.addEventListener("resize", reclamp);
+	return { persistedWidth: () => persisted, reclamp };
 }

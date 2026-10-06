@@ -19,8 +19,8 @@
 
 import { Grid, type GridOptions } from "../grid";
 import { confirm } from "../ui/confirm";
-import { requireEl } from "../ui/dom";
-import { tabShortcut, type TabShortcut } from "./tabShortcuts";
+import { isDialogOpen, requireEl } from "../ui/dom";
+import { tabShortcut, type TabAction, type TabJump, type TabShortcut } from "./tabShortcuts";
 import { closeIcon, plusIcon } from "../ui/icons";
 import { shrinkConfirmMessage } from "../gridModel";
 import { t } from "../i18n";
@@ -65,6 +65,8 @@ export interface TabManagerOptions {
   getSftpState?: () => SftpPanelState | undefined;
   /** The left menu's width to persist (undefined while it has its default). */
   getSidebarWidth?: () => number | undefined;
+  /** Whether the left menu is collapsed (undefined while it is expanded). */
+  getSidebarCollapsed?: () => boolean | undefined;
   /** The tunnels' remembered run state to persist (undefined when empty). */
   getTunnelState?: () => Record<string, boolean | string[]> | undefined;
   /** The device list's collapsed tag sections to persist (undefined when none). */
@@ -97,6 +99,10 @@ export class TabManager {
    */
   private ready = false;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** The profile links of tabs still being built, so a {@link clearProfileLink}
+   * that runs meanwhile reaches them too. */
+  private readonly pendingLinks = new Set<{ profileId: string | null }>();
 
   private stripTabs: HTMLElement | null = null;
   private stack: HTMLElement | null = null;
@@ -212,6 +218,29 @@ export class TabManager {
   }
 
   /**
+   * Opens a copy of tab `index` right after it: the same layout and devices,
+   * connected afresh, in the source's profile. Named "<name> (copy)". Skipped
+   * while the source is still building a loaded layout's panes.
+   */
+  async duplicateTab(index: number): Promise<void> {
+    const source = this.tabs[index];
+    if (!source?.grid.isSnapshotComplete()) return;
+    const snapshot = source.grid.snapshot();
+    const grid = await this.createTab(
+      t("tabs.copyName", { name: source.name }),
+      source.linkedProfileId,
+      () => this.slotAfter(source),
+    );
+    await grid.applySnapshot(snapshot, { confirmTeardown: false });
+  }
+
+  /** Right after `tab`, or the end once it has been closed. */
+  private slotAfter(tab: Tab): number {
+    const index = this.tabs.indexOf(tab);
+    return index >= 0 ? index + 1 : this.tabs.length;
+  }
+
+  /**
    * Opens blank tabs named `names`, linked to a profile, so the caller
    * (`ProfileManager`) can apply the profile's tabs into the returned grids. They
    * take the place of the still-open tabs owning `replacing`, which are closed
@@ -286,14 +315,20 @@ export class TabManager {
         this.schedulePersist();
       },
     });
-    await grid.init();
+    const link = { profileId: linkedProfileId };
+    this.pendingLinks.add(link);
+    try {
+      await grid.init();
+    } finally {
+      this.pendingLinks.delete(link);
+    }
 
     const tab: Tab = {
       grid,
       panel,
       button: this.createTabButton(name),
       name,
-      linkedProfileId,
+      linkedProfileId: link.profileId,
     };
     const index = slot();
     const before = this.tabs[index];
@@ -399,14 +434,27 @@ export class TabManager {
     return grid;
   }
 
+  /** Re-fits the active tab's grid after the space around it changed (side
+   * menu resized or collapsed). A no-op while the first tab is being built. */
+  refitActive(): void {
+    this.tabs[this.activeIndex]?.grid.refit();
+  }
+
   /** The active tab's linked-profile id (or null) — read by `ProfileManager`. */
   activeLinkedProfileId(): string | null {
     return this.tabs[this.activeIndex]?.linkedProfileId ?? null;
   }
 
-  /** Every profile id some tab links to, once each. */
+  /** How many distinct devices are connected in some pane of some tab. */
+  connectedDeviceCount(): number {
+    return new Set(this.tabs.flatMap((tab) => tab.grid.connectedDeviceIds())).size;
+  }
+
+  /** Every profile id some tab links to, once each — tabs still being built
+   * included, so a profile missing on disk is unlinked from them too. */
   linkedProfileIds(): string[] {
-    const ids = this.tabs.map((tab) => tab.linkedProfileId);
+    const pending = [...this.pendingLinks].map((link) => link.profileId);
+    const ids = [...this.tabs.map((tab) => tab.linkedProfileId), ...pending];
     return [...new Set(ids.filter((id): id is string => id !== null))];
   }
 
@@ -443,10 +491,11 @@ export class TabManager {
   /**
    * Unlinks EVERY tab pointing at `profileId` (used when that profile is
    * deleted, so no tab — active or background — keeps a dangling id that would
-   * otherwise be persisted). Refreshes the strip + schedules a save only if
-   * something actually changed.
+   * otherwise be persisted), including tabs still being built. Refreshes the
+   * strip + schedules a save only if something actually changed.
    */
   clearProfileLink(profileId: string): void {
+    this.clearPendingLinks(profileId);
     let changed = false;
     for (const tab of this.tabs) {
       if (tab.linkedProfileId === profileId) {
@@ -457,6 +506,12 @@ export class TabManager {
     if (changed) {
       this.refreshStrip();
       this.schedulePersist();
+    }
+  }
+
+  private clearPendingLinks(profileId: string): void {
+    for (const link of this.pendingLinks) {
+      if (link.profileId === profileId) link.profileId = null;
     }
   }
 
@@ -479,6 +534,7 @@ export class TabManager {
       activeIndex: Math.max(0, this.activeIndex),
       sftp: this.options.getSftpState?.(),
       sidebarWidth: this.options.getSidebarWidth?.(),
+      sidebarCollapsed: this.options.getSidebarCollapsed?.(),
       tunnels: this.options.getTunnelState?.(),
       collapsedDeviceGroups: this.options.getCollapsedDeviceGroups?.(),
     };
@@ -646,16 +702,42 @@ export class TabManager {
 
   private onKeyDown = (e: KeyboardEvent): void => {
     const shortcut = tabShortcut(e);
-    if (!shortcut) return;
+    if (!shortcut || !this.claims(shortcut)) return;
     e.preventDefault();
     e.stopPropagation();
     this.runShortcut(shortcut);
   };
 
+  /** Whether a shortcut is the strip's to take. Not while a dialog holds the
+   * keyboard, nor a jump to a tab that doesn't exist: the key then reaches the
+   * terminal, where Ctrl+3..8 send control codes (Ctrl+5 is the telnet escape). */
+  private claims(shortcut: TabShortcut): boolean {
+    if (isDialogOpen()) return false;
+    return typeof shortcut === "string" || this.jumpIndex(shortcut) < this.tabs.length;
+  }
+
+  /** Swallowed but not run while saved tabs are restoring: a tab opened then
+   * would shift the indices the restore is filling in. */
   private runShortcut(shortcut: TabShortcut): void {
-    if (shortcut === "new") void this.newTab();
-    else if (shortcut === "close") void this.closeTab(this.activeIndex);
-    else this.cycle(shortcut === "next" ? 1 : -1);
+    if (!this.ready) return;
+    if (typeof shortcut === "object") this.jump(shortcut);
+    else this.shortcutActions[shortcut]();
+  }
+
+  private readonly shortcutActions: Record<TabAction, () => void> = {
+    new: () => void this.newTab(),
+    close: () => void this.closeTab(this.activeIndex),
+    duplicate: () => void this.duplicateTab(this.activeIndex),
+    next: () => this.cycle(1),
+    previous: () => this.cycle(-1),
+  };
+
+  private jump(target: TabJump): void {
+    this.activate(this.jumpIndex(target));
+  }
+
+  private jumpIndex({ jumpTo }: TabJump): number {
+    return jumpTo === "last" ? this.tabs.length - 1 : jumpTo;
   }
 
   private cycle(delta: number): void {

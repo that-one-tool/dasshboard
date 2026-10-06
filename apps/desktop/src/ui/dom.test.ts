@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { describe, it, expect } from "vitest";
-import { remToPx, requireEl } from "./dom";
+import { isDialogOpen, remToPx, requireEl } from "./dom";
 
 describe("requireEl", () => {
   it("returns the matching element, typed as requested", () => {
@@ -39,5 +39,14 @@ describe("remToPx", () => {
 
   it("uses the 16px default when the root has no explicit size", () => {
     expect(remToPx(1.5)).toBe(24);
+  });
+});
+
+describe("isDialogOpen", () => {
+  it("is true only while a dialog is shown, not while one sits hidden in the DOM", () => {
+    document.body.innerHTML = `<div class="dialog dialog-hidden"></div>`;
+    expect(isDialogOpen()).toBe(false);
+    document.body.insertAdjacentHTML("beforeend", `<div class="dialog confirm-dialog"></div>`);
+    expect(isDialogOpen()).toBe(true);
   });
 });

@@ -546,9 +546,9 @@ body {
 	 * toolbar stays whole and the grid gives way. */
 	min-width: 22rem;
 	/* Beats the inline (dragged) width, so shrinking the window can never
-	 * squeeze the terminal grid below 24rem (MIN_GRID_REM, the drag clamp's same
-	 * floor: room for the tab strip's buttons and one tab). */
-	max-width: calc(100% - 24rem);
+	 * squeeze the terminal grid below 28rem (MIN_GRID_REM, the drag clamp's same
+	 * floor: room for the tab strip's buttons and one readable tab). */
+	max-width: calc(100% - 28rem);
 	background-color: var(--surface-1);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-lg);
@@ -1234,6 +1234,86 @@ body.grid-dragging-row * {
 .sidebar .btn-icon.btn-star-active,
 .sidebar .btn-icon.btn-star-active:hover:not(:disabled) {
 	color: var(--warn);
+}
+
+/* `display: flex` beats the `[hidden]` UA rule: the collapsed menu must go. */
+.sidebar[hidden],
+.sidebar-rail[hidden] {
+	display: none;
+}
+
+/* The expanded menu's top row: « alone on the right, level with » on the thin
+ * bar (both under the same top padding). The negative margin eats most of the
+ * menu's section gap, so the row costs little height. */
+.sidebar-top {
+	display: flex;
+	justify-content: flex-end;
+	flex: 0 0 auto;
+	margin-bottom: -0.75rem;
+}
+
+/* The collapsed left menu (layout/sidebarRail.ts): a thin full-height bar
+ * with » on top, then the connected-device and running-forward chips. Kept
+ * after `.btn` so its ghost buttons win over the base button look. */
+.sidebar-rail {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.75rem;
+	flex: 0 0 auto;
+	width: 3rem;
+	padding: 0.875rem 0;
+	background-color: var(--surface-1);
+	border-right: 1px solid var(--border);
+}
+
+.sidebar-rail .btn-icon {
+	background-color: transparent;
+	border-color: transparent;
+	color: var(--text-secondary);
+}
+
+.sidebar-rail .btn-icon:hover {
+	background-color: var(--surface-3);
+	color: var(--text-bright);
+}
+
+/* A count chip: icon over number, tinted like a connected pane's status chip;
+ * dimmed while the count is zero. Clicking it expands the menu. */
+.rail-chip {
+	--chip-bg: var(--ok-soft);
+	--chip-fg: var(--ok-text);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.125rem;
+	width: 2.25rem;
+	padding: 0.375rem 0;
+	border: none;
+	border-radius: var(--radius-sm);
+	background-color: var(--chip-bg);
+	color: var(--chip-fg);
+	font: inherit;
+	font-size: 0.72rem;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.rail-chip.rail-chip-idle {
+	--chip-bg: transparent;
+	--chip-fg: var(--text-muted);
+	opacity: 0.6;
+}
+
+.rail-chip:hover {
+	box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.rail-chip:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
 }
 
 .btn-test-connection {

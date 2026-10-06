@@ -21,6 +21,7 @@ import { openAboutDialog } from "./ui/aboutDialog";
 import { UpdateController } from "./updates/updateController";
 import { applyUpdateBadge } from "./updates/updateBadge";
 import { initSidebarResize } from "./layout/sidebarResize";
+import { initSidebarRail } from "./layout/sidebarRail";
 import { initTrayLabels } from "./tray/trayLabels";
 import { openKnownHostsDialog } from "./settings/knownHostsDialog";
 import { showToast } from "./ui/toast";
@@ -111,6 +112,9 @@ async function initApp(): Promise<void> {
 	let notifySftpIdleChange = (): void => {};
 	let sftpLayoutState = (): SftpPanelState | undefined => undefined;
 	let sidebarWidth = (): number | undefined => undefined;
+	let sidebarCollapsed = (): boolean | undefined => undefined;
+	let refreshRail = (): void => {};
+	let countForwards = (): number => 0;
 	let tunnelState = (): Record<string, boolean | string[]> | undefined => undefined;
 	let collapsedDeviceGroups = (): string[] | undefined => undefined;
 	const tabs = new TabManager(paneRoot, {
@@ -118,6 +122,7 @@ async function initApp(): Promise<void> {
 			onError: (message) => showToast(t("error.prefix", { message }), "error"),
 			onChange: () => onWorkspaceChange(),
 			getTerminalSettings: () => currentTerminalSettings(),
+			onConnectionChange: () => refreshRail(),
 		},
 		onActiveTabChange: () => onActiveTabChange(),
 		resolveTabState: (id) => resolveTabState(id),
@@ -131,6 +136,7 @@ async function initApp(): Promise<void> {
 		getSftpState: () => sftpLayoutState(),
 		// …and the resized left menu's width.
 		getSidebarWidth: () => sidebarWidth(),
+		getSidebarCollapsed: () => sidebarCollapsed(),
 		// …and which tunnels the user left running or stopped.
 		getTunnelState: () => tunnelState(),
 		// …and the device list's collapsed tag sections.
@@ -164,9 +170,11 @@ async function initApp(): Promise<void> {
 		showToast(t("error.prefix", { message: (error as AppError).message }), "error");
 	}
 	const workspaceRestored = restoredWorkspace.tabs.length > 0;
-	await tabs.init(workspaceRestored ? restoredWorkspace : undefined);
 
-	// Resizable left menu: its width is per-window state, restored with the tabs.
+	// Resizable, collapsible left menu: its width and collapsed state are
+	// per-window state, applied before the tabs restore (which can take seconds
+	// while hosts connect) so the menu doesn't snap shut afterwards. Collapsed,
+	// it is a thin bar with the connected-device and running-forward counts.
 	const sidebarEl = document.querySelector<HTMLElement>(".sidebar");
 	const sidebarHandle = document.querySelector<HTMLElement>(".sidebar-splitter");
 	if (sidebarEl && sidebarHandle) {
@@ -175,11 +183,28 @@ async function initApp(): Promise<void> {
 			handle: sidebarHandle,
 			paneRoot,
 			initialWidth: restoredWorkspace.sidebarWidth,
-			onLayoutChange: () => tabs.activeGrid().refit(),
+			onLayoutChange: () => tabs.refitActive(),
 			onPersist: () => tabs.scheduleSave(),
 		});
 		sidebarWidth = () => sidebar.persistedWidth();
+		const sidebarRail = initSidebarRail({
+			sidebar: sidebarEl,
+			splitter: sidebarHandle,
+			initialCollapsed: restoredWorkspace.sidebarCollapsed,
+			countDevices: () => tabs.connectedDeviceCount(),
+			countForwards: () => countForwards(),
+			// An expanded menu may come back wider than the window now allows.
+			onLayoutChange: () => {
+				sidebar.reclamp();
+				tabs.refitActive();
+			},
+			onPersist: () => tabs.scheduleSave(),
+		});
+		sidebarCollapsed = () => sidebarRail.persistedCollapsed();
+		refreshRail = () => sidebarRail.refresh();
 	}
+
+	await tabs.init(workspaceRestored ? restoredWorkspace : undefined);
 
 	// Profiles (Phase 4): the sidebar list + toolbar Save/Save As with a
 	// dirty-state dot. `init()` loads the start profile — default if set, else
@@ -219,8 +244,10 @@ async function initApp(): Promise<void> {
 		onSuccess: (message: string) => showToast(message, "success"),
 		initialState: restoredWorkspace.tunnels,
 		onPersist: () => tabs.scheduleSave(),
+		onForwardsChange: () => refreshRail(),
 	});
 	tunnelState = () => tunnelsPanel.layoutState();
+	countForwards = () => tunnelsPanel.listeningForwardCount();
 
 	// Files (SFTP) panel: a sidebar card listing SSH devices plus a persistent,
 	// resizable browser panel docked to the right of the grid. Independent of the

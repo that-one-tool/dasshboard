@@ -25,6 +25,13 @@ export const de: Messages = {
 	"header.help.updateAvailable": "Über DaSSHboard (Update verfügbar)",
 	"layout.resizeSidebar": "Größe des Seitenmenüs ändern",
 	"layout.resizeFiles": "Größe des Dateien-Panels ändern",
+	"layout.collapseSidebar": "Seitenmenü einklappen",
+	"layout.expandSidebar": "Seitenmenü ausklappen",
+	"layout.rail.aria": "Seitenmenü (eingeklappt)",
+	"layout.rail.devices.one": "{count} verbundenes Gerät",
+	"layout.rail.devices.other": "{count} verbundene Geräte",
+	"layout.rail.forwards.one": "{count} aktive Portweiterleitung",
+	"layout.rail.forwards.other": "{count} aktive Portweiterleitungen",
 	"header.paneRoot.aria": "SSH-Terminal",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -57,6 +64,7 @@ export const de: Messages = {
 	"tabs.rename": "Tab umbenennen",
 	"tabs.untitled": "Tab {index}",
 	"tabs.linked": "Mit einem Profil verknüpft",
+	"tabs.copyName": "{name} (Kopie)",
 
 	/* -- terminal pane ------------------------------------------------------ */
 	"pane.connect": "Verbinden",

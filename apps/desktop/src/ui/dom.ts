@@ -32,3 +32,9 @@ export function remToPx(rem: number): number {
   const root = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
   return rem * (root || DEFAULT_ROOT_FONT_PX);
 }
+
+/** Whether a dialog holds the keyboard. Every dialog carries `.dialog`; a
+ * closed one may stay in the DOM with `.dialog-hidden` (device, host key). */
+export function isDialogOpen(): boolean {
+  return document.querySelector(".dialog:not(.dialog-hidden)") !== null;
+}

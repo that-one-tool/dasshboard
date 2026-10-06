@@ -45,6 +45,7 @@ vi.mock("./ipc", () => ({
 
 // Imported after the mock is registered so the module graph uses it.
 import { Grid } from "./grid";
+import { listDevices } from "./ipc";
 import type { WorkspaceSnapshot } from "./profiles/workspace";
 import type { TerminalPane } from "./terminal/pane";
 
@@ -325,6 +326,47 @@ describe("Grid profiles (Phase 4)", () => {
     expect(grid.snapshot().panes).toEqual(["dev-1", null]);
     finishConnect("sess-1");
     expect(await applied).toBe(true);
+  });
+
+  it("reports its snapshot incomplete only while a load is still building its panes", async () => {
+    const grid = makeGrid();
+    await grid.init();
+    expect(grid.isSnapshotComplete()).toBe(true);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    vi.mocked(listDevices).mockImplementationOnce(async () => {
+      await gate;
+      return [];
+    });
+
+    const applied = grid.applySnapshot(profileTab(), { confirmTeardown: false });
+    await vi.waitFor(() => expect(internals(grid).model.cols).toBe(2));
+
+    expect(grid.isSnapshotComplete()).toBe(false);
+    release();
+    await applied;
+    expect(grid.isSnapshotComplete()).toBe(true);
+  });
+
+  it("lists the devices of the panes showing connected", async () => {
+    const grid = makeGrid();
+    await grid.init();
+    await grid.applySnapshot(twoDeviceTab(), { confirmTeardown: false });
+    const [first] = internals(grid).cells;
+    if (first) vi.spyOn(first.pane, "showsConnected").mockReturnValue(true);
+
+    expect(grid.connectedDeviceIds()).toEqual(["dev-1"]);
+  });
+
+  it("reports pane status changes as connection changes", async () => {
+    const onConnectionChange = vi.fn();
+    const root = document.querySelector<HTMLElement>("#pane-root")!;
+    const grid = new Grid(root, { onConnectionChange });
+    await grid.init();
+
+    await grid.applySnapshot(profileTab(), { confirmTeardown: false });
+
+    expect(onConnectionChange).toHaveBeenCalled();
   });
 
   it("does not orphan cells when loading over an existing grid", async () => {

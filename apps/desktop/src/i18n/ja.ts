@@ -25,6 +25,13 @@ export const ja: Messages = {
 	"header.help.updateAvailable": "DaSSHboard について（更新があります）",
 	"layout.resizeSidebar": "サイドメニューのサイズを変更",
 	"layout.resizeFiles": "ファイルパネルのサイズを変更",
+	"layout.collapseSidebar": "サイドメニューを折りたたむ",
+	"layout.expandSidebar": "サイドメニューを展開",
+	"layout.rail.aria": "サイドメニュー（折りたたみ中）",
+	"layout.rail.devices.one": "{count} 台のデバイスが接続中",
+	"layout.rail.devices.other": "{count} 台のデバイスが接続中",
+	"layout.rail.forwards.one": "{count} 件のポート転送が稼働中",
+	"layout.rail.forwards.other": "{count} 件のポート転送が稼働中",
 	"header.paneRoot.aria": "SSH ターミナル",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -57,6 +64,7 @@ export const ja: Messages = {
 	"tabs.rename": "タブの名前を変更",
 	"tabs.untitled": "タブ {index}",
 	"tabs.linked": "プロファイルにリンク済み",
+	"tabs.copyName": "{name}（コピー）",
 
 	/* -- terminal pane ------------------------------------------------------ */
 	"pane.connect": "接続",

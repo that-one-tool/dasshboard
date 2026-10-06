@@ -65,6 +65,9 @@ export interface TerminalPaneOptions {
    * `assignDevice()` during a profile load (the grid suppresses churn there).
    */
   onChange?: () => void;
+  /** Fired whenever the status chip changes, and on dispose (the side menu's
+   * connected-device count). */
+  onStatusChange?: () => void;
   /**
    * Supplies the current terminal appearance settings (font, theme). Read when a
    * terminal is created so panes opened after a settings change use the new
@@ -158,11 +161,16 @@ export class TerminalPane {
 
   /** Reloads the device dropdown (call after devices are added/edited/deleted). */
   async refreshDevices(): Promise<void> {
-    try {
-      this.devices = await listDevices();
-    } catch {
-      this.devices = [];
-    }
+    // A failed load is not "every device deleted": keep the list we have, or a
+    // transient IPC error would drop every pane's live session.
+    const devices = await listDevices().catch(() => null);
+    if (devices) this.applyDevices(devices);
+    this.renderDeviceOptions();
+    this.updateControls();
+  }
+
+  private applyDevices(devices: Device[]): void {
+    this.devices = devices;
     // If the assigned device was deleted, drop the stale reference so it can't be
     // re-persisted into a profile on the next Save (referential integrity: the
     // backend already nulled it out of profiles.json, and getDeviceId() feeds the
@@ -172,8 +180,6 @@ export class TerminalPane {
       this.abandonSessionForDeletedDevice();
       this.options.onChange?.();
     }
-    this.renderDeviceOptions();
-    this.updateControls();
   }
 
   /** True when this pane's assigned device is no longer in the device list. */
@@ -337,13 +343,20 @@ export class TerminalPane {
     connectBtn.hidden = busy;
     connectBtn.disabled = this.devices.length === 0;
     disconnectBtn.hidden = !busy;
-    select.disabled = busy;
+    select.disabled = this.deviceLocked();
     this.updateHeaderTooltip();
+  }
+
+  /** The device can't change while a session is open or still opening: the
+   * pane would end up connected to one device while claiming another. */
+  private deviceLocked(): boolean {
+    return this.sessionId !== null || this.pendingSessionId !== null || this.connecting;
   }
 
   private setStatus(status: PaneStatus): void {
     this.paneStatus = status;
     this.renderStatus();
+    this.options.onStatusChange?.();
   }
 
   private renderStatus(): void {
@@ -379,6 +392,7 @@ export class TerminalPane {
       await this.establishConnection(deviceId, terminal);
     } finally {
       this.connecting = false;
+      this.updateControls();
     }
   }
 
@@ -613,6 +627,7 @@ export class TerminalPane {
   private cancelReconnect(): void {
     this.stopReconnecting();
     this.releaseSession();
+    this.setStatus("disconnected");
     this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus("disconnected", t("pane.overlay.reconnectCancelled"))));
   }
 
@@ -748,6 +763,11 @@ export class TerminalPane {
    */
   hasLiveSession(): boolean {
     return this.sessionId !== null || this.connecting;
+  }
+
+  /** Whether the status chip reads "connected" (what the side menu counts). */
+  showsConnected(): boolean {
+    return this.paneStatus === "connected";
   }
 
   /**
@@ -904,6 +924,8 @@ export class TerminalPane {
       this.sessionId = null;
     }
     this.teardownTerminal();
+    this.paneStatus = "idle";
+    this.options.onStatusChange?.();
   }
 }
 

@@ -68,7 +68,9 @@ files, releasing),
     - `i18n/` — dependency-free `t`/`tp` runtime + one message table per locale;
       `en.ts` is the source of truth and types the keys
     - `layout/` — the resizable left menu (`sidebarResize`; width persisted per
-      window in `workspace_state.json`)
+      window in `workspace_state.json`) and its collapsed thin bar
+      (`sidebarRail`: », connected-device and running-forward count chips,
+      Ctrl+Shift+B / Cmd+B; collapsed state persisted alongside the width)
     - `ui/` — confirm dialogs, file dialog, icons, toast notifications (`toast.ts`),
       shared DOM helpers (`dom.ts`), the resize handle shared by the left menu and
       the Files panel (`splitter.ts`: drag, arrow keys, double-click reset),

@@ -10,8 +10,9 @@ import { remToPx } from "./dom";
 
 /** The terminal grid always keeps at least this much width when a side
  * element is resized: the tab strip above it holds the six app-action buttons,
- * the + button and at least one tab at its minimum width (~23.9rem in all). */
-export const MIN_GRID_REM = 24;
+ * the + button and at least one tab at its minimum width (~23.9rem in all),
+ * plus headroom so that tab's name stays readable. */
+export const MIN_GRID_REM = 28;
 
 const KEY_STEP_REM = 1;
 const KEY_STEP_LARGE_REM = 4;

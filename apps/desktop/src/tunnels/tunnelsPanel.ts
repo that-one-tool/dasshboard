@@ -68,6 +68,9 @@ export interface TunnelsPanelOptions {
   initialState?: TunnelRunState;
   /** Fired when the user starts/stops a tunnel, so the caller schedules a save. */
   onPersist?: () => void;
+  /** Fired on every re-render (any tunnel change): the side menu recounts the
+   * running forwards. */
+  onForwardsChange?: () => void;
 }
 
 /** The SSH devices that have at least one forward — the only tunnelable ones. */
@@ -109,6 +112,15 @@ export function forwardState(
   const live = state.forwards.find((f) => f.forwardId === forwardId);
   if (!live) return "connecting";
   return live.bound ? "listening" : "unbound";
+}
+
+/** How many forwards are bound and listening (green dots), across devices. */
+export function listeningForwardCount(states: Iterable<DeviceTunnelState>): number {
+  let count = 0;
+  for (const state of states) {
+    count += [...state.requested].filter((id) => forwardState(state, id) === "listening").length;
+  }
+  return count;
 }
 
 /** The forwards to start at launch for a remembered choice (absent: the
@@ -696,7 +708,16 @@ export class TunnelsPanel {
     this.body = this.container.querySelector<HTMLElement>(".tunnel-list-items");
   }
 
+  /** How many forwards are listening right now (the side menu's chip), on
+   * the devices the card shows: a deleted device's tunnel can linger until the
+   * backend confirms its stop, or for good if the stop failed. */
+  listeningForwardCount(): number {
+    const shown = tunnelableDevices(this.devices).map((device) => this.byDevice.get(device.id));
+    return listeningForwardCount(shown.filter((state) => state !== undefined));
+  }
+
   private render(): void {
+    this.options.onForwardsChange?.();
     if (!this.body) return;
     this.body.replaceChildren();
 

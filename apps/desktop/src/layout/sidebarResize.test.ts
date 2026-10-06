@@ -3,8 +3,8 @@
  *
  * The resizable left menu: a restored width (clamped to the 20rem minimum), the
  * CSS default until first resized, and a maximum that always leaves the
- * terminal grid at least 24rem — room for the tab strip's action buttons and
- * one tab (so it accounts for an open Files panel, which
+ * terminal grid at least 28rem — room for the tab strip's action buttons and
+ * a readable tab (so it accounts for an open Files panel, which
  * sits outside the grid). happy-dom has no layout, so element widths are stubbed.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -66,7 +66,7 @@ describe("initSidebarResize", () => {
 	});
 
 	it("re-limits a saved width that no longer fits the window", () => {
-		stubWidth(paneRoot, 420); // max = 320 + 420 - 384 = 356
+		stubWidth(paneRoot, 484); // max = 320 + 484 - 448 = 356
 		const { resize } = init({ initialWidth: 900 });
 		expect(sidebar.style.width).toBe("356px");
 		expect(resize.persistedWidth()).toBe(356);
@@ -81,11 +81,39 @@ describe("initSidebarResize", () => {
 		expect(resize.persistedWidth()).toBe(336);
 	});
 
-	it("keeps at least 24rem for the terminal grid (the top bar fits)", () => {
-		stubWidth(paneRoot, 420); // room to grow: 420 - 384 = 36px
+	it("keeps at least 28rem for the terminal grid (the top bar fits)", () => {
+		stubWidth(paneRoot, 484); // room to grow: 484 - 448 = 36px
 		init();
 		key("ArrowRight", true); // +64px requested
 		expect(sidebar.style.width).toBe("356px");
+	});
+
+	it("re-limits its width to a window that shrank, then gives it back when the window grows", () => {
+		// The rendered width follows the inline one, as in a real layout.
+		sidebar.getBoundingClientRect = () => ({ width: parseFloat(sidebar.style.width) }) as DOMRect;
+		const { resize } = init({ initialWidth: 400 });
+		stubWidth(paneRoot, 484); // max = 400 + 484 - 448 = 436
+		resize.reclamp();
+		expect(sidebar.style.width).toBe("400px");
+
+		stubWidth(paneRoot, 388); // max = 400 + 388 - 448 = 340
+		window.dispatchEvent(new Event("resize"));
+		expect(sidebar.style.width).toBe("340px");
+		expect(handle.getAttribute("aria-valuenow")).toBe("340");
+		expect(resize.persistedWidth()).toBe(400);
+
+		stubWidth(paneRoot, 800);
+		window.dispatchEvent(new Event("resize"));
+		expect(sidebar.style.width).toBe("400px");
+	});
+
+	it("leaves a hidden (collapsed) menu alone on a window resize", () => {
+		init({ initialWidth: 400 });
+		sidebar.hidden = true;
+		stubWidth(sidebar, 0);
+		stubWidth(paneRoot, 300);
+		window.dispatchEvent(new Event("resize"));
+		expect(sidebar.style.width).toBe("400px");
 	});
 
 	it("does not shrink below the minimum", () => {

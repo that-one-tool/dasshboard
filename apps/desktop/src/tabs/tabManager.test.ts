@@ -24,6 +24,8 @@ interface FakeGrid {
   liveSessionCount: Mock;
   snapshot: Mock;
   applySnapshot: Mock;
+  isSnapshotComplete: Mock;
+  connectedDeviceIds: Mock;
 }
 
 // `vi.mock` is hoisted above the file, so the fake Grid and the instance registry
@@ -54,6 +56,8 @@ const { gridInstances, FakeGridClass, initGate } = vi.hoisted(() => {
       panes: [null],
     }));
     applySnapshot = vi.fn(async () => true);
+    isSnapshotComplete = vi.fn(() => true);
+    connectedDeviceIds = vi.fn((): string[] => []);
     constructor(root: HTMLElement) {
       this.root = root;
       gridInstances.push(this as unknown as FakeGrid);
@@ -126,8 +130,10 @@ describe("TabManager.init", () => {
 describe("TabManager keyboard shortcuts", () => {
   const MAC_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
 
-  function press(init: KeyboardEventInit): void {
-    window.dispatchEvent(new KeyboardEvent("keydown", init));
+  function press(init: KeyboardEventInit): KeyboardEvent {
+    const event = new KeyboardEvent("keydown", { cancelable: true, ...init });
+    window.dispatchEvent(event);
+    return event;
   }
 
   afterEach(() => {
@@ -148,6 +154,93 @@ describe("TabManager keyboard shortcuts", () => {
     await tm.init();
     press({ key: "T", shiftKey: true, metaKey: true });
     await vi.waitFor(() => expect(tabButtons()).toHaveLength(2));
+    tm.dispose();
+  });
+
+  it("jumps to a tab on Ctrl+digit, to the last on Ctrl+9, and ignores a missing tab", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    await tm.newTab();
+    tm.activate(0);
+
+    press({ key: "2", code: "Digit2", ctrlKey: true });
+    expect(tm.activeGrid()).toBe(gridInstances[1]);
+    press({ key: "9", code: "Digit9", ctrlKey: true });
+    expect(tm.activeGrid()).toBe(gridInstances[2]);
+    tm.activate(0);
+    press({ key: "5", code: "Digit5", ctrlKey: true });
+    expect(tm.activeGrid()).toBe(gridInstances[0]);
+    tm.dispose();
+  });
+
+  it("leaves Ctrl+digit to the terminal when there is no such tab (Ctrl+5 = ^])", async () => {
+    const tm = makeManager();
+    await tm.init();
+    expect(press({ key: "5", code: "Digit5", ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(press({ key: "1", code: "Digit1", ctrlKey: true }).defaultPrevented).toBe(true);
+    tm.dispose();
+  });
+
+  function addDialog(className: string): void {
+    const dialog = document.createElement("div");
+    dialog.className = className;
+    dialog.setAttribute("aria-modal", "true");
+    document.body.appendChild(dialog);
+  }
+
+  it("still runs tab shortcuts while a dialog sits hidden in the DOM (host-key dialog)", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    addDialog("dialog dialog-hidden");
+
+    press({ key: "1", code: "Digit1", ctrlKey: true });
+
+    expect(tm.activeGrid()).toBe(gridInstances[0]);
+    tm.dispose();
+  });
+
+  it("ignores tab shortcuts while a dialog is open", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    addDialog("dialog confirm-dialog");
+
+    const event = press({ key: "1", code: "Digit1", ctrlKey: true });
+    press({ key: "D", shiftKey: true, ctrlKey: true });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(tm.activeGrid()).toBe(gridInstances[1]);
+    await Promise.resolve();
+    expect(tabButtons()).toHaveLength(2);
+    tm.dispose();
+  });
+
+  it("swallows tab shortcuts while restoring saved tabs, without running them", async () => {
+    let release: () => void = () => {};
+    initGate.promise = new Promise<void>((resolve) => (release = resolve));
+    const tm = makeManager();
+    const state = {
+      tabs: [{ name: "A", grid: { rows: 1, cols: 1, rowSizes: [1], colSizes: [1] }, panes: [{ deviceId: null }], linkedProfileId: null }],
+      activeIndex: 0,
+    } as WorkspaceState;
+    const init = tm.init(state);
+
+    const event = press({ key: "T", shiftKey: true, ctrlKey: true });
+    release();
+    await init;
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(tabNames()).toEqual(["A"]);
+    tm.dispose();
+  });
+
+  it("duplicates the active tab on Ctrl+Shift+D", async () => {
+    const tm = makeManager();
+    await tm.init();
+    press({ key: "D", shiftKey: true, ctrlKey: true });
+    await vi.waitFor(() => expect(tabNames()).toEqual(["Tab 1", "Tab 1 (copy)"]));
     tm.dispose();
   });
 
@@ -174,6 +267,86 @@ describe("TabManager.newTab", () => {
     expect(panels()[0]?.classList.contains("tab-hidden")).toBe(true);
     expect(panels()[1]?.classList.contains("tab-hidden")).toBe(false);
     expect(tm.activeGrid()).toBe(gridInstances[1]);
+  });
+});
+
+describe("TabManager.duplicateTab", () => {
+  const SOURCE = {
+    grid: { rows: 1, cols: 2, rowSizes: [1], colSizes: [0.3, 0.7] },
+    panes: ["dev-a", "dev-b"],
+  };
+
+  it("opens a copy right after the source, active, rebuilt from its snapshot", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    gridInstances[0]?.snapshot.mockReturnValue(SOURCE);
+
+    await tm.duplicateTab(0);
+
+    expect(tabNames()).toEqual(["Tab 1", "Tab 1 (copy)", "Tab 2"]);
+    expect(tm.activeGrid()).toBe(gridInstances[2]);
+    expect(gridInstances[2]?.applySnapshot).toHaveBeenCalledWith(SOURCE, {
+      confirmTeardown: false,
+    });
+  });
+
+  it("joins the source tab's profile", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.openTabs(["Web"], "p1"); // after the blank "Tab 1"
+
+    await tm.duplicateTab(1);
+
+    expect(tm.activeLinkedProfileId()).toBe("p1");
+    expect(tm.groupGrids("p1")).toHaveLength(2);
+  });
+
+  it("appends the copy when the source closes while the copy is being created", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    let release: () => void = () => {};
+    initGate.promise = new Promise<void>((resolve) => (release = resolve));
+
+    const duplicating = tm.duplicateTab(0);
+    await tm.closeTab(0);
+    release();
+    await duplicating;
+
+    expect(tabNames()).toEqual(["Tab 2", "Tab 1 (copy)"]);
+  });
+
+  it("does not copy a tab whose load is still building its panes", async () => {
+    const tm = makeManager();
+    await tm.init();
+    gridInstances[0]?.isSnapshotComplete.mockReturnValue(false);
+
+    await tm.duplicateTab(0);
+
+    expect(tabButtons()).toHaveLength(1);
+  });
+
+  it("leaves the copy unlinked when its profile is deleted while the copy is being created", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.openTabs(["Web"], "p1");
+    let release: () => void = () => {};
+    initGate.promise = new Promise<void>((resolve) => (release = resolve));
+
+    const duplicating = tm.duplicateTab(1);
+    tm.clearProfileLink("p1");
+    release();
+    await duplicating;
+
+    expect(tm.linkedProfileIds()).toEqual([]);
+  });
+
+  it("is a no-op for a tab index that does not exist", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.duplicateTab(3);
+    expect(tabButtons()).toHaveLength(1);
   });
 });
 
@@ -473,6 +646,12 @@ describe("TabManager persistence (Phase 3)", () => {
     expect(untouched.serialize().sidebarWidth).toBeUndefined();
   });
 
+  it("serialize() includes the collapsed side menu", async () => {
+    const tm = makeManager({ getSidebarCollapsed: () => true });
+    await tm.init();
+    expect(tm.serialize().sidebarCollapsed).toBe(true);
+  });
+
   it("serialize() includes the device list's collapsed tag sections", async () => {
     const tm = makeManager({ getCollapsedDeviceGroups: () => ["", "web"] });
     await tm.init();
@@ -705,6 +884,35 @@ describe("TabManager profile groups", () => {
     expect(tm.groupGrids("p1")).toHaveLength(2);
   });
 
+  it("a new tab stays unlinked when its profile is deleted while it is being created", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.openTabs(["Web"], "p1");
+    let release: () => void = () => {};
+    initGate.promise = new Promise<void>((resolve) => (release = resolve));
+
+    const opening = tm.newTab();
+    tm.clearProfileLink("p1");
+    release();
+    await opening;
+
+    expect(tm.linkedProfileIds()).toEqual([]);
+  });
+
+  it("linkedProfileIds includes a profile only a tab still being built links to", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.openTabs(["Web"], "p1");
+    let release: () => void = () => {};
+    initGate.promise = new Promise<void>((resolve) => (release = resolve));
+
+    const duplicating = tm.duplicateTab(1);
+    await tm.closeTab(1);
+    expect(tm.linkedProfileIds()).toEqual(["p1"]);
+    release();
+    await duplicating;
+  });
+
   it("a new tab opened from an unlinked tab stays unlinked", async () => {
     const tm = makeManager();
     await tm.init();
@@ -731,6 +939,34 @@ describe("TabManager profile groups", () => {
 
     await tm.closeTab(0);
     expect(onChange).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("TabManager.refitActive", () => {
+  it("refits the active grid only, and is safe before any tab exists", async () => {
+    const tm = makeManager();
+    expect(() => tm.refitActive()).not.toThrow();
+    await tm.init();
+    await tm.newTab();
+    gridInstances[0]?.refit.mockClear();
+    gridInstances[1]?.refit.mockClear();
+
+    tm.refitActive();
+
+    expect(gridInstances[1]?.refit).toHaveBeenCalledOnce();
+    expect(gridInstances[0]?.refit).not.toHaveBeenCalled();
+  });
+});
+
+describe("TabManager.connectedDeviceCount", () => {
+  it("counts each connected device once across every tab", async () => {
+    const tm = makeManager();
+    await tm.init();
+    await tm.newTab();
+    gridInstances[0]?.connectedDeviceIds.mockReturnValue(["a", "b"]);
+    gridInstances[1]?.connectedDeviceIds.mockReturnValue(["b", "c"]);
+
+    expect(tm.connectedDeviceCount()).toBe(3);
   });
 });
 

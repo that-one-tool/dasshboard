@@ -91,6 +91,10 @@ pub struct WorkspaceState {
     /// default). Same legacy/clean-file handling as `sftp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_width: Option<u32>,
+    /// `Some(true)` while the left menu is collapsed to its thin bar. Same
+    /// legacy/clean-file handling as `sftp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar_collapsed: Option<bool>,
     /// Device id → which of its forwards the user last left running (explicit
     /// Start/Stop), restored on launch; a device absent here follows its
     /// `tunnelAutoStart` flag. Same legacy/clean-file handling as `sftp`.
@@ -122,6 +126,7 @@ impl WorkspaceState {
             active_index: 0,
             sftp: None,
             sidebar_width: None,
+            sidebar_collapsed: None,
             tunnels: None,
             collapsed_device_groups: None,
         }
@@ -174,6 +179,7 @@ mod tests {
             active_index: 0,
             sftp: None,
             sidebar_width: None,
+            sidebar_collapsed: None,
             tunnels: None,
             collapsed_device_groups: None,
         }
@@ -294,6 +300,21 @@ mod tests {
         let json = r#"{ "tabs": [], "activeIndex": 0 }"#;
         let back: WorkspaceState = serde_json::from_str(json).expect("deserialize");
         assert_eq!(back.tunnels, None);
+    }
+
+    #[test]
+    fn sidebar_collapsed_round_trips_camel_case_and_is_omitted_when_absent() {
+        let mut s = state();
+        assert!(serde_json::to_value(&s)
+            .unwrap()
+            .get("sidebarCollapsed")
+            .is_none());
+
+        s.sidebar_collapsed = Some(true);
+        let value = serde_json::to_value(&s).expect("serialize");
+        assert_eq!(value["sidebarCollapsed"], true);
+        let back: WorkspaceState = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(back.sidebar_collapsed, Some(true));
     }
 
     #[test]

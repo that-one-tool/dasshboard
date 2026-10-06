@@ -37,6 +37,9 @@ export interface GridOptions {
   onChange?: () => void;
   /** Supplies current terminal appearance settings to each pane (Phase 5). */
   getTerminalSettings?: () => TerminalSettings;
+  /** A pane's status changed (or a pane went away): the side menu recounts
+   * the connected devices. */
+  onConnectionChange?: () => void;
 }
 
 /** One grid cell: the wrapper element (grid item) and its `TerminalPane`. */
@@ -317,6 +320,20 @@ export class Grid {
     };
   }
 
+  /** False while a load is still building its panes: {@link snapshot} would
+   * then give the new layout with its devices missing. */
+  isSnapshotComplete(): boolean {
+    return this.cells.length === paneCount(this.model);
+  }
+
+  /** The devices of the panes whose status reads "connected". */
+  connectedDeviceIds(): string[] {
+    return this.cells
+      .filter((cell) => cell.pane.showsConnected())
+      .map((cell) => cell.pane.getDeviceId())
+      .filter((id): id is string => id !== null);
+  }
+
   /** Number of panes currently holding a live session. */
   liveSessionCount(): number {
     return this.cells.filter((c) => c.pane.hasLiveSession()).length;
@@ -483,6 +500,7 @@ export class Grid {
     const pane = new TerminalPane(wrapper, {
       onError: this.options.onError,
       onChange: () => this.emitChange(),
+      onStatusChange: () => this.options.onConnectionChange?.(),
       getTerminalSettings: this.options.getTerminalSettings,
       // Referencing `pane` here is safe: the callback only ever runs after this
       // `const` has been initialised (once a live terminal emits input).

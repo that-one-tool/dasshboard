@@ -108,6 +108,7 @@ mod tests {
             active_index: 0,
             sftp: None,
             sidebar_width: None,
+            sidebar_collapsed: None,
             tunnels: None,
             collapsed_device_groups: None,
         }

@@ -15,7 +15,10 @@
   ports, and local shells. Tags (collapsible sections), search, and import/export
   (JSON or `~/.ssh/config`).
 - **Grid & tabs** — split each tab into up to 3×2 resizable panes, and resize the
-  side menu and Files panel; tabs and layouts are restored on launch.
+  Files panel; duplicate a tab (Ctrl+Shift+D) or jump to one (Ctrl+1–8, Ctrl+9
+  for the last; Cmd on macOS); tabs and layouts are restored on launch.
+- **Side menu** — resize it, or collapse it (Ctrl+Shift+B, Cmd+B on macOS) to a
+  thin bar showing the connected devices and running port forwards.
 - **Profiles** — save a workspace of one or more tabs and set a default that
   reconnects every pane on launch.
 - **SSH extras** — jump hosts (`-J`, for shells, SFTP and tunnels), agent

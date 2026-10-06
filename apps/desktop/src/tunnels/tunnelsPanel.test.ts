@@ -29,6 +29,7 @@ import {
   statusLabel,
   forwardEndpoint,
   forwardState,
+  listeningForwardCount,
   forwardIdsToRun,
   runChoiceOf,
 } from "./tunnelsPanel";
@@ -145,6 +146,11 @@ describe("per-forward state helpers", () => {
     expect(forwardState(live, "f4")).toBe("stopped"); // not asked for
   });
 
+  it("listeningForwardCount counts only the bound forwards, across devices", () => {
+    expect(listeningForwardCount([])).toBe(0);
+    expect(listeningForwardCount([live, { ...live, requested: new Set(["f1"]) }])).toBe(2);
+  });
+
   const device = sshDevice("dev-1", "NAS", [forward("f1", 1), forward("f2", 2)]) as SshDevice;
 
   it("forwardIdsToRun reads a remembered choice, else the auto-start flag", () => {
@@ -233,6 +239,45 @@ describe("TunnelsPanel", () => {
     action.click();
     await flush();
     expect(stopTunnel).toHaveBeenCalledWith("t1");
+  });
+
+  it("reports its running-forward count whenever a tunnel changes", async () => {
+    const onForwardsChange = vi.fn();
+    const panel = new TunnelsPanel({ onForwardsChange });
+    await panel.init();
+    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
+    await flush();
+    onForwardsChange.mockClear();
+
+    h.statusHandler!({
+      tunnelId: "t1",
+      status: "listening",
+      forwards: [
+        { forwardId: "f1", localAddr: "127.0.0.1", localPort: 5432, remoteHost: "db", remotePort: 5432, bound: true },
+      ],
+    });
+
+    expect(onForwardsChange).toHaveBeenCalled();
+    expect(panel.listeningForwardCount()).toBe(1);
+  });
+
+  it("stops counting a deleted device's forwards before the backend confirms the stop", async () => {
+    const panel = new TunnelsPanel();
+    await panel.init();
+    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
+    await flush();
+    h.statusHandler!({
+      tunnelId: "t1",
+      status: "listening",
+      forwards: [
+        { forwardId: "f1", localAddr: "127.0.0.1", localPort: 5432, remoteHost: "db", remotePort: 5432, bound: true },
+      ],
+    });
+
+    h.devices = [];
+    await panel.refresh();
+
+    expect(panel.listeningForwardCount()).toBe(0);
   });
 
   it("shows a stopped tunnel as an icon status and icon-only buttons", async () => {

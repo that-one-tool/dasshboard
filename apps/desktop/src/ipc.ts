@@ -646,6 +646,8 @@ export interface WorkspaceState {
   sftp?: SftpPanelState;
   /** The left menu's width in px, or absent while the CSS default applies. */
   sidebarWidth?: number;
+  /** True while the left menu is collapsed to its thin bar; absent otherwise. */
+  sidebarCollapsed?: boolean;
   /** Device id → which of its forwards the user last left running (explicit
    * Start/Stop): the listed forward ids, or none (`false`); `true` (all) only
    * in older files. Absent devices follow their `tunnelAutoStart` flag. */

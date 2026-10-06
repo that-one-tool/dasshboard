@@ -392,6 +392,18 @@ describe("TerminalPane auto-reconnect (Phase 5)", () => {
     expect(vi.mocked(connect)).not.toHaveBeenCalled();
   });
 
+  it("Cancel leaves the status chip on disconnected, not connecting", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await connectThenDrop(pane);
+
+    q<HTMLButtonElement>(root, ".overlay-cancel").dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+
+    expect(q<HTMLElement>(root, ".pane-status").classList.contains("pane-status-disconnected")).toBe(true);
+  });
+
   it("does not reconnect a shell that exited on its own (exit / logout)", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
     const pane = new TerminalPane(root);
@@ -1106,5 +1118,98 @@ describe("TerminalPane status chip", () => {
     pane.retranslate();
 
     expect(q<HTMLElement>(root, ".pane-status-label").textContent).toBe("Connecté");
+  });
+});
+
+describe("TerminalPane connection status (side-menu count)", () => {
+  beforeEach(() => {
+    h.statusHandler = null;
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  async function connectedPane(onStatusChange: () => void): Promise<TerminalPane> {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { onStatusChange });
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+    await (pane as unknown as { startSession(): Promise<void> }).startSession();
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    return pane;
+  }
+
+  it("reports connected once its status chip says so, and every status change", async () => {
+    const onStatusChange = vi.fn();
+    const pane = await connectedPane(onStatusChange);
+
+    expect(pane.showsConnected()).toBe(true);
+    expect(onStatusChange).toHaveBeenCalled();
+    onStatusChange.mockClear();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "exited" });
+
+    expect(pane.showsConnected()).toBe(false);
+    expect(onStatusChange).toHaveBeenCalled();
+  });
+
+  it("reports a status change when disposed, no longer connected", async () => {
+    const onStatusChange = vi.fn();
+    const pane = await connectedPane(onStatusChange);
+    onStatusChange.mockClear();
+
+    pane.dispose();
+
+    expect(pane.showsConnected()).toBe(false);
+    expect(onStatusChange).toHaveBeenCalledOnce();
+  });
+});
+
+describe("TerminalPane device picker and device reloads", () => {
+  const start = (pane: TerminalPane) =>
+    (pane as unknown as { startSession(): Promise<void> }).startSession();
+
+  beforeEach(() => {
+    h.statusHandler = null;
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    vi.mocked(connect).mockClear();
+    vi.mocked(disconnect).mockClear();
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  it("locks the device picker while a connect is in flight, and unlocks it when that fails", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    const select = q<HTMLSelectElement>(root, ".pane-device-select");
+    select.value = h.device.id;
+    let failConnect: (error: unknown) => void = () => {};
+    vi.mocked(connect).mockImplementationOnce(
+      () => new Promise<string>((_resolve, reject) => (failConnect = reject)),
+    );
+
+    const connecting = start(pane);
+    await flush();
+    expect(select.disabled).toBe(true);
+
+    failConnect({ code: "connection", message: "refused" });
+    await connecting;
+    await flush();
+    expect(select.disabled).toBe(false);
+  });
+
+  it("keeps its device and live session when reloading the device list fails", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+    await start(pane);
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+
+    vi.mocked(listDevices).mockRejectedValueOnce({ code: "ipc", message: "busy" });
+    await pane.refreshDevices();
+
+    expect(vi.mocked(disconnect)).not.toHaveBeenCalled();
+    expect(pane.getDeviceId()).toBe(h.device.id);
+    expect(pane.isConnected()).toBe(true);
   });
 });

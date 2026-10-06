@@ -25,6 +25,13 @@ export const zh: Messages = {
 	"header.help.updateAvailable": "关于 DaSSHboard（有可用更新）",
 	"layout.resizeSidebar": "调整侧边菜单大小",
 	"layout.resizeFiles": "调整文件面板大小",
+	"layout.collapseSidebar": "收起侧边菜单",
+	"layout.expandSidebar": "展开侧边菜单",
+	"layout.rail.aria": "侧边菜单（已收起）",
+	"layout.rail.devices.one": "{count} 台已连接设备",
+	"layout.rail.devices.other": "{count} 台已连接设备",
+	"layout.rail.forwards.one": "{count} 个运行中的端口转发",
+	"layout.rail.forwards.other": "{count} 个运行中的端口转发",
 	"header.paneRoot.aria": "SSH 终端",
 
 	/* -- shared / common ---------------------------------------------------- */
@@ -57,6 +64,7 @@ export const zh: Messages = {
 	"tabs.rename": "重命名标签页",
 	"tabs.untitled": "标签页 {index}",
 	"tabs.linked": "已关联到配置文件",
+	"tabs.copyName": "{name}（副本）",
 
 	/* -- terminal pane ------------------------------------------------------ */
 	"pane.connect": "连接",
