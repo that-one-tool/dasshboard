@@ -83,9 +83,11 @@ struct TestServer {
     /// (a chatty remote); `None` echoes each received chunk as one packet.
     echo_chunk: Option<usize>,
     /// `ssh -R` misbehaviours: listen but answer "refused" (as a grant that
-    /// arrives after the client gave up looks), and never answer a cancel.
+    /// arrives after the client gave up looks), never answer a cancel, and
+    /// never answer a listen.
     refuse_remote_listen: bool,
     stall_cancel: bool,
+    stall_listen: bool,
     /// When set, the server opens a `forwarded-tcpip` channel the client never
     /// asked for (on shell request, or for the port after a granted one) and
     /// reports whether the client accepted it.
@@ -111,6 +113,7 @@ impl TestServer {
             echo_chunk: None,
             refuse_remote_listen: false,
             stall_cancel: false,
+            stall_listen: false,
             forward_probe: None,
             stall_reads: false,
             session_errors: None,
@@ -129,6 +132,7 @@ impl server::Server for TestServer {
             echo_chunk: self.echo_chunk,
             refuse_remote_listen: self.refuse_remote_listen,
             stall_cancel: self.stall_cancel,
+            stall_listen: self.stall_listen,
             forward_probe: self.forward_probe.clone(),
             stall_reads: self.stall_reads,
             stray_probe: self.stray_probe.clone(),
@@ -151,6 +155,7 @@ struct TestServerHandler {
     echo_chunk: Option<usize>,
     refuse_remote_listen: bool,
     stall_cancel: bool,
+    stall_listen: bool,
     forward_probe: Option<mpsc::UnboundedSender<bool>>,
     stall_reads: bool,
     stray_probe: Option<mpsc::UnboundedSender<(&'static str, bool)>>,
@@ -308,6 +313,10 @@ impl server::Handler for TestServerHandler {
         port: &mut u32,
         session: &mut Session,
     ) -> Result<bool, Self::Error> {
+        if self.stall_listen {
+            // Blocks this connection's server loop: a server that stopped answering.
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
         let Ok(listener) = TcpListener::bind(("127.0.0.1", *port as u16)).await else {
             return Ok(false);
         };
@@ -1309,6 +1318,7 @@ async fn host_key_accept_persists_tofu() {
         .await
         .expect("a host_key_prompt");
     assert!(!prompt.changed, "first contact must be changed:false");
+    assert!(!prompt.trust_reset);
     assert_eq!(prompt.fingerprint, server_fingerprint());
 
     manager.respond_host_key(&prompt.prompt_id, true);
@@ -1400,6 +1410,26 @@ async fn changed_host_key_prompts_with_changed_true_and_overwrites_on_accept() {
     );
 
     manager.disconnect("s1").await;
+}
+
+/// After a damaged trust file was reset, a host with no record may be one
+/// trusted before: the prompt says so instead of reading as a first contact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_unknown_after_a_trust_reset_prompts_with_trust_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("known_hosts.json"), "{ damaged").unwrap();
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let port = spawn_test_server(TEST_PASSWORD).await;
+
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session(&manager, "s1", port, sink);
+
+    let prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
+        .await
+        .expect("a host_key_prompt");
+    assert!(prompt.trust_reset);
+    assert!(!prompt.changed);
+    manager.respond_host_key(&prompt.prompt_id, false);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1939,13 +1969,17 @@ fn new_tunnel_sink() -> (Arc<dyn TunnelSink>, TunnelSinkChannels) {
 }
 
 fn tunnel_manager_with(dir: &std::path::Path) -> Arc<TunnelManager> {
+    Arc::new(new_tunnel_manager(dir))
+}
+
+fn new_tunnel_manager(dir: &std::path::Path) -> TunnelManager {
     let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
-    Arc::new(TunnelManager::new(
+    TunnelManager::new(
         known_hosts,
         Duration::from_secs(10),
         Duration::from_secs(60),
         Duration::from_secs(10),
-    ))
+    )
 }
 
 /// Await the `Listening` status (past the initial `Connecting`), returning its
@@ -2284,6 +2318,50 @@ async fn tunnel_adds_and_removes_forwards_while_live() {
             .add_forward("t1", echo_forward("f3", first_port))
             .await
     );
+}
+
+/// russh blocks its whole connection while one channel's reader is full, so a
+/// local client that stops reading used to freeze every connection of the
+/// tunnel. Once its writes make no progress for the stall timeout, only that
+/// connection is closed and the others flow again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_that_stops_reading_does_not_freeze_the_tunnel() {
+    use tokio::io::AsyncWriteExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_test_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), port);
+    let manager =
+        Arc::new(new_tunnel_manager(dir.path()).with_stall_timeout(Duration::from_secs(1)));
+    let local_port = free_local_port().await;
+    let (sink, mut chans) = new_tunnel_sink();
+    manager.spawn_tunnel(
+        "t1".to_string(),
+        TunnelParams {
+            device_id: "dev-1".to_string(),
+            host: "127.0.0.1".to_string(),
+            port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            forwards: vec![echo_forward("f1", local_port)],
+            keepalive: KeepaliveConfig::disabled(),
+            jump: None,
+        },
+        sink,
+    );
+    await_listening(&mut chans.status_rx).await;
+
+    // Flood the echo and never read it back, keeping the socket open.
+    let mut stalled = connect_local(local_port).await;
+    tokio::spawn(async move {
+        let _ = stalled.write_all(&vec![0u8; 64 << 20]).await;
+        std::future::pending::<()>().await;
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let mut other = connect_local(local_port).await;
+    assert_echoes(&mut other).await;
+    manager.stop_tunnel("t1").await;
 }
 
 /// Connect to a tunnel's local port, retrying briefly until its listener accepts.
@@ -2899,4 +2977,112 @@ async fn a_stop_does_not_wait_behind_a_pending_forward_change() {
         "stop took {:?}",
         started.elapsed()
     );
+}
+
+/// The forwards of the next `Listening` status within `limit`, skipping any
+/// other status; `None` when none arrives in time.
+async fn next_listening_within(
+    status_rx: &mut mpsc::UnboundedReceiver<(TunnelStatus, Vec<ForwardStatus>)>,
+    limit: Duration,
+) -> Option<Vec<ForwardStatus>> {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match recv_timeout(status_rx, left).await? {
+            (TunnelStatus::Listening, forwards) => return Some(forwards),
+            _ => continue,
+        }
+    }
+}
+
+fn bound_ids(forwards: &[ForwardStatus]) -> Vec<(&str, bool)> {
+    forwards
+        .iter()
+        .map(|f| (f.forward_id.as_str(), f.bound))
+        .collect()
+}
+
+/// A server slow to cancel a removed remote forward doesn't hold up the
+/// tunnel's next change: a local forward added meanwhile binds right away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_does_not_wait_behind_a_slow_remote_cancel() {
+    let echo_port = spawn_echo_service().await;
+    let (local_port, server_port, added_port) = (
+        free_local_port().await,
+        free_local_port().await,
+        free_local_port().await,
+    );
+    let port = spawn_remote_test_server(|s| s.stall_cancel = true).await;
+    let mut tunnel = start_remote_tunnel(
+        port,
+        tempfile::tempdir().unwrap(),
+        vec![
+            echo_forward("f1", local_port),
+            remote_forward("r1", server_port, echo_port),
+        ],
+    );
+    await_listening(&mut tunnel.chans.status_rx).await;
+
+    tunnel.manager.remove_forward("t1", "r1".to_string()).await;
+    let removed = next_listening_within(&mut tunnel.chans.status_rx, Duration::from_secs(3))
+        .await
+        .expect("the removal must be reported without waiting on the server");
+    assert_eq!(bound_ids(&removed), [("f1", true)]);
+    assert!(
+        tunnel
+            .manager
+            .add_forward("t1", echo_forward("f2", added_port))
+            .await
+    );
+    let added = next_listening_within(&mut tunnel.chans.status_rx, Duration::from_secs(3))
+        .await
+        .expect("the add must not wait on the server");
+    assert_eq!(bound_ids(&added), [("f1", true), ("f2", true)]);
+    tunnel.manager.stop_tunnel("t1").await;
+}
+
+/// While the server has yet to answer a remote forward's listen, the forward
+/// is left out of `Listening` (still starting) and other changes go ahead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_does_not_wait_behind_a_slow_remote_listen() {
+    let (local_port, server_port, added_port) = (
+        free_local_port().await,
+        free_local_port().await,
+        free_local_port().await,
+    );
+    let port = spawn_remote_test_server(|s| s.stall_listen = true).await;
+    let mut tunnel = start_remote_tunnel(
+        port,
+        tempfile::tempdir().unwrap(),
+        vec![echo_forward("f1", local_port)],
+    );
+    await_listening(&mut tunnel.chans.status_rx).await;
+
+    assert!(
+        tunnel
+            .manager
+            .add_forward("t1", remote_forward("r1", server_port, 9))
+            .await
+    );
+    assert!(
+        tunnel
+            .manager
+            .add_forward("t1", echo_forward("f2", added_port))
+            .await
+    );
+    let mut latest = None;
+    while let Some(forwards) =
+        next_listening_within(&mut tunnel.chans.status_rx, Duration::from_secs(3)).await
+    {
+        let done = forwards.iter().any(|f| f.forward_id == "f2");
+        latest = Some(forwards);
+        if done {
+            break;
+        }
+    }
+    let latest = latest.expect("the changes must not wait on the server");
+    assert_eq!(bound_ids(&latest), [("f1", true), ("f2", true)]);
+    // Still starting, so a reloaded frontend sees it as asked for.
+    assert_eq!(tunnel.manager.list()[0].forward_ids, ["f1", "r1", "f2"]);
+    tunnel.manager.stop_tunnel("t1").await;
 }

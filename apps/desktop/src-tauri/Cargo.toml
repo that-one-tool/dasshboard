@@ -1,6 +1,6 @@
 [package]
 name = "dasshboard"
-version = "1.33.2"
+version = "1.34.0"
 description = "Multi-pane SSH & serial terminal dashboard with SFTP file transfer"
 authors = ["That one tool"]
 edition = "2021"
@@ -40,6 +40,8 @@ russh-keys = "0.49.2"
 aws-lc-rs = { version = "1.17.1", features = ["prebuilt-nasm"] }
 # OS keychain for device secrets (used starting Phase 1 — SecretStore).
 keyring = "4.1.5"
+# Wipes passwords/passphrases from memory once used (already a russh dependency).
+zeroize = "1.9.0"
 # Async runtime backing SessionManager's per-session tasks (used starting Phase 2).
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 # Serial/COM device sessions (SerialSessionManager). Pinned exactly like the
@@ -85,10 +87,11 @@ libloading = "=0.7.4"
 # through WebKitGTK; same version.
 gio = "=0.18.4"
 
-# Polls a local shell's PTY so its reader thread can stop (`local_shell.rs`).
-# Already in the tree (tokio, portable-pty); same version.
+# Polls a local shell's PTY so its reader thread can stop (`local_shell.rs`);
+# on macOS it uses select(2), as poll(2) doesn't work on devices there.
+# Already in the tree through portable-pty; same version.
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.186"
+filedescriptor = "0.8.3"
 
 [dev-dependencies]
 # Temp-dir fixtures for DeviceStore tests (missing/corrupt-file recovery,

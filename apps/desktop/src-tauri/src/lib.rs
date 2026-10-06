@@ -19,6 +19,7 @@ mod serial;
 mod settings;
 mod socks;
 mod ssh_config;
+mod stall_guard;
 mod state;
 mod store;
 mod transfer;
@@ -197,6 +198,8 @@ pub fn run() {
             commands::respond_host_key,
             commands::list_known_hosts,
             commands::forget_host,
+            commands::known_hosts_reset,
+            commands::dismiss_known_hosts_reset,
             commands::test_connection,
             commands::start_tunnel,
             commands::stop_tunnel,
@@ -213,6 +216,7 @@ pub fn run() {
             commands::save_workspace_state,
             commands::reload_config,
             commands::export_devices,
+            commands::preview_devices_import,
             commands::import_devices,
             commands::export_profiles,
             commands::import_profiles,

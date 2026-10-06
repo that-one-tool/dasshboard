@@ -10,14 +10,16 @@
 //! Unlike SSH (async `russh`) and serial (async `tokio_serial`), `portable-pty`
 //! is **blocking and thread-based**: its reader/writer are `std::io` handles and
 //! opening/spawning are synchronous. So a local-shell session bridges that sync
-//! world to the async sink with two dedicated OS threads plus one tokio task:
+//! world to the async sink with three dedicated OS threads plus one tokio task:
 //! - a **reader thread** pumps PTY output into the sink until EOF, or (on
 //!   Unix) until the session ends: it polls, so a background job still
 //!   holding the terminal can't keep it — and the PTY — alive;
 //! - a **writer thread** drains an mpsc of keystroke chunks into the PTY;
-//! - the **control task** (tokio) owns the master (for `resize`) and a child
-//!   killer, applies control messages, and ends the session when the child exits
-//!   (a blocking `wait` fires a `done` channel) or a disconnect is requested.
+//! - a **reaper thread** owns the child: it reports its exit on a `done`
+//!   channel, or kills it when the session ends (see `spawn_reaper`);
+//! - the **control task** (tokio) owns the master (for `resize`), applies
+//!   control messages, and ends the session when the child exits or a
+//!   disconnect is requested.
 //!
 //! There are **no secrets** here (like serial), and auto-reconnect does not apply
 //! — a shell exiting is a normal end, surfaced as `Disconnected`.
@@ -25,10 +27,11 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::mpsc;
 
 use crate::error::AppError;
@@ -44,7 +47,7 @@ const READ_BUFFER_SIZE: usize = 4096;
 /// How long a Unix reader waits on a quiet PTY before checking whether its
 /// session ended.
 #[cfg(unix)]
-const READ_POLL_TIMEOUT_MS: i32 = 100;
+const READ_POLL_TIMEOUT: Duration = Duration::from_millis(100);
 /// `LANG` for a macOS shell when the app started without one.
 const MACOS_FALLBACK_LANG: &str = "en_US.UTF-8";
 
@@ -87,12 +90,14 @@ struct ShellHandle {
 /// field is `Send`, so the whole bundle moves across the await.
 struct OpenedShell {
     master: Box<dyn MasterPty + Send>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
     reader: PtyReader,
     writer: Box<dyn Write + Send>,
-    /// The spawned child, moved into a blocking `wait` task to detect exit.
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// The spawned child, moved into its reaper thread (see [`spawn_reaper`]).
+    child: Box<dyn Child + Send + Sync>,
 }
+
+/// How often the reaper checks whether the shell has exited.
+const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Resolve the shell program to launch: an explicit non-empty `shell`, else the
 /// OS default. On Windows, prefer PowerShell 7 (`pwsh`) then Windows PowerShell,
@@ -365,11 +370,9 @@ fn open_shell(params: &LocalShellParams) -> Result<OpenedShell, AppError> {
         .master
         .take_writer()
         .map_err(|e| AppError::Io(format!("could not write to the shell: {e}")))?;
-    let killer = child.clone_killer();
 
     Ok(OpenedShell {
         master: pair.master,
-        killer,
         reader,
         writer,
         child,
@@ -398,10 +401,9 @@ async fn run_session(
 
     let OpenedShell {
         master,
-        mut killer,
         reader,
         writer,
-        mut child,
+        child,
     } = opened;
 
     let reader_done = Arc::new(AtomicBool::new(false));
@@ -429,12 +431,9 @@ async fn run_session(
         let _ = write_tx.send(bytes);
     }
 
-    // Detect the shell exiting on its own: a blocking `wait` fires `done`.
+    let (kill_tx, kill_rx) = std::sync::mpsc::channel::<()>();
     let (done_tx, mut done_rx) = mpsc::channel::<Option<u32>>(1);
-    std::thread::spawn(move || {
-        let exit_code = child.wait().ok().map(|status| status.exit_code());
-        let _ = done_tx.blocking_send(exit_code);
-    });
+    spawn_reaper(child, kill_rx, done_tx);
 
     let status = loop {
         tokio::select! {
@@ -463,10 +462,10 @@ async fn run_session(
         }
     };
 
-    // Teardown: kill the child (idempotent if it already exited), end the writer
-    // thread by dropping its sender, and drop the master so the PTY closes and
-    // the reader thread returns.
-    let _ = killer.kill();
+    // Teardown: have the reaper kill the child (a no-op if it already exited),
+    // end the writer thread by dropping its sender, and drop the master so the
+    // PTY closes and the reader thread returns.
+    drop(kill_tx);
     reader_done.store(true, Ordering::Relaxed);
     drop(write_tx);
     drop(master);
@@ -484,6 +483,47 @@ fn pump_output(mut reader: PtyReader, sink: &dyn SessionSink, stop: &AtomicBool)
             Ok(Some(count)) => sink.on_data(&buf[..count]),
             Ok(None) => {}
         }
+    }
+}
+
+/// The thread that owns the shell process: it reports the exit code on `done`
+/// once the shell exits, or kills it when `kill` fires or is dropped.
+/// portable-pty's `kill` on the child itself sends SIGHUP and, if the shell is
+/// still there after a short grace (one ignoring the hangup and EOF), SIGKILL;
+/// owning the child means it is never signalled after being reaped.
+fn spawn_reaper(
+    mut child: Box<dyn Child + Send + Sync>,
+    kill: std::sync::mpsc::Receiver<()>,
+    done: mpsc::Sender<Option<u32>>,
+) {
+    std::thread::spawn(move || {
+        let exit_code = wait_or_kill(child.as_mut(), &kill);
+        let _ = done.blocking_send(exit_code);
+    });
+}
+
+fn wait_or_kill(
+    child: &mut (dyn Child + Send + Sync),
+    kill: &std::sync::mpsc::Receiver<()>,
+) -> Option<u32> {
+    loop {
+        if let Some(exited) = try_exit_code(child) {
+            return exited;
+        }
+        if kill.recv_timeout(EXIT_POLL_INTERVAL) != Err(RecvTimeoutError::Timeout) {
+            let _ = child.kill();
+            return child.wait().ok().map(|status| status.exit_code());
+        }
+    }
+}
+
+/// `Some(exit code)` once the shell has exited (`Some(None)` when its status
+/// can't be read), `None` while it runs.
+fn try_exit_code(child: &mut (dyn Child + Send + Sync)) -> Option<Option<u32>> {
+    match child.try_wait() {
+        Ok(Some(status)) => Some(Some(status.exit_code())),
+        Ok(None) => None,
+        Err(_) => Some(None),
     }
 }
 
@@ -509,29 +549,31 @@ impl PtyReader {
     }
 
     /// Read what is available, or `None` when nothing came within
-    /// [`READ_POLL_TIMEOUT_MS`].
+    /// [`READ_POLL_TIMEOUT`]. A descriptor `select(2)` can't watch (macOS,
+    /// fd ≥ 1024) falls back to a blocking read rather than losing output.
     fn read_ready(&mut self, buf: &mut [u8]) -> std::io::Result<Option<usize>> {
         use std::os::fd::AsRawFd;
-        let mut poll_fd = libc::pollfd {
+        let mut poll_fd = [filedescriptor::pollfd {
             fd: self.0.as_raw_fd(),
-            events: libc::POLLIN,
+            events: filedescriptor::POLLIN,
             revents: 0,
-        };
-        // SAFETY: one valid `pollfd`, matching the count passed.
-        match unsafe { libc::poll(&mut poll_fd, 1, READ_POLL_TIMEOUT_MS) } {
-            0 => Ok(None),
-            ready if ready > 0 => self.0.read(buf).map(Some),
-            _ => interrupted_as_none(std::io::Error::last_os_error()),
+        }];
+        match filedescriptor::poll(&mut poll_fd, Some(READ_POLL_TIMEOUT)) {
+            Ok(0) => Ok(None),
+            Err(err) if is_interrupted(&err) => Ok(None),
+            Ok(_) | Err(_) => self.0.read(buf).map(Some),
         }
     }
 }
 
 /// A poll cut short by a signal is just another quiet interval.
 #[cfg(unix)]
-fn interrupted_as_none(err: std::io::Error) -> std::io::Result<Option<usize>> {
-    match err.kind() {
-        std::io::ErrorKind::Interrupted => Ok(None),
-        _ => Err(err),
+fn is_interrupted(err: &filedescriptor::Error) -> bool {
+    match err {
+        filedescriptor::Error::Poll(io) | filedescriptor::Error::Io(io) => {
+            io.kind() == std::io::ErrorKind::Interrupted
+        }
+        _ => false,
     }
 }
 
@@ -969,5 +1011,52 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("the reader thread outlived the session");
+    }
+
+    /// A shell that ignores both the hangup and EOF is killed once the
+    /// session ends, so it can't keep the PTY and the reader thread alive.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shell_ignoring_hangup_and_eof_is_killed() {
+        if !std::path::Path::new("/bin/bash").exists() {
+            return;
+        }
+        let manager = Arc::new(LocalShellManager::new());
+        let sink = Arc::new(RecordingSink::default());
+        manager.spawn_session(
+            "ls1".to_string(),
+            LocalShellParams {
+                shell: Some("/bin/bash".to_string()),
+                cwd: None,
+                cols: 80,
+                rows: 24,
+                connect_snippet: None,
+            },
+            Arc::clone(&sink) as Arc<dyn SessionSink>,
+        );
+        // The quotes keep the echoed command line from matching the output.
+        manager
+            .write_stdin(
+                "ls1",
+                b"trap '' HUP; set -o ignoreeof; echo AR''MED\n".to_vec(),
+            )
+            .await;
+        for _ in 0..60 {
+            if sink.text().contains("ARMED\r\n") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(sink.text().contains("ARMED\r\n"), "got: {:?}", sink.text());
+
+        manager.disconnect_all().await;
+
+        for _ in 0..150 {
+            if Arc::strong_count(&sink) == 1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the shell outlived the session");
     }
 }

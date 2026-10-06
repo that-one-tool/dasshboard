@@ -32,6 +32,19 @@ describe("confirm", () => {
     expect(document.querySelector(".confirm-dialog")).toBeNull();
   });
 
+  it("keeps line breaks only when asked to", async () => {
+    const plain = confirm("Delete a\nb?");
+    const message = document.querySelector<HTMLElement>(".confirm-message");
+    expect(message?.classList.contains("confirm-lines")).toBe(false);
+    click('.confirm-dialog [data-action="cancel"]');
+    await plain;
+
+    const lines = confirm("a\nb", { keepLineBreaks: true });
+    expect(document.querySelector(".confirm-message")?.classList.contains("confirm-lines")).toBe(true);
+    click('.confirm-dialog [data-action="cancel"]');
+    await lines;
+  });
+
   it("resolves false on cancel and on overlay click", async () => {
     const p1 = confirm("go?");
     click('.confirm-dialog [data-action="cancel"]');

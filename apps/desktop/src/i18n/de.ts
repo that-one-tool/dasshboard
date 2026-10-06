@@ -242,6 +242,21 @@ export const de: Messages = {
 	"devices.exported.other": "{count} Geräte exportiert",
 	"devices.imported.one": "{count} Gerät importiert",
 	"devices.imported.other": "{count} Geräte importiert",
+	"devices.importRisks.title": "Importierte Einstellungen prüfen",
+	"devices.importRisks.lead": "Einige Geräte in dieser Datei haben Einstellungen, die auf diesem Computer wirken:",
+	"devices.importRisks.advice": "Importieren Sie nur Dateien aus einer vertrauenswürdigen Quelle.",
+	"devices.importRisks.confirm": "Importieren",
+	"devices.importRisks.more.one": "…und {count} weiteres Gerät",
+	"devices.importRisks.more.other": "…und {count} weitere Geräte",
+	"devices.importRisk.agentForwarding": "SSH-Agent-Weiterleitung (der Server kann Ihre Schlüssel nutzen)",
+	"devices.importRisk.autoStartForwards": "Weiterleitungen, die beim Start beginnen",
+	"devices.importRisk.autoStartRemoteForwards": "Remote-Weiterleitungen, die beim Start beginnen (der Server erreicht Ihr Netzwerk)",
+	"devices.importRisk.customShell": "startet ein eigenes Programm",
+	"devices.importRisk.localSnippet": "tippt Befehle in eine lokale Shell",
+	"devices.importRisk.networkKeyPath": "Schlüsseldatei auf einer Netzwerkfreigabe",
+	"devices.importRisk.networkSerialPort": "serieller Port auf einer Netzwerkfreigabe",
+	"devices.importRisk.networkShellDir": "startet in einem Netzwerkordner",
+	"devices.importRisk.replacesForwards": "ersetzt ein gespeichertes Gerät, daher können seine Weiterleitungen wie zuvor starten",
 	"devices.importedSsh.one": "{count} Gerät aus SSH-Konfiguration importiert",
 	"devices.importedSsh.other": "{count} Geräte aus SSH-Konfiguration importiert",
 	"devices.importedSshSkipped.one": "{count} Gerät aus SSH-Konfiguration importiert ({skipped} übersprungen)",
@@ -478,6 +493,8 @@ export const de: Messages = {
 	"knownHosts.forget.title": "Host vergessen",
 	"knownHosts.forget.message":
 		"Den vertrauenswürdigen Host {id} vergessen? Sie werden bei der nächsten Verbindung gebeten, seinen Schlüssel erneut zu überprüfen.",
+	"knownHosts.reset.notice": "Die Datei der vertrauenswürdigen Hosts war beschädigt und wurde am {date} zurückgesetzt. Bis Sie diesen Hinweis ausblenden, zeigt eine Verbindung zu einem Host, dem seitdem nicht erneut vertraut wurde, eine Warnung, da der zuvor vertraute Schlüssel verloren ging.",
+	"knownHosts.reset.dismiss": "Ausblenden",
 
 	/* -- host-key trust dialog ---------------------------------------------- */
 	"hostkey.host": "Host",
@@ -491,6 +508,8 @@ export const de: Messages = {
 	"hostkey.unknown.heading": "Unbekannter Host-Schlüssel",
 	"hostkey.unknown.lead":
 		"Die Authentizität von {host}:{port} kann nicht festgestellt werden, da dies die erste Verbindung ist. Überprüfen Sie den Fingerabdruck unten auf anderem Weg und entscheiden Sie dann, ob Sie ihm vertrauen.",
+	"hostkey.reset.heading": "WARNUNG: Host-Schlüssel kann nicht überprüft werden",
+	"hostkey.reset.lead": "Ihre gespeicherten vertrauenswürdigen Hosts sind gerade nicht verfügbar (ihre Datei war beschädigt und wurde zurückgesetzt oder konnte nicht gelesen werden). Der Schlüssel von {host}:{port} kann daher nicht mit einem zuvor vertrauten verglichen werden. Wenn Sie sich schon einmal mit diesem Server verbunden haben, hat sich sein Schlüssel möglicherweise geändert. Überprüfen Sie den Fingerabdruck unten auf anderem Weg, bevor Sie ihm vertrauen.",
 
 	/* -- error prefixes ----------------------------------------------------- */
 	"error.prefix": "Fehler: {message}",

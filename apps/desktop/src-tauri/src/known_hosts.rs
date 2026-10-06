@@ -6,6 +6,16 @@
 //! { "version": 1, "hosts": { "192.168.1.10:22": { "keyType": "ssh-ed25519", "fingerprint": "SHA256:..." } } }
 //! ```
 //!
+//! A damaged file is backed up and replaced by an empty one marked
+//! `"resetAt": <unix-seconds>`: until the user dismisses that, a host with no
+//! record may be one the lost file trusted, so it is [`Verdict::Unverifiable`]
+//! rather than a plain first contact. (A 1.33 instance reads the file but
+//! drops the mark when it writes.)
+//!
+//! A file that can't be read at launch (e.g. locked by an antivirus) is never
+//! overwritten: the store retries it before each write and refuses the write
+//! while it stays unreadable, and unknown hosts are `Unverifiable` meanwhile.
+//!
 //! The matching decision (`Verdict`) is a pure function of the stored record
 //! and the presented fingerprint, so it is unit-tested without any filesystem
 //! or network. Persistence uses the same atomic write-then-rename strategy as
@@ -14,10 +24,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_file;
+use crate::atomic_file::{self, ReadOutcome};
 use crate::error::AppError;
 
 const KNOWN_HOSTS_FILE: &str = "known_hosts.json";
@@ -46,9 +57,37 @@ pub struct KnownHostEntry {
 
 /// On-disk shape of `known_hosts.json`.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct KnownHostsFile {
     version: u32,
     hosts: HashMap<String, KnownHost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reset_at: Option<u64>,
+}
+
+/// The trust map, plus when a damaged file was replaced (unix seconds) if the
+/// user hasn't dismissed that yet. The map started empty then, so every host
+/// in it was trusted since.
+#[derive(Default)]
+struct TrustState {
+    hosts: HashMap<String, KnownHost>,
+    reset_at: Option<u64>,
+    /// The file couldn't be read: the map is empty, not the file.
+    unreadable: bool,
+}
+
+impl TrustState {
+    fn unreadable() -> Self {
+        TrustState {
+            unreadable: true,
+            ..TrustState::default()
+        }
+    }
+
+    /// Whether a host with no record may still be one trusted before.
+    fn may_miss_hosts(&self) -> bool {
+        self.reset_at.is_some() || self.unreadable
+    }
 }
 
 /// The outcome of comparing a presented host key against the store.
@@ -62,6 +101,10 @@ pub enum Verdict {
     /// A record exists but the fingerprint differs — possible MITM
     /// (`changed: true`, loud warning).
     Changed,
+    /// No record, but the store was reset after a damaged file, so this may
+    /// be a host trusted before with a key that has since changed
+    /// (`trustReset: true`, loud warning).
+    Unverifiable,
 }
 
 /// Builds the `host:port` map key used both in memory and on disk.
@@ -81,21 +124,21 @@ pub fn verdict_for(stored: Option<&KnownHost>, presented_fingerprint: &str) -> V
 
 pub struct KnownHostsStore {
     dir: PathBuf,
-    hosts: Mutex<HashMap<String, KnownHost>>,
+    state: Mutex<TrustState>,
 }
 
 impl KnownHostsStore {
     /// Loads `dir/known_hosts.json`. Never panics and never returns an error:
     /// a missing file yields an empty store, and a corrupt file is backed up
-    /// to `known_hosts.json.corrupt-<unix-seconds>` and treated as empty (a
-    /// corrupt trust store must not brick connecting — the user is simply
-    /// re-prompted via TOFU). Neither the file nor these log lines ever
-    /// contain secret material.
+    /// to `known_hosts.json.corrupt-<unix-seconds>` and replaced by an empty,
+    /// reset one (a corrupt trust store must not brick connecting — the user
+    /// is re-prompted, with a warning). Neither the file nor these log lines
+    /// ever contain secret material.
     pub fn load(dir: PathBuf) -> Self {
-        let hosts = Self::read_from_disk(&dir).unwrap_or_default();
+        let state = Self::read_from_disk(&dir).unwrap_or_else(TrustState::unreadable);
         KnownHostsStore {
             dir,
-            hosts: Mutex::new(hosts),
+            state: Mutex::new(state),
         }
     }
 
@@ -103,49 +146,84 @@ impl KnownHostsStore {
     /// map. Lets a second running app instance pick up host keys another
     /// instance trusted or forgot, so its next connection's TOFU check consults
     /// fresh data (see `reload_config`). Same recovery semantics as
-    /// [`load`](Self::load): a corrupt file is backed up and treated as empty
-    /// (the user is simply re-prompted via TOFU); an unreadable one keeps the
-    /// current map.
+    /// [`load`](Self::load): a corrupt file is backed up and replaced by a
+    /// reset one; an unreadable one keeps the current state.
     pub fn reload(&self) {
-        if let Some(hosts) = Self::read_from_disk(&self.dir) {
-            *self.lock_hosts() = hosts;
+        if let Some(state) = Self::read_from_disk(&self.dir) {
+            *self.lock_state() = state;
         }
     }
 
-    /// Reads and parses `dir/known_hosts.json` into the trust map, applying the
-    /// missing-file and corrupt-file recovery shared by `load` and `reload`
-    /// (see [`atomic_file::reread_recovering`]); `None` when unreadable. A
-    /// corrupt trust store must not brick connecting — the map simply starts
-    /// empty and the user is re-prompted via TOFU.
-    fn read_from_disk(dir: &Path) -> Option<HashMap<String, KnownHost>> {
-        atomic_file::reread_recovering::<KnownHostsFile, _>(
-            dir,
-            KNOWN_HOSTS_FILE,
-            |file| file.hosts,
-            HashMap::new,
-        )
+    /// Reads and parses `dir/known_hosts.json`, applying the missing-file and
+    /// corrupt-file recovery shared by `load` and `reload` (see
+    /// [`atomic_file::read_or_backup`]); `None` when unreadable.
+    fn read_from_disk(dir: &Path) -> Option<TrustState> {
+        let outcome = atomic_file::read_or_backup::<KnownHostsFile>(dir, KNOWN_HOSTS_FILE)?;
+        Some(match outcome {
+            ReadOutcome::Parsed(file) => TrustState {
+                hosts: file.hosts,
+                reset_at: file.reset_at,
+                ..TrustState::default()
+            },
+            ReadOutcome::Missing => TrustState::default(),
+            ReadOutcome::Corrupt => Self::start_after_reset(dir),
+        })
+    }
+
+    /// The damaged file was moved aside: start empty, and write the reset
+    /// mark right away so it outlives this run even if nothing gets trusted.
+    fn start_after_reset(dir: &Path) -> TrustState {
+        let state = TrustState {
+            reset_at: Some(unix_now()),
+            ..TrustState::default()
+        };
+        if let Err(err) = write_state(dir, &state) {
+            eprintln!("[DaSSHboard] could not record the trusted hosts reset: {err}");
+        }
+        state
     }
 
     /// Returns the [`Verdict`] for a presented host key without mutating the
     /// store. Locks only briefly and never across an `.await`.
     pub fn verdict(&self, host: &str, port: u16, presented_fingerprint: &str) -> Verdict {
         let key = host_key(host, port);
-        let hosts = self.lock_hosts();
-        verdict_for(hosts.get(&key), presented_fingerprint)
+        let state = self.lock_state();
+        match verdict_for(state.hosts.get(&key), presented_fingerprint) {
+            Verdict::Unknown if state.may_miss_hosts() => Verdict::Unverifiable,
+            verdict => verdict,
+        }
+    }
+
+    /// When the trusted hosts were reset after a damaged file (unix seconds),
+    /// unless the user dismissed it.
+    pub fn reset_at(&self) -> Option<u64> {
+        self.lock_state().reset_at
+    }
+
+    /// The user acknowledged the reset: hosts without a record are plain
+    /// first contacts again.
+    pub fn dismiss_reset(&self) -> Result<(), AppError> {
+        let mut state = self.lock_state();
+        let Some(reset_at) = state.reset_at.take() else {
+            return Ok(());
+        };
+        self.persist(&state)
+            .inspect_err(|_| state.reset_at = Some(reset_at))
     }
 
     /// Records (TOFU) or overwrites (accepted key change) the host key for
     /// `host:port`, persisting the whole store atomically.
     pub fn trust(&self, host: &str, port: u16, entry: KnownHost) -> Result<(), AppError> {
-        let mut hosts = self.lock_hosts();
-        hosts.insert(host_key(host, port), entry);
-        self.persist(&hosts)
+        let mut state = self.lock_state();
+        self.ensure_loaded(&mut state)?;
+        state.hosts.insert(host_key(host, port), entry);
+        self.persist(&state)
     }
 
     /// Test/introspection helper: the stored record for a host, if any.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn get(&self, host: &str, port: u16) -> Option<KnownHost> {
-        self.lock_hosts().get(&host_key(host, port)).cloned()
+        self.lock_state().hosts.get(&host_key(host, port)).cloned()
     }
 
     /// Snapshot of every trusted host for the management UI, sorted by `id`
@@ -153,7 +231,8 @@ impl KnownHostsStore {
     /// to clone the map out; never across I/O.
     pub fn list(&self) -> Vec<KnownHostEntry> {
         let mut entries: Vec<KnownHostEntry> = self
-            .lock_hosts()
+            .lock_state()
+            .hosts
             .iter()
             .map(|(id, host)| KnownHostEntry {
                 id: id.clone(),
@@ -171,28 +250,53 @@ impl KnownHostsStore {
     /// the user clicked simply no longer exists) rather than an error. The
     /// store is only rewritten when something changed.
     pub fn forget(&self, id: &str) -> Result<bool, AppError> {
-        let mut hosts = self.lock_hosts();
-        if hosts.remove(id).is_none() {
+        let mut state = self.lock_state();
+        self.ensure_loaded(&mut state)?;
+        if state.hosts.remove(id).is_none() {
             return Ok(false);
         }
-        self.persist(&hosts)?;
+        self.persist(&state)?;
         Ok(true)
     }
 
-    fn lock_hosts(&self) -> std::sync::MutexGuard<'_, HashMap<String, KnownHost>> {
-        atomic_file::lock(&self.hosts)
+    /// Read a file that was unreadable at launch before changing it, so a
+    /// write never replaces what it holds.
+    fn ensure_loaded(&self, state: &mut TrustState) -> Result<(), AppError> {
+        if !state.unreadable {
+            return Ok(());
+        }
+        *state = Self::read_from_disk(&self.dir).ok_or_else(|| {
+            AppError::Io("the trusted hosts file can't be read; it was left untouched".to_string())
+        })?;
+        Ok(())
     }
 
-    /// Atomically persists the trust map (see [`atomic_file::write_json`]).
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, TrustState> {
+        atomic_file::lock(&self.state)
+    }
+
+    /// Atomically persists the trust state (see [`atomic_file::write_json`]).
     /// Callers hold the lock while writing, so two writes can't land out of
     /// order and drop the newer one from disk.
-    fn persist(&self, hosts: &HashMap<String, KnownHost>) -> Result<(), AppError> {
-        let file = KnownHostsFile {
-            version: CURRENT_VERSION,
-            hosts: hosts.clone(),
-        };
-        atomic_file::write_json(&self.dir, KNOWN_HOSTS_FILE, &file)
+    fn persist(&self, state: &TrustState) -> Result<(), AppError> {
+        write_state(&self.dir, state)
     }
+}
+
+fn write_state(dir: &Path, state: &TrustState) -> Result<(), AppError> {
+    let file = KnownHostsFile {
+        version: CURRENT_VERSION,
+        hosts: state.hosts.clone(),
+        reset_at: state.reset_at,
+    };
+    atomic_file::write_json(dir, KNOWN_HOSTS_FILE, &file)
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -371,8 +475,7 @@ mod tests {
         fs::write(dir.path().join(KNOWN_HOSTS_FILE), "{ not json ").unwrap();
 
         let store = KnownHostsStore::load(dir.path().to_path_buf());
-        assert_eq!(store.verdict("h", 22, "SHA256:x"), Verdict::Unknown);
-        assert!(!dir.path().join(KNOWN_HOSTS_FILE).exists());
+        assert!(store.list().is_empty());
 
         let backups: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
@@ -385,6 +488,132 @@ mod tests {
         // Still usable afterwards.
         store.trust("h", 22, ed25519("SHA256:abc")).unwrap();
         assert!(dir.path().join(KNOWN_HOSTS_FILE).exists());
+    }
+
+    // -- reset after a damaged file ---------------------------------------
+
+    fn load_reset_store(dir: &Path) -> KnownHostsStore {
+        fs::write(dir.join(KNOWN_HOSTS_FILE), "{ not json ").unwrap();
+        KnownHostsStore::load(dir.to_path_buf())
+    }
+
+    /// A host the damaged file may have held can't be told apart from a new
+    /// one, so it is not a plain first contact; the mark survives a restart.
+    #[test]
+    fn a_damaged_file_leaves_unknown_hosts_unverifiable_across_restarts() {
+        let dir = tempdir().unwrap();
+        let store = load_reset_store(dir.path());
+
+        assert!(store.reset_at().is_some());
+        assert_eq!(store.verdict("h", 22, "SHA256:x"), Verdict::Unverifiable);
+        let restarted = KnownHostsStore::load(dir.path().to_path_buf());
+        assert_eq!(restarted.reset_at(), store.reset_at());
+        assert_eq!(
+            restarted.verdict("h", 22, "SHA256:x"),
+            Verdict::Unverifiable
+        );
+    }
+
+    #[test]
+    fn a_host_trusted_after_the_reset_is_checked_as_usual() {
+        let dir = tempdir().unwrap();
+        let store = load_reset_store(dir.path());
+        store.trust("h", 22, ed25519("SHA256:abc")).unwrap();
+
+        assert_eq!(store.verdict("h", 22, "SHA256:abc"), Verdict::Known);
+        assert_eq!(store.verdict("h", 22, "SHA256:bbb"), Verdict::Changed);
+        assert!(KnownHostsStore::load(dir.path().to_path_buf())
+            .reset_at()
+            .is_some());
+    }
+
+    #[test]
+    fn dismissing_the_reset_makes_unknown_hosts_first_contacts_again() {
+        let dir = tempdir().unwrap();
+        let store = load_reset_store(dir.path());
+        store.trust("h", 22, ed25519("SHA256:abc")).unwrap();
+
+        store.dismiss_reset().unwrap();
+
+        assert_eq!(store.reset_at(), None);
+        assert_eq!(store.verdict("other", 22, "SHA256:x"), Verdict::Unknown);
+        let restarted = KnownHostsStore::load(dir.path().to_path_buf());
+        assert_eq!(restarted.reset_at(), None);
+        assert_eq!(restarted.verdict("h", 22, "SHA256:abc"), Verdict::Known);
+    }
+
+    #[test]
+    fn reload_picks_up_a_reset_dismissed_by_another_instance() {
+        let dir = tempdir().unwrap();
+        let store = load_reset_store(dir.path());
+        KnownHostsStore::load(dir.path().to_path_buf())
+            .dismiss_reset()
+            .unwrap();
+
+        store.reload();
+
+        assert_eq!(store.reset_at(), None);
+    }
+
+    #[test]
+    fn a_failed_dismiss_keeps_the_reset() {
+        let dir = tempdir().unwrap();
+        let store = load_reset_store(dir.path());
+        // The store's dir turned into a file: every write now fails.
+        fs::remove_dir_all(dir.path()).unwrap();
+        fs::write(dir.path(), "").unwrap();
+
+        assert!(store.dismiss_reset().is_err());
+
+        assert!(store.reset_at().is_some());
+        assert_eq!(store.verdict("h", 22, "SHA256:x"), Verdict::Unverifiable);
+        fs::remove_file(dir.path()).unwrap();
+    }
+
+    // -- unreadable file ----------------------------------------------------
+
+    /// A file that can't be read (e.g. locked by an antivirus) may hold every
+    /// trusted key: unknown hosts can't be told apart from changed ones, and
+    /// nothing may overwrite it.
+    fn load_unreadable_store(dir: &Path) -> KnownHostsStore {
+        fs::create_dir(dir.join(KNOWN_HOSTS_FILE)).unwrap();
+        KnownHostsStore::load(dir.to_path_buf())
+    }
+
+    #[test]
+    fn an_unreadable_file_leaves_unknown_hosts_unverifiable() {
+        let dir = tempdir().unwrap();
+        let store = load_unreadable_store(dir.path());
+
+        assert_eq!(store.verdict("h", 22, "SHA256:x"), Verdict::Unverifiable);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_never_overwritten() {
+        let dir = tempdir().unwrap();
+        let store = load_unreadable_store(dir.path());
+
+        assert!(store.trust("h", 22, ed25519("SHA256:abc")).is_err());
+        assert!(store.forget("h:22").is_err());
+
+        assert!(dir.path().join(KNOWN_HOSTS_FILE).is_dir());
+    }
+
+    #[test]
+    fn a_file_readable_again_is_loaded_before_trusting() {
+        let dir = tempdir().unwrap();
+        let store = load_unreadable_store(dir.path());
+        fs::remove_dir(dir.path().join(KNOWN_HOSTS_FILE)).unwrap();
+        KnownHostsStore::load(dir.path().to_path_buf())
+            .trust("old", 22, ed25519("SHA256:old"))
+            .unwrap();
+
+        store.trust("h", 22, ed25519("SHA256:abc")).unwrap();
+
+        let reloaded = KnownHostsStore::load(dir.path().to_path_buf());
+        assert_eq!(reloaded.verdict("old", 22, "SHA256:old"), Verdict::Known);
+        assert_eq!(reloaded.verdict("h", 22, "SHA256:abc"), Verdict::Known);
+        assert_eq!(store.verdict("other", 22, "SHA256:x"), Verdict::Unknown);
     }
 
     // -- reload: multi-instance sync ---------------------------------------

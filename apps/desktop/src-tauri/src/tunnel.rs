@@ -31,6 +31,12 @@
 //!   stopping the tunnel) aborts and awaits its listener, which cascades: the
 //!   per-connection `JoinSet` drops → in-flight copies abort. No handle is held
 //!   across teardown that could leak a socket.
+//! - A remote forward's listen and cancel requests go through one
+//!   [`ServerRequests`] task, in order, so a slow server never holds up the
+//!   serve loop; the answers come back to it.
+//! - A forwarded connection whose local peer stops reading is closed after
+//!   [`STALL_TIMEOUT`] (see `stall_guard.rs`): russh would otherwise stop the
+//!   whole connection behind it.
 //! - Each tunnel task removes its own map entry on **every** terminal reason
 //!   (auth failure, all binds failing, stop, transport drop). Cleanup has a
 //!   single owner, exactly as `SessionManager` does.
@@ -58,6 +64,7 @@ use crate::session::{
     DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
 };
 use crate::socks;
+use crate::stall_guard::{StallGuard, STALL_TIMEOUT};
 
 /// Control-channel bound. A tunnel's control channel carries the occasional
 /// user-driven forward add/remove and a final `Stop`; the bound just keeps it
@@ -206,8 +213,8 @@ struct TunnelHandle {
 }
 
 /// What drives a tunnel task: the queued forward changes, and the stop flag,
-/// out of band so a stop never waits behind a change that is still waiting
-/// on the server (up to [`SERVER_REQUEST_TIMEOUT`]).
+/// out of band so a stop never waits behind the first binds, which wait for
+/// the server's answers about remote forwards (up to [`SERVER_REQUEST_TIMEOUT`]).
 struct Controls {
     queue: mpsc::Receiver<TunnelControl>,
     stop: watch::Receiver<bool>,
@@ -225,6 +232,7 @@ pub struct TunnelManager {
     connect_timeout: Duration,
     prompt_timeout: Duration,
     handshake_timeout: Duration,
+    stall_timeout: Duration,
 }
 
 impl TunnelManager {
@@ -241,7 +249,15 @@ impl TunnelManager {
             connect_timeout,
             prompt_timeout,
             handshake_timeout,
+            stall_timeout: STALL_TIMEOUT,
         }
+    }
+
+    /// Close a forwarded connection whose local peer stops reading for
+    /// `timeout` (default [`STALL_TIMEOUT`]); tests shorten it.
+    pub fn with_stall_timeout(mut self, timeout: Duration) -> Self {
+        self.stall_timeout = timeout;
+        self
     }
 
     /// Production constructor with the same SPEC §6 timeouts as a shell session.
@@ -342,7 +358,7 @@ impl TunnelManager {
             },
         );
 
-        let routes = Arc::new(RemoteRoutes::default());
+        let routes = Arc::new(RemoteRoutes::new(self.stall_timeout));
         let handler = SshHandler::new(
             Arc::new(HandshakeSink(Arc::clone(&sink))),
             Arc::clone(&self.known_hosts),
@@ -356,8 +372,11 @@ impl TunnelManager {
         )
         .with_remote_routes(Arc::clone(&routes));
         let manager = Arc::clone(self);
-        let connect_timeout = self.connect_timeout;
-        let overall_timeout = self.overall_establish_timeout();
+        let timeouts = TunnelTimeouts {
+            connect: self.connect_timeout,
+            overall: self.overall_establish_timeout(),
+            stall: self.stall_timeout,
+        };
 
         tokio::spawn(async move {
             sink.on_status(TunnelStatus::Connecting, None, Vec::new());
@@ -366,16 +385,7 @@ impl TunnelManager {
                 sink: Arc::clone(&sink),
                 snapshot,
             };
-            let result = run_tunnel(
-                params,
-                handler,
-                routes,
-                connect_timeout,
-                overall_timeout,
-                publisher,
-                controls,
-            )
-            .await;
+            let result = run_tunnel(params, handler, routes, timeouts, publisher, controls).await;
 
             match result {
                 Ok(()) => sink.on_status(TunnelStatus::Disconnected, None, Vec::new()),
@@ -448,9 +458,13 @@ impl Publisher {
         lock_snapshot(&self.snapshot).forward_ids = forward_ids(forwards);
     }
 
-    fn listening(&self, forwards: Vec<ForwardStatus>) {
+    /// Report the forwards that started or failed; one still waiting on the
+    /// server is left out (the frontend shows it as starting) but stays in the
+    /// snapshot's ids, as it will be served.
+    fn listening(&self, active: &ActiveForwards) {
+        let forwards = active.statuses();
         *lock_snapshot(&self.snapshot) = TunnelSnapshot {
-            forward_ids: forwards.iter().map(|f| f.forward_id.clone()).collect(),
+            forward_ids: active.ids(),
             forwards: forwards.clone(),
         };
         self.sink.on_status(TunnelStatus::Listening, None, forwards);
@@ -467,6 +481,14 @@ fn lock_snapshot(snapshot: &ForwardSnapshot) -> std::sync::MutexGuard<'_, Tunnel
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// A tunnel's deadlines: the TCP connect, the whole establish flow, and how
+/// long a forwarded connection's local peer may stop reading.
+struct TunnelTimeouts {
+    connect: Duration,
+    overall: Duration,
+    stall: Duration,
+}
+
 /// The full lifecycle of one tunnel task: connect+auth (racing an early stop,
 /// and queuing forward changes made meanwhile), bind the forwards, then serve
 /// until stopped, the last bound forward is released, or the transport drops.
@@ -476,8 +498,7 @@ async fn run_tunnel(
     params: TunnelParams,
     mut handler: SshHandler,
     routes: Arc<RemoteRoutes>,
-    connect_timeout: Duration,
-    overall_timeout: Duration,
+    timeouts: TunnelTimeouts,
     publisher: Publisher,
     mut controls: Controls,
 ) -> Result<(), AppError> {
@@ -511,21 +532,21 @@ async fn run_tunnel(
             target,
             jump.as_ref(),
             handler,
-            connect_timeout,
-            overall_timeout,
+            timeouts.connect,
+            timeouts.overall,
         ) => result?,
     };
 
     let handle = Arc::new(handle);
 
-    let mut active = ActiveForwards::new(Arc::clone(&handle), routes);
+    let mut active = ActiveForwards::new(Arc::clone(&handle), routes, timeouts.stall);
     let end = if bind_until_stop(&mut active, &forwards, &mut controls.stop).await {
         if !active.any_bound() {
             return Err(AppError::TunnelBind(
                 "none of the tunnel's forwards could be started".to_string(),
             ));
         }
-        publisher.listening(active.statuses());
+        publisher.listening(&active);
         serve_until_stopped(&handle, &mut controls, keepalive, &mut active, &publisher).await
     } else {
         ServeEnd::Stopped
@@ -645,26 +666,13 @@ struct ServerListen {
 }
 
 impl ServerListen {
-    /// Stop routing first, so open connections close right away; then, unless
-    /// the whole connection is closing (which ends every listen anyway), ask
-    /// the server to stop listening.
-    async fn stop(self, handle: &client::Handle<SshHandler>, cancel_on_server: bool) {
-        self.routes.release(self.port, &self.owner);
-        if cancel_on_server {
-            let cancel = handle.cancel_tcpip_forward(self.address.clone(), u32::from(self.port));
-            let _ = tokio::time::timeout(SERVER_REQUEST_TIMEOUT, cancel).await;
+    /// Stop routing (dropping `self`), so open connections close right away;
+    /// then, given `requests` (none when the whole connection is closing, which
+    /// ends every listen anyway), queue the request to stop listening.
+    fn release(self, requests: Option<&ServerRequests>) {
+        if let Some(requests) = requests {
+            requests.cancel(self.address.clone(), self.port);
         }
-    }
-
-    /// Cancel without waiting: for a request that timed out, whose grant may
-    /// still arrive.
-    fn cancel_in_background(&self, handle: &Arc<client::Handle<SshHandler>>) {
-        let handle = Arc::clone(handle);
-        let (address, port) = (self.address.clone(), u32::from(self.port));
-        tokio::spawn(async move {
-            let cancel = handle.cancel_tcpip_forward(address, port);
-            let _ = tokio::time::timeout(SERVER_REQUEST_TIMEOUT, cancel).await;
-        });
     }
 }
 
@@ -675,21 +683,151 @@ impl Drop for ServerListen {
 }
 
 /// One forward a live tunnel serves: its reported status plus, when it
-/// started, what keeps it serving.
+/// started (or is waiting on the server to), what keeps it serving.
 struct ActiveForward {
     status: ForwardStatus,
     binding: Option<Binding>,
+    /// The listen request the server has yet to answer, for a remote forward.
+    pending: Option<u64>,
 }
 
 impl ActiveForward {
-    /// Stop serving; `cancel_on_server` as for [`ServerListen::stop`].
-    async fn release(self, handle: &client::Handle<SshHandler>, cancel_on_server: bool) {
+    fn new(forward: &Forward, binding: Option<Binding>, pending: Option<u64>) -> Self {
+        let bound = binding.is_some() && pending.is_none();
+        ActiveForward {
+            status: forward_status(forward, bound),
+            binding,
+            pending,
+        }
+    }
+
+    /// Stop serving; `requests` as for [`ServerListen::release`].
+    async fn release(self, requests: Option<&ServerRequests>) {
         match self.binding {
             Some(Binding::Listener(listener)) => listener.stop().await,
-            Some(Binding::Server(listen)) => listen.stop(handle, cancel_on_server).await,
+            Some(Binding::Server(listen)) => listen.release(requests),
             None => {}
         }
     }
+}
+
+/// A remote forward's listen request, numbered so its answer finds the very
+/// entry that asked (not a later one for the same forward).
+struct ListenRequest {
+    attempt: u64,
+    address: String,
+    port: u16,
+}
+
+enum ServerRequest {
+    Listen(ListenRequest),
+    Cancel { address: String, port: u16 },
+}
+
+/// The server's answer to listen request `attempt`.
+struct ListenReply {
+    attempt: u64,
+    granted: bool,
+}
+
+/// A tunnel's requests to the server about remote forwards, made one at a
+/// time on their own task so the serve loop never waits on the server. Order
+/// matters (a cancel must follow the listen it undoes), and the server
+/// answers them in order anyway.
+struct ServerRequests {
+    queue: mpsc::UnboundedSender<ServerRequest>,
+    replies: mpsc::UnboundedReceiver<ListenReply>,
+    worker: JoinHandle<()>,
+}
+
+impl ServerRequests {
+    fn start(handle: Arc<client::Handle<SshHandler>>) -> Self {
+        let (queue, requests) = mpsc::unbounded_channel();
+        let (reply_tx, replies) = mpsc::unbounded_channel();
+        let worker = RequestWorker {
+            handle,
+            replies: reply_tx,
+            cancels: HashMap::new(),
+        };
+        let worker = tokio::spawn(worker.run(requests));
+        ServerRequests {
+            queue,
+            replies,
+            worker,
+        }
+    }
+
+    fn listen(&self, request: ListenRequest) {
+        let _ = self.queue.send(ServerRequest::Listen(request));
+    }
+
+    fn cancel(&self, address: String, port: u16) {
+        let _ = self.queue.send(ServerRequest::Cancel { address, port });
+    }
+}
+
+impl Drop for ServerRequests {
+    fn drop(&mut self) {
+        self.worker.abort();
+    }
+}
+
+impl ServerRequest {
+    fn port(&self) -> u16 {
+        match self {
+            ServerRequest::Listen(listen) => listen.port,
+            ServerRequest::Cancel { port, .. } => *port,
+        }
+    }
+}
+
+/// The task behind [`ServerRequests`].
+struct RequestWorker {
+    handle: Arc<client::Handle<SshHandler>>,
+    replies: mpsc::UnboundedSender<ListenReply>,
+    /// Cancels sent after a listen timed out, by port: only a later request
+    /// for the same port has to wait for one (it must reach the server after).
+    cancels: HashMap<u16, JoinHandle<()>>,
+}
+
+impl RequestWorker {
+    async fn run(mut self, mut requests: mpsc::UnboundedReceiver<ServerRequest>) {
+        while let Some(request) = requests.recv().await {
+            if let Some(cancel) = self.cancels.remove(&request.port()) {
+                let _ = cancel.await;
+            }
+            match request {
+                ServerRequest::Listen(listen) => self.listen(listen).await,
+                ServerRequest::Cancel { address, port } => {
+                    request_cancel(&self.handle, address, port).await
+                }
+            }
+        }
+    }
+
+    /// Ask the server to listen and report its answer; a request that timed
+    /// out is then cancelled in the background, as its grant may still arrive.
+    async fn listen(&mut self, listen: ListenRequest) {
+        let request = self
+            .handle
+            .tcpip_forward(listen.address.clone(), u32::from(listen.port));
+        let reply = tokio::time::timeout(SERVER_REQUEST_TIMEOUT, request).await;
+        let granted = matches!(reply, Ok(Ok(_)));
+        let _ = self.replies.send(ListenReply {
+            attempt: listen.attempt,
+            granted,
+        });
+        if reply.is_err() {
+            let handle = Arc::clone(&self.handle);
+            let cancel = async move { request_cancel(&handle, listen.address, listen.port).await };
+            self.cancels.insert(listen.port, tokio::spawn(cancel));
+        }
+    }
+}
+
+async fn request_cancel(handle: &client::Handle<SshHandler>, address: String, port: u16) {
+    let cancel = handle.cancel_tcpip_forward(address, u32::from(port));
+    let _ = tokio::time::timeout(SERVER_REQUEST_TIMEOUT, cancel).await;
 }
 
 /// The forwards a live tunnel currently serves, in the order they were added.
@@ -698,36 +836,51 @@ impl ActiveForward {
 struct ActiveForwards {
     handle: Arc<client::Handle<SshHandler>>,
     routes: Arc<RemoteRoutes>,
+    requests: ServerRequests,
+    /// The last listen request's number.
+    attempts: u64,
+    stall_timeout: Duration,
     entries: Vec<ActiveForward>,
 }
 
 impl ActiveForwards {
-    fn new(handle: Arc<client::Handle<SshHandler>>, routes: Arc<RemoteRoutes>) -> Self {
+    fn new(
+        handle: Arc<client::Handle<SshHandler>>,
+        routes: Arc<RemoteRoutes>,
+        stall_timeout: Duration,
+    ) -> Self {
         ActiveForwards {
+            requests: ServerRequests::start(Arc::clone(&handle)),
             handle,
             routes,
+            attempts: 0,
+            stall_timeout,
             entries: Vec::new(),
         }
     }
 
     /// Bind `forward` (re-binding it if already present). A bind failure is
-    /// recorded as `bound: false`; it never affects the other forwards.
+    /// recorded as `bound: false`; it never affects the other forwards. A
+    /// remote forward waits for the server's answer (see [`Self::settle`]).
     async fn add(&mut self, forward: &Forward) {
         self.remove(&forward.id).await;
-        let binding = self.bind(forward).await;
-        self.entries.push(ActiveForward {
-            status: forward_status(forward, binding.is_some()),
-            binding,
-        });
+        let entry = if forward.kind == ForwardKind::Remote {
+            self.listen_on_server(forward)
+        } else {
+            ActiveForward::new(forward, self.bind(forward).await, None)
+        };
+        self.entries.push(entry);
     }
 
     async fn bind(&self, forward: &Forward) -> Option<Binding> {
-        if forward.kind == ForwardKind::Remote {
-            return self.bind_on_server(forward).await;
-        }
         let (listener, destination) = listen(forward).await?;
         let handle = Arc::clone(&self.handle);
-        let task = tokio::spawn(run_listener(listener, handle, destination));
+        let task = tokio::spawn(run_listener(
+            listener,
+            handle,
+            destination,
+            self.stall_timeout,
+        ));
         Some(Binding::Listener(LocalListener(task)))
     }
 
@@ -735,16 +888,51 @@ impl ActiveForwards {
     /// so a connection arriving right after the server's reply finds it; a
     /// refused or timed-out request drops the listen, and with it the route,
     /// so a grant that comes late carries no connections.
-    async fn bind_on_server(&self, forward: &Forward) -> Option<Binding> {
-        let listen = self.claim_route(forward)?;
-        let request = self
-            .handle
-            .tcpip_forward(listen.address.clone(), u32::from(listen.port));
-        let reply = tokio::time::timeout(SERVER_REQUEST_TIMEOUT, request).await;
-        if reply.is_err() {
-            listen.cancel_in_background(&self.handle);
+    fn listen_on_server(&mut self, forward: &Forward) -> ActiveForward {
+        let Some(listen) = self.claim_route(forward) else {
+            return ActiveForward::new(forward, None, None);
+        };
+        self.attempts += 1;
+        self.requests.listen(ListenRequest {
+            attempt: self.attempts,
+            address: listen.address.clone(),
+            port: listen.port,
+        });
+        ActiveForward::new(forward, Some(Binding::Server(listen)), Some(self.attempts))
+    }
+
+    /// The server's next answer to a listen request.
+    async fn next_reply(&mut self) -> Option<ListenReply> {
+        self.requests.replies.recv().await
+    }
+
+    /// Apply the server's answer to the entry that asked, if it is still
+    /// there; `false` when no forward is left serving.
+    fn settle(&mut self, reply: Option<ListenReply>) -> bool {
+        let Some(reply) = reply else {
+            return self.any_bound();
+        };
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.pending == Some(reply.attempt))
+        {
+            entry.pending = None;
+            entry.status.bound = reply.granted;
+            entry.binding = entry.binding.take().filter(|_| reply.granted);
         }
-        matches!(reply, Ok(Ok(_))).then_some(Binding::Server(listen))
+        self.any_bound()
+    }
+
+    /// Wait until the server has answered every listen request made so far.
+    async fn await_replies(&mut self) {
+        while self.entries.iter().any(|e| e.pending.is_some()) {
+            let reply = self.next_reply().await;
+            if reply.is_none() {
+                return;
+            }
+            self.settle(reply);
+        }
     }
 
     /// `None` when another forward's route holds the server port.
@@ -766,7 +954,10 @@ impl ActiveForwards {
             .iter()
             .position(|e| e.status.forward_id == forward_id)
         {
-            self.entries.remove(index).release(&self.handle, true).await;
+            self.entries
+                .remove(index)
+                .release(Some(&self.requests))
+                .await;
         }
     }
 
@@ -774,16 +965,29 @@ impl ActiveForwards {
     /// ends the server's listens, so an unresponsive server can't hold it up.
     async fn clear(&mut self) {
         for entry in std::mem::take(&mut self.entries) {
-            entry.release(&self.handle, false).await;
+            entry.release(None).await;
         }
     }
 
+    /// Whether any forward serves, or may once the server answers.
     fn any_bound(&self) -> bool {
         self.entries.iter().any(|e| e.binding.is_some())
     }
 
+    fn ids(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .map(|e| e.status.forward_id.clone())
+            .collect()
+    }
+
+    /// The statuses of the forwards the server isn't still deciding about.
     fn statuses(&self) -> Vec<ForwardStatus> {
-        self.entries.iter().map(|e| e.status.clone()).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.pending.is_none())
+            .map(|e| e.status.clone())
+            .collect()
     }
 
     /// Apply a control received while serving; `false` means the tunnel should
@@ -859,6 +1063,10 @@ fn is_loopback(addr: &str) -> bool {
 /// dropped, so an idle or non-SOCKS client can't hold a task forever.
 const SOCKS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// A forwarded connection's local socket, closed if its peer stops reading
+/// (see `stall_guard.rs`).
+type LocalStream = StallGuard<TcpStream>;
+
 /// Accept loop for one forward: every accepted local connection opens a
 /// `direct-tcpip` channel and is copied bidirectionally. Per-connection tasks
 /// live in a local `JoinSet` that is reaped as connections finish (bounding
@@ -868,6 +1076,7 @@ async fn run_listener(
     listener: TcpListener,
     handle: Arc<client::Handle<SshHandler>>,
     destination: Destination,
+    stall_timeout: Duration,
 ) {
     let mut conns = JoinSet::new();
     loop {
@@ -875,7 +1084,7 @@ async fn run_listener(
             accepted = listener.accept() => match accepted {
                 Ok((tcp, peer)) => {
                     conns.spawn(handle_connection(
-                        tcp,
+                        StallGuard::new(tcp, stall_timeout),
                         Arc::clone(&handle),
                         destination.clone(),
                         peer,
@@ -896,7 +1105,7 @@ async fn run_listener(
 /// back until either side closes. A failure (channel open, SOCKS handshake)
 /// only drops this local connection; it never affects the tunnel.
 async fn handle_connection(
-    tcp: TcpStream,
+    tcp: LocalStream,
     handle: Arc<client::Handle<SshHandler>>,
     destination: Destination,
     peer: SocketAddr,
@@ -910,7 +1119,7 @@ async fn handle_connection(
 /// `ssh -L`: a channel-open failure drops the local connection (the DB client
 /// sees a closed socket).
 async fn forward_fixed(
-    tcp: TcpStream,
+    tcp: LocalStream,
     handle: &client::Handle<SshHandler>,
     host: String,
     port: u16,
@@ -923,7 +1132,11 @@ async fn forward_fixed(
 
 /// `ssh -D`: learn the target from the SOCKS request, open the channel, and
 /// tell the client whether it worked before pumping.
-async fn forward_socks(mut tcp: TcpStream, handle: &client::Handle<SshHandler>, peer: SocketAddr) {
+async fn forward_socks(
+    mut tcp: LocalStream,
+    handle: &client::Handle<SshHandler>,
+    peer: SocketAddr,
+) {
     let Some(request) = socks_handshake(&mut tcp, SOCKS_HANDSHAKE_TIMEOUT).await else {
         return;
     };
@@ -986,7 +1199,7 @@ async fn open_direct_tcpip(
         .await
 }
 
-async fn pump(mut tcp: TcpStream, channel: Channel<client::Msg>) {
+async fn pump(mut tcp: LocalStream, channel: Channel<client::Msg>) {
     let mut stream = channel.into_stream();
     let _ = copy_bidirectional(&mut tcp, &mut stream).await;
 }
@@ -1007,40 +1220,101 @@ async fn serve_until_stopped(
     active: &mut ActiveForwards,
     publisher: &Publisher,
 ) -> ServeEnd {
-    let mut probe = keepalive.interval.map(|interval| {
-        let mut probe = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
-        probe.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        probe
-    });
-    let mut transport_check = tokio::time::interval(TRANSPORT_CHECK_INTERVAL);
-    transport_check.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
+    let mut watchdog = Watchdog::new(keepalive);
     loop {
-        let control = tokio::select! {
-            control = controls.queue.recv() => control,
-            _ = controls.stop.wait_for(|requested| *requested) => return ServeEnd::Stopped,
-            alive = send_probe(handle, probe.as_mut()) => {
-                if !alive {
-                    return ServeEnd::ConnectionLost;
-                }
-                continue;
-            }
-            _ = transport_check.tick() => {
-                if handle.is_closed() {
-                    return ServeEnd::ConnectionLost;
-                }
-                continue;
-            }
-        };
-        if !apply_until_stop(active, control, &mut controls.stop).await {
-            return ServeEnd::Stopped;
+        let event = next_event(handle, controls, &mut watchdog, active).await;
+        if let Some(end) = apply_event(event, active, controls, publisher).await {
+            return end;
         }
-        publisher.listening(active.statuses());
     }
 }
 
-/// Bind each forward (a failure on one is non-fatal to the others); `false`
-/// when a stop came first.
+/// What woke the serve loop.
+enum ServeEvent {
+    Control(Option<TunnelControl>),
+    Reply(Option<ListenReply>),
+    /// The connection checked out fine.
+    Healthy,
+    End(ServeEnd),
+}
+
+async fn next_event(
+    handle: &client::Handle<SshHandler>,
+    controls: &mut Controls,
+    watchdog: &mut Watchdog,
+    active: &mut ActiveForwards,
+) -> ServeEvent {
+    tokio::select! {
+        control = controls.queue.recv() => ServeEvent::Control(control),
+        _ = controls.stop.wait_for(|requested| *requested) => ServeEvent::End(ServeEnd::Stopped),
+        alive = watchdog.check(handle) => match alive {
+            true => ServeEvent::Healthy,
+            false => ServeEvent::End(ServeEnd::ConnectionLost),
+        },
+        reply = active.next_reply() => ServeEvent::Reply(reply),
+    }
+}
+
+/// Act on `event`, reporting the forwards when they changed; `Some` when the
+/// tunnel should end.
+async fn apply_event(
+    event: ServeEvent,
+    active: &mut ActiveForwards,
+    controls: &mut Controls,
+    publisher: &Publisher,
+) -> Option<ServeEnd> {
+    let keep = match event {
+        ServeEvent::End(end) => return Some(end),
+        ServeEvent::Healthy => return None,
+        ServeEvent::Control(control) => apply_until_stop(active, control, &mut controls.stop).await,
+        ServeEvent::Reply(reply) => active.settle(reply),
+    };
+    report_or_end(keep, active, publisher)
+}
+
+/// Report the forwards after a change, or end the tunnel when none is left.
+fn report_or_end(keep: bool, active: &ActiveForwards, publisher: &Publisher) -> Option<ServeEnd> {
+    if !keep {
+        return Some(ServeEnd::Stopped);
+    }
+    publisher.listening(active);
+    None
+}
+
+/// Watches the connection: the keepalive probe at its cadence, and the
+/// transport check that notices a connection russh already saw end.
+struct Watchdog {
+    probe: Option<tokio::time::Interval>,
+    transport_check: tokio::time::Interval,
+}
+
+impl Watchdog {
+    fn new(keepalive: KeepaliveConfig) -> Self {
+        let probe = keepalive.interval.map(|interval| {
+            let start = tokio::time::Instant::now() + interval;
+            let mut probe = tokio::time::interval_at(start, interval);
+            probe.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            probe
+        });
+        let mut transport_check = tokio::time::interval(TRANSPORT_CHECK_INTERVAL);
+        transport_check.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        Watchdog {
+            probe,
+            transport_check,
+        }
+    }
+
+    /// Wait for the next check; `false` when the connection is gone.
+    async fn check(&mut self, handle: &client::Handle<SshHandler>) -> bool {
+        tokio::select! {
+            alive = send_probe(handle, self.probe.as_mut()) => alive,
+            _ = self.transport_check.tick() => !handle.is_closed(),
+        }
+    }
+}
+
+/// Bind each forward (a failure on one is non-fatal to the others) and wait
+/// for the server's answers about remote ones; `false` when a stop came first.
 async fn bind_until_stop(
     active: &mut ActiveForwards,
     forwards: &[Forward],
@@ -1050,6 +1324,7 @@ async fn bind_until_stop(
         for forward in forwards {
             active.add(forward).await;
         }
+        active.await_replies().await;
     };
     tokio::select! {
         () = bind_all => true,
@@ -1073,7 +1348,7 @@ async fn apply_until_stop(
 /// Wait for the next keepalive tick and ping; `false` when the ping fails.
 /// Never resolves with keepalive disabled.
 async fn send_probe(
-    handle: &Arc<client::Handle<SshHandler>>,
+    handle: &client::Handle<SshHandler>,
     probe: Option<&mut tokio::time::Interval>,
 ) -> bool {
     let Some(probe) = probe else {

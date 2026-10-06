@@ -21,6 +21,9 @@ export interface ConfirmOptions {
   cancelLabel?: string;
   /** Style the accept button as destructive (red) — deletes, session teardown. */
   danger?: boolean;
+  /** Show the message's `\n`s as line breaks. Only for messages that keep
+   * untrusted text (names) on one line, or a newline in it could fake one. */
+  keepLineBreaks?: boolean;
 }
 
 export function confirm(message: string, options: ConfirmOptions = {}): Promise<boolean> {
@@ -51,6 +54,7 @@ export function confirm(message: string, options: ConfirmOptions = {}): Promise<
     };
     set(".confirm-title", title);
     set(".confirm-message", message);
+    root.querySelector(".confirm-message")?.classList.toggle("confirm-lines", !!options.keepLineBreaks);
     set('[data-action="cancel"]', cancelLabel);
     set('[data-action="confirm"]', confirmLabel);
 

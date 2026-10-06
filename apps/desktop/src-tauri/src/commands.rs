@@ -15,6 +15,7 @@ use serde::Serialize;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::device::{Auth, Connection, Device, Forward};
 use crate::editor;
@@ -32,6 +33,7 @@ use crate::settings::Settings;
 use crate::sftp::{SftpEntry, SftpParams, SftpSink};
 use crate::sftp_edit::{EditCheck, EditInfo, EditSink, EditUpload};
 use crate::state::AppState;
+use crate::transfer::DeviceRisks;
 use crate::tunnel::{ForwardStatus, TunnelInfo, TunnelParams, TunnelSink, TunnelStatus};
 use crate::updater::{self, PendingUpdate, UpdateInfo};
 use crate::workspace::WorkspaceState;
@@ -56,10 +58,10 @@ fn write_secret_for_save(
     device_id: &str,
     previous_method: Option<&'static str>,
     incoming_method: &'static str,
-    secret: Option<String>,
+    secret: Option<&str>,
 ) -> Result<(), AppError> {
     match secret {
-        Some(secret) => state.secret_store.set(device_id, &secret),
+        Some(secret) => state.secret_store.set(device_id, secret),
         None if previous_method.is_some_and(|prev| prev != incoming_method) => {
             state.secret_store.delete(device_id)
         }
@@ -84,7 +86,10 @@ fn save_device_impl(
     // even if the frontend erroneously supplied it. Dropping it here also means
     // the ssh→serial/local edit path below sees the method change and clears any
     // stale password/passphrase left over from when the device was SSH.
-    let secret = if device.has_secret() { secret } else { None };
+    let mut secret = Zeroizing::new(secret);
+    if !device.has_secret() {
+        secret.zeroize();
+    }
 
     // Capture the previously-stored secret "slot" (SSH auth method, or "serial")
     // if this is an edit of an existing device, before anything below changes
@@ -100,7 +105,13 @@ fn save_device_impl(
     // B2: write the secret first. If the keyring write fails, we return here
     // and `device_store.upsert` never runs, so a device can never end up on
     // disk claiming an auth method with no matching keyring entry.
-    write_secret_for_save(state, &device.id, previous_method, incoming_method, secret)?;
+    write_secret_for_save(
+        state,
+        &device.id,
+        previous_method,
+        incoming_method,
+        secret.as_deref(),
+    )?;
 
     state.device_store.upsert(device)
 }
@@ -833,6 +844,23 @@ pub fn respond_host_key(state: State<'_, AppState>, prompt_id: String, accept: b
 #[tauri::command]
 pub fn list_known_hosts(state: State<'_, AppState>) -> Result<Vec<KnownHostEntry>, AppError> {
     Ok(state.session_manager.known_hosts().list())
+}
+
+/// When the trusted hosts were reset after a damaged file (unix seconds), if
+/// the user hasn't dismissed it: hosts without a record then prompt with a
+/// warning instead of as first contacts.
+#[tauri::command]
+pub fn known_hosts_reset(state: State<'_, AppState>) -> Option<u64> {
+    state.session_manager.known_hosts().reset_at()
+}
+
+/// Acknowledge the trusted hosts reset (see [`known_hosts_reset`]).
+#[tauri::command]
+pub async fn dismiss_known_hosts_reset(state: State<'_, AppState>) -> Result<(), AppError> {
+    let known_hosts = state.session_manager.known_hosts();
+    tokio::task::spawn_blocking(move || known_hosts.dismiss_reset())
+        .await
+        .map_err(|e| AppError::Io(format!("dismiss-reset task failed: {e}")))?
 }
 
 /// Forget a trusted host by its `host:port` id (management UI). Async because
@@ -1643,11 +1671,26 @@ pub fn export_devices(state: State<'_, AppState>, path: String) -> Result<u32, A
     crate::transfer::export_devices_impl(&state, Path::new(&path))
 }
 
-/// Import devices from `path`: validate every item, then upsert by id
-/// (all-or-nothing).
+/// Validate the devices file at `path` and list the devices whose settings
+/// would act on this machine, for the user to confirm before importing.
 #[tauri::command]
-pub fn import_devices(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
-    crate::transfer::import_devices_impl(&state, Path::new(&path))
+pub fn preview_devices_import(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<DeviceRisks>, AppError> {
+    crate::transfer::preview_devices_import_impl(&state, Path::new(&path))
+}
+
+/// Import devices from `path`: validate every item, then upsert by id
+/// (all-or-nothing). `confirmed_risks` is what the user agreed to from
+/// [`preview_devices_import`]; a file that no longer matches it is refused.
+#[tauri::command]
+pub fn import_devices(
+    state: State<'_, AppState>,
+    path: String,
+    confirmed_risks: Vec<DeviceRisks>,
+) -> Result<u32, AppError> {
+    crate::transfer::import_devices_impl(&state, Path::new(&path), &confirmed_risks)
 }
 
 /// Export all profiles to `path` (excludes `defaultProfileId`).
@@ -2168,7 +2211,7 @@ mod tests {
         let state = test_state(dir.path());
         let saved = save_device_impl(&state, sample_device(), Some("hunter2".to_string())).unwrap();
 
-        match resolve_credentials(&state, &saved).await.unwrap() {
+        match &resolve_credentials(&state, &saved).await.unwrap() {
             AuthCredentials::Password(pw) => assert_eq!(pw, "hunter2"),
             other => panic!("expected password credentials, got {other:?}"),
         }
@@ -2231,10 +2274,10 @@ mod tests {
         // No secret ⇒ unencrypted key (SPEC §4), NOT an error.
         let saved = save_device_impl(&state, device, None).unwrap();
 
-        match resolve_credentials(&state, &saved).await.unwrap() {
+        match &resolve_credentials(&state, &saved).await.unwrap() {
             AuthCredentials::Key { path, passphrase } => {
                 assert_eq!(path, "C:/keys/id_ed25519");
-                assert_eq!(passphrase, None);
+                assert_eq!(passphrase.as_deref(), None);
             }
             other => panic!("expected key credentials, got {other:?}"),
         }
@@ -2244,8 +2287,8 @@ mod tests {
         let auth = Auth::Key {
             key_path: key_path.to_string(),
         };
-        match credentials_from(&auth, None).unwrap() {
-            AuthCredentials::Key { path, .. } => path,
+        match &credentials_from(&auth, None).unwrap() {
+            AuthCredentials::Key { path, .. } => path.clone(),
             other => panic!("expected key credentials, got {other:?}"),
         }
     }
@@ -2279,9 +2322,9 @@ mod tests {
         );
         let saved = save_device_impl(&state, device, Some("phrase".to_string())).unwrap();
 
-        match resolve_credentials(&state, &saved).await.unwrap() {
+        match &resolve_credentials(&state, &saved).await.unwrap() {
             AuthCredentials::Key { passphrase, .. } => {
-                assert_eq!(passphrase, Some("phrase".to_string()));
+                assert_eq!(passphrase.as_deref(), Some("phrase"));
             }
             other => panic!("expected key credentials, got {other:?}"),
         }
@@ -2301,7 +2344,7 @@ mod tests {
         // Even if a stale secret were somehow stored, agent auth ignores it.
         let saved = save_device_impl(&state, device, Some("ignored".to_string())).unwrap();
 
-        match resolve_credentials(&state, &saved).await.unwrap() {
+        match &resolve_credentials(&state, &saved).await.unwrap() {
             AuthCredentials::Agent { fingerprint } => assert_eq!(fingerprint, "SHA256:abc"),
             other => panic!("expected agent credentials, got {other:?}"),
         }

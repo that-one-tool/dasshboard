@@ -392,6 +392,7 @@ describe("device import/export", () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "list_devices") return [deviceA, deviceB];
       if (cmd === "export_devices") return 2;
+      if (cmd === "preview_devices_import") return [];
       if (cmd === "import_devices") return 5;
       return undefined;
     });
@@ -441,10 +442,59 @@ describe("device import/export", () => {
       multiple: false,
       filters: [{ name: "JSON", extensions: ["json"] }],
     });
-    expect(invokeMock).toHaveBeenCalledWith("import_devices", {
+    expect(invokeMock).toHaveBeenCalledWith("preview_devices_import", {
       path: "C:/in/dasshboard-devices.json",
     });
+    expect(invokeMock).toHaveBeenCalledWith("import_devices", {
+      path: "C:/in/dasshboard-devices.json",
+      confirmedRisks: [],
+    });
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
     expect(callsTo("list_devices").length).toBe(2);
+  });
+
+  const risky = [{ name: "Build box", risks: ["agentForwarding"] }];
+
+  function previewReturns(risks: unknown): void {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_devices") return [deviceA];
+      if (cmd === "preview_devices_import") return risks;
+      if (cmd === "import_devices") return 1;
+      return undefined;
+    });
+  }
+
+  it("lists the risky settings and imports once they are confirmed", async () => {
+    previewReturns(risky);
+    openMock.mockResolvedValue("C:/in/devices.json");
+    const container = await setup();
+
+    q<HTMLButtonElement>(container, ".device-import-btn").click();
+    await flush();
+    const dialog = q<HTMLElement>(document, ".confirm-dialog");
+    expect(dialog.textContent).toContain("Build box");
+    expect(callsTo("import_devices").length).toBe(0);
+
+    q<HTMLButtonElement>(dialog, '[data-action="confirm"]').click();
+    await flush();
+
+    expect(invokeMock).toHaveBeenCalledWith("import_devices", {
+      path: "C:/in/devices.json",
+      confirmedRisks: risky,
+    });
+  });
+
+  it("imports nothing when the risky settings are not confirmed", async () => {
+    previewReturns(risky);
+    openMock.mockResolvedValue("C:/in/devices.json");
+    const container = await setup();
+
+    q<HTMLButtonElement>(container, ".device-import-btn").click();
+    await flush();
+    q<HTMLButtonElement>(document, '.confirm-dialog [data-action="cancel"]').click();
+    await flush();
+
+    expect(callsTo("import_devices").length).toBe(0);
   });
 
   it("a cancelled open dialog does not call import_devices or reload", async () => {

@@ -569,19 +569,35 @@ impl<'a> ClaimedPorts<'a> {
 /// Port-forward validation: every forward must have a non-empty name, non-zero
 /// ports, a loopback `local_addr` unless it is remote (SPEC §8), a destination
 /// unless it is dynamic, and no two forwards may claim the same
-/// `(local_addr, local_port)` bind pair, or the same server port.
+/// `(local_addr, local_port)` bind pair, or the same server port, or share an
+/// id (a tunnel keys its forwards by id).
 fn validate_forwards(forwards: &[Forward]) -> Result<(), AppError> {
     let mut claimed = ClaimedPorts::default();
+    let mut ids = std::collections::HashSet::new();
     for forward in forwards {
         validate_one_forward(forward)?;
+        claim_forward_id(&mut ids, &forward.id)?;
         claimed.claim(forward)?;
     }
     Ok(())
 }
 
+fn claim_forward_id<'a>(
+    ids: &mut std::collections::HashSet<&'a str>,
+    id: &'a str,
+) -> Result<(), AppError> {
+    if ids.insert(id) {
+        return Ok(());
+    }
+    Err(AppError::Validation(
+        "two forwards share the same id".to_string(),
+    ))
+}
+
 /// Field-level checks for a single forward (SPEC §1). Split out so
 /// `validate_forwards` stays a simple iterate-and-dedupe loop.
 fn validate_one_forward(forward: &Forward) -> Result<(), AppError> {
+    require_non_empty(&forward.id, "forward id must not be empty")?;
     require_non_empty(&forward.name, "forward name must not be empty")?;
     require_forward_port(forward.local_port)?;
     validate_forward_destination(forward)?;
@@ -1520,6 +1536,30 @@ mod tests {
             sample_forward("Postgres", 5432),
             sample_forward("Postgres dup", 5432),
         ]);
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    /// A tunnel keys its forwards by id, so two forwards sharing one would
+    /// replace each other.
+    #[test]
+    fn rejects_two_forwards_with_the_same_id() {
+        let mut second = sample_forward("Redis", 6379);
+        second.id = "fwd-Postgres".to_string();
+        let device = device_with_forwards(vec![sample_forward("Postgres", 5432), second]);
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_a_forward_without_an_id() {
+        let mut forward = sample_forward("Postgres", 5432);
+        forward.id = "  ".to_string();
+        let device = device_with_forwards(vec![forward]);
         assert!(matches!(
             device.validate().unwrap_err(),
             AppError::Validation(_)

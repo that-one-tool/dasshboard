@@ -90,9 +90,18 @@ export interface HostKeyDialogText {
 /**
  * Copy for the host-key trust dialog. A first-contact (TOFU) key gets a neutral
  * "unknown key" prompt; a *changed* key gets a prominent warning that the
- * previously-trusted key no longer matches — a possible MITM (SPEC §6/§8).
+ * previously-trusted key no longer matches — a possible MITM (SPEC §6/§8) —
+ * and so does a key that can't be checked because the trusted hosts were
+ * reset after a damaged file.
  */
 export function hostKeyDialogText(event: HostKeyPromptEvent): HostKeyDialogText {
+  if (event.trustReset) {
+    return {
+      heading: t("hostkey.reset.heading"),
+      danger: true,
+      lead: t("hostkey.reset.lead", { host: event.host, port: event.port }),
+    };
+  }
   if (event.changed) {
     return {
       heading: t("hostkey.changed.heading"),

@@ -241,6 +241,21 @@ export const ja: Messages = {
 	"devices.exported.other": "{count} 件のデバイスをエクスポートしました",
 	"devices.imported.one": "{count} 件のデバイスをインポートしました",
 	"devices.imported.other": "{count} 件のデバイスをインポートしました",
+	"devices.importRisks.title": "インポートする設定を確認",
+	"devices.importRisks.lead": "このファイルの一部のデバイスには、このコンピューター上で動作する設定があります:",
+	"devices.importRisks.advice": "信頼できる提供元のファイルだけをインポートしてください。",
+	"devices.importRisks.confirm": "インポート",
+	"devices.importRisks.more.one": "…ほか {count} 件のデバイス",
+	"devices.importRisks.more.other": "…ほか {count} 件のデバイス",
+	"devices.importRisk.agentForwarding": "SSH エージェント転送（サーバーがあなたの鍵を使用できます）",
+	"devices.importRisk.autoStartForwards": "起動時に開始する転送",
+	"devices.importRisk.autoStartRemoteForwards": "起動時に開始するリモート転送（サーバーがあなたのネットワークに到達できます）",
+	"devices.importRisk.customShell": "独自のプログラムを実行",
+	"devices.importRisk.localSnippet": "ローカルシェルにコマンドを入力",
+	"devices.importRisk.networkKeyPath": "ネットワーク共有上の鍵ファイル",
+	"devices.importRisk.networkSerialPort": "ネットワーク共有上のシリアルポート",
+	"devices.importRisk.networkShellDir": "ネットワークフォルダーで開始",
+	"devices.importRisk.replacesForwards": "保存済みのデバイスを置き換えるため、その転送が以前どおり開始される可能性があります",
 	"devices.importedSsh.one": "SSH 設定から {count} 件のデバイスをインポートしました",
 	"devices.importedSsh.other": "SSH 設定から {count} 件のデバイスをインポートしました",
 	"devices.importedSshSkipped.one": "SSH 設定から {count} 件のデバイスをインポートしました（{skipped} 件スキップ）",
@@ -476,6 +491,8 @@ export const ja: Messages = {
 	"knownHosts.forget": "信頼を解除",
 	"knownHosts.forget.title": "ホストの信頼を解除",
 	"knownHosts.forget.message": "信頼済みホスト {id} の信頼を解除しますか？次回の接続時に鍵の再確認を求められます。",
+	"knownHosts.reset.notice": "信頼済みホストのファイルが破損していたため、{date} にリセットされました。この通知を閉じるまでは、それ以降に改めて信頼していないホストへの接続で警告が表示されます。以前に信頼した鍵が失われたためです。",
+	"knownHosts.reset.dismiss": "閉じる",
 
 	/* -- host-key trust dialog ---------------------------------------------- */
 	"hostkey.host": "ホスト",
@@ -489,6 +506,8 @@ export const ja: Messages = {
 	"hostkey.unknown.heading": "不明なホスト鍵",
 	"hostkey.unknown.lead":
 		"これは初回の接続のため、{host}:{port} の真正性を確認できません。以下のフィンガープリントを別の手段で照合してから、信頼するかどうかを選択してください。",
+	"hostkey.reset.heading": "警告: ホスト鍵を検証できません",
+	"hostkey.reset.lead": "保存済みの信頼済みホストを現在使用できません（ファイルが破損してリセットされたか、読み取れませんでした）。そのため {host}:{port} の鍵を以前に信頼した鍵と比較できません。このサーバーに接続したことがある場合、鍵が変更されている可能性があります。信頼する前に、以下のフィンガープリントを別の手段で照合してください。",
 
 	/* -- error prefixes ----------------------------------------------------- */
 	"error.prefix": "エラー：{message}",

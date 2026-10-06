@@ -241,6 +241,21 @@ export const fr: Messages = {
 	"devices.exported.other": "{count} appareils exportés",
 	"devices.imported.one": "{count} appareil importé",
 	"devices.imported.other": "{count} appareils importés",
+	"devices.importRisks.title": "Vérifier les réglages importés",
+	"devices.importRisks.lead": "Certains appareils de ce fichier ont des réglages qui agissent sur cet ordinateur :",
+	"devices.importRisks.advice": "N'importez qu'un fichier provenant d'une source de confiance.",
+	"devices.importRisks.confirm": "Importer",
+	"devices.importRisks.more.one": "…et {count} autre appareil",
+	"devices.importRisks.more.other": "…et {count} autres appareils",
+	"devices.importRisk.agentForwarding": "transfert de l'agent SSH (le serveur peut utiliser vos clés)",
+	"devices.importRisk.autoStartForwards": "redirections démarrées au lancement",
+	"devices.importRisk.autoStartRemoteForwards": "redirections distantes démarrées au lancement (le serveur peut atteindre votre réseau)",
+	"devices.importRisk.customShell": "lance un programme personnalisé",
+	"devices.importRisk.localSnippet": "tape des commandes dans un shell local",
+	"devices.importRisk.networkKeyPath": "fichier de clé sur un partage réseau",
+	"devices.importRisk.networkSerialPort": "port série sur un partage réseau",
+	"devices.importRisk.networkShellDir": "démarre dans un dossier réseau",
+	"devices.importRisk.replacesForwards": "remplace un appareil enregistré : ses redirections peuvent démarrer comme avant",
 	"devices.importedSsh.one": "{count} appareil importé depuis la config SSH",
 	"devices.importedSsh.other": "{count} appareils importés depuis la config SSH",
 	"devices.importedSshSkipped.one": "{count} appareil importé depuis la config SSH ({skipped} ignoré(s))",
@@ -477,6 +492,8 @@ export const fr: Messages = {
 	"knownHosts.forget.title": "Oublier l'hôte",
 	"knownHosts.forget.message":
 		"Oublier l'hôte de confiance {id} ? Il vous sera demandé de vérifier à nouveau sa clé lors de votre prochaine connexion.",
+	"knownHosts.reset.notice": "Le fichier des hôtes de confiance était endommagé et a été réinitialisé le {date}. Tant que vous ne masquez pas ce message, la connexion à un hôte qui n'a pas été approuvé à nouveau depuis affiche un avertissement, car la clé approuvée auparavant a été perdue.",
+	"knownHosts.reset.dismiss": "Masquer",
 
 	/* -- host-key trust dialog ---------------------------------------------- */
 	"hostkey.host": "Hôte",
@@ -490,6 +507,8 @@ export const fr: Messages = {
 	"hostkey.unknown.heading": "Clé d'hôte inconnue",
 	"hostkey.unknown.lead":
 		"L'authenticité de {host}:{port} ne peut pas être établie car il s'agit de la première connexion. Vérifiez l'empreinte ci-dessous par un autre moyen, puis choisissez de l'approuver ou non.",
+	"hostkey.reset.heading": "ATTENTION : clé d'hôte impossible à vérifier",
+	"hostkey.reset.lead": "Vos hôtes de confiance enregistrés sont indisponibles pour l'instant (leur fichier était endommagé et a été réinitialisé, ou n'a pas pu être lu) : la clé de {host}:{port} ne peut donc pas être comparée à celle que vous aviez peut-être approuvée. Si vous vous êtes déjà connecté à ce serveur, sa clé a peut-être changé. Vérifiez l'empreinte ci-dessous par un autre moyen avant de l'approuver.",
 
 	/* -- error prefixes ----------------------------------------------------- */
 	"error.prefix": "Erreur : {message}",

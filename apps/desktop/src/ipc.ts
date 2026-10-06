@@ -363,6 +363,9 @@ export interface HostKeyPromptEvent {
   fingerprint: string;
   /** `true` when a *different* key was already trusted for this host (MITM warning). */
   changed: boolean;
+  /** `true` when no key is on record because the trusted hosts were reset
+   * after a damaged file: one trusted before may have changed (warning). */
+  trustReset: boolean;
 }
 
 /**
@@ -446,6 +449,17 @@ export async function listKnownHosts(): Promise<KnownHostEntry[]> {
  */
 export async function forgetHost(id: string): Promise<void> {
   await invokeMutation<void>("forget_host", { id });
+}
+
+/** When the trusted hosts were reset after a damaged file (unix seconds), or
+ * `null` when they weren't or the user dismissed it. */
+export async function knownHostsReset(): Promise<number | null> {
+  return invokeChecked<number | null>("known_hosts_reset");
+}
+
+/** Acknowledge the trusted hosts reset: unknown hosts are plain first contacts again. */
+export async function dismissKnownHostsReset(): Promise<void> {
+  await invokeMutation<void>("dismiss_known_hosts_reset");
 }
 
 /** Connect + authenticate + close, no shell (SPEC §5). */
@@ -835,13 +849,45 @@ export async function exportDevices(path: string): Promise<number> {
   return invokeChecked<number>("export_devices", { path });
 }
 
+/** A setting an imported device would act with on this machine (mirrors
+ * `transfer::ImportRisk`). */
+export type ImportRisk =
+  | "agentForwarding"
+  | "autoStartForwards"
+  | "autoStartRemoteForwards"
+  | "customShell"
+  | "localSnippet"
+  | "networkKeyPath"
+  | "networkSerialPort"
+  | "networkShellDir"
+  | "replacesForwards";
+
+/** One imported device's risky settings (mirrors `transfer::DeviceRisks`). */
+export interface DeviceRisks {
+  name: string;
+  risks: ImportRisk[];
+}
+
+/**
+ * Validates the devices file at `path` (as the import will) and lists the
+ * devices whose settings the user should confirm before importing.
+ */
+export async function previewDevicesImport(path: string): Promise<DeviceRisks[]> {
+  return invokeChecked<DeviceRisks[]>("preview_devices_import", { path });
+}
+
 /**
  * Imports devices from the JSON file at `path` (upsert by id, all-or-nothing on
  * validation). Returns the number of devices imported. `path` comes from the
- * native open dialog (`fileDialog`).
+ * native open dialog (`fileDialog`); `confirmedRisks` is what the user agreed
+ * to from `previewDevicesImport` (the backend refuses a file that no longer
+ * matches it).
  */
-export async function importDevices(path: string): Promise<number> {
-  return invokeMutation<number>("import_devices", { path });
+export async function importDevices(
+  path: string,
+  confirmedRisks: DeviceRisks[],
+): Promise<number> {
+  return invokeMutation<number>("import_devices", { path, confirmedRisks });
 }
 
 /**

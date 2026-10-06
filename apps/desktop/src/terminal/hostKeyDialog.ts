@@ -186,13 +186,15 @@ export function initHostKeyDialog(): () => void {
   };
 }
 
-/** Same host, key and verdict — a changed-key prompt is never answered by a
- * neutral unknown-key one (it must always get its own loud warning). */
+/** Same host, key and verdict — a changed-key or trust-reset prompt is never
+ * answered by a neutral unknown-key one (it must always get its own loud
+ * warning). */
 function isSameKey(a: HostKeyPromptEvent, b: HostKeyPromptEvent): boolean {
   return (
     a.host === b.host &&
     a.port === b.port &&
     a.fingerprint === b.fingerprint &&
-    a.changed === b.changed
+    a.changed === b.changed &&
+    a.trustReset === b.trustReset
   );
 }

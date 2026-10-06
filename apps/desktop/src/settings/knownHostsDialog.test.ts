@@ -16,11 +16,15 @@ const h = vi.hoisted(() => ({
   list: vi.fn<() => Promise<KnownHostEntry[]>>(),
   forget: vi.fn<(id: string) => Promise<void>>(),
   confirm: vi.fn<() => Promise<boolean>>(),
+  reset: vi.fn<() => Promise<number | null>>(),
+  dismissReset: vi.fn<() => Promise<void>>(),
 }));
 
 vi.mock("../ipc", () => ({
   listKnownHosts: () => h.list(),
   forgetHost: (id: string) => h.forget(id),
+  knownHostsReset: () => h.reset(),
+  dismissKnownHostsReset: () => h.dismissReset(),
 }));
 vi.mock("../ui/confirm", () => ({
   confirm: () => h.confirm(),
@@ -58,6 +62,8 @@ describe("openKnownHostsDialog", () => {
     h.list.mockReset();
     h.forget.mockReset().mockResolvedValue(undefined);
     h.confirm.mockReset();
+    h.reset.mockReset().mockResolvedValue(null);
+    h.dismissReset.mockReset().mockResolvedValue(undefined);
     onError.mockReset();
   });
 
@@ -144,6 +150,45 @@ describe("openKnownHostsDialog", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(document.querySelector(".known-hosts-dialog")).not.toBeNull();
     removeDialog(over);
+  });
+
+  it("hides the reset notice when the trusted hosts were never reset", async () => {
+    h.list.mockResolvedValue([]);
+    openKnownHostsDialog({ onError });
+    await flush();
+
+    expect(q<HTMLElement>(".known-hosts-reset").hidden).toBe(true);
+  });
+
+  it("shows the reset notice until it is dismissed", async () => {
+    h.list.mockResolvedValue([]);
+    h.reset.mockResolvedValue(1_700_000_000);
+    openKnownHostsDialog({ onError });
+    await flush();
+
+    const notice = q<HTMLElement>(".known-hosts-reset");
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent).toContain("damaged");
+
+    q<HTMLButtonElement>('[data-action="dismiss-reset"]').click();
+    await flush();
+
+    expect(h.dismissReset).toHaveBeenCalledOnce();
+    expect(notice.hidden).toBe(true);
+  });
+
+  it("keeps the reset notice when dismissing it fails", async () => {
+    h.list.mockResolvedValue([]);
+    h.reset.mockResolvedValue(1_700_000_000);
+    h.dismissReset.mockRejectedValue({ code: "Io", message: "write failed" });
+    openKnownHostsDialog({ onError });
+    await flush();
+
+    q<HTMLButtonElement>('[data-action="dismiss-reset"]').click();
+    await flush();
+
+    expect(onError).toHaveBeenCalledWith("write failed");
+    expect(q<HTMLElement>(".known-hosts-reset").hidden).toBe(false);
   });
 
   it("surfaces a load failure via onError", async () => {

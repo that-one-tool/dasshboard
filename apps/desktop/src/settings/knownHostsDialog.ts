@@ -10,7 +10,13 @@
  * through a `danger` confirm first.
  */
 
-import { forgetHost, listKnownHosts, type KnownHostEntry } from "../ipc";
+import {
+  dismissKnownHostsReset,
+  forgetHost,
+  knownHostsReset,
+  listKnownHosts,
+  type KnownHostEntry,
+} from "../ipc";
 import { confirm } from "../ui/confirm";
 import { requireEl } from "../ui/dom";
 import { consumeKey, isTopDialog, pushDialog, removeDialog } from "../ui/dialogStack";
@@ -36,6 +42,10 @@ export function openKnownHostsDialog(options: KnownHostsDialogOptions): void {
     <div class="dialog-content known-hosts-content">
       <div class="dialog-header"><h2>${t("knownHosts.title")}</h2></div>
       <p class="known-hosts-lead">${t("knownHosts.lead")}</p>
+      <div class="known-hosts-reset" role="alert" hidden>
+        <p class="known-hosts-reset-text"></p>
+        <button type="button" class="btn btn-secondary" data-action="dismiss-reset">${t("knownHosts.reset.dismiss")}</button>
+      </div>
       <ul class="known-hosts-list" aria-live="polite"></ul>
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" data-action="close">${t("common.close")}</button>
@@ -45,6 +55,7 @@ export function openKnownHostsDialog(options: KnownHostsDialogOptions): void {
 
   const list = requireEl<HTMLUListElement>(root, ".known-hosts-list");
   const closeBtn = requireEl<HTMLButtonElement>(root, '[data-action="close"]');
+  const resetNotice = requireEl<HTMLElement>(root, ".known-hosts-reset");
 
   /** Reload the list from the backend and (re)render every row. */
   async function refresh(): Promise<void> {
@@ -87,6 +98,9 @@ export function openKnownHostsDialog(options: KnownHostsDialogOptions): void {
     if (target.dataset.action === "close" || target.classList.contains("dialog-overlay")) {
       close();
     }
+    if (target.dataset.action === "dismiss-reset") {
+      void dismissReset(resetNotice, options);
+    }
   });
   const onKey = (e: KeyboardEvent): void => {
     if (e.key === "Escape" && isTopDialog(root)) {
@@ -100,6 +114,41 @@ export function openKnownHostsDialog(options: KnownHostsDialogOptions): void {
   pushDialog(root);
   closeBtn.focus();
   void refresh();
+  void showResetNotice(resetNotice, options);
+}
+
+/** Show when the trusted hosts were reset after a damaged file, if they were. */
+async function showResetNotice(
+  notice: HTMLElement,
+  options: KnownHostsDialogOptions,
+): Promise<void> {
+  let resetAt: number | null;
+  try {
+    resetAt = await knownHostsReset();
+  } catch (err) {
+    options.onError(errorMessage(err));
+    return;
+  }
+  if (resetAt === null) return;
+  const date = new Date(resetAt * 1000).toLocaleDateString();
+  requireEl<HTMLElement>(notice, ".known-hosts-reset-text").textContent = t(
+    "knownHosts.reset.notice",
+    { date },
+  );
+  notice.hidden = false;
+}
+
+async function dismissReset(
+  notice: HTMLElement,
+  options: KnownHostsDialogOptions,
+): Promise<void> {
+  try {
+    await dismissKnownHostsReset();
+  } catch (err) {
+    options.onError(errorMessage(err));
+    return;
+  }
+  notice.hidden = true;
 }
 
 /** Render the host rows (or an empty-state note) into `list`. */

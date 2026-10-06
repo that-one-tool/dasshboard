@@ -65,6 +65,7 @@ function promptEvent(overrides: Partial<HostKeyPromptEvent> = {}): HostKeyPrompt
     keyType: "ssh-ed25519",
     fingerprint: "SHA256:abc",
     changed: false,
+    trustReset: false,
     ...overrides,
   };
 }
@@ -197,6 +198,17 @@ describe("initHostKeyDialog", () => {
     expect(h.respond).toHaveBeenCalledWith("p1", true);
     expect(h.respond).not.toHaveBeenCalledWith("p2", expect.anything());
     // The changed key still gets its own, loud prompt.
+    expect(q<HTMLElement>(".hostkey-content").classList.contains("hostkey-danger")).toBe(true);
+  });
+
+  it("never lets a plain answer approve a queued trust-reset prompt", async () => {
+    h.promptHandler?.(promptEvent({ promptId: "p1" }));
+    h.promptHandler?.(promptEvent({ promptId: "p2", trustReset: true }));
+
+    clickTrust();
+    await flush();
+
+    expect(h.respond).not.toHaveBeenCalledWith("p2", expect.anything());
     expect(q<HTMLElement>(".hostkey-content").classList.contains("hostkey-danger")).toBe(true);
   });
 

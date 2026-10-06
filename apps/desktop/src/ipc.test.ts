@@ -30,6 +30,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 import {
 	exportDevices,
 	importDevices,
+	previewDevicesImport,
 	saveTextFile,
 	exportProfiles,
 	importProfiles,
@@ -88,7 +89,6 @@ describe("import/export IPC wrappers", () => {
 		command: string;
 	}> = [
 		{ name: "exportDevices", fn: exportDevices, command: "export_devices" },
-		{ name: "importDevices", fn: importDevices, command: "import_devices" },
 		{ name: "exportProfiles", fn: exportProfiles, command: "export_profiles" },
 		{ name: "importProfiles", fn: importProfiles, command: "import_profiles" },
 	];
@@ -104,9 +104,27 @@ describe("import/export IPC wrappers", () => {
 		});
 	}
 
+	it("importDevices sends the risks the user confirmed", async () => {
+		invokeMock.mockResolvedValue(3);
+		const confirmedRisks = [{ name: "Box", risks: ["agentForwarding" as const] }];
+		expect(await importDevices("C:/tmp/file.json", confirmedRisks)).toBe(3);
+		expect(invokeMock).toHaveBeenCalledWith("import_devices", {
+			path: "C:/tmp/file.json",
+			confirmedRisks,
+		});
+	});
+
+	it("previewDevicesImport calls preview_devices_import with { path }", async () => {
+		invokeMock.mockResolvedValue([]);
+		expect(await previewDevicesImport("C:/tmp/file.json")).toEqual([]);
+		expect(invokeMock).toHaveBeenCalledWith("preview_devices_import", {
+			path: "C:/tmp/file.json",
+		});
+	});
+
 	it("normalizes a rejected AppError from the backend", async () => {
 		invokeMock.mockRejectedValue({ code: "Validation", message: "bad kind" });
-		await expect(importDevices("C:/tmp/bad.json")).rejects.toEqual({
+		await expect(importDevices("C:/tmp/bad.json", [])).rejects.toEqual({
 			code: "Validation",
 			message: "bad kind",
 		});

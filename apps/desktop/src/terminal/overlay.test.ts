@@ -55,6 +55,7 @@ describe("hostKeyDialogText", () => {
     keyType: "ssh-ed25519",
     fingerprint: "SHA256:abc",
     changed: false,
+    trustReset: false,
   };
 
   it("is neutral for a first-contact key", () => {
@@ -69,5 +70,13 @@ describe("hostKeyDialogText", () => {
     expect(t.danger).toBe(true);
     expect(t.heading.toLowerCase()).toContain("changed");
     expect(t.lead.toLowerCase()).toContain("intercept");
+  });
+
+  it("warns loudly for a key that can't be checked since a trust reset", () => {
+    const t = hostKeyDialogText({ ...base, trustReset: true });
+    expect(t.danger).toBe(true);
+    expect(t.heading.toLowerCase()).toContain("can't be verified");
+    expect(t.lead).toContain("10.0.0.5:22");
+    expect(t.lead.toLowerCase()).toContain("reset");
   });
 });

@@ -52,7 +52,8 @@ files, releasing),
     - `devices/` — device CRUD, validation, save payloads, the port-forward
       editor; the dialog is split into `deviceManager` (controller: events +
       backend calls + list), `deviceDialogTemplate` (markup), and `deviceForm`
-      (form DOM read/populate/toggle helpers)
+      (form DOM read/populate/toggle helpers); `importRisks` builds the
+      confirmation listing an import file's risky settings
     - `tunnels/` — the Tunnels sidebar card (start/stop all or one forward,
       device status icon + per-forward status dots; backend calls serialized per
       device; a connection-settings edit restarts the running tunnel)
@@ -96,7 +97,11 @@ files, releasing),
       that every store (`store`, `profile_store`, `settings`, `known_hosts`,
       `bookmark_store`, `workspace_store`) delegates to; each store keeps only
       its own wrapper type + domain logic
-    - `known_hosts.rs` — host-key TOFU store
+    - `known_hosts.rs` — host-key TOFU store; a damaged file is replaced by
+      an empty one marked `resetAt`, and until the user dismisses that (Trusted
+      hosts dialog) an unknown host is `Unverifiable`: a loud prompt, not a
+      first contact. A file unreadable at launch is never overwritten (retried
+      before each write) and leaves unknown hosts `Unverifiable` too
     - `bookmark_store.rs` — per-device SFTP bookmarks (`sftp_bookmarks.json`)
     - `workspace.rs`, `workspace_store.rs` — open tabs restored on launch
       (`workspace_state.json`); per-instance, not reloaded by the config watcher
@@ -120,7 +125,14 @@ files, releasing),
       channel is accepted only once its local target answers, and a port no
       forward asked for is rejected; each route belongs to one forward and is
       released with it (also on a refused or timed-out listen), which closes
-      its connections
+      its connections. A tunnel's listen/cancel requests go through one
+      sequential worker (`ServerRequests`), so the serve loop never waits on
+      the server; a forward still waiting is left out of `Listening`
+    - `stall_guard.rs` — wraps a forwarded connection's local socket so a
+      write making no progress for 20 s fails: russh blocks the whole SSH
+      connection while one channel's reader is full, so one client that
+      stops reading would otherwise freeze every forward of the tunnel (a
+      client that reads slowly still sets the whole connection's pace)
     - `socks.rs` — server side of the SOCKS4/4a/5 handshake (no-auth,
       `CONNECT` only) for dynamic forwards; stream-generic, unit-tested
       against an in-memory pipe
@@ -154,7 +166,11 @@ files, releasing),
     - `local_shell.rs` — local PTY shells (PowerShell/bash/zsh) via `portable-pty`,
       reusing the same `SessionSink`/`SessionStatus` seam; bridges the crate's
       blocking reader/writer to the async sink with reader/writer threads + a
-      control task; on macOS the default shell runs as a login shell with a
+      control task (on Unix the reader polls its own copy of the master
+      descriptor and lets go when the session ends, so a child still holding
+      the terminal can't keep the PTY open); a reaper thread owns the child (polls its exit, and on
+      disconnect calls portable-pty's `Child::kill`: SIGHUP, then SIGKILL after
+      a short grace); on macOS the default shell runs as a login shell with a
       UTF-8 `LANG` fallback; inside Flatpak the shell runs on the host via
       `flatpak-spawn --host`, the PTY left free to be its controlling tty.
       Also owns the updater's TLS env vars: `preset_tls_env` (first thing in
@@ -167,7 +183,11 @@ files, releasing),
       size/position on Wayland, where the plugin's restore made the window
       grow every launch until GDK crashed) and `__NV_DISABLE_EXPLICIT_SYNC`
       (NVIDIA + WebKitGTK "Error 71"), set first thing in `run()`
-    - `transfer.rs` — devices/profiles import-export
+    - `transfer.rs` — devices/profiles import-export; a devices import is
+      previewed first (`ImportRisk`s per device: agent forwarding, auto-start
+      forwards, custom local shell / snippet, a Windows network path as key
+      file, serial port or shell folder, forwards replacing a saved device's)
+      and refused if the file's risks no longer match what the user confirmed
     - `updater.rs` — in-app updates via `tauri-plugin-updater` (CrabNebula
       endpoints): check → download → install, each naming the confirmed
       version; runs only on user request or opt-in launch check; self-install

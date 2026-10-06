@@ -240,6 +240,21 @@ export const pt: Messages = {
 	"devices.exported.other": "{count} dispositivos exportados",
 	"devices.imported.one": "{count} dispositivo importado",
 	"devices.imported.other": "{count} dispositivos importados",
+	"devices.importRisks.title": "Rever as definições importadas",
+	"devices.importRisks.lead": "Alguns dispositivos deste ficheiro têm definições que atuam neste computador:",
+	"devices.importRisks.advice": "Importe apenas ficheiros de uma fonte em que confia.",
+	"devices.importRisks.confirm": "Importar",
+	"devices.importRisks.more.one": "…e mais {count} dispositivo",
+	"devices.importRisks.more.other": "…e mais {count} dispositivos",
+	"devices.importRisk.agentForwarding": "reencaminhamento do agente SSH (o servidor pode usar as suas chaves)",
+	"devices.importRisk.autoStartForwards": "reencaminhamentos iniciados no arranque",
+	"devices.importRisk.autoStartRemoteForwards": "reencaminhamentos remotos iniciados no arranque (o servidor pode chegar à sua rede)",
+	"devices.importRisk.customShell": "executa um programa personalizado",
+	"devices.importRisk.localSnippet": "escreve comandos num shell local",
+	"devices.importRisk.networkKeyPath": "ficheiro de chave numa partilha de rede",
+	"devices.importRisk.networkSerialPort": "porta série numa partilha de rede",
+	"devices.importRisk.networkShellDir": "começa numa pasta de rede",
+	"devices.importRisk.replacesForwards": "substitui um dispositivo guardado, por isso os reencaminhamentos podem iniciar como antes",
 	"devices.importedSsh.one": "{count} dispositivo importado da config SSH",
 	"devices.importedSsh.other": "{count} dispositivos importados da config SSH",
 	"devices.importedSshSkipped.one": "{count} dispositivo importado da config SSH ({skipped} ignorado(s))",
@@ -477,6 +492,8 @@ export const pt: Messages = {
 	"knownHosts.forget.title": "Esquecer host",
 	"knownHosts.forget.message":
 		"Esquecer o host confiável {id}? Ser-lhe-á pedido para verificar novamente a sua chave na próxima vez que ligar.",
+	"knownHosts.reset.notice": "O ficheiro de hosts confiáveis estava danificado e foi reposto em {date}. Até dispensar este aviso, ligar a um host que não voltou a ser confiado desde então mostra um aviso, porque a chave confiada antes foi perdida.",
+	"knownHosts.reset.dismiss": "Dispensar",
 
 	/* -- host-key trust dialog ---------------------------------------------- */
 	"hostkey.host": "Host",
@@ -490,6 +507,8 @@ export const pt: Messages = {
 	"hostkey.unknown.heading": "Chave de host desconhecida",
 	"hostkey.unknown.lead":
 		"A autenticidade de {host}:{port} não pode ser estabelecida porque esta é a primeira ligação. Verifique a impressão digital abaixo por outro meio e depois decida se confia nela.",
+	"hostkey.reset.heading": "AVISO: não é possível verificar a chave do host",
+	"hostkey.reset.lead": "Os seus hosts confiáveis guardados não estão disponíveis agora (o ficheiro estava danificado e foi reposto, ou não pôde ser lido), por isso a chave de {host}:{port} não pode ser comparada com a que talvez tenha confiado antes. Se já se ligou a este servidor, a chave pode ter mudado. Verifique a impressão digital abaixo por outro meio antes de confiar nela.",
 
 	/* -- error prefixes ----------------------------------------------------- */
 	"error.prefix": "Erro: {message}",

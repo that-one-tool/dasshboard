@@ -247,6 +247,21 @@ export const en = {
 	"devices.exported.other": "Exported {count} devices",
 	"devices.imported.one": "Imported {count} device",
 	"devices.imported.other": "Imported {count} devices",
+	"devices.importRisks.title": "Review imported settings",
+	"devices.importRisks.lead": "Some devices in this file have settings that act on this computer:",
+	"devices.importRisks.advice": "Only import a file from a source you trust.",
+	"devices.importRisks.confirm": "Import",
+	"devices.importRisks.more.one": "…and {count} more device",
+	"devices.importRisks.more.other": "…and {count} more devices",
+	"devices.importRisk.agentForwarding": "SSH agent forwarding (the server can use your keys)",
+	"devices.importRisk.autoStartForwards": "forwards that start at launch",
+	"devices.importRisk.autoStartRemoteForwards": "remote forwards that start at launch (the server can reach your network)",
+	"devices.importRisk.customShell": "runs a custom program",
+	"devices.importRisk.localSnippet": "types commands into a local shell",
+	"devices.importRisk.networkKeyPath": "key file on a network share",
+	"devices.importRisk.networkSerialPort": "serial port on a network share",
+	"devices.importRisk.networkShellDir": "starts in a network folder",
+	"devices.importRisk.replacesForwards": "replaces a saved device, so its forwards may start as before",
 	"devices.importedSsh.one": "Imported {count} device from SSH config",
 	"devices.importedSsh.other": "Imported {count} devices from SSH config",
 	"devices.importedSshSkipped.one": "Imported {count} device from SSH config ({skipped} skipped)",
@@ -482,6 +497,8 @@ export const en = {
 	"knownHosts.forget": "Forget",
 	"knownHosts.forget.title": "Forget host",
 	"knownHosts.forget.message": "Forget the trusted host {id}? You will be asked to verify its key again the next time you connect.",
+	"knownHosts.reset.notice": "The trusted hosts file was damaged and reset on {date}. Until you dismiss this, connecting to a host not trusted again since then shows a warning, because the key trusted before was lost.",
+	"knownHosts.reset.dismiss": "Dismiss",
 
 	/* -- host-key trust dialog (terminal/hostKeyDialog.ts, overlay.ts) ------ */
 	"hostkey.host": "Host",
@@ -495,6 +512,8 @@ export const en = {
 	"hostkey.unknown.heading": "Unknown host key",
 	"hostkey.unknown.lead":
 		"The authenticity of {host}:{port} can't be established because this is the first connection. Verify the fingerprint below out of band, then choose whether to trust it.",
+	"hostkey.reset.heading": "WARNING: host key can't be verified",
+	"hostkey.reset.lead": "Your saved trusted hosts can't be used right now (their file was damaged and reset, or couldn't be read), so the key for {host}:{port} can't be compared with one you may have trusted before. If you have connected to this server before, its key may have changed. Verify the fingerprint below out of band before trusting it.",
 
 	/* -- error prefixes (main.ts) ------------------------------------------- */
 	"error.prefix": "Error: {message}",

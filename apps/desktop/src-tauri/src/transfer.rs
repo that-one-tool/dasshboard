@@ -16,7 +16,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::device::{Auth, Connection, Device};
+use crate::device::{Auth, Connection, Device, Forward, ForwardKind};
 use crate::error::AppError;
 use crate::profile::Profile;
 use crate::state::AppState;
@@ -105,6 +105,151 @@ fn parse_devices_import(contents: &str) -> Result<Vec<Device>, AppError> {
     Ok(envelope.devices)
 }
 
+/// A setting an imported device would act with on this machine, or expose it
+/// by: listed for the user to confirm before the import (an import file may
+/// come from anyone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportRisk {
+    /// Programs on the server could use this machine's SSH keys.
+    AgentForwarding,
+    /// Local ports open by themselves at launch.
+    AutoStartForwards,
+    /// At launch, the server can reach hosts from this machine (`ssh -R`).
+    AutoStartRemoteForwards,
+    /// A local shell that runs a program of the file's choosing.
+    CustomShell,
+    /// Commands typed into a local shell when it opens.
+    LocalSnippet,
+    /// A key file on a network share: reading it can send the Windows login
+    /// (NTLM) to that server.
+    NetworkKeyPath,
+    /// A serial port name that opens a network share (same NTLM leak).
+    NetworkSerialPort,
+    /// A local shell starting in a network share (same NTLM leak).
+    NetworkShellDir,
+    /// Replaces a saved device that has the same id: what the app remembers
+    /// for it (forwards left running, a running tunnel) then starts the
+    /// imported forwards, auto-start or not.
+    ReplacesForwards,
+}
+
+/// One imported device's risky settings, by name (how the user knows it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRisks {
+    pub name: String,
+    pub risks: Vec<ImportRisk>,
+}
+
+/// The devices of an import that carry risky settings, in file order;
+/// `saved` is the device list they would be merged into.
+fn risks_of(devices: &[Device], saved: &[Device]) -> Vec<DeviceRisks> {
+    devices
+        .iter()
+        .map(|device| DeviceRisks {
+            name: device.name.clone(),
+            risks: device_risks(device, saved),
+        })
+        .filter(|device| !device.risks.is_empty())
+        .collect()
+}
+
+fn device_risks(device: &Device, saved: &[Device]) -> Vec<ImportRisk> {
+    match &device.connection {
+        Connection::Ssh {
+            auth,
+            forwards,
+            tunnel_auto_start,
+            forward_agent,
+            ..
+        } => {
+            let mut risks = Vec::new();
+            risks.extend(forward_agent.then_some(ImportRisk::AgentForwarding));
+            risks.extend(
+                tunnel_auto_start
+                    .then(|| auto_start_risk(forwards))
+                    .flatten(),
+            );
+            risks.extend(is_network_key(auth).then_some(ImportRisk::NetworkKeyPath));
+            risks.extend(replaces_forwards(device, forwards, saved));
+            risks
+        }
+        Connection::LocalShell { shell, cwd } => shell_risks(shell, cwd, device),
+        Connection::Serial { port_name, .. } => {
+            Vec::from_iter(is_network_port(port_name).then_some(ImportRisk::NetworkSerialPort))
+        }
+    }
+}
+
+fn shell_risks(shell: &Option<String>, cwd: &Option<String>, device: &Device) -> Vec<ImportRisk> {
+    let mut risks = Vec::new();
+    risks.extend(is_set(shell.as_deref()).then_some(ImportRisk::CustomShell));
+    let snippet = device.connect_snippet.as_deref();
+    risks.extend(is_set(snippet).then_some(ImportRisk::LocalSnippet));
+    let network_dir = cwd.as_deref().is_some_and(is_network_path);
+    risks.extend(network_dir.then_some(ImportRisk::NetworkShellDir));
+    risks
+}
+
+fn auto_start_risk(forwards: &[Forward]) -> Option<ImportRisk> {
+    if forwards.iter().any(|f| f.kind == ForwardKind::Remote) {
+        return Some(ImportRisk::AutoStartRemoteForwards);
+    }
+    (!forwards.is_empty()).then_some(ImportRisk::AutoStartForwards)
+}
+
+fn replaces_forwards(
+    device: &Device,
+    forwards: &[Forward],
+    saved: &[Device],
+) -> Option<ImportRisk> {
+    let replaces = saved.iter().any(|d| d.id == device.id);
+    (replaces && !forwards.is_empty()).then_some(ImportRisk::ReplacesForwards)
+}
+
+fn is_network_key(auth: &Auth) -> bool {
+    matches!(auth, Auth::Key { key_path } if is_network_path(key_path))
+}
+
+/// A path that reaches another machine (over SMB, on Windows): UNC, i.e. any
+/// two leading separators (`\\srv\share`, `/\srv`), also through the `\\?\`,
+/// `\\.\` and `\??\` namespaces (`\\?\UNC\srv\share`, `GLOBALROOT`). Their
+/// local forms (`\\.\COM10`, `\\?\C:\…`) are not.
+fn is_network_path(path: &str) -> bool {
+    let path = path.trim().replace('/', r"\");
+    match strip_namespace(&path) {
+        Some(rest) => {
+            starts_with_ignore_case(rest, r"UNC\") || starts_with_ignore_case(rest, "GLOBALROOT")
+        }
+        None => path.starts_with(r"\\"),
+    }
+}
+
+fn strip_namespace(path: &str) -> Option<&str> {
+    [r"\\?\", r"\\.\", r"\??\"]
+        .iter()
+        .find_map(|prefix| path.strip_prefix(prefix))
+}
+
+fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
+    text.get(..prefix.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+}
+
+/// serialport opens a name that doesn't start with `\` as `\\.\<name>`.
+fn is_network_port(name: &str) -> bool {
+    let name = name.trim();
+    if name.starts_with(['\\', '/']) {
+        return is_network_path(name);
+    }
+    is_network_path(&format!(r"\\.\{name}"))
+}
+
+fn is_set(value: Option<&str>) -> bool {
+    value.is_some_and(|v| !v.trim().is_empty())
+}
+
 /// Parse + validate a profiles import file (see [`parse_devices_import`]).
 fn parse_profiles_import(contents: &str) -> Result<Vec<Profile>, AppError> {
     let envelope: ProfilesEnvelope = serde_json::from_str(contents)
@@ -139,11 +284,24 @@ pub(crate) fn export_devices_impl(state: &AppState, path: &Path) -> Result<u32, 
 /// idempotent. Stored secrets an imported device must not inherit are dropped
 /// first, for every device, so a keyring failure aborts the import before any
 /// device is saved (see [`drop_inherited_secret`]). Returns the count imported.
-pub(crate) fn import_devices_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
+///
+/// `confirmed` is what the user agreed to from [`preview_devices_import_impl`]:
+/// a file whose risky settings no longer match (it changed in between) is
+/// refused.
+pub(crate) fn import_devices_impl(
+    state: &AppState,
+    path: &Path,
+    confirmed: &[DeviceRisks],
+) -> Result<u32, AppError> {
     let contents = fs::read_to_string(path)?;
     let devices = parse_devices_import(&contents)?;
-    let count = devices.len() as u32;
     let saved = state.device_store.list();
+    if risks_of(&devices, &saved) != confirmed {
+        return Err(AppError::Validation(
+            "the file changed since it was checked; import it again".to_string(),
+        ));
+    }
+    let count = devices.len() as u32;
     for device in &devices {
         drop_inherited_secret(state, &saved, device)?;
     }
@@ -151,6 +309,17 @@ pub(crate) fn import_devices_impl(state: &AppState, path: &Path) -> Result<u32, 
         state.device_store.upsert(device)?;
     }
     Ok(count)
+}
+
+/// Validate a devices import file (as the import will) and list the devices
+/// whose settings the user should confirm first.
+pub(crate) fn preview_devices_import_impl(
+    state: &AppState,
+    path: &Path,
+) -> Result<Vec<DeviceRisks>, AppError> {
+    let contents = fs::read_to_string(path)?;
+    let devices = parse_devices_import(&contents)?;
+    Ok(risks_of(&devices, &state.device_store.list()))
 }
 
 /// What a device's stored secret is sent to: the SSH endpoint, account, auth
@@ -231,7 +400,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use crate::device::{Auth, Connection, FlowControl, Parity};
+    use crate::device::{Auth, Connection, FlowControl, Forward, ForwardKind, Parity};
     use crate::known_hosts::KnownHostsStore;
     use crate::profile::{Grid, Pane, ProfileTab};
     use crate::profile_store::ProfileStore;
@@ -324,6 +493,235 @@ mod tests {
         }
     }
 
+    /* -- import risks --------------------------------------------------- */
+
+    fn with_ssh(
+        name: &str,
+        edit: impl FnOnce(&mut Auth, &mut Vec<Forward>, &mut bool, &mut bool),
+    ) -> Device {
+        let mut device = sample_device(name);
+        if let Connection::Ssh {
+            auth,
+            forwards,
+            tunnel_auto_start,
+            forward_agent,
+            ..
+        } = &mut device.connection
+        {
+            edit(auth, forwards, tunnel_auto_start, forward_agent);
+        }
+        device
+    }
+
+    fn forward(id: &str, kind: ForwardKind) -> Forward {
+        Forward {
+            id: id.to_string(),
+            name: id.to_string(),
+            kind,
+            local_addr: "127.0.0.1".to_string(),
+            local_port: 3000,
+            remote_host: "localhost".to_string(),
+            remote_port: 8080,
+        }
+    }
+
+    fn local_shell(name: &str, shell: Option<&str>, snippet: Option<&str>) -> Device {
+        Device {
+            id: String::new(),
+            name: name.to_string(),
+            connection: Connection::LocalShell {
+                shell: shell.map(str::to_string),
+                cwd: None,
+            },
+            auto_reconnect: false,
+            tags: Vec::new(),
+            connect_snippet: snippet.map(str::to_string),
+        }
+    }
+
+    fn exported(devices: Vec<Device>) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        for device in devices {
+            state.device_store.upsert(device).unwrap();
+        }
+        let file = dir.path().join("devices-export.json");
+        export_devices_impl(&state, &file).unwrap();
+        (dir, file)
+    }
+
+    fn risky_devices() -> Vec<Device> {
+        vec![
+            with_ssh("Agent", |_, _, _, agent| *agent = true),
+            with_ssh("Remote", |_, forwards, auto, _| {
+                forwards.push(forward("r1", ForwardKind::Remote));
+                *auto = true;
+            }),
+            with_ssh("Local", |_, forwards, auto, _| {
+                forwards.push(forward("l1", ForwardKind::Local));
+                *auto = true;
+            }),
+            with_ssh("Share", |auth, _, _, _| {
+                *auth = Auth::Key {
+                    key_path: r"\\server\share\id_ed25519".to_string(),
+                };
+            }),
+            local_shell("Shell", Some("/opt/tool"), Some("make install")),
+            with_ssh("Manual tunnel", |_, forwards, _, _| {
+                forwards.push(forward("r2", ForwardKind::Remote));
+            }),
+            local_shell("Default shell", None, Some("  ")),
+            sample_serial_device("Serial"),
+            serial_on(r"\\attacker\share\x", "Share port"),
+            serial_on(r"\\.\COM10", "COM10"),
+            shell_in(r"\\attacker\share", "Share dir"),
+        ]
+    }
+
+    fn serial_on(port: &str, name: &str) -> Device {
+        let mut device = sample_serial_device(name);
+        if let Connection::Serial { port_name, .. } = &mut device.connection {
+            *port_name = port.to_string();
+        }
+        device
+    }
+
+    fn shell_in(dir: &str, name: &str) -> Device {
+        let mut device = local_shell(name, None, None);
+        device.connection = Connection::LocalShell {
+            shell: None,
+            cwd: Some(dir.to_string()),
+        };
+        device
+    }
+
+    #[test]
+    fn network_paths_are_the_ones_that_reach_another_machine() {
+        for path in [
+            r"\\srv\share\id",
+            "//srv/share/id",
+            r"/\srv\share\id",
+            r"\/srv\share\id",
+            r"\\?\UNC\srv\share\id",
+            r"\\.\unc\srv\share\id",
+            r"\??\UNC\srv\share\id",
+            r"\\?\GLOBALROOT\Device\Mup\srv\share",
+            r"  \\srv\share\id",
+        ] {
+            assert!(is_network_path(path), "{path}");
+        }
+        for path in [
+            r"C:\keys\id",
+            "~/.ssh/id_ed25519",
+            "/home/me/.ssh/id",
+            r"\\?\C:\keys\id",
+            r"\\.\COM10",
+            r"\??\C:\keys\id",
+        ] {
+            assert!(!is_network_path(path), "{path}");
+        }
+    }
+
+    /// serialport opens a name without a leading `\` as `\\.\<name>`.
+    #[test]
+    fn a_serial_port_reaches_a_share_through_the_device_namespace_too() {
+        assert!(is_network_port(r"UNC\srv\share\x"));
+        assert!(is_network_port(r"\\srv\share\x"));
+        assert!(!is_network_port("COM3"));
+        assert!(!is_network_port("/dev/ttyUSB0"));
+        assert!(!is_network_port(r"\\.\COM10"));
+    }
+
+    #[test]
+    fn preview_lists_what_imported_devices_would_do_on_this_machine() {
+        let (_dir, file) = exported(risky_devices());
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+
+        let mut risks = preview_devices_import_impl(&state, &file).unwrap();
+        risks.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let listed: Vec<(&str, &[ImportRisk])> = risks
+            .iter()
+            .map(|d| (d.name.as_str(), d.risks.as_slice()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("Agent", &[ImportRisk::AgentForwarding][..]),
+                ("Local", &[ImportRisk::AutoStartForwards][..]),
+                ("Remote", &[ImportRisk::AutoStartRemoteForwards][..]),
+                ("Share", &[ImportRisk::NetworkKeyPath][..]),
+                ("Share dir", &[ImportRisk::NetworkShellDir][..]),
+                ("Share port", &[ImportRisk::NetworkSerialPort][..]),
+                (
+                    "Shell",
+                    &[ImportRisk::CustomShell, ImportRisk::LocalSnippet][..]
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn preview_rejects_an_invalid_file() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("bad.json");
+        fs::write(&file, "{ not json").unwrap();
+        let state = test_state(dir.path());
+
+        assert!(preview_devices_import_impl(&state, &file).is_err());
+    }
+
+    #[test]
+    fn import_refuses_risks_that_were_not_confirmed() {
+        let (_src, file) = exported(risky_devices());
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+
+        let err = import_devices_impl(&state, &file, &[]).unwrap_err();
+
+        assert!(matches!(err, AppError::Validation(_)));
+        assert!(state.device_store.list().is_empty());
+    }
+
+    #[test]
+    fn import_goes_ahead_with_the_risks_the_user_confirmed() {
+        let (_src, file) = exported(risky_devices());
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        let confirmed = preview_devices_import_impl(&state, &file).unwrap();
+
+        let count = import_devices_impl(&state, &file, &confirmed).unwrap();
+
+        assert_eq!(count, 11);
+    }
+
+    /// Import replaces a saved device with the same id, and what the app
+    /// remembers for that id (forwards left running, a running tunnel) then
+    /// applies to the imported forwards, auto-start or not.
+    #[test]
+    fn preview_flags_forwards_that_replace_a_saved_device() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        let saved = state.device_store.upsert(sample_device("Saved")).unwrap();
+        let mut replacing = with_ssh("Replacing", |_, forwards, _, _| {
+            forwards.push(forward("r1", ForwardKind::Remote));
+        });
+        replacing.id = saved.id.clone();
+        let mut plain = sample_device("Plain");
+        plain.id = saved.id.clone();
+        let (_a, with_forwards) = exported(vec![replacing]);
+        let (_b, without) = exported(vec![plain]);
+
+        let risks = preview_devices_import_impl(&state, &with_forwards).unwrap();
+
+        assert_eq!(risks.len(), 1);
+        assert_eq!(risks[0].risks, [ImportRisk::ReplacesForwards]);
+        assert!(preview_devices_import_impl(&state, &without)
+            .unwrap()
+            .is_empty());
+    }
+
     /* -- devices export ------------------------------------------------- */
 
     #[test]
@@ -385,7 +783,7 @@ mod tests {
         // Import into a completely fresh state (fresh dir ⇒ empty store).
         let dst_dir = tempdir().unwrap();
         let dst = test_state(dst_dir.path());
-        let count = import_devices_impl(&dst, &file).unwrap();
+        let count = import_devices_impl(&dst, &file, &[]).unwrap();
 
         assert_eq!(count, 2);
         assert_eq!(dst.device_store.list(), original);
@@ -422,7 +820,7 @@ mod tests {
 
         let dst_dir = tempdir().unwrap();
         let dst = test_state(dst_dir.path());
-        let count = import_devices_impl(&dst, &file).unwrap();
+        let count = import_devices_impl(&dst, &file, &[]).unwrap();
 
         assert_eq!(count, 2);
         assert_eq!(dst.device_store.list(), original);
@@ -440,9 +838,9 @@ mod tests {
 
         let dst_dir = tempdir().unwrap();
         let dst = test_state(dst_dir.path());
-        import_devices_impl(&dst, &file).unwrap();
+        import_devices_impl(&dst, &file, &[]).unwrap();
         // Second import of the same file must update in place, not duplicate.
-        import_devices_impl(&dst, &file).unwrap();
+        import_devices_impl(&dst, &file, &[]).unwrap();
 
         let after = dst.device_store.list();
         assert_eq!(after.len(), 1, "re-import must not create duplicates");
@@ -462,7 +860,7 @@ mod tests {
         edit(&mut incoming);
         let file = dir.path().join("in.json");
         fs::write(&file, devices_to_export_json(&[incoming])).unwrap();
-        import_devices_impl(&state, &file).unwrap();
+        import_devices_impl(&state, &file, &[]).unwrap();
         (state, saved.id)
     }
 
@@ -518,7 +916,7 @@ mod tests {
         let file = dir.path().join("in.json");
         fs::write(&file, devices_to_export_json(&[incoming])).unwrap();
 
-        import_devices_impl(&state, &file).unwrap();
+        import_devices_impl(&state, &file, &[]).unwrap();
 
         assert_eq!(state.secret_store.get("orphan-id").unwrap(), None);
     }
@@ -539,7 +937,7 @@ mod tests {
         fs::write(&file, devices_to_export_json(&[retargeted, new_one])).unwrap();
         secrets.fail_next_delete();
 
-        assert!(import_devices_impl(&state, &file).is_err());
+        assert!(import_devices_impl(&state, &file, &[]).is_err());
         assert_eq!(state.device_store.list(), vec![saved], "nothing saved");
     }
 
@@ -567,7 +965,7 @@ mod tests {
         let file = dir.path().join("in.json");
         fs::write(&file, json).unwrap();
 
-        let count = import_devices_impl(&state, &file).unwrap();
+        let count = import_devices_impl(&state, &file, &[]).unwrap();
         assert_eq!(count, 1);
 
         let imported = state.device_store.list();
@@ -585,7 +983,7 @@ mod tests {
         let file = dir.path().join("bad.json");
         fs::write(&file, "{ not valid json ").unwrap();
 
-        let err = import_devices_impl(&state, &file).unwrap_err();
+        let err = import_devices_impl(&state, &file, &[]).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
         assert!(state.device_store.list().is_empty());
     }
@@ -607,7 +1005,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = import_devices_impl(&state, &file).unwrap_err();
+        let err = import_devices_impl(&state, &file, &[]).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
         assert!(state.device_store.list().is_empty());
     }
@@ -638,7 +1036,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = import_devices_impl(&state, &file).unwrap_err();
+        let err = import_devices_impl(&state, &file, &[]).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
 
         let after = state.device_store.list();

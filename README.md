@@ -52,6 +52,9 @@
 - Host keys are trusted on first use; a changed key blocks the connection until
   you explicitly accept it.
 - With SSH agent auth, private keys never enter the app.
+- Importing a devices file first lists any settings that act on your machine
+  (agent forwarding, forwards that start on their own, local shell commands)
+  for you to confirm.
 - Strict CSP, no remote content.
 
 ## Download

@@ -240,6 +240,21 @@ export const es: Messages = {
 	"devices.exported.other": "{count} dispositivos exportados",
 	"devices.imported.one": "{count} dispositivo importado",
 	"devices.imported.other": "{count} dispositivos importados",
+	"devices.importRisks.title": "Revisar los ajustes importados",
+	"devices.importRisks.lead": "Algunos dispositivos de este archivo tienen ajustes que actúan en este equipo:",
+	"devices.importRisks.advice": "Importa solo archivos de una fuente de confianza.",
+	"devices.importRisks.confirm": "Importar",
+	"devices.importRisks.more.one": "…y {count} dispositivo más",
+	"devices.importRisks.more.other": "…y {count} dispositivos más",
+	"devices.importRisk.agentForwarding": "reenvío del agente SSH (el servidor puede usar tus claves)",
+	"devices.importRisk.autoStartForwards": "reenvíos que se inician al arrancar",
+	"devices.importRisk.autoStartRemoteForwards": "reenvíos remotos que se inician al arrancar (el servidor puede llegar a tu red)",
+	"devices.importRisk.customShell": "ejecuta un programa personalizado",
+	"devices.importRisk.localSnippet": "escribe comandos en un shell local",
+	"devices.importRisk.networkKeyPath": "archivo de clave en un recurso de red",
+	"devices.importRisk.networkSerialPort": "puerto serie en un recurso de red",
+	"devices.importRisk.networkShellDir": "se inicia en una carpeta de red",
+	"devices.importRisk.replacesForwards": "reemplaza un dispositivo guardado, así que sus reenvíos pueden iniciarse como antes",
 	"devices.importedSsh.one": "{count} dispositivo importado desde la config SSH",
 	"devices.importedSsh.other": "{count} dispositivos importados desde la config SSH",
 	"devices.importedSshSkipped.one": "{count} dispositivo importado desde la config SSH ({skipped} omitido(s))",
@@ -477,6 +492,8 @@ export const es: Messages = {
 	"knownHosts.forget.title": "Olvidar host",
 	"knownHosts.forget.message":
 		"¿Olvidar el host de confianza {id}? Se te pedirá que verifiques de nuevo su clave la próxima vez que te conectes.",
+	"knownHosts.reset.notice": "El archivo de hosts de confianza estaba dañado y se restableció el {date}. Hasta que descartes este aviso, conectarse a un host que no se haya vuelto a aprobar desde entonces muestra una advertencia, porque la clave aprobada antes se perdió.",
+	"knownHosts.reset.dismiss": "Descartar",
 
 	/* -- host-key trust dialog ---------------------------------------------- */
 	"hostkey.host": "Host",
@@ -490,6 +507,8 @@ export const es: Messages = {
 	"hostkey.unknown.heading": "Clave de host desconocida",
 	"hostkey.unknown.lead":
 		"No se puede establecer la autenticidad de {host}:{port} porque es la primera conexión. Verifica la huella de abajo por otro medio y luego decide si confiar en ella.",
+	"hostkey.reset.heading": "ADVERTENCIA: no se puede verificar la clave del host",
+	"hostkey.reset.lead": "Tus hosts de confianza guardados no están disponibles ahora (su archivo estaba dañado y se restableció, o no se pudo leer), así que la clave de {host}:{port} no se puede comparar con la que quizá aprobaste antes. Si ya te habías conectado a este servidor, su clave puede haber cambiado. Verifica la huella de abajo por otro medio antes de confiar en ella.",
 
 	/* -- error prefixes ----------------------------------------------------- */
 	"error.prefix": "Error: {message}",

@@ -8,7 +8,8 @@
 //! - [`write_json`] — atomic write-then-rename;
 //! - [`backup_corrupt`] — move an unreadable/unparseable file out of the way;
 //! - [`read_recovering`] / [`reread_recovering`] — the missing-file /
-//!   corrupt-file / unreadable-file read-recovery flow (load / reload);
+//!   corrupt-file / unreadable-file read-recovery flow (load / reload), and
+//!   [`read_or_backup`] for a store that must know which case it hit;
 //! - [`lock`] — a poison-recovering mutex lock.
 //!
 //! None of these ever touch secret material — secrets live in the OS keyring
@@ -126,10 +127,30 @@ pub fn reread_recovering<D, T>(
 where
     D: serde::de::DeserializeOwned,
 {
+    match read_or_backup::<D>(dir, file_name)? {
+        ReadOutcome::Parsed(parsed) => Some(map(parsed)),
+        ReadOutcome::Missing | ReadOutcome::Corrupt => Some(default()),
+    }
+}
+
+/// What [`read_or_backup`] found.
+pub enum ReadOutcome<D> {
+    Parsed(D),
+    Missing,
+    /// Unparseable; already backed up (see [`backup_corrupt`]).
+    Corrupt,
+}
+
+/// Reads and parses `dir/file_name`, backing up a corrupt file; `None` when
+/// the file can't be read (left untouched, see [`read_recovering`]).
+pub fn read_or_backup<D>(dir: &Path, file_name: &str) -> Option<ReadOutcome<D>>
+where
+    D: serde::de::DeserializeOwned,
+{
     let path = dir.join(file_name);
     match read_with_retries(&path) {
-        Ok(Some(contents)) => Some(parse_or_backup(&path, file_name, &contents, map, default)),
-        Ok(None) => Some(default()),
+        Ok(Some(contents)) => Some(parse_or_backup(&path, file_name, &contents)),
+        Ok(None) => Some(ReadOutcome::Missing),
         Err(err) => {
             eprintln!("[DaSSHboard] could not read {file_name} ({err}); leaving it untouched");
             None
@@ -160,24 +181,18 @@ fn read_once(path: &Path) -> std::io::Result<Option<String>> {
     }
 }
 
-fn parse_or_backup<D, T>(
-    path: &Path,
-    file_name: &str,
-    contents: &str,
-    map: impl FnOnce(D) -> T,
-    default: impl Fn() -> T,
-) -> T
+fn parse_or_backup<D>(path: &Path, file_name: &str, contents: &str) -> ReadOutcome<D>
 where
     D: serde::de::DeserializeOwned,
 {
     match serde_json::from_str::<D>(contents) {
-        Ok(parsed) => map(parsed),
+        Ok(parsed) => ReadOutcome::Parsed(parsed),
         Err(err) => {
             eprintln!(
                 "[DaSSHboard] {file_name} is corrupt ({err}); backing it up and starting fresh"
             );
             backup_corrupt(path);
-            default()
+            ReadOutcome::Corrupt
         }
     }
 }
@@ -326,6 +341,23 @@ mod tests {
             })
             .count();
         assert_eq!(backups, 1);
+    }
+
+    #[test]
+    fn read_or_backup_tells_a_missing_file_from_a_corrupt_one() {
+        let dir = tempdir().unwrap();
+        assert!(matches!(
+            read_or_backup::<Sample>(dir.path(), FILE),
+            Some(ReadOutcome::Missing)
+        ));
+
+        fs::write(dir.path().join(FILE), "{ not valid json ").unwrap();
+
+        assert!(matches!(
+            read_or_backup::<Sample>(dir.path(), FILE),
+            Some(ReadOutcome::Corrupt)
+        ));
+        assert!(has_corrupt_backup(dir.path()));
     }
 
     /// A read error that isn't "not found" (here: a directory where the file

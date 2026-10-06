@@ -21,6 +21,8 @@ use tokio::io::copy_bidirectional;
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 
+use crate::stall_guard::{StallGuard, STALL_TIMEOUT};
+
 /// How long dialing a local target may take before the server's channel is
 /// refused (a filtered host would otherwise hold it for the OS's full timeout).
 const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -35,12 +37,26 @@ struct Route {
     live: watch::Sender<()>,
 }
 
-#[derive(Default)]
 pub(crate) struct RemoteRoutes {
     routes: Mutex<HashMap<u16, Route>>,
+    /// How long a bridged connection's local target may stop reading.
+    stall_timeout: Duration,
+}
+
+impl Default for RemoteRoutes {
+    fn default() -> Self {
+        Self::new(STALL_TIMEOUT)
+    }
 }
 
 impl RemoteRoutes {
+    pub(crate) fn new(stall_timeout: Duration) -> Self {
+        RemoteRoutes {
+            routes: Mutex::default(),
+            stall_timeout,
+        }
+    }
+
     /// Send connections to `server_port` on to `host:port` for forward `owner`
     /// (replacing, and closing the connections of, its own earlier route).
     /// `false` when another forward holds the port.
@@ -96,7 +112,8 @@ pub(crate) fn serve_forwarded(
 ) {
     match routes.lookup(connected_port) {
         Some((host, port, live)) => {
-            tokio::spawn(bridge(host, port, live, channel, reply));
+            let stall_timeout = routes.stall_timeout;
+            tokio::spawn(bridge(host, port, live, channel, reply, stall_timeout));
         }
         // Dropping the reply rejects the channel (administratively prohibited).
         None => drop(reply),
@@ -111,12 +128,14 @@ async fn bridge(
     mut live: watch::Receiver<()>,
     channel: Channel<client::Msg>,
     reply: client::ChannelOpenHandle,
+    stall_timeout: Duration,
 ) {
-    let Some(mut tcp) = dial(&host, port).await else {
+    let Some(tcp) = dial(&host, port).await else {
         reply.reject(ChannelOpenFailure::ConnectFailed).await;
         return;
     };
     reply.accept().await;
+    let mut tcp = StallGuard::new(tcp, stall_timeout);
     let mut stream = channel.into_stream();
     tokio::select! {
         _ = copy_bidirectional(&mut tcp, &mut stream) => {}

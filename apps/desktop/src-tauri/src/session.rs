@@ -42,6 +42,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use tokio::time::timeout;
 use uuid::Uuid;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::AppError;
 use crate::known_hosts::{KnownHost, KnownHostsStore, Verdict};
@@ -176,6 +177,9 @@ pub struct HostKeyPromptPayload {
     pub key_type: String,
     pub fingerprint: String,
     pub changed: bool,
+    /// No record to compare with because the trusted hosts were reset after
+    /// a damaged file: the key may have changed (see `Verdict::Unverifiable`).
+    pub trust_reset: bool,
 }
 
 /// The credential a device authenticates with. Constructed in `commands.rs`
@@ -196,6 +200,18 @@ pub enum AuthCredentials {
     Agent {
         fingerprint: String,
     },
+}
+
+/// Wipe the secret once the connection no longer needs it (the copy russh
+/// takes for password auth is beyond reach).
+impl Drop for AuthCredentials {
+    fn drop(&mut self) {
+        match self {
+            AuthCredentials::Password(password) => password.zeroize(),
+            AuthCredentials::Key { passphrase, .. } => passphrase.zeroize(),
+            AuthCredentials::Agent { .. } => {}
+        }
+    }
 }
 
 /// Hand-rolled `Debug` that redacts the password/passphrase. The derived impl
@@ -520,7 +536,7 @@ impl SshHandler {
         &self,
         key_type: &str,
         fingerprint: &str,
-        changed: bool,
+        verdict: Verdict,
     ) -> bool {
         let prompt_id = Uuid::new_v4().to_string();
         let (rx, _guard) = self.prompts.register(prompt_id.clone());
@@ -535,7 +551,8 @@ impl SshHandler {
             port: self.port,
             key_type: key_type.to_string(),
             fingerprint: fingerprint.to_string(),
-            changed,
+            changed: verdict == Verdict::Changed,
+            trust_reset: verdict == Verdict::Unverifiable,
         });
 
         let mut owner_gone = self.owner_gone.clone();
@@ -582,17 +599,15 @@ impl client::Handler for SshHandler {
         let fingerprint = server_public_key.fingerprint(HashAlg::Sha256).to_string();
         let key_type = server_public_key.algorithm().to_string();
 
-        let changed = match self
+        let verdict = self
             .known_hosts
-            .verdict(&self.host, self.port, &fingerprint)
-        {
-            Verdict::Known => return Ok(true),
-            Verdict::Unknown => false,
-            Verdict::Changed => true,
-        };
+            .verdict(&self.host, self.port, &fingerprint);
+        if verdict == Verdict::Known {
+            return Ok(true);
+        }
 
         let accepted = self
-            .await_host_key_decision(&key_type, &fingerprint, changed)
+            .await_host_key_decision(&key_type, &fingerprint, verdict)
             .await;
 
         if accepted {
@@ -811,7 +826,7 @@ where
             // on `spawn_blocking` rather than stalling this async connect path
             // (and, in Phase 3, unrelated sessions sharing the runtime).
             let path = path.clone();
-            let passphrase = passphrase.clone();
+            let passphrase = Zeroizing::new(passphrase.clone());
             let key =
                 tokio::task::spawn_blocking(move || load_secret_key(&path, passphrase.as_deref()))
                     .await
@@ -1589,12 +1604,14 @@ mod tests {
             key_type: "ssh-ed25519".into(),
             fingerprint: "SHA256:abc".into(),
             changed: true,
+            trust_reset: false,
         };
         let value = serde_json::to_value(&payload).unwrap();
         assert_eq!(value["promptId"], "p1");
         assert_eq!(value["keyType"], "ssh-ed25519");
         assert_eq!(value["fingerprint"], "SHA256:abc");
         assert_eq!(value["changed"], true);
+        assert_eq!(value["trustReset"], false);
     }
 
     #[test]

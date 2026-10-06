@@ -5,7 +5,7 @@
  * State and validation logic are kept in separate modules for testability.
  */
 
-import type { Device, AppError } from "../ipc";
+import type { Device, AppError, DeviceRisks } from "../ipc";
 import {
   listDevices,
   saveDevice,
@@ -13,6 +13,7 @@ import {
   testConnection,
   exportDevices,
   importDevices,
+  previewDevicesImport,
   importSshConfig,
   exportSshConfig,
   sshAgentAvailable,
@@ -42,6 +43,7 @@ import {
   updateKindDisplay,
 } from "./deviceForm";
 import { confirm } from "../ui/confirm";
+import { importRiskMessage } from "./importRisks";
 import {
   pickJsonSavePath,
   pickJsonOpenPath,
@@ -499,7 +501,8 @@ export class DeviceManagerImpl {
   }
 
   /**
-   * Imports devices from a user-chosen JSON file (upsert by id, backend-side).
+   * Imports devices from a user-chosen JSON file (upsert by id, backend-side),
+   * once the user confirmed any settings that would act on this machine.
    * Routes the success through `onSuccess` so `main.ts` also refreshes the pane
    * dropdowns and profiles, then reloads the sidebar list. Cancel is a no-op.
    */
@@ -507,7 +510,9 @@ export class DeviceManagerImpl {
     try {
       const path = await pickJsonOpenPath();
       if (path === null) return; // user cancelled the picker
-      const count = await importDevices(path);
+      const risks = await previewDevicesImport(path);
+      if (risks.length > 0 && !(await confirmImportRisks(risks))) return;
+      const count = await importDevices(path, risks);
       this.options.onSuccess?.(tp("devices.imported", count));
       await this.loadDevices();
     } catch (err) {
@@ -761,4 +766,13 @@ function escapeHtml(text: string): string {
 /** A tag section's header label: the tag, or "Untagged". */
 function groupLabel(tag: string | null): string {
   return tag ?? t("devices.group.untagged");
+}
+
+function confirmImportRisks(risks: DeviceRisks[]): Promise<boolean> {
+  return confirm(importRiskMessage(risks), {
+    title: t("devices.importRisks.title"),
+    confirmLabel: t("devices.importRisks.confirm"),
+    danger: true,
+    keepLineBreaks: true,
+  });
 }

@@ -911,6 +911,10 @@ body.grid-dragging-row * {
 	font-size: 0.9rem;
 }
 
+.confirm-message.confirm-lines {
+	white-space: pre-line;
+}
+
 /* ============================================================================
  * SSH terminal pane (Phase 2)
  * ============================================================================ */
@@ -2213,6 +2217,29 @@ body.grid-dragging-row * {
 	line-height: 1.45;
 	margin: 0;
 	padding: 16px 16px 12px;
+}
+
+.known-hosts-reset {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin: 0 16px 12px;
+	padding: 8px 10px;
+	background-color: var(--danger-soft);
+	border: 1px solid var(--danger);
+	border-radius: var(--radius);
+}
+
+.known-hosts-reset[hidden] {
+	display: none;
+}
+
+.known-hosts-reset-text {
+	flex: 1 1 auto;
+	margin: 0;
+	color: var(--text-primary);
+	font-size: 0.9rem;
+	line-height: 1.45;
 }
 
 .known-hosts-list {
