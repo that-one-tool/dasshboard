@@ -15,7 +15,7 @@
 //! (`crate::secret`), never in these JSON files.
 
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -36,17 +36,29 @@ pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Atomically writes `value` as pretty JSON to `dir/file_name`: serialize to a
-/// uniquely-named temp file in the same directory, then `rename` it over the
-/// real file. A `rename` within one directory is atomic on both Windows and
+/// uniquely-named temp file in the same directory, flushed to disk, then
+/// `rename` it over the real file (a failed write removes the temp file).
+/// A `rename` within one directory is atomic on both Windows and
 /// POSIX filesystems, so a concurrent reader only ever sees the fully-old or
 /// fully-new content, never a partial write. Creates `dir` if it doesn't exist.
 pub fn write_json<T: Serialize>(dir: &Path, file_name: &str, value: &T) -> Result<(), AppError> {
     fs::create_dir_all(dir)?;
     let json = serde_json::to_string_pretty(value)?;
     let tmp_path = dir.join(format!("{file_name}.tmp-{}", Uuid::new_v4()));
-    fs::write(&tmp_path, json)?;
-    fs::rename(&tmp_path, dir.join(file_name))?;
-    Ok(())
+    let written = write_synced(&tmp_path, json.as_bytes())
+        .and_then(|()| fs::rename(&tmp_path, dir.join(file_name)));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    written.map_err(AppError::from)
+}
+
+/// Writes `bytes` to a new file and flushes them to disk, so the rename that
+/// follows can't publish a file whose content a crash would still lose.
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// Renames an unreadable/corrupt file to `<name>.corrupt-<unix-seconds>` so a
@@ -178,6 +190,23 @@ mod tests {
     use tempfile::tempdir;
 
     const FILE: &str = "sample.json";
+
+    #[test]
+    fn a_failed_write_leaves_no_temp_file_behind() {
+        let dir = tempdir().unwrap();
+        // A directory where the file should go: the final rename fails.
+        fs::create_dir(dir.path().join(FILE)).unwrap();
+
+        let result = write_json(dir.path(), FILE, &vec!["x"]);
+
+        assert!(result.is_err());
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|name| name != FILE)
+            .collect();
+        assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+    }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     struct Sample {

@@ -26,8 +26,8 @@
 //! never holding more than one [`TRANSFER_CHUNK`] in memory, so an arbitrarily
 //! large file transfers in constant memory. A download streams into a sibling
 //! `.part` file and is renamed onto the target only on success, so a failed or
-//! cancelled download never truncates or deletes an existing file; an upload
-//! removes the remote file only if it fails after creating it. The
+//! cancelled download never truncates or deletes an existing file; a failed
+//! upload removes the remote file only if the upload itself created it. The
 //! whole-file-in-memory [`SftpManager::read_file`] /
 //! [`SftpManager::write_file`] helpers are retained only for the integration
 //! tests' small byte round-trips.
@@ -93,7 +93,8 @@ pub struct RemoteStamp {
 /// truncated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PartialUpload {
-    /// A fresh upload: drop the incomplete file.
+    /// A fresh upload: drop the incomplete file — unless it existed before
+    /// (an overwrite), which is never deleted.
     Remove,
     /// An edit-in-place upload over a file the user cares about: leave it
     /// (owner, mode, links intact) so a retry can complete it.
@@ -596,7 +597,8 @@ impl SftpManager {
     /// Recursively upload a local directory tree into `remote_dir` (already
     /// created/renamed by the caller per policy). With `skip_existing`, remote
     /// files that already exist are left untouched; otherwise overwritten. Local
-    /// symlinks are skipped. One cancel flag covers the whole walk.
+    /// symlinks are skipped, and so are names that aren't valid Unicode, which
+    /// are returned. One cancel flag covers the whole walk.
     pub async fn upload_dir(
         &self,
         device_id: &str,
@@ -604,7 +606,7 @@ impl SftpManager {
         remote_dir: &str,
         skip_existing: bool,
         on_progress: &(dyn Fn(u64, u64) + Send + Sync),
-    ) -> Result<(), AppError> {
+    ) -> Result<Vec<String>, AppError> {
         let conn = self.conn_of(device_id)?;
         let cancel = self.begin_transfer(device_id);
         let _guard = TransferGuard {
@@ -965,9 +967,9 @@ async fn download_into_scratch(
 /// Stream one local file to a remote path (create/truncate), chunk by chunk,
 /// holding at most one [`TRANSFER_CHUNK`] in memory. With
 /// [`PartialUpload::Remove`] the remote file is removed only if the transfer
-/// fails **after** we created it — a failure reading the local source
-/// (missing/unreadable) happens first and leaves any pre-existing remote file
-/// untouched. Returns the bytes uploaded. Shared by the single-file
+/// fails **after** we created it, and only if it didn't exist before — a
+/// failure reading the local source (missing/unreadable) happens first and
+/// leaves any pre-existing remote file untouched. Returns the bytes uploaded. Shared by the single-file
 /// upload command and the recursive [`upload_tree`].
 ///
 /// Unlike download, upload does not use a scratch-then-rename dance: SFTP rename
@@ -991,6 +993,7 @@ async fn upload_from_file(
     let mut local = tokio::fs::File::open(local_path)
         .await
         .map_err(|e| AppError::Io(format!("could not open {disp}: {e}")))?;
+    let partial = keep_if_existing(conn, remote_path, partial).await;
     // From here on the remote file exists (created/truncated), so a later failure
     // cleans it up.
     let mut remote = conn
@@ -1029,6 +1032,23 @@ async fn upload_from_file(
             }
             Err(e)
         }
+    }
+}
+
+/// An overwrite must never end in losing the file the user chose to replace:
+/// a target that already exists is kept on failure. Unsure (the stat failed)
+/// counts as existing.
+async fn keep_if_existing(
+    conn: &Arc<SftpConn>,
+    remote_path: &str,
+    partial: PartialUpload,
+) -> PartialUpload {
+    if partial == PartialUpload::Keep {
+        return partial;
+    }
+    match conn.session.try_exists(remote_path.to_string()).await {
+        Ok(false) => PartialUpload::Remove,
+        _ => PartialUpload::Keep,
     }
 }
 
@@ -1199,41 +1219,71 @@ struct LocalWalkEntry {
     is_dir: bool,
 }
 
+/// What a walk of a local directory to upload found.
+#[derive(Default)]
+struct LocalWalk {
+    entries: Vec<LocalWalkEntry>,
+    /// Relative paths (shown lossily) of entries whose name isn't valid
+    /// Unicode, skipped with anything under them: an SFTP path is a string.
+    skipped: Vec<String>,
+}
+
 /// Walk a local directory top-down (parents before children), collecting
 /// directories and regular files (symlinks are skipped so the upload can't
 /// follow a link out of the tree or into a cycle).
-fn walk_local(root: &Path) -> std::io::Result<Vec<LocalWalkEntry>> {
-    fn rec(dir: &Path, prefix: &str, out: &mut Vec<LocalWalkEntry>) -> std::io::Result<()> {
-        let mut names: Vec<_> = std::fs::read_dir(dir)?.collect::<Result<_, _>>()?;
-        names.sort_by_key(|e| e.file_name());
-        for e in names {
-            let file_type = e.file_type()?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            let rel = if prefix.is_empty() {
-                name
-            } else {
-                format!("{prefix}/{name}")
-            };
-            if file_type.is_dir() {
-                out.push(LocalWalkEntry {
-                    rel: rel.clone(),
-                    is_dir: true,
-                });
-                rec(&e.path(), &rel, out)?;
-            } else if file_type.is_file() {
-                out.push(LocalWalkEntry { rel, is_dir: false });
-            }
-        }
-        Ok(())
+fn walk_local(root: &Path) -> std::io::Result<LocalWalk> {
+    let mut walk = LocalWalk::default();
+    walk_local_dir(root, "", &mut walk)?;
+    Ok(walk)
+}
+
+fn walk_local_dir(dir: &Path, prefix: &str, walk: &mut LocalWalk) -> std::io::Result<()> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?.collect::<Result<_, _>>()?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        walk_local_entry(&entry, prefix, walk)?;
     }
-    let mut out = Vec::new();
-    rec(root, "", &mut out)?;
-    Ok(out)
+    Ok(())
+}
+
+fn walk_local_entry(
+    entry: &std::fs::DirEntry,
+    prefix: &str,
+    walk: &mut LocalWalk,
+) -> std::io::Result<()> {
+    let name = entry.file_name();
+    let Some(name) = name.to_str() else {
+        walk.skipped
+            .push(join_relative(prefix, &name.to_string_lossy()));
+        return Ok(());
+    };
+    let rel = join_relative(prefix, name);
+    let file_type = entry.file_type()?;
+    if file_type.is_dir() {
+        walk.entries.push(LocalWalkEntry {
+            rel: rel.clone(),
+            is_dir: true,
+        });
+        walk_local_dir(&entry.path(), &rel, walk)?;
+    } else if file_type.is_file() {
+        walk.entries.push(LocalWalkEntry { rel, is_dir: false });
+    }
+    Ok(())
+}
+
+fn join_relative(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}/{name}")
+    }
 }
 
 /// Recursively upload `local_dir` into `remote_dir`: create each remote
 /// subdirectory (ignoring an already-exists error), then upload files (skipping
 /// existing ones when `skip_existing`). Checks `cancel` before each entry.
+/// Returns the relative paths of the entries it had to skip (see
+/// [`LocalWalk::skipped`]).
 async fn upload_tree(
     conn: &Arc<SftpConn>,
     local_dir: &Path,
@@ -1241,15 +1291,15 @@ async fn upload_tree(
     skip_existing: bool,
     cancel: &Arc<AtomicBool>,
     on_progress: &(dyn Fn(u64, u64) + Send + Sync),
-) -> Result<(), AppError> {
+) -> Result<Vec<String>, AppError> {
     let root = local_dir.to_path_buf();
     let disp = local_dir.display().to_string();
-    let entries = tokio::task::spawn_blocking(move || walk_local(&root))
+    let walk = tokio::task::spawn_blocking(move || walk_local(&root))
         .await
         .map_err(|e| AppError::Io(format!("upload walk task failed: {e}")))?
         .map_err(|e| AppError::Io(format!("could not read {disp}: {e}")))?;
 
-    for entry in entries {
+    for entry in walk.entries {
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
         }
@@ -1275,7 +1325,7 @@ async fn upload_tree(
             .await?;
         }
     }
-    Ok(())
+    Ok(walk.skipped)
 }
 
 /// Map any `russh_sftp` error to a secret-free [`AppError::Sftp`] with context.

@@ -36,6 +36,7 @@ vi.mock("./ipc", () => ({
     connectMock(deviceId, cols, rows, ch),
   disconnect: vi.fn(async () => {}),
   writeStdin: vi.fn(async () => {}),
+  writeStdinBinary: vi.fn(async () => {}),
   resizePty: vi.fn(async () => {}),
   newDataChannel: vi.fn(() => ({ onmessage: null })),
   onSessionStatus: vi.fn(
@@ -346,6 +347,26 @@ describe("Grid profiles (Phase 4)", () => {
     release();
     await applied;
     expect(grid.isSnapshotComplete()).toBe(true);
+  });
+
+  // Save right after Load used to send the new grid shape with no panes,
+  // which the backend refused.
+  it("snapshots what it is loading while the load builds its panes", async () => {
+    const grid = makeGrid();
+    await grid.init();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    vi.mocked(listDevices).mockImplementationOnce(async () => {
+      await gate;
+      return [];
+    });
+
+    const applied = grid.applySnapshot(profileTab(), { confirmTeardown: false });
+    await vi.waitFor(() => expect(internals(grid).model.cols).toBe(2));
+
+    expect(grid.snapshot()).toEqual(profileTab());
+    release();
+    await applied;
   });
 
   it("connects nothing when disposed while a load is still building its panes", async () => {

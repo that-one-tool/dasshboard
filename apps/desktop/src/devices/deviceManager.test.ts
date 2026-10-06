@@ -97,6 +97,24 @@ function q<T extends Element>(root: ParentNode, selector: string): T {
   return el;
 }
 
+describe("device list markup", () => {
+  // `escapeHtml` used to leave quotes alone, so a quote in an id or tag ended
+  // the `data-*` attribute it was written into.
+  it("keeps quotes inside data attributes", async () => {
+    const quoted: Device = { ...deviceA, id: 'x" data-evil="1', tags: ["it's \"prod\""] };
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string) => (cmd === "list_devices" ? [quoted] : undefined));
+
+    const container = await setup();
+
+    const edit = q<HTMLButtonElement>(container, ".btn-edit");
+    expect(edit.dataset.deviceId).toBe(quoted.id);
+    expect(edit.hasAttribute("data-evil")).toBe(false);
+    const header = q<HTMLButtonElement>(container, ".device-group-header");
+    expect(header.dataset.groupKey).toBe('it\'s "prod"');
+  });
+});
+
 async function setup(): Promise<HTMLElement> {
   return (await setupManager()).container;
 }
@@ -118,6 +136,27 @@ function clickCancel(container: HTMLElement): void {
   if (!cancel) throw new Error("test: Cancel button not found");
   cancel.click();
 }
+
+describe("device editor agent identity", () => {
+  // The picker used to keep the last agent device's key: switching another
+  // device (or a new one) to agent auth then preselected that key.
+  it("doesn't carry one device's agent identity into the next dialog", async () => {
+    const agentDevice: Device = { ...deviceA, auth: { method: "agent", fingerprint: "SHA256:alpha" } };
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "list_devices" ? [agentDevice, deviceB] : undefined,
+    );
+    const container = await setup();
+    q<HTMLButtonElement>(container, `.btn-edit[data-device-id="${agentDevice.id}"]`).click();
+    clickCancel(container);
+
+    q<HTMLButtonElement>(container, ".device-add-btn").click();
+
+    const select = q<HTMLSelectElement>(container, "#device-agent-identity");
+    expect(select.options.length).toBe(0);
+    expect(q<HTMLElement>(container, "#device-agent-status").textContent).toBe("");
+  });
+});
 
 describe("device editor dialog secret hygiene", () => {
   beforeEach(() => {

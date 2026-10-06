@@ -268,7 +268,9 @@ export const zh: Messages = {
 	"validation.baudRatePositive": "波特率必须是正数",
 	"validation.remoteHost": "远程主机为必填项",
 	"validation.loopback": "本地地址必须是回环地址（例如 127.0.0.1）",
+	"validation.bindTaken": "另一个转发已在使用此地址和端口",
 	"validation.serverPortTaken": "另一个远程转发已在使用此服务器端口",
+	"validation.forwardUnsupported": "此转发需要更新版本的 DaSSHboard：请将其删除后再保存",
 	"validation.serverHost": "服务器地址为必填项",
 
 	/* -- port-forwards editor ----------------------------------------------- */
@@ -287,6 +289,7 @@ export const zh: Messages = {
 	"forwards.serverHost.placeholder": "服务器地址",
 	"forwards.localHost.placeholder": "本地主机",
 	"forwards.kind.remote": "远程",
+	"forwards.kind.unsupported": "不支持（较新版本）",
 
 	/* -- profiles ----------------------------------------------------------- */
 	"profiles.title": "配置文件",
@@ -365,7 +368,7 @@ export const zh: Messages = {
 	"sftp.cancelTransfer": "取消传输",
 	"sftp.connecting": "正在连接…",
 	"sftp.emptyDir": "空目录。",
-	"sftp.count.one": "1 项",
+	"sftp.count.one": "{count} 项",
 	"sftp.count.other": "{count} 项",
 	"sftp.entry.openFolder": "打开文件夹",
 	"sftp.entry.downloadFile": "下载文件",
@@ -403,6 +406,8 @@ export const zh: Messages = {
 	"sftp.upload.noFreeName": "无法在服务器上为“{name}”找到可用的名称。",
 	"sftp.download.skipped.one": "已跳过“{name}”中的 {count} 项（指向文件夹的链接、失效链接、特殊文件或此计算机无法保存的名称）：{items}",
 	"sftp.download.skipped.other": "已跳过“{name}”中的 {count} 项（指向文件夹的链接、失效链接、特殊文件或此计算机无法保存的名称）：{items}",
+	"sftp.upload.skipped.one": "已跳过“{name}”中的 {count} 项（名称不是有效的 Unicode，无法发送）：{items}",
+	"sftp.upload.skipped.other": "已跳过“{name}”中的 {count} 项（名称不是有效的 Unicode，无法发送）：{items}",
 	"sftp.uploading": "正在上传 {name}…",
 	"sftp.uploadedToast": "已上传 {name}",
 	"sftp.transferCancelled": "传输已取消",
@@ -454,7 +459,7 @@ export const zh: Messages = {
 	"sftp.edit.largeConfirm": "{name} 大小为 {size}。仍要打开编辑吗？",
 	"sftp.edit.uploadedToast": "已将 {name} 保存到服务器",
 	"sftp.edit.stopConfirm": "“{name}”有已保存但未上传的更改。停止编辑会删除保存这些更改的本地副本。仍要停止编辑吗？",
-	"sftp.edit.disconnectConfirm.one": "1 个编辑中的文件有已保存但未上传的更改。关闭连接会结束编辑并删除其本地副本。要继续吗？",
+	"sftp.edit.disconnectConfirm.one": "{count} 个编辑中的文件有已保存但未上传的更改。关闭连接会结束编辑并删除其本地副本。要继续吗？",
 	"sftp.edit.disconnectConfirm.other": "{count} 个编辑中的文件有已保存但未上传的更改。关闭连接会结束这些编辑并删除其本地副本。要继续吗？",
 	"sftp.edit.conflict.title": "服务器上的文件已更改",
 	"sftp.edit.conflict.message": "自您打开后，“{name}”已在服务器上被更改。如何处理您已保存的更改？",

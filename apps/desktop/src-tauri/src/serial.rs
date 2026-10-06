@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_serial::SerialPortBuilderExt;
 
 use crate::device::{FlowControl, Parity};
@@ -62,14 +62,15 @@ pub struct SerialParams {
 /// nothing.
 enum SerialControl {
     Write(Vec<u8>),
-    Disconnect,
 }
 
-/// Per-session handle: just the control `Sender`. Dropping every clone (the
-/// manager forgetting the session) makes the task's `recv()` return `None`,
-/// which it treats as a disconnect.
+/// Per-session handle. Dropping every clone of `control` makes the task's
+/// `recv()` return `None`, which it treats as a disconnect.
 struct SerialHandle {
     control: mpsc::Sender<SerialControl>,
+    /// Set by `disconnect`. Out of band, so a disconnect never waits behind a
+    /// write that flow control is holding up.
+    stop: watch::Sender<bool>,
 }
 
 /// Map our framing params onto a `tokio_serial` port builder. Pure (no I/O);
@@ -138,34 +139,52 @@ async fn run_pump<S>(
     mut stream: S,
     sink: Arc<dyn SessionSink>,
     mut control_rx: mpsc::Receiver<SerialControl>,
+    mut stop: watch::Receiver<bool>,
 ) -> Result<(), AppError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let mut buf = [0u8; READ_BUFFER_SIZE];
     loop {
-        tokio::select! {
+        let ctrl = tokio::select! {
             read = stream.read(&mut buf) => {
                 let count = read.map_err(|e| AppError::Io(format!("serial read failed: {e}")))?;
                 if count == 0 {
                     break; // EOF — the port was closed on the other end.
                 }
                 sink.on_data(&buf[..count]);
+                continue;
             }
-            ctrl = control_rx.recv() => {
-                if !apply_control(ctrl, &mut stream).await {
-                    break;
-                }
-            }
+            ctrl = control_rx.recv() => ctrl,
+            _ = stop.wait_for(|requested| *requested) => break,
+        };
+        if !apply_control_until_stop(ctrl, &mut stream, &mut stop).await {
+            break;
         }
     }
     Ok(())
 }
 
+/// [`apply_control`], cut short by a disconnect: under flow control a write
+/// waits for as long as the device isn't ready, possibly forever.
+async fn apply_control_until_stop<S>(
+    ctrl: Option<SerialControl>,
+    stream: &mut S,
+    stop: &mut watch::Receiver<bool>,
+) -> bool
+where
+    S: AsyncWrite + Unpin,
+{
+    tokio::select! {
+        keep_going = apply_control(ctrl, stream) => keep_going,
+        _ = stop.wait_for(|requested| *requested) => false,
+    }
+}
+
 /// Apply one control message. Returns whether the pump loop should keep running.
 /// A write failure ends the session cleanly (Disconnected), mirroring the SSH
-/// path's treatment of a failed `channel.data`; an explicit disconnect (or the
-/// manager dropping the handle, `None`) also stops it.
+/// path's treatment of a failed `channel.data`; the manager dropping the
+/// handle (`None`) also stops it.
 async fn apply_control<S>(ctrl: Option<SerialControl>, stream: &mut S) -> bool
 where
     S: AsyncWrite + Unpin,
@@ -180,7 +199,7 @@ where
             let _ = stream.flush().await;
             true
         }
-        Some(SerialControl::Disconnect) | None => false,
+        None => false,
     }
 }
 
@@ -191,18 +210,18 @@ async fn run_session(
     params: SerialParams,
     sink: Arc<dyn SessionSink>,
     control_rx: mpsc::Receiver<SerialControl>,
+    mut stop: watch::Receiver<bool>,
 ) -> Result<(), AppError> {
     let mut stream = open_port(&params)?;
     sink.on_status(SessionStatus::Connected, None);
     // Connect snippet: send the device's saved commands once the port is open.
-    // Best-effort — a write failure ends the pump the same way a failed keystroke
-    // would; it is not a reason to skip reporting Connected above.
+    // Best-effort — a failed write is not a reason to skip reporting Connected
+    // above, nor to end the session.
     if let Some(bytes) = crate::device::connect_snippet_bytes(params.connect_snippet.as_deref()) {
-        if stream.write_all(&bytes).await.is_ok() {
-            let _ = stream.flush().await;
-        }
+        let snippet = Some(SerialControl::Write(bytes));
+        let _ = apply_control_until_stop(snippet, &mut stream, &mut stop).await;
     }
-    run_pump(stream, sink, control_rx).await
+    run_pump(stream, sink, control_rx, stop).await
 }
 
 /// Owns all live serial sessions. Lives in Tauri managed state behind an `Arc`
@@ -259,10 +278,12 @@ impl SerialSessionManager {
         sink: Arc<dyn SessionSink>,
     ) {
         let (control_tx, control_rx) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
+        let (stop_tx, stop_rx) = watch::channel(false);
         self.lock_sessions().insert(
             session_id.clone(),
             SerialHandle {
                 control: control_tx,
+                stop: stop_tx,
             },
         );
 
@@ -270,7 +291,7 @@ impl SerialSessionManager {
         tokio::spawn(async move {
             sink.on_status(SessionStatus::Connecting, None);
 
-            let result = run_session(params, Arc::clone(&sink), control_rx).await;
+            let result = run_session(params, Arc::clone(&sink), control_rx, stop_rx).await;
             match result {
                 Ok(()) => sink.on_status(SessionStatus::Disconnected, None),
                 // AppError messages are always secret-free (serial has none).
@@ -297,8 +318,8 @@ impl SerialSessionManager {
     /// Request a graceful disconnect. Idempotent: an unknown `session_id` is a
     /// no-op. The task performs the actual map removal when it exits.
     pub async fn disconnect(&self, session_id: &str) {
-        if let Some(control) = self.control_of(session_id) {
-            let _ = control.send(SerialControl::Disconnect).await;
+        if let Some(handle) = self.lock_sessions().get(session_id) {
+            handle.stop.send_replace(true);
         }
     }
 
@@ -416,10 +437,11 @@ mod tests {
     async fn pump_forwards_port_bytes_to_the_sink() {
         let (port, mut peer) = duplex(64);
         let sink = Arc::new(RecordingSink::default());
-        let (control_tx, control_rx) = mpsc::channel(4);
+        let (_control_tx, control_rx) = mpsc::channel(4);
+        let (stop_tx, stop_rx) = watch::channel(false);
 
         let sink_for_task = Arc::clone(&sink) as Arc<dyn SessionSink>;
-        let pump = tokio::spawn(run_pump(port, sink_for_task, control_rx));
+        let pump = tokio::spawn(run_pump(port, sink_for_task, control_rx, stop_rx));
 
         // The "device" writes some bytes; they must reach the sink verbatim.
         peer.write_all(b"hello serial").await.unwrap();
@@ -427,7 +449,7 @@ mod tests {
 
         // Give the pump a moment, then end it so the task returns.
         tokio::time::sleep(Duration::from_millis(20)).await;
-        control_tx.send(SerialControl::Disconnect).await.unwrap();
+        stop_tx.send_replace(true);
         pump.await.unwrap().unwrap();
 
         assert_eq!(sink.data(), b"hello serial");
@@ -438,7 +460,8 @@ mod tests {
         let (port, mut peer) = duplex(64);
         let sink = Arc::new(RecordingSink::default()) as Arc<dyn SessionSink>;
         let (control_tx, control_rx) = mpsc::channel(4);
-        let pump = tokio::spawn(run_pump(port, sink, control_rx));
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let pump = tokio::spawn(run_pump(port, sink, control_rx, stop_rx));
 
         control_tx
             .send(SerialControl::Write(b"AT\r\n".to_vec()))
@@ -450,7 +473,7 @@ mod tests {
         peer.read_exact(&mut got).await.unwrap();
         assert_eq!(&got, b"AT\r\n");
 
-        control_tx.send(SerialControl::Disconnect).await.unwrap();
+        stop_tx.send_replace(true);
         pump.await.unwrap().unwrap();
     }
 
@@ -458,12 +481,38 @@ mod tests {
     async fn pump_stops_on_disconnect() {
         let (port, _peer) = duplex(64);
         let sink = Arc::new(RecordingSink::default()) as Arc<dyn SessionSink>;
-        let (control_tx, control_rx) = mpsc::channel(4);
-        let pump = tokio::spawn(run_pump(port, sink, control_rx));
+        let (_control_tx, control_rx) = mpsc::channel(4);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let pump = tokio::spawn(run_pump(port, sink, control_rx, stop_rx));
 
-        control_tx.send(SerialControl::Disconnect).await.unwrap();
+        stop_tx.send_replace(true);
         // A clean disconnect resolves the pump to Ok(()).
         pump.await.unwrap().unwrap();
+    }
+
+    /// B3: under flow control a write can wait forever on a device that never
+    /// signals ready; a disconnect must still end the session.
+    #[tokio::test]
+    async fn pump_stops_on_disconnect_during_a_stalled_write() {
+        // The peer never reads, so a write larger than the pipe never finishes.
+        let (port, _peer) = duplex(4);
+        let sink = Arc::new(RecordingSink::default()) as Arc<dyn SessionSink>;
+        let (control_tx, control_rx) = mpsc::channel(4);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let pump = tokio::spawn(run_pump(port, sink, control_rx, stop_rx));
+        control_tx
+            .send(SerialControl::Write(vec![b'x'; 64]))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        stop_tx.send_replace(true);
+
+        tokio::time::timeout(Duration::from_secs(1), pump)
+            .await
+            .expect("the pump must stop despite the stalled write")
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
@@ -471,7 +520,8 @@ mod tests {
         let (port, peer) = duplex(64);
         let sink = Arc::new(RecordingSink::default()) as Arc<dyn SessionSink>;
         let (_control_tx, control_rx) = mpsc::channel(4);
-        let pump = tokio::spawn(run_pump(port, sink, control_rx));
+        let (_stop_tx, stop_rx) = watch::channel(false);
+        let pump = tokio::spawn(run_pump(port, sink, control_rx, stop_rx));
 
         // Closing the peer end yields a 0-byte read → clean EOF stop.
         drop(peer);
@@ -489,7 +539,14 @@ mod tests {
         };
         let sink = Arc::new(RecordingSink::default());
         let (_tx, rx) = mpsc::channel(4);
-        let result = run_session(params, Arc::clone(&sink) as Arc<dyn SessionSink>, rx).await;
+        let (_stop_tx, stop_rx) = watch::channel(false);
+        let result = run_session(
+            params,
+            Arc::clone(&sink) as Arc<dyn SessionSink>,
+            rx,
+            stop_rx,
+        )
+        .await;
 
         assert!(result.is_err(), "opening a missing port must fail");
         assert!(

@@ -1,11 +1,11 @@
 /**
- * Tab keyboard shortcuts. Shift is required on T/W/D so a shell keeps Ctrl+W
+ * Tab keyboard shortcuts (letters per `shortcutLetter`). Shift is required on T/W/D so a shell keeps Ctrl+W
  * (delete word) / Ctrl+T (transpose) / Ctrl+D (EOF); Cmd works in place of
  * Ctrl on macOS. Plain Cmd+W also closes a tab there, as in every macOS
  * terminal — the native menu's Close Window is removed for it (`app_menu.rs`).
  */
 
-import { isMacPlatform, isOnlyShortcutModifier, isShortcutModifier } from "../ui/keyboard";
+import { isMacPlatform, isOnlyShortcutModifier, isShortcutModifier, shortcutLetter } from "../ui/keyboard";
 
 export type TabAction = "new" | "close" | "duplicate" | "next" | "previous";
 
@@ -53,9 +53,9 @@ function tabAction(e: KeyboardEvent, mac: boolean): TabAction | null {
 
 function keyAction(e: KeyboardEvent): TabAction | null {
   const table = e.shiftKey ? WITH_SHIFT : WITHOUT_SHIFT;
-  return table.get(e.key.toLowerCase()) ?? null;
+  return table.get(shortcutLetter(e)) ?? null;
 }
 
 function isPlainCmdW(e: KeyboardEvent, mac: boolean): boolean {
-  return mac && isOnlyShortcutModifier(e, mac) && e.key.toLowerCase() === "w";
+  return mac && isOnlyShortcutModifier(e, mac) && shortcutLetter(e) === "w";
 }

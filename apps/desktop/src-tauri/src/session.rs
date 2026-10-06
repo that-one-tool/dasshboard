@@ -35,7 +35,7 @@ use std::time::Duration;
 use russh::client;
 use russh::keys::ssh_key::{HashAlg, PublicKey};
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
-use russh::{ChannelMsg, ChannelWriteHalf, Pty};
+use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Pty};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -115,6 +115,10 @@ const LOCALE_ENV: &[(&str, &str)] = &[("LANG", "C.UTF-8"), ("LC_CTYPE", "C.UTF-8
 /// realistically happens; the bound just keeps the channel from being
 /// unbounded (a standing review concern).
 const CONTROL_CHANNEL_CAPACITY: usize = 256;
+/// How long each goodbye at the end of a session (the channel close, then the
+/// SSH disconnect of the target and of the jump host) may take before the
+/// connection is just dropped: a stalled server must not hold up app quit.
+const CLOSE_GRACE: Duration = Duration::from_millis(300);
 /// Max forwarded SSH-agent channels served concurrently per session. Agent
 /// channels are short-lived (one signing exchange), so a handful is plenty; the
 /// cap stops a malicious/compromised target — which agent forwarding inherently
@@ -314,14 +318,16 @@ pub struct JumpHop {
 enum SessionControl {
     Write(Vec<u8>),
     Resize { cols: u32, rows: u32 },
-    Disconnect,
 }
 
-/// The manager's per-session handle: just the control `Sender`. Dropping every
-/// clone of it (i.e. the manager forgetting the session) makes the task's
-/// `control_rx.recv()` return `None`, which the task treats as a disconnect.
+/// The manager's per-session handle. Dropping every clone of `control` makes
+/// the task's `control_rx.recv()` return `None`, which it treats as a
+/// disconnect.
 struct SessionHandle {
     control: mpsc::Sender<SessionControl>,
+    /// Set by `disconnect`. Out of band, so a disconnect never waits behind
+    /// queued writes that a stalled server isn't taking.
+    stop: watch::Sender<bool>,
 }
 
 /// Registry of in-flight host-key prompts: `promptId -> oneshot::Sender`.
@@ -656,6 +662,68 @@ impl client::Handler for SshHandler {
         }
         Ok(())
     }
+
+    // The channel types below are ones we never ask a server for; russh
+    // accepts them by default, which would let a server park channels (and
+    // their buffers) on us. Dropping `reply` rejects.
+
+    async fn server_channel_open_session(
+        &mut self,
+        _channel: russh::Channel<client::Msg>,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        drop(reply);
+        Ok(())
+    }
+
+    async fn server_channel_open_direct_tcpip(
+        &mut self,
+        _channel: russh::Channel<client::Msg>,
+        _host_to_connect: &str,
+        _port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        drop(reply);
+        Ok(())
+    }
+
+    async fn server_channel_open_direct_streamlocal(
+        &mut self,
+        _channel: russh::Channel<client::Msg>,
+        _socket_path: &str,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        drop(reply);
+        Ok(())
+    }
+
+    async fn server_channel_open_forwarded_streamlocal(
+        &mut self,
+        _channel: russh::Channel<client::Msg>,
+        _socket_path: &str,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        drop(reply);
+        Ok(())
+    }
+
+    async fn server_channel_open_x11(
+        &mut self,
+        _channel: russh::Channel<client::Msg>,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        drop(reply);
+        Ok(())
+    }
 }
 
 /// Maps a russh handshake/transport error to the right `AppError` code.
@@ -970,11 +1038,11 @@ pub(crate) async fn close_jump(jump: Option<&client::Handle<SshHandler>>) {
 /// Open a session channel, request a PTY + shell, then pump bytes both ways
 /// and send keepalives until the channel closes or a disconnect is requested.
 async fn run_shell(
-    handle: client::Handle<SshHandler>,
+    handle: &client::Handle<SshHandler>,
     sink: Arc<dyn SessionSink>,
     control_rx: mpsc::Receiver<SessionControl>,
-    cols: u32,
-    rows: u32,
+    mut stop: watch::Receiver<bool>,
+    (cols, rows): (u32, u32),
     forward_agent: bool,
     connect_snippet: Option<String>,
 ) -> Result<SessionStatus, AppError> {
@@ -1025,26 +1093,56 @@ async fn run_shell(
     // session loop blocked handing us output we weren't reading, so it never
     // took the rest of our write, and the terminal froze.
     let (mut reader, writer) = channel.split();
-    let mut writes = tokio::spawn(pump_controls(control_rx, writer));
+    let writer = Arc::new(writer);
+    let mut writes = tokio::spawn(pump_controls(control_rx, Arc::clone(&writer)));
     // Reported by the server just before it closes the channel (after EOF).
     let mut exit_code = None;
-    loop {
+    let status = loop {
         let end = tokio::select! {
             msg = reader.wait() => handle_channel_msg(msg, &sink, &mut exit_code),
             ended = &mut writes => Some(ended.unwrap_or(SessionStatus::Disconnected)),
+            _ = stop.wait_for(|requested| *requested) => Some(SessionStatus::Disconnected),
         };
         if let Some(status) = end {
-            writes.abort();
-            return Ok(status);
+            break status;
         }
+    };
+    // Also cancels a write stuck on a stalled server.
+    writes.abort();
+    if *stop.borrow() {
+        close_channel(&writer, &mut reader).await;
     }
+    Ok(status)
+}
+
+/// End the shell channel politely (EOF, close, then the server's close in
+/// reply, so the disconnect that follows doesn't cut that reply off), within
+/// `CLOSE_GRACE`.
+async fn close_channel(writer: &ChannelWriteHalf<client::Msg>, reader: &mut ChannelReadHalf) {
+    let _ = timeout(CLOSE_GRACE, async {
+        let _ = writer.eof().await;
+        let _ = writer.close().await;
+        while !matches!(reader.wait().await, Some(ChannelMsg::Close) | None) {}
+    })
+    .await;
+}
+
+/// Send the target, then the jump host, an SSH disconnect, so neither sees a
+/// dropped socket; each within `CLOSE_GRACE`.
+async fn close_connection(
+    handle: &client::Handle<SshHandler>,
+    jump: Option<&client::Handle<SshHandler>>,
+) {
+    let goodbye = handle.disconnect(russh::Disconnect::ByApplication, "", "");
+    let _ = timeout(CLOSE_GRACE, goodbye).await;
+    let _ = timeout(CLOSE_GRACE, close_jump(jump)).await;
 }
 
 /// Apply control messages to the channel until one ends the session; returns
 /// that final status.
 async fn pump_controls(
     mut control_rx: mpsc::Receiver<SessionControl>,
-    writer: ChannelWriteHalf<client::Msg>,
+    writer: Arc<ChannelWriteHalf<client::Msg>>,
 ) -> SessionStatus {
     loop {
         if let Some(status) = handle_control(control_rx.recv().await, &writer).await {
@@ -1080,8 +1178,8 @@ fn handle_channel_msg(
     }
 }
 
-/// Apply one control message (keystrokes, resize, or disconnect) to the
-/// channel. Returns the session's final status once it is over.
+/// Apply one control message (keystrokes or resize) to the channel. Returns
+/// the session's final status once it is over.
 async fn handle_control(
     ctrl: Option<SessionControl>,
     channel: &ChannelWriteHalf<client::Msg>,
@@ -1096,27 +1194,34 @@ async fn handle_control(
             let _ = channel.window_change(cols, rows, 0, 0).await;
             None
         }
-        // Explicit disconnect, or the manager dropped the handle.
-        Some(SessionControl::Disconnect) | None => {
-            let _ = channel.eof().await;
-            let _ = channel.close().await;
-            Some(SessionStatus::Disconnected)
-        }
+        // The manager dropped the handle.
+        None => Some(SessionStatus::Disconnected),
     }
 }
 
-/// Drain control messages until a disconnect (or the manager drops the
-/// handle), ignoring any keystrokes queued before the shell exists. A resize
-/// updates `size`, the `(cols, rows)` the PTY will be requested with, so a pane
-/// resized while connecting doesn't start its shell at a stale width.
-/// Used to race the handshake so a disconnect requested mid-handshake (even
-/// while a host-key prompt is pending) tears the task down promptly.
-async fn wait_for_disconnect(rx: &mut mpsc::Receiver<SessionControl>, size: &mut (u32, u32)) {
-    loop {
-        match rx.recv().await {
-            Some(SessionControl::Disconnect) | None => return,
-            Some(SessionControl::Resize { cols, rows }) => *size = (cols, rows),
-            Some(SessionControl::Write(_)) => continue,
+/// Wait for a disconnect (the stop flag, or the manager dropping the handle),
+/// applying the resizes queued before it. Used to race the handshake so a
+/// disconnect requested mid-handshake (even while a host-key prompt is
+/// pending) tears the task down promptly.
+async fn wait_for_stop(
+    rx: &mut mpsc::Receiver<SessionControl>,
+    stop: &mut watch::Receiver<bool>,
+    size: &mut (u32, u32),
+) {
+    tokio::select! {
+        biased;
+        () = track_resizes(rx, size) => {}
+        _ = stop.wait_for(|requested| *requested) => {}
+    }
+}
+
+/// Keep `size`, the `(cols, rows)` the PTY will be requested with, up to date,
+/// so a pane resized while connecting doesn't start its shell at a stale
+/// width. Keystrokes queued before the shell exists are dropped.
+async fn track_resizes(rx: &mut mpsc::Receiver<SessionControl>, size: &mut (u32, u32)) {
+    while let Some(control) = rx.recv().await {
+        if let SessionControl::Resize { cols, rows } = control {
+            *size = (cols, rows);
         }
     }
 }
@@ -1134,17 +1239,18 @@ async fn run_session(
     overall_timeout: Duration,
     sink: Arc<dyn SessionSink>,
     mut control_rx: mpsc::Receiver<SessionControl>,
+    mut stop: watch::Receiver<bool>,
 ) -> Result<SessionStatus, AppError> {
     // Abandons a pending host-key prompt if this returns mid-handshake.
     let _owner = handler.take_owner_token();
     let mut pty_size = (params.cols, params.rows);
-    let (handle, _jump_keepalive) = tokio::select! {
+    let (handle, jump) = tokio::select! {
         biased;
         // If a disconnect arrives during the handshake, abort: dropping the
         // `establish_target` future drops the handler(s) (and any PromptGuard
         // within) plus any jump handle, so a pending host-key prompt and the
         // jump connection are cleaned up too.
-        _ = wait_for_disconnect(&mut control_rx, &mut pty_size) => return Ok(SessionStatus::Disconnected),
+        _ = wait_for_stop(&mut control_rx, &mut stop, &mut pty_size) => return Ok(SessionStatus::Disconnected),
         result = establish_target(
             params.endpoint(),
             params.jump.as_ref(),
@@ -1155,19 +1261,21 @@ async fn run_session(
     };
 
     sink.on_status(SessionStatus::Connected, None);
-    // `_jump_keepalive` (the jump host's handle, for a jumped connection) must
-    // outlive the shell: dropping it would tear down the direct-tcpip channel
-    // this session rides on. Bound here, it lives until `run_shell` returns.
-    run_shell(
-        handle,
+    // `jump` (the jump host's handle, for a jumped connection) must outlive
+    // the shell: dropping it would tear down the direct-tcpip channel this
+    // session rides on.
+    let status = run_shell(
+        &handle,
         sink,
         control_rx,
-        pty_size.0,
-        pty_size.1,
+        stop,
+        pty_size,
         params.forward_agent,
         params.connect_snippet,
     )
-    .await
+    .await;
+    close_connection(&handle, jump.as_ref()).await;
+    status
 }
 
 /// Owns all live sessions and the host-key machinery. Lives in Tauri managed
@@ -1286,10 +1394,12 @@ impl SessionManager {
         sink: Arc<dyn SessionSink>,
     ) {
         let (control_tx, control_rx) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
+        let (stop_tx, stop_rx) = watch::channel(false);
         self.lock_sessions().insert(
             session_id.clone(),
             SessionHandle {
                 control: control_tx,
+                stop: stop_tx,
             },
         );
 
@@ -1314,6 +1424,7 @@ impl SessionManager {
                 overall_timeout,
                 Arc::clone(&sink),
                 control_rx,
+                stop_rx,
             )
             .await;
 
@@ -1346,8 +1457,8 @@ impl SessionManager {
     /// Request a graceful disconnect. Idempotent: an unknown `session_id` is a
     /// no-op (SPEC §5). The task performs the actual map removal when it exits.
     pub async fn disconnect(&self, session_id: &str) {
-        if let Some(control) = self.control_of(session_id) {
-            let _ = control.send(SessionControl::Disconnect).await;
+        if let Some(handle) = self.lock_sessions().get(session_id) {
+            handle.stop.send_replace(true);
         }
     }
 
@@ -1432,13 +1543,14 @@ mod tests {
                 cols: 132,
                 rows: 43,
             },
-            SessionControl::Disconnect,
         ] {
             tx.send(control).await.unwrap();
         }
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        stop_tx.send_replace(true);
         let mut size = (80, 24);
 
-        wait_for_disconnect(&mut rx, &mut size).await;
+        wait_for_stop(&mut rx, &mut stop_rx, &mut size).await;
 
         assert_eq!(size, (132, 43));
     }

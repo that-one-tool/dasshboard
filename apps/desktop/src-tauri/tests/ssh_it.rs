@@ -90,6 +90,16 @@ struct TestServer {
     /// asked for (on shell request, or for the port after a granted one) and
     /// reports whether the client accepted it.
     forward_probe: Option<mpsc::UnboundedSender<bool>>,
+    /// A shell that stops reading: `data` never returns, so the server sends
+    /// no more window adjusts and the client's writes block for good.
+    stall_reads: bool,
+    /// Receives every connection that ended in an error — as a client
+    /// dropping the socket without an SSH disconnect does.
+    session_errors: Option<mpsc::UnboundedSender<String>>,
+    /// When set, the server opens every channel type a client never asks the
+    /// server for (on shell request) and reports each type and whether the
+    /// client accepted it.
+    stray_probe: Option<mpsc::UnboundedSender<(&'static str, bool)>>,
 }
 
 impl TestServer {
@@ -102,6 +112,9 @@ impl TestServer {
             refuse_remote_listen: false,
             stall_cancel: false,
             forward_probe: None,
+            stall_reads: false,
+            session_errors: None,
+            stray_probe: None,
         }
     }
 }
@@ -117,8 +130,16 @@ impl server::Server for TestServer {
             refuse_remote_listen: self.refuse_remote_listen,
             stall_cancel: self.stall_cancel,
             forward_probe: self.forward_probe.clone(),
+            stall_reads: self.stall_reads,
+            stray_probe: self.stray_probe.clone(),
             remote_listeners: HashMap::new(),
             forwarded: Arc::default(),
+        }
+    }
+
+    fn handle_session_error(&mut self, error: russh::Error) {
+        if let Some(tx) = &self.session_errors {
+            let _ = tx.send(error.to_string());
         }
     }
 }
@@ -131,6 +152,8 @@ struct TestServerHandler {
     refuse_remote_listen: bool,
     stall_cancel: bool,
     forward_probe: Option<mpsc::UnboundedSender<bool>>,
+    stall_reads: bool,
+    stray_probe: Option<mpsc::UnboundedSender<(&'static str, bool)>>,
     /// `ssh -R`: one real listener per granted `tcpip-forward`, by port.
     remote_listeners: HashMap<u32, tokio::task::JoinHandle<()>>,
     /// The `forwarded-tcpip` channels opened back to the client: their bytes
@@ -145,6 +168,35 @@ impl Drop for TestServerHandler {
             listener.abort();
         }
     }
+}
+
+/// Open each channel type a client never asks for and report whether the
+/// client accepted it.
+fn probe_stray_channels(
+    handle: server::Handle,
+    probe: mpsc::UnboundedSender<(&'static str, bool)>,
+) {
+    tokio::spawn(async move {
+        let opened = handle.channel_open_session().await.is_ok();
+        let _ = probe.send(("session", opened));
+        let opened = handle
+            .channel_open_direct_tcpip("127.0.0.1", 22, "127.0.0.1", 40000)
+            .await
+            .is_ok();
+        let _ = probe.send(("direct-tcpip", opened));
+        let opened = handle
+            .channel_open_direct_streamlocal("/tmp/s")
+            .await
+            .is_ok();
+        let _ = probe.send(("direct-streamlocal", opened));
+        let opened = handle
+            .channel_open_forwarded_streamlocal("/tmp/s")
+            .await
+            .is_ok();
+        let _ = probe.send(("forwarded-streamlocal", opened));
+        let opened = handle.channel_open_x11("127.0.0.1", 6000).await.is_ok();
+        let _ = probe.send(("x11", opened));
+    });
 }
 
 /// Open a `forwarded-tcpip` channel for `port` and report whether the client
@@ -320,6 +372,9 @@ impl server::Handler for TestServerHandler {
         if let Some(probe) = &self.forward_probe {
             probe_forwarded(session.handle(), 8080, probe.clone());
         }
+        if let Some(probe) = &self.stray_probe {
+            probe_stray_channels(session.handle(), probe.clone());
+        }
         Ok(())
     }
 
@@ -351,6 +406,9 @@ impl server::Handler for TestServerHandler {
         // standing in for a shell's tty.
         if self.bridge_direct_tcpip || self.forwarded.lock().unwrap().contains(&channel) {
             return Ok(());
+        }
+        if self.stall_reads {
+            std::future::pending::<()>().await;
         }
         // Standing in for a shell's `exit [code]`: end the channel the way
         // OpenSSH does — EOF, then the exit status, then close.
@@ -436,6 +494,51 @@ async fn spawn_flooding_echo_server(password: &str) -> u16 {
         ..server_config(Duration::from_secs(30))
     };
     spawn_server(server, config).await
+}
+
+/// A server whose shell stops reading after the first bytes, with a small
+/// window so a client write soon has to wait for a window adjust that never
+/// comes.
+async fn spawn_stalled_server(password: &str) -> u16 {
+    let server = TestServer {
+        stall_reads: true,
+        ..TestServer::new(password)
+    };
+    let config = server::Config {
+        window_size: 16 * 1024,
+        ..server_config(Duration::from_secs(30))
+    };
+    spawn_server(server, config).await
+}
+
+/// A server reporting every connection that ended in an error on the
+/// returned receiver; `bridge_direct_tcpip` makes it a jump host.
+async fn spawn_error_reporting_server(
+    password: &str,
+    bridge_direct_tcpip: bool,
+) -> (u16, mpsc::UnboundedReceiver<String>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let server = TestServer {
+        bridge_direct_tcpip,
+        session_errors: Some(tx),
+        ..TestServer::new(password)
+    };
+    let port = spawn_server(server, server_config(Duration::from_secs(30))).await;
+    (port, rx)
+}
+
+/// A server probing the client with channels it never asked for (see
+/// [`probe_stray_channels`]); the receiver gets one report per type.
+async fn spawn_stray_channel_server(
+    password: &str,
+) -> (u16, mpsc::UnboundedReceiver<(&'static str, bool)>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let server = TestServer {
+        stray_probe: Some(tx),
+        ..TestServer::new(password)
+    };
+    let port = spawn_server(server, server_config(Duration::from_secs(30))).await;
+    (port, rx)
 }
 
 fn server_config(inactivity: Duration) -> server::Config {
@@ -1396,6 +1499,117 @@ async fn disconnect_all_closes_every_session() {
         0,
         "disconnect_all must gracefully close every session"
     );
+}
+
+/// A server can't park channels on us that we never asked for (each would
+/// hold memory for the connection's lifetime).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn channels_the_client_never_asked_for_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, mut probes) = spawn_stray_channel_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session(&manager, "s1", port, sink);
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+
+    for _ in 0..5 {
+        let (kind, accepted) = recv_timeout(&mut probes, Duration::from_secs(5))
+            .await
+            .expect("a probe report");
+        assert!(!accepted, "a stray {kind} channel was accepted");
+    }
+
+    manager.disconnect("s1").await;
+    await_session_count(&manager, 0).await;
+}
+
+/// B3: a disconnect must not wait behind writes the server stopped taking. It
+/// used to queue after them, so with the queue full it never got in and app
+/// quit hung.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disconnect_is_not_stuck_behind_a_stalled_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_stalled_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session(&manager, "s1", port, sink);
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+
+    // Far more than the window and the write queue hold.
+    let writer = Arc::clone(&manager);
+    tokio::spawn(async move {
+        for _ in 0..400 {
+            writer.write_stdin("s1", vec![b'x'; 1024]).await;
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    tokio::time::timeout(Duration::from_secs(2), manager.disconnect("s1"))
+        .await
+        .expect("disconnect must return despite the stalled write");
+    let (final_status, _) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(final_status, SessionStatus::Disconnected);
+    await_session_count(&manager, 0).await;
+}
+
+/// A disconnect ends the SSH connection with a real SSH disconnect, so the
+/// server sees a clean goodbye rather than a dropped socket (an error).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_disconnect_closes_the_connection_cleanly() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, mut errors) = spawn_error_reporting_server(TEST_PASSWORD, false).await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session(&manager, "s1", port, sink);
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+
+    manager.disconnect("s1").await;
+    await_session_count(&manager, 0).await;
+
+    let error = recv_timeout(&mut errors, Duration::from_millis(500)).await;
+    assert_eq!(error, None, "the server saw the connection drop");
+}
+
+/// The jump host's connection is closed cleanly too, once the target's is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_disconnect_closes_the_jump_host_cleanly() {
+    let dir = tempfile::tempdir().unwrap();
+    let target_port = spawn_test_server(TEST_PASSWORD).await;
+    let (jump_port, mut jump_errors) = spawn_error_reporting_server(TEST_PASSWORD, true).await;
+    seed_trusted(dir.path(), target_port);
+    seed_trusted(dir.path(), jump_port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let (sink, mut chans) = new_sink();
+    manager.spawn_session(
+        "s1".to_string(),
+        ConnectParams {
+            host: "127.0.0.1".to_string(),
+            port: target_port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            cols: 80,
+            rows: 24,
+            jump: Some(jump_hop(jump_port, TEST_PASSWORD)),
+            keepalive: KeepaliveConfig::disabled(),
+            forward_agent: false,
+            connect_snippet: None,
+        },
+        sink,
+    );
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+
+    manager.disconnect("s1").await;
+    await_session_count(&manager, 0).await;
+
+    let error = recv_timeout(&mut jump_errors, Duration::from_millis(500)).await;
+    assert_eq!(error, None, "the jump host saw the connection drop");
 }
 
 /// Finding 4 (regression): disconnect while a host-key prompt is still pending —
@@ -2647,6 +2861,35 @@ async fn stopping_a_tunnel_does_not_wait_on_an_unresponsive_server() {
         ],
     );
     await_listening(&mut tunnel.chans.status_rx).await;
+
+    let started = std::time::Instant::now();
+    tunnel.manager.stop_tunnel("t1").await;
+    await_no_tunnels(&tunnel.manager).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "stop took {:?}",
+        started.elapsed()
+    );
+}
+
+/// A stop isn't held up by a forward change still waiting on the server (a
+/// cancel or listen can take up to its 10 s timeout).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_does_not_wait_behind_a_pending_forward_change() {
+    let echo_port = spawn_echo_service().await;
+    let (first, second) = (free_local_port().await, free_local_port().await);
+    let port = spawn_remote_test_server(|s| s.stall_cancel = true).await;
+    let mut tunnel = start_remote_tunnel(
+        port,
+        tempfile::tempdir().unwrap(),
+        vec![
+            remote_forward("r1", first, echo_port),
+            remote_forward("r2", second, echo_port),
+        ],
+    );
+    await_listening(&mut tunnel.chans.status_rx).await;
+    tunnel.manager.remove_forward("t1", "r2".to_string()).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let started = std::time::Instant::now();
     tunnel.manager.stop_tunnel("t1").await;

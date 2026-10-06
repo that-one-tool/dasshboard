@@ -206,6 +206,40 @@ describe("SettingsController live-apply round trip", () => {
     expect(controller.terminalSettings().fontSize).toBe(40);
   });
 
+  // A number is committed on blur or Enter; Escape closed the dialog without
+  // either, dropping what was typed.
+  it("keeps a value still being typed when Escape closes the dialog", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+    const fontSizeInput = document.querySelector<HTMLInputElement>(".settings-font-size");
+    if (!fontSizeInput) throw new Error("unreachable");
+    fontSizeInput.value = "20";
+    fontSizeInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    fontSizeInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flush();
+
+    expect(document.querySelector(".settings-font-size")).toBeNull();
+    expect(vi.mocked(saveSettings).mock.calls[0]?.[0].terminal.fontSize).toBe(20);
+  });
+
+  it("doesn't save anything on Escape when nothing was typed", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+
+    document
+      .querySelector(".settings-font-size")
+      ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flush();
+
+    expect(saveSettings).not.toHaveBeenCalled();
+  });
+
   it("adopts and live-applies the value the backend actually stored", async () => {
     const g = fakeGrid();
     vi.mocked(getSettings).mockResolvedValue(settings());

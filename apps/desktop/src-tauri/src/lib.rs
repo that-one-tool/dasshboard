@@ -82,8 +82,10 @@ pub(crate) fn app_version() -> String {
 pub fn run() {
     // Before GTK starts and before any thread exists.
     wayland::disable_nvidia_explicit_sync();
-    // Before anything can run an update check (which may set TLS env vars).
+    // Before anything can run an update check (which may set TLS env vars),
+    // and before any thread exists (setting the env is not thread-safe).
     local_shell::record_startup_env();
+    local_shell::preset_tls_env();
     let builder = tauri::Builder::default();
     // Tauri installs its default menu bar on macOS only; ours drops Cmd+W.
     let builder = if cfg!(target_os = "macos") {

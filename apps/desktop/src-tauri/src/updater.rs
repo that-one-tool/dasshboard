@@ -200,9 +200,10 @@ pub async fn check<R: Runtime>(
         .map_err(update_error)?
         .check()
         .await;
-    // On Linux the check sets SSL_CERT_FILE/DIR process-wide; drop them again so
-    // nothing spawned later (the restart after an update, the opener) inherits them.
-    local_shell::restore_startup_tls_env();
+    // On Linux the check sets SSL_CERT_FILE/DIR process-wide where none could be
+    // preset; drop them again so nothing spawned later (the restart after an
+    // update, the opener) inherits Debian's paths.
+    local_shell::drop_updater_tls_env();
     let found = result.map_err(update_error)?;
     let info = found.as_ref().map(|update| UpdateInfo {
         version: update.version.clone(),

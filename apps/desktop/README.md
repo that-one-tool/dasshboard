@@ -96,7 +96,8 @@ the Flatpak):
 | `workspace_state.json` | Open tabs, Files panel and side-menu widths, side menu collapsed, tunnels left running/stopped, collapsed device sections, per instance (not synced) |
 
 When another running instance changes `devices.json`, `profiles.json`,
-`settings.json` or `known_hosts.json`, a file watcher reloads them. Passwords and passphrases are stored only in the OS keychain, under the
+`settings.json`, `known_hosts.json` or `sftp_bookmarks.json`, a file watcher
+reloads them. Passwords and passphrases are stored only in the OS keychain, under the
 service `DaSSHboard` and keyed by device id. The backend never sends them back
 to the frontend.
 

@@ -46,7 +46,7 @@ vi.mock("../ipc", () => ({
   sftpDownload: vi.fn(async () => 123),
   sftpUpload: vi.fn(async () => 10),
   sftpDownloadDir: vi.fn(async (): Promise<string[]> => []),
-  sftpUploadDir: vi.fn(async () => {}),
+  sftpUploadDir: vi.fn(async (): Promise<string[]> => []),
   sftpLocalExists: vi.fn(async () => h.localExists),
   sftpExists: vi.fn(async () => h.remoteExists),
   sftpMkdir: vi.fn(async () => {}),
@@ -107,6 +107,7 @@ vi.mock("@tauri-apps/api/path", () => ({
 
 import { SftpPanel, browsableDevices, type SftpPanelOptions } from "./sftpPanel";
 import {
+  listDevices,
   sftpConnect,
   sftpList,
   sftpRealpath,
@@ -317,6 +318,49 @@ describe("SftpPanel", () => {
     q<HTMLButtonElement>('.sftp-panel [data-action="forward"]').click();
     await flush();
     expect(sftpList).toHaveBeenLastCalledWith("a", "/home/j/sub");
+  });
+
+  it("a folder that fails to open is not added to history", async () => {
+    await setup();
+    await browse(); // at /home/j
+    vi.mocked(sftpList).mockRejectedValueOnce({ code: "Sftp", message: "permission denied" });
+
+    document
+      .querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")
+      ?.click();
+    await flush();
+
+    expect(q<HTMLInputElement>(".sftp-path").value).toBe("/home/j");
+    expect(q<HTMLButtonElement>('.sftp-panel [data-action="back"]').disabled).toBe(true);
+  });
+
+  it("a Back that fails to list keeps the history where it was", async () => {
+    await setup();
+    await browse(); // at /home/j
+    document
+      .querySelector<HTMLButtonElement>(".sftp-entry.is-dir .sftp-entry-name")
+      ?.click();
+    await flush(); // at /home/j/sub
+    vi.mocked(sftpList).mockRejectedValueOnce({ code: "Sftp", message: "timed out" });
+    q<HTMLButtonElement>('.sftp-panel [data-action="back"]').click();
+    await flush();
+
+    q<HTMLButtonElement>('.sftp-panel [data-action="back"]').click();
+    await flush();
+
+    expect(sftpList).toHaveBeenLastCalledWith("a", "/home/j");
+    expect(q<HTMLInputElement>(".sftp-path").value).toBe("/home/j");
+  });
+
+  it("stays connected when the device list can't be read on refresh", async () => {
+    const panel = await setup();
+    await browse();
+    vi.mocked(listDevices).mockRejectedValueOnce({ code: "Io", message: "busy" });
+
+    await panel.refresh();
+
+    expect(sftpDisconnect).not.toHaveBeenCalled();
+    expect(q<HTMLInputElement>(".sftp-path").value).toBe("/home/j");
   });
 
   it("typing a directory path and pressing Enter navigates there", async () => {
@@ -1048,6 +1092,21 @@ describe("SftpPanel", () => {
     expect(sftpUploadDir).toHaveBeenCalledWith("a", "C:/local/proj", "/home/j/proj", "overwrite");
   });
 
+  it("reports the entries a folder upload skipped", async () => {
+    h.uploadDirResult = "C:/local/proj";
+    vi.mocked(sftpUploadDir).mockResolvedValueOnce(["bad\uFFFD.txt", "sub/dir\uFFFD"]);
+    const onError = vi.fn();
+    await setup({ onError });
+    await browse();
+
+    q<HTMLButtonElement>('.sftp-panel [data-action="upload-dir"]').click();
+    await flush();
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("bad\uFFFD.txt, dir\uFFFD") }),
+    );
+  });
+
   it("prompts for a conflict policy when the destination already exists", async () => {
     h.dirResult = "C:/dest";
     h.localExists = true; // target already present
@@ -1237,6 +1296,17 @@ describe("SftpPanel", () => {
     await browse();
     const labels = [...document.querySelectorAll(".sftp-bookmark-go")].map((e) => e.textContent);
     expect(labels).toEqual(["etc", "log"]);
+  });
+
+  it("picks up bookmarks another instance saved when refreshed", async () => {
+    const panel = await setup();
+    await browse();
+    h.bookmarks = ["/srv"];
+
+    await panel.refresh();
+
+    const labels = [...document.querySelectorAll(".sftp-bookmark-go")].map((e) => e.textContent);
+    expect(labels).toEqual(["srv"]);
   });
 
   /* ----- persistence ----------------------------------------------------- */

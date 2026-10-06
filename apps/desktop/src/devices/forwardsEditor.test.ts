@@ -54,6 +54,16 @@ describe("ForwardsEditor", () => {
     expect(editor.getForwards()).toEqual(forwards);
   });
 
+  // A newer version's forward kind used to come back as "local" and get saved
+  // as one; it now stays what it is, and the save is blocked until removed.
+  it("keeps a forward of an unknown kind and blocks the save", () => {
+    editor.setForwards([sampleForward({ kind: "unsupported" })]);
+
+    expect(editor.getForwards()[0]?.kind).toBe("unsupported");
+    expect(editor.validate()).toBe(false);
+    expect(container.querySelector(".forward-row .error-text")?.textContent).not.toBe("");
+  });
+
   it("round-trips a dynamic forward without a destination", () => {
     const forwards = [
       sampleForward({ kind: "dynamic", localPort: 1080, remoteHost: "", remotePort: 0 }),

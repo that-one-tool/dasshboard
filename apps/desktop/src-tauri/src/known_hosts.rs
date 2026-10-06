@@ -137,13 +137,9 @@ impl KnownHostsStore {
     /// Records (TOFU) or overwrites (accepted key change) the host key for
     /// `host:port`, persisting the whole store atomically.
     pub fn trust(&self, host: &str, port: u16, entry: KnownHost) -> Result<(), AppError> {
-        let key = host_key(host, port);
-        let snapshot = {
-            let mut hosts = self.lock_hosts();
-            hosts.insert(key, entry);
-            hosts.clone()
-        };
-        self.persist(&snapshot)
+        let mut hosts = self.lock_hosts();
+        hosts.insert(host_key(host, port), entry);
+        self.persist(&hosts)
     }
 
     /// Test/introspection helper: the stored record for a host, if any.
@@ -175,14 +171,11 @@ impl KnownHostsStore {
     /// the user clicked simply no longer exists) rather than an error. The
     /// store is only rewritten when something changed.
     pub fn forget(&self, id: &str) -> Result<bool, AppError> {
-        let snapshot = {
-            let mut hosts = self.lock_hosts();
-            if hosts.remove(id).is_none() {
-                return Ok(false);
-            }
-            hosts.clone()
-        };
-        self.persist(&snapshot)?;
+        let mut hosts = self.lock_hosts();
+        if hosts.remove(id).is_none() {
+            return Ok(false);
+        }
+        self.persist(&hosts)?;
         Ok(true)
     }
 
@@ -191,8 +184,8 @@ impl KnownHostsStore {
     }
 
     /// Atomically persists the trust map (see [`atomic_file::write_json`]).
-    /// Callers pass a snapshot cloned out under the lock, so no lock is held
-    /// during I/O.
+    /// Callers hold the lock while writing, so two writes can't land out of
+    /// order and drop the newer one from disk.
     fn persist(&self, hosts: &HashMap<String, KnownHost>) -> Result<(), AppError> {
         let file = KnownHostsFile {
             version: CURRENT_VERSION,
@@ -236,6 +229,31 @@ mod tests {
     fn host_key_formats_host_and_port() {
         assert_eq!(host_key("192.168.1.10", 22), "192.168.1.10:22");
         assert_eq!(host_key("example.com", 2222), "example.com:2222");
+    }
+
+    /// Concurrent trusts (several panes meeting new hosts at once) used to
+    /// write their snapshots after releasing the lock, so an older one could
+    /// land last and drop a newer trust from disk.
+    #[test]
+    fn concurrent_trusts_all_reach_disk() {
+        let dir = tempdir().unwrap();
+        let store = std::sync::Arc::new(KnownHostsStore::load(dir.path().to_path_buf()));
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let store = std::sync::Arc::clone(&store);
+                std::thread::spawn(move || {
+                    for i in 0..20 {
+                        store
+                            .trust(&format!("h{t}-{i}"), 22, ed25519("SHA256:x"))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        threads.into_iter().for_each(|t| t.join().unwrap());
+
+        let reloaded = KnownHostsStore::load(dir.path().to_path_buf());
+        assert_eq!(reloaded.list().len(), 8 * 20);
     }
 
     #[test]

@@ -443,7 +443,9 @@ export class SettingsController {
     // strings carry `data-i18n` keys), rather than only on the next open.
     const stopRetranslating = onLocaleChange(() => applyDomTranslations(root));
     const previouslyFocused = document.activeElement;
+    const commitPendingEdit = trackPendingEdit(root);
     const close = (): void => {
+      commitPendingEdit();
       stopRetranslating();
       root.remove();
       if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) {
@@ -464,6 +466,16 @@ export class SettingsController {
     document.body.appendChild(root);
     language?.focus();
   }
+}
+
+/** Fields save on `change`, which fires on blur or Enter; closing the dialog
+ * with Escape does neither. Returns a function that commits the field typed
+ * into but not yet committed, if any. */
+function trackPendingEdit(root: HTMLElement): () => void {
+  let pending: EventTarget | null = null;
+  root.addEventListener("input", (e) => (pending = e.target));
+  root.addEventListener("change", () => (pending = null));
+  return () => pending?.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 function sameTerminalSettings(a: TerminalSettings, b: TerminalSettings): boolean {

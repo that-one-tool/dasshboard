@@ -51,6 +51,18 @@ function portText(port: number | undefined): string {
   return port ? String(port) : "";
 }
 
+const KINDS: readonly ForwardKind[] = ["local", "dynamic", "remote", "unsupported"];
+
+/** Shown only for a forward a newer version wrote: it reads as what it is
+ * (and blocks the save) rather than as a local forward. Not selectable. */
+function unsupportedKindOption(): HTMLOptionElement {
+  const option = document.createElement("option");
+  option.value = "unsupported";
+  option.textContent = t("forwards.kind.unsupported");
+  option.disabled = true;
+  return option;
+}
+
 export class ForwardsEditor {
   private readonly rowsEl: HTMLElement;
 
@@ -162,6 +174,7 @@ export class ForwardsEditor {
     // A narrow field cuts its placeholder off; the tooltip keeps it readable.
     this.labelField(row, ".forward-name", t("forwards.name.placeholder"));
     const kindSelect = this.kindSelect(row);
+    if (forward?.kind === "unsupported") kindSelect.append(unsupportedKindOption());
     kindSelect.value = forward?.kind ?? "local";
     kindSelect.addEventListener("change", () => this.applyKind(row));
     this.applyKind(row);
@@ -209,7 +222,7 @@ export class ForwardsEditor {
 
   private kindOf(row: HTMLElement): ForwardKind {
     const value = this.kindSelect(row).value;
-    return value === "dynamic" || value === "remote" ? value : "local";
+    return KINDS.find((kind) => kind === value) ?? "local";
   }
 
   private kindSelect(row: HTMLElement): HTMLSelectElement {

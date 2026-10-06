@@ -1,10 +1,14 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
+import { fr } from "../i18n/fr";
+import { setLocale } from "../i18n";
 import type { Forward } from "../ipc";
 import {
   isLoopbackAddress,
   validateForwards,
   type ForwardFormValues,
 } from "./forwardValidation";
+
+afterEach(() => setLocale("en"));
 
 function sampleForward(overrides: Partial<Forward> = {}): ForwardFormValues {
   return {
@@ -129,6 +133,17 @@ describe("validateForwards", () => {
     const local = sampleForward({ localPort: 3000 });
     const remote = sampleForward({ id: "f2", kind: "remote", localPort: 3000, remotePort: 8080 });
     expect(validateForwards([local, remote])).toEqual([]);
+  });
+
+  it("flags two local forwards on the same address and port, translated", () => {
+    setLocale("fr");
+    const errors = validateForwards([sampleForward(), sampleForward({ id: "f2", name: "Copy" })]);
+    expect(errors).toEqual([{ field: "forward-1-localPort", message: fr["validation.bindTaken"] }]);
+  });
+
+  it("flags a forward of a kind this version doesn't know", () => {
+    const errors = validateForwards([sampleForward({ kind: "unsupported" })]);
+    expect(errors.map((e) => e.field)).toEqual(["forward-0-kind"]);
   });
 
   it("flags two remote forwards on the same server port", () => {

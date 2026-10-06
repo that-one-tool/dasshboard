@@ -1,6 +1,6 @@
 [package]
 name = "dasshboard"
-version = "1.33.1"
+version = "1.33.2"
 description = "Multi-pane SSH & serial terminal dashboard with SFTP file transfer"
 authors = ["That one tool"]
 edition = "2021"
@@ -81,6 +81,9 @@ russh-sftp = "=3.0.0"
 # tray-icon's Linux backend panics when none loads. Same version it uses.
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "=0.7.4"
+# Starts the text/plain handler for an SFTP edit (`editor.rs`). Already linked
+# through WebKitGTK; same version.
+gio = "=0.18.4"
 
 [dev-dependencies]
 # Temp-dir fixtures for DeviceStore tests (missing/corrupt-file recovery,

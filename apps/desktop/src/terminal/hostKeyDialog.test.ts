@@ -31,7 +31,7 @@ vi.mock("../ipc", () => ({
 }));
 
 // Imported after the mock is registered so the module graph uses it.
-import { initHostKeyDialog } from "./hostKeyDialog";
+import { initHostKeyDialog, TRUST_ARM_DELAY_MS } from "./hostKeyDialog";
 import { applyDomTranslations, setLocale } from "../i18n";
 
 function q<T extends Element>(selector: string): T {
@@ -43,6 +43,18 @@ function q<T extends Element>(selector: string): T {
 /** Let queued microtasks (the awaited onHostKeyPrompt/respondHostKey chains) settle. */
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i++) await Promise.resolve();
+}
+
+/** Click Trust once the prompt on screen has armed it. */
+function clickTrust(): void {
+  vi.advanceTimersByTime(TRUST_ARM_DELAY_MS);
+  clickTrustNow();
+}
+
+function clickTrustNow(): void {
+  q<HTMLButtonElement>('[data-hostkey-action="trust"]').dispatchEvent(
+    new MouseEvent("click", { bubbles: true }),
+  );
 }
 
 function promptEvent(overrides: Partial<HostKeyPromptEvent> = {}): HostKeyPromptEvent {
@@ -61,6 +73,7 @@ describe("initHostKeyDialog", () => {
   let dispose: () => void;
 
   beforeEach(async () => {
+    vi.useFakeTimers();
     document.body.innerHTML = "";
     h.promptHandler = null;
     h.respond.mockClear();
@@ -70,6 +83,36 @@ describe("initHostKeyDialog", () => {
 
   afterEach(() => {
     dispose();
+    vi.useRealTimers();
+  });
+
+  // A prompt can swap in under the cursor (the previous one answered or
+  // dropped): a click meant for the old one must not trust the new one.
+  it("arms Trust only a moment after a prompt appears", async () => {
+    h.promptHandler?.(promptEvent());
+    const trust = q<HTMLButtonElement>('[data-hostkey-action="trust"]');
+    expect(trust.disabled).toBe(true);
+
+    clickTrustNow();
+    await flush();
+    expect(h.respond).not.toHaveBeenCalled();
+
+    clickTrust();
+    await flush();
+    expect(h.respond).toHaveBeenCalledWith("p1", true);
+  });
+
+  it("re-arms the delay when the next prompt swaps in", async () => {
+    h.promptHandler?.(promptEvent({ promptId: "p1", host: "host-a" }));
+    h.promptHandler?.(promptEvent({ promptId: "p2", host: "host-b" }));
+    clickTrust();
+    await flush();
+
+    clickTrustNow(); // the second click of a double-click
+    await flush();
+
+    expect(h.respond).not.toHaveBeenCalledWith("p2", expect.anything());
+    expect(q<HTMLButtonElement>('[data-hostkey-action="trust"]').disabled).toBe(true);
   });
 
   it("shows a prompt as soon as it arrives", () => {
@@ -88,9 +131,7 @@ describe("initHostKeyDialog", () => {
     // The second prompt is queued, not shown yet.
     expect(q<HTMLElement>(".hostkey-host").textContent).toBe("host-a:22");
 
-    q<HTMLButtonElement>('[data-hostkey-action="trust"]').dispatchEvent(
-      new MouseEvent("click", { bubbles: true }),
-    );
+    clickTrust();
     await flush();
 
     expect(h.respond).toHaveBeenCalledWith("p1", true);
@@ -124,9 +165,7 @@ describe("initHostKeyDialog", () => {
   it("ignores a closed notice for a prompt it already answered", async () => {
     h.promptHandler?.(promptEvent({ promptId: "p1", host: "host-a" }));
     h.promptHandler?.(promptEvent({ promptId: "p2", host: "host-b" }));
-    q<HTMLButtonElement>('[data-hostkey-action="trust"]').dispatchEvent(
-      new MouseEvent("click", { bubbles: true }),
-    );
+    clickTrust();
     await flush();
 
     h.closedHandler?.("p1");
@@ -139,9 +178,7 @@ describe("initHostKeyDialog", () => {
     h.promptHandler?.(promptEvent({ promptId: "p2" }));
     h.promptHandler?.(promptEvent({ promptId: "p3", host: "other" }));
 
-    q<HTMLButtonElement>('[data-hostkey-action="trust"]').dispatchEvent(
-      new MouseEvent("click", { bubbles: true }),
-    );
+    clickTrust();
     await flush();
 
     expect(h.respond).toHaveBeenCalledWith("p1", true);
@@ -154,9 +191,7 @@ describe("initHostKeyDialog", () => {
     h.promptHandler?.(promptEvent({ promptId: "p1", changed: false }));
     h.promptHandler?.(promptEvent({ promptId: "p2", changed: true }));
 
-    q<HTMLButtonElement>('[data-hostkey-action="trust"]').dispatchEvent(
-      new MouseEvent("click", { bubbles: true }),
-    );
+    clickTrust();
     await flush();
 
     expect(h.respond).toHaveBeenCalledWith("p1", true);

@@ -59,10 +59,7 @@ function duplicateError(forward: ForwardFormValues, prefix: string): ValidationE
   if (forward.kind === "remote") {
     return { field: `${prefix}-remotePort`, message: t("validation.serverPortTaken") };
   }
-  return {
-    field: `${prefix}-localPort`,
-    message: "Another forward already binds this address and port",
-  };
+  return { field: `${prefix}-localPort`, message: t("validation.bindTaken") };
 }
 
 function pushIfEmpty(
@@ -103,6 +100,10 @@ function forwardFieldErrors(
   forward: ForwardFormValues,
   prefix: string,
 ): ValidationError[] {
+  // Written by a newer version: it can't be checked, nor saved as it was.
+  if (forward.kind === "unsupported") {
+    return [{ field: `${prefix}-kind`, message: t("validation.forwardUnsupported") }];
+  }
   const errors: ValidationError[] = [];
   pushIfEmpty(errors, forward.name, `${prefix}-name`, t("validation.name"));
   pushIfInvalidPort(errors, forward.localPort, `${prefix}-localPort`);

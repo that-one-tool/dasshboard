@@ -10,9 +10,6 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use tauri::{AppHandle, Runtime};
-use tauri_plugin_opener::OpenerExt;
-
 use crate::error::AppError;
 use crate::flatpak;
 
@@ -22,11 +19,7 @@ const FILE_PLACEHOLDER: &str = "{file}";
 /// Open `file` with `command` (see [`editor_argv`]), or with the system's
 /// text editor when `command` is blank (see [`text_editor_argv`]). The editor
 /// is not waited for.
-pub fn open_in_editor<R: Runtime>(
-    app: &AppHandle<R>,
-    command: &str,
-    file: &Path,
-) -> Result<(), AppError> {
+pub fn open_in_editor(command: &str, file: &Path) -> Result<(), AppError> {
     let sandboxed = flatpak::is_sandboxed();
     let argv = match command.trim() {
         "" => text_editor_argv(path_arg(file), sandboxed),
@@ -34,22 +27,16 @@ pub fn open_in_editor<R: Runtime>(
     };
     match argv {
         Some(argv) => spawn_detached(&on_host(argv, sandboxed)),
-        None => open_with_default_app(app, file),
+        None => open_with_text_handler(file),
     }
-}
-
-fn open_with_default_app<R: Runtime>(app: &AppHandle<R>, file: &Path) -> Result<(), AppError> {
-    app.opener()
-        .open_path(path_arg(file), None::<&str>)
-        .map_err(|e| AppError::Io(format!("could not open {}: {e}", file.display())))
 }
 
 /// The fallback editor when no command is set. Never the file's own default
 /// action: on Windows that *runs* a `.bat`, `.vbs`, `.exe`, … and on macOS a
 /// `.terminal` file, so a hostile server could name a file to have Edit run
 /// it. Windows uses Notepad and macOS the default text editor (`open -t`).
-/// On Linux `xdg-open` picks the handler by type and runs nothing (the copy
-/// is not executable); `None` means "use the opener plugin", which calls it.
+/// Linux uses the text/plain handler: `None` means GIO starts it in-process
+/// (`xdg-open` would pick the handler by type, and Wine's runs a `.exe`).
 #[cfg(windows)]
 fn text_editor_argv(path: String, _sandboxed: bool) -> Option<Vec<String>> {
     Some(vec!["notepad.exe".to_string(), path])
@@ -60,11 +47,48 @@ fn text_editor_argv(path: String, _sandboxed: bool) -> Option<Vec<String>> {
     Some(vec!["open".to_string(), "-t".to_string(), path])
 }
 
-/// In the Flatpak sandbox the host's `xdg-open` opens the copy directly (it
-/// sits in a folder the host sees), rather than through a portal.
+/// In the Flatpak sandbox GIO only knows the sandbox's apps, so a host script
+/// starts the host's handler on the copy (it sits in a folder the host sees).
 #[cfg(not(any(windows, target_os = "macos")))]
 fn text_editor_argv(path: String, sandboxed: bool) -> Option<Vec<String>> {
-    sandboxed.then(|| vec!["xdg-open".to_string(), path])
+    let script = [HOST_TEXT_EDITOR_SCRIPT, "sh"].map(String::from);
+    sandboxed.then(|| {
+        ["sh", "-c"]
+            .map(String::from)
+            .into_iter()
+            .chain(script)
+            .chain([path])
+            .collect()
+    })
+}
+
+/// Starts the host's text/plain handler on `$1`: its desktop file, found the
+/// way `xdg-mime` reports it, run by `gio launch` (both ship with any desktop
+/// a Flatpak runs on).
+#[cfg(not(any(windows, target_os = "macos")))]
+const HOST_TEXT_EDITOR_SCRIPT: &str = r#"id=$(xdg-mime query default text/plain) && [ -n "$id" ] || exit 1
+for dir in "${XDG_DATA_HOME:-$HOME/.local/share}" $(printf %s "${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" | tr : ' '); do
+  [ -f "$dir/applications/$id" ] && exec gio launch "$dir/applications/$id" "$1"
+done
+exit 1"#;
+
+/// Linux outside the sandbox: the app registered for plain text, whatever
+/// the copy's own type.
+#[cfg(not(any(windows, target_os = "macos")))]
+fn open_with_text_handler(file: &Path) -> Result<(), AppError> {
+    use gio::prelude::AppInfoExt;
+    let handler = gio::AppInfo::default_for_type("text/plain", false).ok_or_else(|| {
+        AppError::NotFound("no text editor is set up: set an editor command in Settings".into())
+    })?;
+    handler
+        .launch(&[gio::File::for_path(file)], None::<&gio::AppLaunchContext>)
+        .map_err(|e| AppError::Io(format!("could not start {}: {e}", handler.name())))
+}
+
+/// Windows and macOS always have a text editor command.
+#[cfg(any(windows, target_os = "macos"))]
+fn open_with_text_handler(_file: &Path) -> Result<(), AppError> {
+    unreachable!("text_editor_argv always names a program here")
 }
 
 /// The argument vector for `command` opening `file`: the command split like a
@@ -197,6 +221,9 @@ fn command_for(program: &str, args: &[String]) -> Command {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    for var in crate::local_shell::tls_vars_not_inherited() {
+        cmd.env_remove(var);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -303,14 +330,33 @@ mod tests {
         );
     }
 
+    /// Never `xdg-open`: it picks the handler by type, and the one for a
+    /// remote `x.exe` may be Wine. Outside the sandbox GIO starts the
+    /// text/plain handler (`None`); in it, a host script does.
     #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
-    fn without_a_command_linux_uses_xdg_open() {
-        assert_eq!(text_editor_argv("/e/a.conf".into(), false), None);
-        assert_eq!(
-            text_editor_argv("/e/a.conf".into(), true),
-            Some(vec!["xdg-open".to_string(), "/e/a.conf".to_string()])
-        );
+    fn without_a_command_linux_uses_the_text_handler() {
+        assert_eq!(text_editor_argv("/e/a.exe".into(), false), None);
+        let argv = text_editor_argv("/e/$(x) a.exe".into(), true).unwrap();
+        assert_eq!(argv[..2], ["sh", "-c"]);
+        assert!(argv[2].contains("xdg-mime query default text/plain"));
+        // The path is the script's `$1`, never part of the script itself.
+        assert_eq!(argv[3..], ["sh", "/e/$(x) a.exe"]);
+    }
+
+    /// Like a local shell, an editor doesn't inherit the TLS vars the app
+    /// itself set (see `local_shell::preset_tls_env`).
+    #[test]
+    fn the_editor_does_not_inherit_the_apps_tls_vars() {
+        let cmd = command_for("code", &[]);
+        let removed: Vec<_> = cmd
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        for var in crate::local_shell::tls_vars_not_inherited() {
+            assert!(removed.iter().any(|r| r == var), "{var} is inherited");
+        }
     }
 
     #[test]

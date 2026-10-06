@@ -183,6 +183,7 @@ fn reload_config_impl(state: &AppState) {
     state.profile_store.reload();
     state.settings_store.reload();
     state.session_manager.known_hosts().reload();
+    state.bookmark_store.reload();
 }
 
 /// Never includes secret material — `Device` has no secret field to begin
@@ -732,13 +733,15 @@ fn serial_params_of(connection: &Connection, connect_snippet: Option<&str>) -> S
 }
 
 /// Forward keystrokes to a session (SPEC §5). Unknown/closed session ⇒ no-op.
+/// `binary` marks xterm's binary input (see [`stdin_bytes`]).
 #[tauri::command]
 pub async fn write_stdin(
     state: State<'_, AppState>,
     session_id: String,
     data: String,
+    binary: Option<bool>,
 ) -> Result<(), AppError> {
-    let bytes = data.into_bytes();
+    let bytes = stdin_bytes(data, binary.unwrap_or(false));
     // Route to whichever manager owns the session. `owns` locks+releases the
     // map synchronously (no guard held across the `.await`); the `Arc` is cloned
     // out before awaiting. An unknown id is a no-op in either manager.
@@ -756,6 +759,18 @@ pub async fn write_stdin(
             .await;
     }
     Ok(())
+}
+
+/// The bytes to send for terminal input: text as UTF-8, binary input (legacy
+/// mouse reports, which aren't UTF-8) as one byte per character — xterm never
+/// puts a character above U+00FF there.
+fn stdin_bytes(data: String, binary: bool) -> Vec<u8> {
+    if !binary {
+        return data.into_bytes();
+    }
+    data.chars()
+        .filter_map(|c| u8::try_from(u32::from(c)).ok())
+        .collect()
 }
 
 /// Resize a session's terminal (SPEC §5). Unknown/closed session ⇒ no-op. A
@@ -1319,7 +1334,8 @@ pub async fn sftp_download_dir(
 
 /// Recursively upload a local directory tree into the current remote directory.
 /// `remote_path` is the intended target; `policy` behaves as for
-/// [`sftp_download_dir`] but against the remote side.
+/// [`sftp_download_dir`] but against the remote side. Returns the relative
+/// paths of the entries skipped (names that aren't valid Unicode).
 #[tauri::command]
 pub async fn sftp_upload_dir(
     app: AppHandle,
@@ -1328,7 +1344,7 @@ pub async fn sftp_upload_dir(
     local_path: String,
     remote_path: String,
     policy: String,
-) -> Result<(), AppError> {
+) -> Result<Vec<String>, AppError> {
     let skip = policy == "skip";
     let mut target = remote_path;
     if policy == "rename" {
@@ -1498,12 +1514,12 @@ impl EditSink for TauriEditSink {
     }
 }
 
-/// Open an edit's local copy with the editor command from settings (or the OS
-/// default app).
-fn launch_editor(app: &AppHandle, state: &AppState, edit_id: &str) -> Result<(), AppError> {
+/// Open an edit's local copy with the editor command from settings (or a text
+/// editor).
+fn launch_editor(state: &AppState, edit_id: &str) -> Result<(), AppError> {
     let path = state.edit_manager.local_path(edit_id)?;
     let command = state.settings_store.get().sftp.editor_command;
-    editor::open_in_editor(app, &command, &path)
+    editor::open_in_editor(&command, &path)
 }
 
 /// Download a remote file into a private local copy (streaming
@@ -1528,7 +1544,7 @@ pub async fn sftp_edit_open(
             &progress,
         )
         .await?;
-    if let Err(e) = launch_editor(&app, &state, &info.edit_id) {
+    if let Err(e) = launch_editor(&state, &info.edit_id) {
         state.edit_manager.close(&info.edit_id);
         return Err(e);
     }
@@ -1548,12 +1564,8 @@ pub async fn sftp_editable_size(
 
 /// Open an already-downloaded edit in the editor again (it was closed).
 #[tauri::command]
-pub fn sftp_edit_launch(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    edit_id: String,
-) -> Result<(), AppError> {
-    launch_editor(&app, &state, &edit_id)
+pub fn sftp_edit_launch(state: State<'_, AppState>, edit_id: String) -> Result<(), AppError> {
+    launch_editor(&state, &edit_id)
 }
 
 /// Whether a saved edit needs uploading, and whether the remote changed too.
@@ -1717,6 +1729,20 @@ mod tests {
     use crate::store::DeviceStore;
     use crate::tunnel::TunnelManager;
     use tempfile::tempdir;
+
+    #[test]
+    fn text_input_is_sent_as_utf8() {
+        assert_eq!(stdin_bytes("é\r".into(), false), "é\r".as_bytes());
+    }
+
+    /// xterm's binary input (legacy mouse reports) is one byte per character.
+    #[test]
+    fn binary_input_is_sent_one_byte_per_character() {
+        assert_eq!(
+            stdin_bytes("\x1b[M \u{ff}!".into(), true),
+            [0x1b, b'[', b'M', b' ', 0xff, b'!']
+        );
+    }
 
     #[test]
     fn session_status_payload_carries_the_error_code_only_when_set() {
@@ -2412,6 +2438,7 @@ mod tests {
                 },
             )
             .unwrap();
+        other.bookmark_store.add("dev-1", "/etc").unwrap();
 
         // Our in-memory view is stale until reloaded.
         assert!(list_devices_impl(&state).is_empty(), "stale until reload");
@@ -2421,5 +2448,6 @@ mod tests {
         assert_eq!(list_devices_impl(&state).len(), 1);
         assert_eq!(list_profiles_impl(&state).profiles.len(), 1);
         assert_eq!(state.session_manager.known_hosts().list().len(), 1);
+        assert_eq!(state.bookmark_store.list("dev-1"), ["/etc"]);
     }
 }

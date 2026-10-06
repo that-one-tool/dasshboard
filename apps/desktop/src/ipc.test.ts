@@ -38,6 +38,7 @@ import {
 	deleteDevice,
 	connect,
 	writeStdin,
+	writeStdinBinary,
 	resizePty,
 	disconnect,
 	respondHostKey,
@@ -68,6 +69,8 @@ import {
 	sftpEditDiscard,
 	sftpEditClose,
 	sftpEditableSize,
+	sftpBookmarkAdd,
+	sftpBookmarkRemove,
 	onSftpEditChanged,
 	type Device,
 	type Settings,
@@ -228,6 +231,16 @@ describe("IPC command wrapper argument shapes", () => {
 		expect(invokeMock).toHaveBeenCalledWith("write_stdin", {
 			sessionId: "sess-1",
 			data: "ls -la\n",
+		});
+	});
+
+	it("writeStdinBinary marks the data as binary", async () => {
+		invokeMock.mockResolvedValue(undefined);
+		await writeStdinBinary("sess-1", "\x1b[M \xff!");
+		expect(invokeMock).toHaveBeenCalledWith("write_stdin", {
+			sessionId: "sess-1",
+			data: "\x1b[M \xff!",
+			binary: true,
 		});
 	});
 
@@ -538,6 +551,16 @@ describe("config-write echo suppression (invokeMutation vs invokeChecked)", () =
 		vi.setSystemTime(1_000_000);
 		invokeMock.mockResolvedValue(profile);
 		await saveProfile(profile);
+		expect(isLocalConfigWriteRecent()).toBe(true);
+	});
+
+	it("a bookmark change arms echo suppression (its file is watched too)", async () => {
+		vi.setSystemTime(1_500_000);
+		invokeMock.mockResolvedValue(["/etc"]);
+		await sftpBookmarkAdd("dev-1", "/etc");
+		expect(isLocalConfigWriteRecent()).toBe(true);
+		vi.setSystemTime(1_600_000);
+		await sftpBookmarkRemove("dev-1", "/etc");
 		expect(isLocalConfigWriteRecent()).toBe(true);
 	});
 

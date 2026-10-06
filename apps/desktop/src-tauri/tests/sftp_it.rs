@@ -967,6 +967,60 @@ async fn failed_upload_leaves_an_existing_remote_target_intact() {
     manager.disconnect("dev-1").await;
 }
 
+/// The user chose to overwrite the file, not to lose it: a cancel mid-way
+/// used to delete it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_upload_over_an_existing_file_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+    manager
+        .write_file("dev-1", "/keep.bin", b"original remote", &noop_progress())
+        .await
+        .unwrap();
+    // Several chunks long, so the loop sees the cancel after the first one.
+    let src = dir.path().join("keep.bin");
+    std::fs::write(&src, vec![b'x'; 100_000]).unwrap();
+    let cancel_on_first_chunk = |_: u64, _: u64| {
+        manager.cancel_transfer("dev-1");
+    };
+
+    let err = manager
+        .upload_from_path("dev-1", &src, "/keep.bin", &cancel_on_first_chunk)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, AppError::Cancelled(_)), "got {err:?}");
+    assert!(manager.remote_exists("dev-1", "/keep.bin").await.unwrap());
+
+    manager.disconnect("dev-1").await;
+}
+
+/// A file the upload itself created is still cleaned up on cancel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_upload_of_a_new_file_removes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+    let src = dir.path().join("new.bin");
+    std::fs::write(&src, vec![b'x'; 100_000]).unwrap();
+    let cancel_on_first_chunk = |_: u64, _: u64| {
+        manager.cancel_transfer("dev-1");
+    };
+
+    let err = manager
+        .upload_from_path("dev-1", &src, "/new.bin", &cancel_on_first_chunk)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, AppError::Cancelled(_)), "got {err:?}");
+    assert!(!manager.remote_exists("dev-1", "/new.bin").await.unwrap());
+
+    manager.disconnect("dev-1").await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_reports_mode_and_chmod_changes_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -1135,6 +1189,43 @@ async fn upload_dir_then_download_dir_round_trips_a_tree() {
         std::fs::read(out.join("sub").join("b.txt")).unwrap(),
         b"bbb"
     );
+
+    manager.disconnect("dev-1").await;
+}
+
+/// A local name that isn't UTF-8 can't be sent as an SFTP path: it (and a
+/// folder's whole subtree) is skipped and reported, and the rest goes up.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upload_dir_skips_and_reports_names_that_are_not_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+    let src = tempfile::tempdir().unwrap();
+    let top = src.path().join("top");
+    let bad_dir = top.join(std::ffi::OsStr::from_bytes(b"dir\xff"));
+    std::fs::create_dir_all(&bad_dir).unwrap();
+    std::fs::write(bad_dir.join("inside.txt"), b"x").unwrap();
+    std::fs::write(top.join(std::ffi::OsStr::from_bytes(b"bad\xff.txt")), b"x").unwrap();
+    std::fs::write(top.join("good.txt"), b"ok").unwrap();
+    manager.mkdir("dev-1", "/top").await.unwrap();
+
+    let skipped = manager
+        .upload_dir("dev-1", &top, "/top", false, &noop_progress())
+        .await
+        .unwrap();
+
+    assert_eq!(skipped, vec!["bad\u{FFFD}.txt", "dir\u{FFFD}"]);
+    let names: Vec<String> = manager
+        .list("dev-1", "/top")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(names, vec!["good.txt"]);
 
     manager.disconnect("dev-1").await;
 }

@@ -1,7 +1,7 @@
 //! Filesystem watcher on the app-config directory (multi-instance sync).
 //!
 //! Each config file (`devices.json`, `profiles.json`, `settings.json`,
-//! `known_hosts.json`) is read once into an in-memory cache at startup, so a
+//! `known_hosts.json`, `sftp_bookmarks.json`) is read once into an in-memory cache at startup, so a
 //! change made by a *second* running app instance is otherwise invisible until
 //! restart. This watcher notices such a change on disk and emits a single
 //! debounced [`CONFIG_CHANGED_EVENT`] to every window; the frontend answers it
@@ -28,11 +28,12 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 /// atomic-write temp files (`*.tmp-<uuid>`) and corrupt backups
 /// (`*.corrupt-<secs>`) are intentionally excluded, so only the final rename
 /// onto one of these names wakes the frontend.
-const WATCHED_FILES: [&str; 4] = [
+const WATCHED_FILES: [&str; 5] = [
     "devices.json",
     "profiles.json",
     "settings.json",
     "known_hosts.json",
+    "sftp_bookmarks.json",
 ];
 
 /// Whether a raw event touches one of the watched config files (by exact
@@ -133,6 +134,15 @@ mod tests {
     #[test]
     fn matches_a_watched_file_write() {
         let e = event(EventKind::Modify(ModifyKind::Any), "/cfg/devices.json");
+        assert!(is_config_change(&e));
+    }
+
+    #[test]
+    fn bookmarks_are_watched() {
+        let e = event(
+            EventKind::Modify(ModifyKind::Any),
+            "/cfg/sftp_bookmarks.json",
+        );
         assert!(is_config_change(&e));
     }
 

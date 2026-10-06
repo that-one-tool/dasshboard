@@ -23,6 +23,11 @@ import { requireEl } from "../ui/dom";
 import { consumeKey, isTopDialog, pushDialog, removeDialog } from "../ui/dialogStack";
 import { t } from "../i18n";
 
+/** How long Trust stays disabled after a prompt appears: a prompt can swap in
+ * under the cursor (the one before it answered or dropped), and a click meant
+ * for that one must not trust this one. */
+export const TRUST_ARM_DELAY_MS = 600;
+
 export function initHostKeyDialog(): () => void {
   const root = document.createElement("div");
   root.className = "dialog dialog-hidden hostkey-dialog";
@@ -66,6 +71,14 @@ export function initHostKeyDialog(): () => void {
     root,
     '[data-hostkey-action="reject"]',
   );
+  const trustBtn = requireEl<HTMLButtonElement>(root, '[data-hostkey-action="trust"]');
+  let armTimer: number | undefined;
+
+  function armTrustLater(): void {
+    window.clearTimeout(armTimer);
+    trustBtn.disabled = true;
+    armTimer = window.setTimeout(() => (trustBtn.disabled = false), TRUST_ARM_DELAY_MS);
+  }
 
   function showNext(): void {
     const next = queue.shift();
@@ -92,6 +105,7 @@ export function initHostKeyDialog(): () => void {
     // answered the same.
     document.body.appendChild(root);
     pushDialog(root);
+    armTrustLater();
     // Focus the safe default (Reject), not Trust — so a stray Enter/Space never
     // trusts an unknown or changed key.
     rejectBtn.focus();
@@ -141,7 +155,7 @@ export function initHostKeyDialog(): () => void {
     const target = e.target;
     if (!(target instanceof HTMLElement)) return;
     const action = target.dataset.hostkeyAction;
-    if (action === "trust") void respond(true);
+    if (action === "trust" && !trustBtn.disabled) void respond(true);
     else if (action === "reject") void respond(false);
   };
   root.addEventListener("click", onClick);
@@ -164,6 +178,7 @@ export function initHostKeyDialog(): () => void {
   return () => {
     root.removeEventListener("click", onClick);
     document.removeEventListener("keydown", onKey, true);
+    window.clearTimeout(armTimer);
     removeDialog(root);
     void unlistenPromise.then((unlisten) => unlisten());
     void unlistenClosedPromise.then((unlisten) => unlisten());

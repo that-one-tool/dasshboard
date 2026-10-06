@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { heldModifiers, isMacPlatform, isOnlyShortcutModifier, isShortcutModifier } from "./keyboard";
+import {
+  heldModifiers,
+  isMacPlatform,
+  isOnlyShortcutModifier,
+  isShortcutModifier,
+  shortcutLetter,
+} from "./keyboard";
 
 const key = (mods: { ctrlKey?: boolean; metaKey?: boolean }) =>
   ({ ctrlKey: false, metaKey: false, ...mods }) as KeyboardEvent;
@@ -56,5 +62,23 @@ describe("isOnlyShortcutModifier", () => {
     expect(isOnlyShortcutModifier(key({ ctrlKey: true, shiftKey: true }), false)).toBe(false);
     expect(isOnlyShortcutModifier(key({ ctrlKey: true, altKey: true }), false)).toBe(false);
     expect(isOnlyShortcutModifier(key({ metaKey: true, ctrlKey: true }), true)).toBe(false);
+  });
+});
+
+describe("shortcutLetter", () => {
+  const press = (key: string, code: string) => ({ key, code }) as KeyboardEvent;
+
+  it("is the key's own letter on a Latin layout, wherever the key sits", () => {
+    expect(shortcutLetter(press("T", "KeyT"))).toBe("t");
+    expect(shortcutLetter(press("w", "KeyZ"))).toBe("w"); // AZERTY's W
+  });
+
+  it("falls back to the key's QWERTY position on a non-Latin layout", () => {
+    expect(shortcutLetter(press("е", "KeyT"))).toBe("t"); // Russian
+    expect(shortcutLetter(press("β", "KeyB"))).toBe("b"); // Greek
+  });
+
+  it("leaves named keys alone", () => {
+    expect(shortcutLetter(press("Tab", "Tab"))).toBe("tab");
   });
 });

@@ -24,7 +24,7 @@ export function isLocalFileName(name: string): boolean {
 
 const SKIPPED_NAMES_SHOWN = 3;
 
-/** The skipped entries of a folder download as a short list of their names
+/** The skipped entries of a folder transfer as a short list of their names
  * (the first few, then `…`). */
 export function skippedSummary(remotePaths: string[]): string {
   const names = remotePaths.slice(0, SKIPPED_NAMES_SHOWN).map((p) => p.split("/").pop() ?? p);

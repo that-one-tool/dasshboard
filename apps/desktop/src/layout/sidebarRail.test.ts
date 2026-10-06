@@ -181,6 +181,12 @@ describe("Ctrl+Shift+B", () => {
 		expect(rail.isCollapsed()).toBe(false);
 	});
 
+	it("works on a non-Latin layout, by the key's position", () => {
+		const { rail } = init();
+		press({ key: "И", code: "KeyB", ctrlKey: true, shiftKey: true });
+		expect(rail.isCollapsed()).toBe(true);
+	});
+
 	it("leaves plain Ctrl+B to the shell (tmux prefix, back one char)", () => {
 		const { rail } = init();
 		expect(press({ key: "b", ctrlKey: true }).defaultPrevented).toBe(false);

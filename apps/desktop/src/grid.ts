@@ -63,6 +63,9 @@ export class Grid {
   // While a profile load is applying, per-pane changes are suppressed so the
   // dirty dot doesn't flicker; `applySnapshot` emits a single change at the end.
   private loading = false;
+  // What a load is building, until its panes exist: the grid's snapshot
+  // meanwhile, so a Save right after Load saves what was loaded.
+  private loadingSnapshot: WorkspaceSnapshot | null = null;
   // Set by `dispose()` (its tab closed). Cell creation awaits, so a build in
   // flight must stop there rather than add (and connect) panes nobody can close.
   private disposed = false;
@@ -309,6 +312,7 @@ export class Grid {
 
   /** A comparable snapshot of the live workspace (grid + row-major device ids). */
   snapshot(): WorkspaceSnapshot {
+    if (this.loadingSnapshot) return copySnapshot(this.loadingSnapshot);
     return {
       grid: {
         rows: this.model.rows,
@@ -421,6 +425,7 @@ export class Grid {
     snapshot: WorkspaceSnapshot,
   ): Promise<void> {
     this.loading = true;
+    this.loadingSnapshot = copySnapshot(snapshot);
     try {
       this.teardownAllCells();
       // A load swaps every pane to (potentially) different hosts, so silently
@@ -440,6 +445,7 @@ export class Grid {
       const cells = await this.createLiveCells(paneCount(this.model));
       if (!cells) return;
       this.cells = cells;
+      this.loadingSnapshot = null;
       container.append(...this.cells.map((c) => c.wrapper));
       this.applyLayout();
       this.updateToolbarActive();
@@ -454,6 +460,7 @@ export class Grid {
       await Promise.allSettled(connects);
     } finally {
       this.loading = false;
+      this.loadingSnapshot = null;
     }
   }
 
@@ -718,4 +725,13 @@ export class Grid {
     }
     this.cells = [];
   }
+}
+
+/** A copy sharing no arrays with `snapshot`. */
+function copySnapshot(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
+  const { grid, panes } = snapshot;
+  return {
+    grid: { ...grid, rowSizes: [...grid.rowSizes], colSizes: [...grid.colSizes] },
+    panes: [...panes],
+  };
 }

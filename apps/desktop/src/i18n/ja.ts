@@ -269,7 +269,9 @@ export const ja: Messages = {
 	"validation.baudRatePositive": "ボーレートは正の数値で指定してください",
 	"validation.remoteHost": "リモートホストは必須です",
 	"validation.loopback": "ローカルアドレスはループバックアドレスにしてください（例: 127.0.0.1）",
+	"validation.bindTaken": "別の転送がこのアドレスとポートを使用しています",
 	"validation.serverPortTaken": "別のリモート転送がこのサーバーのポートを使用しています",
+	"validation.forwardUnsupported": "この転送には新しいバージョンの DaSSHboard が必要です。保存するには削除してください",
 	"validation.serverHost": "サーバーのアドレスは必須です",
 
 	/* -- port-forwards editor ----------------------------------------------- */
@@ -288,6 +290,7 @@ export const ja: Messages = {
 	"forwards.serverHost.placeholder": "サーバーのアドレス",
 	"forwards.localHost.placeholder": "ローカルホスト",
 	"forwards.kind.remote": "リモート",
+	"forwards.kind.unsupported": "非対応（新しいバージョン）",
 
 	/* -- profiles ----------------------------------------------------------- */
 	"profiles.title": "プロファイル",
@@ -366,7 +369,7 @@ export const ja: Messages = {
 	"sftp.cancelTransfer": "転送をキャンセル",
 	"sftp.connecting": "接続中…",
 	"sftp.emptyDir": "空のディレクトリです。",
-	"sftp.count.one": "1 件",
+	"sftp.count.one": "{count} 件",
 	"sftp.count.other": "{count} 件",
 	"sftp.entry.openFolder": "フォルダーを開く",
 	"sftp.entry.downloadFile": "ファイルをダウンロード",
@@ -404,6 +407,8 @@ export const ja: Messages = {
 	"sftp.upload.noFreeName": "サーバー上で「{name}」の空いている名前が見つかりませんでした。",
 	"sftp.download.skipped.one": "「{name}」の {count} 項目をスキップしました（フォルダーへのリンク、壊れたリンク、特殊ファイル、またはこのコンピューターに保存できない名前）：{items}",
 	"sftp.download.skipped.other": "「{name}」の {count} 項目をスキップしました（フォルダーへのリンク、壊れたリンク、特殊ファイル、またはこのコンピューターに保存できない名前）：{items}",
+	"sftp.upload.skipped.one": "「{name}」の {count} 項目をスキップしました（名前が有効な Unicode ではないため送信できません）：{items}",
+	"sftp.upload.skipped.other": "「{name}」の {count} 項目をスキップしました（名前が有効な Unicode ではないため送信できません）：{items}",
 	"sftp.uploading": "{name} をアップロード中…",
 	"sftp.uploadedToast": "{name} をアップロードしました",
 	"sftp.transferCancelled": "転送をキャンセルしました",
@@ -455,7 +460,7 @@ export const ja: Messages = {
 	"sftp.edit.largeConfirm": "{name} は {size} です。それでも編集用に開きますか？",
 	"sftp.edit.uploadedToast": "{name} をサーバーに保存しました",
 	"sftp.edit.stopConfirm": "「{name}」には保存済みで未アップロードの変更があります。終了すると、その変更を含むローカルコピーが削除されます。それでも編集を終了しますか？",
-	"sftp.edit.disconnectConfirm.one": "編集中の 1 個のファイルに保存済みで未アップロードの変更があります。接続を閉じると編集が終了し、ローカルコピーが削除されます。続行しますか？",
+	"sftp.edit.disconnectConfirm.one": "編集中の {count} 個のファイルに保存済みで未アップロードの変更があります。接続を閉じると編集が終了し、ローカルコピーが削除されます。続行しますか？",
 	"sftp.edit.disconnectConfirm.other": "編集中の {count} 個のファイルに保存済みで未アップロードの変更があります。接続を閉じると編集が終了し、ローカルコピーが削除されます。続行しますか？",
 	"sftp.edit.conflict.title": "サーバー上で変更されました",
 	"sftp.edit.conflict.message": "「{name}」は開いた後にサーバー上で変更されました。保存済みの変更をどうしますか？",

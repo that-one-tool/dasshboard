@@ -26,6 +26,7 @@ import {
   resizePty,
   saveTextFile,
   writeStdin,
+  writeStdinBinary,
   type Device,
   type ErrorCode,
   type SessionStatus,
@@ -33,6 +34,7 @@ import {
 } from "../ipc";
 import { overlayForStatus } from "./overlay";
 import { isTerminalReply } from "./terminalReplies";
+import { SerialQueue } from "./inputQueue";
 import {
   DEFAULT_TERMINAL_SETTINGS,
   withIconFont,
@@ -124,6 +126,7 @@ export class TerminalPane {
   private searchBar: TerminalSearchBar | null = null;
   /** A mouse press in the terminal may be selecting: copied on release. */
   private mouseSelecting = false;
+  private readonly input = new SerialQueue();
   /** The pane's own keys inside the terminal, each with what it does. */
   private readonly terminalKeys: Array<[(e: KeyboardEvent) => boolean, () => void]> = [
     // Ctrl+Shift+V paste (SPEC §7).
@@ -527,11 +530,16 @@ export class TerminalPane {
 
     terminal.onData((data) => {
       if (this.connected && this.sessionId) {
-        void writeStdin(this.sessionId, data);
+        this.write(this.sessionId, data);
         // Let the grid mirror what the user typed into other panes (broadcast
         // mode) — never the terminal's own query replies or mouse reports.
         if (!isTerminalReply(data)) this.options.onInput?.(data);
       }
+    });
+    // Mouse reports that aren't UTF-8 (the legacy encoding): never mirrored.
+    terminal.onBinary((data) => {
+      const sessionId = this.sessionId;
+      if (this.connected && sessionId) this.input.push(() => writeStdinBinary(sessionId, data));
     });
     terminal.attachCustomKeyEventHandler((e) => this.onTerminalKey(e));
     // (Right-click paste is wired once in renderUI(), not here — see comment
@@ -551,8 +559,12 @@ export class TerminalPane {
   private onTerminalKey(e: KeyboardEvent): boolean {
     if (e.type !== "keydown") return true;
     const key = this.terminalKeys.find(([matches]) => matches(e));
-    key?.[1]();
-    return key === undefined;
+    if (key === undefined) return true;
+    // Returning false only stops xterm; WebView2 would still run the key's
+    // native action (Ctrl+Shift+V = a second, native paste).
+    e.preventDefault();
+    key[1]();
+    return false;
   }
 
   /** Writes the scrollback + screen, as they are now, to a file the user picks. */
@@ -896,8 +908,12 @@ export class TerminalPane {
    */
   sendInput(data: string): void {
     if (this.connected && this.sessionId) {
-      void writeStdin(this.sessionId, data);
+      this.write(this.sessionId, data);
     }
+  }
+
+  private write(sessionId: string, data: string): void {
+    this.input.push(() => writeStdin(sessionId, data));
   }
 
   /**

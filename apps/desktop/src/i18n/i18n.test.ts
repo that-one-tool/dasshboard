@@ -79,9 +79,22 @@ describe("tp (plural)", () => {
 
   it("treats 0 and 1 as singular in French", () => {
     setLocale("fr");
-    expect(tp("sftp.count", 0)).toBe("1 élément"); // fr singular, count interpolated
+    expect(tp("sftp.count", 0)).toBe("0 élément"); // fr singular, count interpolated
     expect(tp("sftp.count", 1)).toBe("1 élément");
     expect(tp("sftp.count", 2)).toBe("2 éléments");
+  });
+
+  // French (and Brazilian Portuguese) count 0 as singular, so a singular
+  // form that spells out "1" would read "1 élément" for an empty folder.
+  it("shows the real count in every singular form", () => {
+    setLocale("fr");
+    expect(tp("sftp.count", 0)).toBe("0 élément");
+    const tables = { en, fr, es, de, pt, zh, ja };
+    for (const [name, table] of Object.entries(tables)) {
+      for (const [key, value] of Object.entries(table)) {
+        if (key.endsWith(".one")) expect(value, `${name} ${key}`).not.toMatch(/(^|[^\d{])1([^\d}]|$)/);
+      }
+    }
   });
 
   it("always uses the other form for Chinese and Japanese (no plural)", () => {

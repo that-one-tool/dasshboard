@@ -43,6 +43,9 @@ const FALLBACK_NAME: &str = "file";
 const COPY_DIR: &str = "copy";
 const DOWNLOAD_SCRATCH: &str = "download.tmp";
 const UPLOAD_SCRATCH: &str = "upload.tmp";
+/// Locked by the owning instance for as long as the edit lives (see
+/// [`is_in_use`]).
+const LOCK_FILE: &str = "lock";
 
 /// Copies untouched for this long are leftovers of a crash (see
 /// [`sweep_stale_copies`]).
@@ -106,17 +109,11 @@ struct Snapshot {
 
 struct EditSession {
     info: EditInfo,
-    dir: PathBuf,
+    dir: EditDir,
     local_path: PathBuf,
     baseline: Mutex<Baseline>,
     /// Held only to keep the watch alive; dropping it ends the watch thread.
     _watcher: RecommendedWatcher,
-}
-
-impl Drop for EditSession {
-    fn drop(&mut self) {
-        remove_logged(&self.dir);
-    }
 }
 
 impl EditSession {
@@ -136,34 +133,48 @@ impl EditSession {
     }
 
     fn scratch(&self, name: &str) -> PathBuf {
-        self.dir.join(name)
+        self.dir.path.join(name)
     }
 }
 
-/// An edit's directory while it is being set up: removed on drop unless kept.
-struct NewEditDir(Option<PathBuf>);
+/// An edit's private directory: locked while the edit lives, so another
+/// instance's startup sweep leaves it alone, and removed with it — also when
+/// setting the edit up fails.
+struct EditDir {
+    path: PathBuf,
+    /// Released before the directory is removed: Windows can't remove a
+    /// folder holding an open file.
+    lock: Option<std::fs::File>,
+}
 
-impl NewEditDir {
-    fn create(dir: PathBuf) -> Result<Self, AppError> {
-        create_private_dir(&dir.join(COPY_DIR))?;
-        Ok(Self(Some(dir)))
-    }
-
-    fn path(&self) -> &Path {
-        self.0.as_deref().unwrap_or(Path::new(""))
-    }
-
-    fn keep(mut self) -> PathBuf {
-        self.0.take().unwrap_or_default()
+impl EditDir {
+    fn create(path: PathBuf) -> Result<Self, AppError> {
+        create_private_dir(&path.join(COPY_DIR))?;
+        let lock = lock_edit_dir(&path);
+        Ok(Self { path, lock })
     }
 }
 
-impl Drop for NewEditDir {
+impl Drop for EditDir {
     fn drop(&mut self) {
-        if let Some(dir) = &self.0 {
-            remove_logged(dir);
-        }
+        drop(self.lock.take());
+        remove_logged(&self.path);
     }
+}
+
+/// Best effort: on a filesystem without locks the edit still works, only
+/// unprotected from a sweep (which needs it untouched for a day anyway).
+fn lock_edit_dir(dir: &Path) -> Option<std::fs::File> {
+    let file = std::fs::File::create(dir.join(LOCK_FILE)).ok()?;
+    let _ = file.try_lock();
+    Some(file)
+}
+
+/// Whether a running instance holds the edit directory's lock. A crash
+/// releases it, so a crash's leftovers read as not in use.
+fn is_in_use(dir: &Path) -> bool {
+    std::fs::File::open(dir.join(LOCK_FILE))
+        .is_ok_and(|file| matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)))
 }
 
 pub struct EditManager {
@@ -204,10 +215,10 @@ impl EditManager {
     ) -> Result<EditInfo, AppError> {
         let remote = sftp.remote_stamp(device_id, remote_path).await?;
         let edit_id = uuid::Uuid::new_v4().to_string();
-        let dir = NewEditDir::create(self.base_dir.join(&edit_id))?;
+        let dir = EditDir::create(self.base_dir.join(&edit_id))?;
         let name = remote_base_name(remote_path).to_string();
-        let local_path = dir.path().join(COPY_DIR).join(local_edit_name(&name));
-        let scratch = dir.path().join(DOWNLOAD_SCRATCH);
+        let local_path = dir.path.join(COPY_DIR).join(local_edit_name(&name));
+        let scratch = dir.path.join(DOWNLOAD_SCRATCH);
         let digest = download_into(
             sftp,
             device_id,
@@ -228,7 +239,7 @@ impl EditManager {
             sftp,
             EditSession {
                 info: info.clone(),
-                dir: dir.keep(),
+                dir,
                 local_path,
                 baseline: Mutex::new(Baseline {
                     remote: Some(remote),
@@ -460,16 +471,15 @@ fn remove_logged(dir: &Path) {
 }
 
 /// Delete the edit directories under `base_dir` untouched for longer than
-/// `older_than`: copies left behind by a crash. Age-based rather than "all",
-/// because a second running instance shares `base_dir` and its live edits
-/// are recent.
+/// `older_than` and not locked by a running instance (which shares
+/// `base_dir`): copies left behind by a crash.
 pub fn sweep_stale_copies(base_dir: &Path, older_than: Duration) {
     let Ok(entries) = std::fs::read_dir(base_dir) else {
         return;
     };
     let now = SystemTime::now();
     for dir in entries.flatten().map(|e| e.path()) {
-        if is_stale(&dir, now, older_than) {
+        if is_stale(&dir, now, older_than) && !is_in_use(&dir) {
             remove_logged(&dir);
         }
     }
@@ -618,12 +628,32 @@ fn remote_base_name(remote_path: &str) -> &str {
     remote_path.rsplit('/').next().unwrap_or(remote_path)
 }
 
-/// A local file name for a remote base name that is valid on every desktop
-/// OS: characters Windows forbids become `_`, trailing dots/spaces (dropped by
-/// Windows) are trimmed, reserved device names get a `_` prefix, and an
-/// empty or dot-only result falls back to [`FALLBACK_NAME`].
+/// A local file name for a remote base name: shell metacharacters become `_`
+/// (the copy's path may be spliced into a user's `sh -c "… {file}"` editor
+/// command), then made [`windows_portable_name`].
 fn local_edit_name(remote_name: &str) -> String {
-    let replaced: String = remote_name.chars().map(portable_char).collect();
+    let inert: String = remote_name.chars().map(shell_inert_char).collect();
+    windows_portable_name(&inert)
+}
+
+/// Characters that end or extend a word, quote, or substitute in `sh`,
+/// PowerShell or `cmd`.
+const SHELL_METACHARACTERS: &str = "$`;&|()<>!'\"\\{}^%";
+
+fn shell_inert_char(c: char) -> char {
+    if SHELL_METACHARACTERS.contains(c) {
+        '_'
+    } else {
+        c
+    }
+}
+
+/// `name` made valid on every desktop OS: characters Windows forbids become
+/// `_`, trailing dots/spaces (dropped by Windows) are trimmed, reserved device
+/// names get a `_` prefix, and an empty or dot-only result falls back to
+/// [`FALLBACK_NAME`].
+fn windows_portable_name(name: &str) -> String {
+    let replaced: String = name.chars().map(portable_char).collect();
     let trimmed = replaced.trim_end_matches(['.', ' ']);
     if trimmed.is_empty() {
         return FALLBACK_NAME.to_string();
@@ -635,9 +665,9 @@ fn local_edit_name(remote_name: &str) -> String {
 }
 
 /// Whether Windows can store a file under `name` as is: the name
-/// [`local_edit_name`] would leave unchanged.
+/// [`windows_portable_name`] would leave unchanged.
 pub(crate) fn is_windows_portable_name(name: &str) -> bool {
-    local_edit_name(name) == name
+    windows_portable_name(name) == name
 }
 
 fn portable_char(c: char) -> char {
@@ -712,6 +742,20 @@ mod tests {
         assert_eq!(local_edit_name("tab\there"), "tab_here");
     }
 
+    /// The copy's path can land inside a user's `sh -c "… {file}"` editor
+    /// command, so a remote name must not be able to carry shell syntax.
+    #[test]
+    fn shell_metacharacters_become_underscores() {
+        assert_eq!(local_edit_name("x$(id).conf"), "x__id_.conf");
+        assert_eq!(local_edit_name("a;b&c|d`e`"), "a_b_c_d_e_");
+        assert_eq!(local_edit_name("it's {x} 5%^!.txt"), "it_s _x_ 5___.txt");
+    }
+
+    #[test]
+    fn shell_metacharacters_are_still_windows_portable() {
+        assert!(is_windows_portable_name("a$b;c'd"));
+    }
+
     #[test]
     fn trailing_dots_and_spaces_are_trimmed() {
         assert_eq!(local_edit_name("notes. "), "notes");
@@ -779,6 +823,42 @@ mod tests {
         sweep_stale_copies(base.path(), Duration::from_millis(1));
 
         assert!(!dir.exists());
+    }
+
+    /// Another running instance's edit can sit untouched for over a day; its
+    /// lock keeps the sweep off it.
+    #[test]
+    fn the_sweep_spares_a_live_edit_however_old() {
+        let base = tempfile::tempdir().unwrap();
+        let live = EditDir::create(base.path().join("live")).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+
+        sweep_stale_copies(base.path(), Duration::from_millis(1));
+
+        assert!(live.path.join(COPY_DIR).exists());
+    }
+
+    #[test]
+    fn the_sweep_removes_a_crashed_edit_whose_lock_was_released() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = edit_dir_in(base.path(), "crashed");
+        std::fs::write(dir.join(LOCK_FILE), b"").unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+
+        sweep_stale_copies(base.path(), Duration::from_millis(1));
+
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn an_edit_dir_is_removed_when_dropped() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = EditDir::create(base.path().join("e")).unwrap();
+        let path = dir.path.clone();
+
+        drop(dir);
+
+        assert!(!path.exists());
     }
 
     #[test]

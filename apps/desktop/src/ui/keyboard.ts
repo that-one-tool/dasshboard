@@ -24,3 +24,14 @@ export function isOnlyShortcutModifier(e: KeyboardEvent, mac: boolean = isMacPla
 export function heldModifiers(e: KeyboardEvent): string {
   return MODIFIERS.filter((modifier) => e[modifier]).join("+");
 }
+
+/** The key a letter shortcut means, lower case: the key's own letter on a
+ * Latin layout (wherever it sits: AZERTY's W is W), else the letter at its
+ * QWERTY position, so Ctrl+Shift+T still works on a Cyrillic or Greek layout.
+ * A named key (Tab) is its name. */
+export function shortcutLetter(e: KeyboardEvent): string {
+  const key = e.key.toLowerCase();
+  if (/^[a-z]$/.test(key)) return key;
+  const position = /^Key([A-Z])$/.exec(e.code)?.[1];
+  return position?.toLowerCase() ?? key;
+}

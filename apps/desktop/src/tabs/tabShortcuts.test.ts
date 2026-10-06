@@ -14,6 +14,12 @@ describe("tabShortcut", () => {
     expect(tabShortcut(key({ key: "Tab", ctrlKey: true, shiftKey: true }), false)).toBe("previous");
   });
 
+  it("works on a non-Latin layout, by the key's position", () => {
+    expect(tabShortcut(key({ key: "Е", code: "KeyT", ctrlKey: true, shiftKey: true }), false)).toBe("new");
+    expect(tabShortcut(key({ key: "Ц", code: "KeyW", ctrlKey: true, shiftKey: true }), false)).toBe("close");
+    expect(tabShortcut(key({ key: "ц", code: "KeyW", metaKey: true }), true)).toBe("close");
+  });
+
   it("leaves the shell's Ctrl+T / Ctrl+W alone", () => {
     expect(tabShortcut(key({ key: "t", ctrlKey: true }), false)).toBeNull();
     expect(tabShortcut(key({ key: "w", ctrlKey: true }), true)).toBeNull();

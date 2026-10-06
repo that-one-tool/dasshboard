@@ -8,7 +8,7 @@
 import { onLocaleChange, t, tp } from "../i18n";
 import { isDialogOpen, requireEl } from "../ui/dom";
 import { chevronsLeftIcon, chevronsRightIcon, forwardsIcon, terminalIcon } from "../ui/icons";
-import { heldModifiers, isMacPlatform } from "../ui/keyboard";
+import { heldModifiers, isMacPlatform, shortcutLetter } from "../ui/keyboard";
 
 export interface SidebarRailOptions {
 	sidebar: HTMLElement;
@@ -172,7 +172,7 @@ function claimsToggle(e: KeyboardEvent): boolean {
  * (tmux's prefix, back one char) — or Cmd+B on macOS. */
 function isToggleKey(e: KeyboardEvent): boolean {
 	const modifiers = isMacPlatform() ? "metaKey" : "ctrlKey+shiftKey";
-	return heldModifiers(e) === modifiers && e.key.toLowerCase() === "b";
+	return heldModifiers(e) === modifiers && shortcutLetter(e) === "b";
 }
 
 function buildTopRow(collapseButton: HTMLButtonElement): HTMLElement {

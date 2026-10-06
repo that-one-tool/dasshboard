@@ -44,7 +44,8 @@ files, releasing),
     - `grid.ts` / `gridModel.ts` — multi-pane grid layout
     - `terminal/` — pane, overlay, reconnect, paste, host-key dialog, terminal
       settings, `terminalReplies` (keeps xterm's own query replies / mouse
-      reports out of broadcast input), `searchBar` (find bar over the
+      reports out of broadcast input), `inputQueue` (a pane's `write_stdin`
+      calls one at a time, so keys arrive in order), `searchBar` (find bar over the
       scrollback, Ctrl+Shift+F / Cmd+F), `links` (Ctrl/Cmd+click opens an
       http(s) URL or OSC 8 link via the opener plugin), `scrollbackText`
       ("save output": buffer → plain text + suggested file name)
@@ -102,7 +103,11 @@ files, releasing),
     - `config_watch.rs` — watches the app-config dir and emits `config_changed`
       so a second running instance picks up on-disk changes
     - `secret.rs` — OS keychain access; secrets never touch the JSON stores
-    - `session.rs` — SSH shell sessions via `russh`
+    - `session.rs` — SSH shell sessions via `russh`; a disconnect is an
+      out-of-band `watch` stop flag (never queued behind writes a stalled
+      server isn't taking, like serial and tunnels), and a shell ends with a
+      bounded channel close + SSH disconnect of the target and jump host;
+      server-opened channels we never asked for are rejected
     - `tunnel.rs` — SSH local (`ssh -L`), dynamic (`ssh -D`) and remote
       (`ssh -R`) port forwarding; reuses `session.rs`'s connect + auth +
       host-key-TOFU path, then binds a local `TcpListener` per forward (added/removed one at a time
@@ -128,13 +133,18 @@ files, releasing),
       baseline (remote size+mtime, local content digest) behind check / upload
       / discard. Uploads truncate in place, never delete the remote, and after
       a failure stop comparing the remote (our own partial write is no
-      conflict); an edit registers only while its connection exists; a
-      startup sweep deletes copies untouched for 24 h (crash leftovers)
+      conflict); an edit registers only while its connection exists; the
+      copy's name has shell metacharacters replaced (it may land in a user's
+      `sh -c` editor command); each edit dir holds a `lock` file locked for
+      the edit's life, and a startup sweep deletes copies untouched for 24 h
+      whose lock is free (crash leftovers, not another instance's live edit)
     - `editor.rs` — opens an edit's copy: the settings editor command (split
       without a shell, `{file}` placeholder; `flatpak-spawn --host` in
       Flatpak), else a text editor — never the file's default action, which
-      on Windows would run a `.bat`/`.exe` (Notepad; `open -t` on macOS;
-      `xdg-open` on Linux)
+      on Windows would run a `.bat`/`.exe` (Notepad; `open -t` on macOS; on
+      Linux the text/plain handler via GIO, or a host `xdg-mime` + `gio
+      launch` script in Flatpak — `xdg-open` picks by type, and Wine's runs a
+      `.exe`)
     - `agent.rs` — SSH agent forwarding (relays the remote's agent channels to
       the local agent); `agent_ident.rs` — agent identity listing + agent-backed auth
     - `ssh_config.rs` — import/export devices ↔ `~/.ssh/config`
@@ -146,7 +156,11 @@ files, releasing),
       blocking reader/writer to the async sink with reader/writer threads + a
       control task; on macOS the default shell runs as a login shell with a
       UTF-8 `LANG` fallback; inside Flatpak the shell runs on the host via
-      `flatpak-spawn --host`, the PTY left free to be its controlling tty
+      `flatpak-spawn --host`, the PTY left free to be its controlling tty.
+      Also owns the updater's TLS env vars: `preset_tls_env` (first thing in
+      `run()`, single-threaded) sets missing `SSL_CERT_FILE`/`DIR` to the
+      system's trust store so the updater never `set_var`s at runtime, and
+      shells/editors don't inherit what the app didn't start with
     - `flatpak.rs` — Flatpak sandbox detection and the host-visible runtime dir
       (where the tray icon image goes)
     - `wayland.rs` — Linux Wayland workarounds: the window-state flags (no

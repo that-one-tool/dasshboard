@@ -268,7 +268,7 @@ export class SftpPanel {
     void onSftpEditChanged((editId) => void this.edits.handleChange(editId)).then((un) => {
       this.unlistenEditChanged = un;
     });
-    this.devices = await this.safeListDevices();
+    this.devices = (await this.listDevicesOrNull()) ?? [];
     this.refreshDeviceSelect();
     this.applyInitialState();
   }
@@ -312,12 +312,22 @@ export class SftpPanel {
     this.options.onPersist?.();
   }
 
-  /** Re-fetch devices and refresh the picker (device CRUD happened). */
+  /** Re-fetch devices and refresh the picker (device CRUD happened), and the
+   * connected device's bookmarks (config reload). */
   async refresh(): Promise<void> {
-    this.devices = await this.safeListDevices();
+    // Unreadable list: keep what we have rather than take the connected
+    // device for deleted.
+    const devices = await this.listDevicesOrNull();
+    if (devices) await this.applyDevices(devices);
+    // Another instance may have changed its bookmarks.
+    if (this.activeDeviceId) await this.loadBookmarks(this.activeDeviceId);
+  }
+
+  private async applyDevices(devices: Device[]): Promise<void> {
+    this.devices = devices;
     this.refreshDeviceSelect();
     // The active device may have been deleted out from under us.
-    if (this.activeDeviceId && !this.devices.some((d) => d.id === this.activeDeviceId)) {
+    if (this.activeDeviceId && !devices.some((d) => d.id === this.activeDeviceId)) {
       await this.handleDisconnect();
     }
   }
@@ -369,12 +379,13 @@ export class SftpPanel {
     void this.resyncConnection();
   }
 
-  private async safeListDevices(): Promise<Device[]> {
+  /** The saved devices, or `null` (reported) when they can't be read. */
+  private async listDevicesOrNull(): Promise<Device[] | null> {
     try {
       return await listDevices();
     } catch (err) {
       this.options.onError?.(err as AppError);
-      return [];
+      return null;
     }
   }
 
@@ -843,13 +854,14 @@ export class SftpPanel {
   /* ----- navigation + operations ----------------------------------------- */
 
   /**
-   * List `path` and render it as the current directory. Does NOT touch the
-   * Back/Forward history — used for Refresh, post-operation re-listing, and as
-   * the shared worker behind `goTo`/`goBack`/`goForward`.
+   * List `path` and render it as the current directory; `true` once it shows.
+   * Does NOT touch the Back/Forward history — used for Refresh,
+   * post-operation re-listing, and as the shared worker behind
+   * `goTo`/`goBack`/`goForward`.
    */
-  private async loadDir(path: string): Promise<void> {
+  private async loadDir(path: string): Promise<boolean> {
     const deviceId = this.activeDeviceId;
-    if (deviceId === null) return;
+    if (deviceId === null) return false;
     // Re-listing the same directory (Refresh, or an auto-refresh after a
     // transfer) keeps any live filter; navigating to a different directory
     // starts fresh.
@@ -861,7 +873,7 @@ export class SftpPanel {
     try {
       const entries = await sftpList(deviceId, path);
       // Disconnected (or switched device) while the listing was in flight.
-      if (this.activeDeviceId !== deviceId) return;
+      if (this.activeDeviceId !== deviceId) return false;
       this.cwd = path;
       this.allEntries = entries;
       if (!sameDir) {
@@ -871,8 +883,10 @@ export class SftpPanel {
       this.syncPathInput();
       this.applyView(); // renders + sets the count status
       this.updateBookmarkButton();
+      return true;
     } catch (err) {
       if (this.activeDeviceId === deviceId) this.reportError(err);
+      return false;
     } finally {
       this.setBusy(false); // also reconciles Back/Forward enabled state
     }
@@ -1044,19 +1058,23 @@ export class SftpPanel {
   }
 
   /**
-   * Navigate to a new directory, recording it in history: truncate any forward
-   * entries and push, then load it. Navigating to the current directory only
-   * re-lists it.
+   * Navigate to a new directory and, once it shows, record it in history:
+   * truncate any forward entries and push. Navigating to the current
+   * directory only re-lists it.
    */
   private async goTo(path: string): Promise<void> {
-    if (path === this.history[this.historyIndex]) {
-      await this.loadDir(path);
-      return;
-    }
+    const isCurrent = path === this.history[this.historyIndex];
+    if (!(await this.loadDir(path)) || isCurrent) return;
     this.history = this.history.slice(0, this.historyIndex + 1);
     this.history.push(path);
-    this.historyIndex = this.history.length - 1;
-    await this.loadDir(path);
+    this.moveHistoryTo(this.history.length - 1);
+  }
+
+  /** Point the history cursor at `index` — only once its directory shows, so
+   * a listing that failed leaves Back/Forward where they were. */
+  private moveHistoryTo(index: number): void {
+    this.historyIndex = index;
+    this.updateNavButtons();
   }
 
   /** Reflect the current directory in the editable path input. */
@@ -1114,8 +1132,7 @@ export class SftpPanel {
     if (this.historyIndex <= 0) return;
     const target = this.history[this.historyIndex - 1];
     if (target === undefined) return;
-    this.historyIndex -= 1;
-    await this.loadDir(target);
+    if (await this.loadDir(target)) this.moveHistoryTo(this.historyIndex - 1);
   }
 
   /** Step forward to the next directory in history (no-op at the end). */
@@ -1123,8 +1140,7 @@ export class SftpPanel {
     if (this.historyIndex >= this.history.length - 1) return;
     const target = this.history[this.historyIndex + 1];
     if (target === undefined) return;
-    this.historyIndex += 1;
-    await this.loadDir(target);
+    if (await this.loadDir(target)) this.moveHistoryTo(this.historyIndex + 1);
   }
 
   private async goUp(): Promise<void> {
@@ -1177,6 +1193,20 @@ export class SftpPanel {
     if (skipped.length === 0) return;
     const name = remote.split("/").pop() ?? remote;
     const message = tp("sftp.download.skipped", skipped.length, { name, items: skippedSummary(skipped) });
+    this.options.onError?.({ code: "Sftp", message });
+  }
+
+  /** Uploads a folder tree, then reports any entries it had to skip. */
+  private async uploadFolder(
+    deviceId: string,
+    localDir: string,
+    target: string,
+    policy: ConflictPolicy,
+  ): Promise<void> {
+    const skipped = await sftpUploadDir(deviceId, localDir, target, policy);
+    if (skipped.length === 0) return;
+    const name = target.split("/").pop() ?? target;
+    const message = tp("sftp.upload.skipped", skipped.length, { name, items: skippedSummary(skipped) });
     this.options.onError?.({ code: "Sftp", message });
   }
 
@@ -1296,7 +1326,7 @@ export class SftpPanel {
       direction: "upload",
       isDir: true,
       name,
-      run: () => sftpUploadDir(deviceId, localDir, target, policy),
+      run: () => this.uploadFolder(deviceId, localDir, target, policy),
       successToast: t("sftp.uploadedFolderToast", { name }),
       refreshDir: dir,
     });

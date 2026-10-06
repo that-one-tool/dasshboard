@@ -47,6 +47,7 @@ vi.mock("../ipc", () => ({
   connect: vi.fn(async () => h.sessionId),
   disconnect: vi.fn(async () => {}),
   writeStdin: vi.fn(async () => {}),
+  writeStdinBinary: vi.fn(async () => {}),
   resizePty: vi.fn(async () => {}),
   saveTextFile: vi.fn(async () => {}),
   newDataChannel: vi.fn(() => ({ onmessage: null })),
@@ -247,6 +248,23 @@ describe("TerminalPane native paste (Cmd+V / Edit → Paste)", () => {
     } finally {
       ua.mockRestore();
     }
+  });
+
+  // F5: WebView2 also fires a native paste for Ctrl+Shift+V unless the key's
+  // default is prevented, and that paste went through a second time.
+  it("prevents the paste shortcut's default, so no native paste follows", async () => {
+    const { root } = await connectedPane();
+    const event = new KeyboardEvent("keydown", {
+      code: "KeyV",
+      key: "V",
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    q<HTMLElement>(root, ".xterm-helper-textarea").dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it("pastes a single line straight away", async () => {
@@ -1005,7 +1023,33 @@ describe("TerminalPane broadcast input", () => {
 
     expect(pane.isConnected()).toBe(true);
     pane.sendInput("ls\r");
+    await flush();
     expect(vi.mocked(writeStdin)).toHaveBeenCalledWith(h.sessionId, "ls\r");
+  });
+
+  // Each write is its own IPC call, which the backend may run concurrently:
+  // the next one only goes once the one before it is done.
+  it("sends input in order, one write at a time", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    pane.assignDevice(h.device.id);
+    await start(pane);
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    let finishFirst = (): void => {};
+    vi.mocked(writeStdin).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finishFirst = resolve)),
+    );
+
+    pane.sendInput("a");
+    pane.sendInput("b");
+    await flush();
+    expect(vi.mocked(writeStdin).mock.calls.map((c) => c[1])).toEqual(["a"]);
+
+    finishFirst();
+    await flush();
+    expect(vi.mocked(writeStdin).mock.calls.map((c) => c[1])).toEqual(["a", "b"]);
   });
 
   it("fires onInput for locally-typed input while connected", async () => {

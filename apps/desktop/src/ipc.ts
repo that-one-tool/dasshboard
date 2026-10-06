@@ -391,6 +391,12 @@ export async function writeStdin(
   await invokeChecked<void>("write_stdin", { sessionId, data });
 }
 
+/** Writes xterm's binary input (one byte per character, e.g. legacy mouse
+ * reports) to a session as those bytes, not as UTF-8 text. */
+export async function writeStdinBinary(sessionId: string, data: string): Promise<void> {
+  await invokeChecked<void>("write_stdin", { sessionId, data, binary: true });
+}
+
 /** Resizes a session's PTY (SPEC §5). */
 export async function resizePty(
   sessionId: string,
@@ -1020,14 +1026,15 @@ export async function sftpDownloadDir(
 }
 
 /** Recursively uploads a local directory tree into `remotePath` (the target
- * directory), applying `policy` to entries that already exist. */
+ * directory), applying `policy` to entries that already exist. Resolves the
+ * relative paths it skipped: names that aren't valid Unicode. */
 export async function sftpUploadDir(
   deviceId: string,
   localPath: string,
   remotePath: string,
   policy: ConflictPolicy,
-): Promise<void> {
-  await invokeChecked<void>("sftp_upload_dir", { deviceId, localPath, remotePath, policy });
+): Promise<string[]> {
+  return invokeChecked<string[]>("sftp_upload_dir", { deviceId, localPath, remotePath, policy });
 }
 
 /** Whether a local path exists (to decide whether to prompt for a conflict). */
@@ -1080,12 +1087,12 @@ export async function sftpBookmarks(deviceId: string): Promise<string[]> {
 
 /** Adds a remote path to a device's bookmarks (idempotent). Returns the list. */
 export async function sftpBookmarkAdd(deviceId: string, path: string): Promise<string[]> {
-  return invokeChecked<string[]>("sftp_bookmark_add", { deviceId, path });
+  return invokeMutation<string[]>("sftp_bookmark_add", { deviceId, path });
 }
 
 /** Removes a remote path from a device's bookmarks (no-op if absent). Returns the list. */
 export async function sftpBookmarkRemove(deviceId: string, path: string): Promise<string[]> {
-  return invokeChecked<string[]>("sftp_bookmark_remove", { deviceId, path });
+  return invokeMutation<string[]>("sftp_bookmark_remove", { deviceId, path });
 }
 
 /**

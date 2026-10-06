@@ -81,6 +81,15 @@ export function populateAgentIdentities(
 	if (previous) select.value = previous;
 }
 
+/** Empties the agent-identity picker and its status line, so one device's
+ * identity is never offered (preselected) for the next one opened. */
+export function clearAgentIdentities(root: ParentNode): void {
+	const select = root.querySelector<HTMLSelectElement>("#device-agent-identity");
+	const status = root.querySelector<HTMLElement>("#device-agent-status");
+	if (select) select.innerHTML = "";
+	if (status) status.textContent = "";
+}
+
 /** Blanks both secret inputs so no password/passphrase lingers in the DOM. */
 export function clearSecretFields(root: ParentNode): void {
 	const secret = root.querySelector<HTMLInputElement>("#device-secret");

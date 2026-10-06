@@ -54,6 +54,21 @@ impl BookmarkStore {
         }
     }
 
+    /// Re-reads `sftp_bookmarks.json`, so bookmarks another running instance
+    /// saved show up here, and this instance's next save keeps them. An
+    /// unreadable file keeps the current map.
+    pub fn reload(&self) {
+        let reread = atomic_file::reread_recovering::<BookmarksFile, _>(
+            &self.dir,
+            BOOKMARKS_FILE,
+            |file| file.bookmarks,
+            Bookmarks::new,
+        );
+        if let Some(state) = reread {
+            *atomic_file::lock(&self.state) = state;
+        }
+    }
+
     /// The bookmarked paths for a device, in saved order (empty if none).
     pub fn list(&self, device_id: &str) -> Vec<String> {
         atomic_file::lock(&self.state)
@@ -115,6 +130,23 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    /// Another running instance's bookmarks: without a reload, this one's
+    /// next add would write its stale map over them.
+    #[test]
+    fn reload_picks_up_bookmarks_another_instance_saved() {
+        let dir = tempdir().unwrap();
+        let store = BookmarkStore::load(dir.path().to_path_buf());
+        let other = BookmarkStore::load(dir.path().to_path_buf());
+        other.add("dev-1", "/etc").unwrap();
+
+        store.reload();
+        store.add("dev-1", "/var").unwrap();
+
+        assert_eq!(store.list("dev-1"), ["/etc", "/var"]);
+        let reloaded = BookmarkStore::load(dir.path().to_path_buf());
+        assert_eq!(reloaded.list("dev-1"), ["/etc", "/var"]);
+    }
 
     #[test]
     fn missing_file_yields_no_bookmarks_and_creates_nothing() {

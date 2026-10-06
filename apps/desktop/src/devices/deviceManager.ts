@@ -31,6 +31,7 @@ import { deviceEndpoint } from "./deviceEndpoint";
 import { deviceManagerMarkup } from "./deviceDialogTemplate";
 import {
   buildDeviceFromForm,
+  clearAgentIdentities,
   clearSecretFields,
   displayFieldErrors,
   populateAgentIdentities,
@@ -260,6 +261,7 @@ export class DeviceManagerImpl {
     // the empty-field ⇒ omit-secret rule in `decideSecretToSend` holds.
     form.reset();
     clearSecretFields(this.container);
+    clearAgentIdentities(this.container);
     // `form.reset()` restores the kind selector to its default (SSH); reflect
     // that in which field group is shown. The edit path re-runs this from
     // `populateForm` after setting the device's actual kind.
@@ -743,13 +745,17 @@ export class DeviceManagerImpl {
   }
 }
 
-/**
- * Simple HTML escape to prevent XSS.
- */
+const HTML_ENTITIES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+/** Escapes text for element content and quoted attribute values alike. */
 function escapeHtml(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
+  return text.replace(/[&<>"']/g, (char) => HTML_ENTITIES[char] ?? char);
 }
 
 /** A tag section's header label: the tag, or "Untagged". */
