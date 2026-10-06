@@ -85,6 +85,11 @@ libloading = "=0.7.4"
 # through WebKitGTK; same version.
 gio = "=0.18.4"
 
+# Polls a local shell's PTY so its reader thread can stop (`local_shell.rs`).
+# Already in the tree (tokio, portable-pty); same version.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"
+
 [dev-dependencies]
 # Temp-dir fixtures for DeviceStore tests (missing/corrupt-file recovery,
 # atomic-write behavior) — never touches the real app config dir. Added in

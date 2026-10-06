@@ -11,7 +11,9 @@
 //! is **blocking and thread-based**: its reader/writer are `std::io` handles and
 //! opening/spawning are synchronous. So a local-shell session bridges that sync
 //! world to the async sink with two dedicated OS threads plus one tokio task:
-//! - a **reader thread** pumps PTY output into the sink until EOF;
+//! - a **reader thread** pumps PTY output into the sink until EOF, or (on
+//!   Unix) until the session ends: it polls, so a background job still
+//!   holding the terminal can't keep it — and the PTY — alive;
 //! - a **writer thread** drains an mpsc of keystroke chunks into the PTY;
 //! - the **control task** (tokio) owns the master (for `resize`) and a child
 //!   killer, applies control messages, and ends the session when the child exits
@@ -22,6 +24,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -38,6 +41,10 @@ const CONTROL_CHANNEL_CAPACITY: usize = 256;
 /// Read buffer for the PTY→terminal pump. 4 KiB covers a burst of shell output
 /// between reads without oversizing each copy (matches the serial pump).
 const READ_BUFFER_SIZE: usize = 4096;
+/// How long a Unix reader waits on a quiet PTY before checking whether its
+/// session ended.
+#[cfg(unix)]
+const READ_POLL_TIMEOUT_MS: i32 = 100;
 /// `LANG` for a macOS shell when the app started without one.
 const MACOS_FALLBACK_LANG: &str = "en_US.UTF-8";
 
@@ -81,7 +88,7 @@ struct ShellHandle {
 struct OpenedShell {
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
-    reader: Box<dyn Read + Send>,
+    reader: PtyReader,
     writer: Box<dyn Write + Send>,
     /// The spawned child, moved into a blocking `wait` task to detect exit.
     child: Box<dyn portable_pty::Child + Send + Sync>,
@@ -352,9 +359,7 @@ fn open_shell(params: &LocalShellParams) -> Result<OpenedShell, AppError> {
     // reports EOF once the child (and any of its children) close it.
     drop(pair.slave);
 
-    let reader = pair
-        .master
-        .try_clone_reader()
+    let reader = PtyReader::open(pair.master.as_ref())
         .map_err(|e| AppError::Io(format!("could not read from the shell: {e}")))?;
     let writer = pair
         .master
@@ -399,20 +404,10 @@ async fn run_session(
         mut child,
     } = opened;
 
-    // Reader thread: pump PTY output into the sink until EOF or a read error
-    // (both mean the shell/PTY is gone). `sink` is `Send + Sync`, so it is called
-    // directly from the thread.
+    let reader_done = Arc::new(AtomicBool::new(false));
     let reader_sink = Arc::clone(&sink);
-    std::thread::spawn(move || {
-        let mut reader = reader;
-        let mut buf = [0u8; READ_BUFFER_SIZE];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(count) => reader_sink.on_data(&buf[..count]),
-            }
-        }
-    });
+    let stop = Arc::clone(&reader_done);
+    std::thread::spawn(move || pump_output(reader, reader_sink.as_ref(), &stop));
 
     // Writer thread: drain keystroke chunks into the PTY. A std mpsc bridges the
     // async control task (non-blocking `send`) to the blocking writer.
@@ -472,9 +467,91 @@ async fn run_session(
     // thread by dropping its sender, and drop the master so the PTY closes and
     // the reader thread returns.
     let _ = killer.kill();
+    reader_done.store(true, Ordering::Relaxed);
     drop(write_tx);
     drop(master);
     Ok(status)
+}
+
+/// Reader thread: pump PTY output into the sink until EOF or a read error
+/// (both mean the shell/PTY is gone), or until `stop` is set. `sink` is
+/// `Send + Sync`, so it is called directly from the thread.
+fn pump_output(mut reader: PtyReader, sink: &dyn SessionSink, stop: &AtomicBool) {
+    let mut buf = [0u8; READ_BUFFER_SIZE];
+    while !stop.load(Ordering::Relaxed) {
+        match reader.read_ready(&mut buf) {
+            Ok(Some(0)) | Err(_) => break,
+            Ok(Some(count)) => sink.on_data(&buf[..count]),
+            Ok(None) => {}
+        }
+    }
+}
+
+/// The PTY's output end, owned by the reader thread. On Unix it is a copy of
+/// the master's descriptor that the thread polls, so it can let go when the
+/// session ends: the PTY only closes once every master descriptor is, and a
+/// blocked read would hold this one for as long as any child (a disowned
+/// job, or a background one under a shell that doesn't hang its jobs up)
+/// keeps the terminal open.
+#[cfg(unix)]
+struct PtyReader(std::fs::File);
+
+#[cfg(unix)]
+impl PtyReader {
+    fn open(master: &(dyn MasterPty + Send)) -> std::io::Result<Self> {
+        use std::os::fd::BorrowedFd;
+        let fd = master
+            .as_raw_fd()
+            .ok_or_else(|| std::io::Error::other("the PTY has no descriptor"))?;
+        // SAFETY: `fd` belongs to `master`, which is borrowed (so open) here.
+        let owned = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()?;
+        Ok(PtyReader(std::fs::File::from(owned)))
+    }
+
+    /// Read what is available, or `None` when nothing came within
+    /// [`READ_POLL_TIMEOUT_MS`].
+    fn read_ready(&mut self, buf: &mut [u8]) -> std::io::Result<Option<usize>> {
+        use std::os::fd::AsRawFd;
+        let mut poll_fd = libc::pollfd {
+            fd: self.0.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid `pollfd`, matching the count passed.
+        match unsafe { libc::poll(&mut poll_fd, 1, READ_POLL_TIMEOUT_MS) } {
+            0 => Ok(None),
+            ready if ready > 0 => self.0.read(buf).map(Some),
+            _ => interrupted_as_none(std::io::Error::last_os_error()),
+        }
+    }
+}
+
+/// A poll cut short by a signal is just another quiet interval.
+#[cfg(unix)]
+fn interrupted_as_none(err: std::io::Error) -> std::io::Result<Option<usize>> {
+    match err.kind() {
+        std::io::ErrorKind::Interrupted => Ok(None),
+        _ => Err(err),
+    }
+}
+
+/// On Windows the reader stays a blocking one, as before (ConPTY has no
+/// descriptor to poll).
+#[cfg(windows)]
+struct PtyReader(Box<dyn Read + Send>);
+
+#[cfg(windows)]
+impl PtyReader {
+    fn open(master: &(dyn MasterPty + Send)) -> std::io::Result<Self> {
+        let reader = master
+            .try_clone_reader()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        Ok(PtyReader(reader))
+    }
+
+    fn read_ready(&mut self, buf: &mut [u8]) -> std::io::Result<Option<usize>> {
+        self.0.read(buf).map(Some)
+    }
 }
 
 /// Owns all live local shell sessions. Lives in Tauri managed state behind an
@@ -854,8 +931,8 @@ mod tests {
     }
 
     /// A background job still holding the PTY must not keep the reader thread
-    /// (and with it the PTY) alive once the session ends: the shell, as the
-    /// PTY's session leader, takes the tty down with it.
+    /// (and with it the PTY) alive once the session ends. Disowned, so no shell
+    /// hangs it up on exit: bash would, dash (`/bin/sh` on Ubuntu) never does.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_background_job_does_not_keep_the_reader_alive() {
@@ -873,7 +950,7 @@ mod tests {
             Arc::clone(&sink) as Arc<dyn SessionSink>,
         );
         manager
-            .write_stdin("ls1", b"sleep 5 & echo JOB_STARTED\n".to_vec())
+            .write_stdin("ls1", b"sleep 5 & disown; echo JOB_STARTED\n".to_vec())
             .await;
         for _ in 0..60 {
             if sink.text().contains("JOB_STARTED\r\n") {
