@@ -44,7 +44,10 @@ files, releasing),
     - `grid.ts` / `gridModel.ts` — multi-pane grid layout
     - `terminal/` — pane, overlay, reconnect, paste, host-key dialog, terminal
       settings, `terminalReplies` (keeps xterm's own query replies / mouse
-      reports out of broadcast input)
+      reports out of broadcast input), `searchBar` (find bar over the
+      scrollback, Ctrl+Shift+F / Cmd+F), `links` (Ctrl/Cmd+click opens an
+      http(s) URL or OSC 8 link via the opener plugin), `scrollbackText`
+      ("save output": buffer → plain text + suggested file name)
     - `devices/` — device CRUD, validation, save payloads, the port-forward
       editor; the dialog is split into `deviceManager` (controller: events +
       backend calls + list), `deviceDialogTemplate` (markup), and `deviceForm`
@@ -98,12 +101,19 @@ files, releasing),
       so a second running instance picks up on-disk changes
     - `secret.rs` — OS keychain access; secrets never touch the JSON stores
     - `session.rs` — SSH shell sessions via `russh`
-    - `tunnel.rs` — SSH local (`ssh -L`) and dynamic (`ssh -D`) port
-      forwarding; reuses `session.rs`'s connect + auth + host-key-TOFU path,
-      then binds a local `TcpListener` per forward (added/removed one at a time
+    - `tunnel.rs` — SSH local (`ssh -L`), dynamic (`ssh -D`) and remote
+      (`ssh -R`) port forwarding; reuses `session.rs`'s connect + auth +
+      host-key-TOFU path, then binds a local `TcpListener` per forward (added/removed one at a time
       on the live connection; the last one removed ends it) and pumps each connection
       over a `direct-tcpip` channel (to the fixed target, or the one a dynamic
-      forward's SOCKS client names)
+      forward's SOCKS client names); a remote forward instead asks the server
+      to listen (`tcpip-forward`)
+    - `remote_forward.rs` — the remote forwards' routes (server port → local
+      target, shared with the tunnel's `SshHandler`): each `forwarded-tcpip`
+      channel is accepted only once its local target answers, and a port no
+      forward asked for is rejected; each route belongs to one forward and is
+      released with it (also on a refused or timed-out listen), which closes
+      its connections
     - `socks.rs` — server side of the SOCKS4/4a/5 handshake (no-auth,
       `CONNECT` only) for dynamic forwards; stream-generic, unit-tested
       against an in-memory pipe

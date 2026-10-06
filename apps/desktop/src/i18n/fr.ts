@@ -91,6 +91,17 @@ export const fr: Messages = {
 	"pane.paste.confirm": "Coller",
 	"pane.paste.one": "Coller {count} ligne dans le terminal ? Chaque ligne peut être exécutée comme une commande.",
 	"pane.paste.other": "Coller {count} lignes dans le terminal ? Chaque ligne peut être exécutée comme une commande.",
+	"pane.find": "Rechercher (Ctrl+Maj+F)",
+	"pane.findMac": "Rechercher (Cmd+F)",
+	"pane.search.placeholder": "Rechercher",
+	"pane.search.previous": "Occurrence précédente (Maj+Entrée)",
+	"pane.search.next": "Occurrence suivante (Entrée)",
+	"pane.search.close": "Fermer (Échap)",
+	"pane.search.none": "Aucun résultat",
+	"pane.saveOutput": "Enregistrer la sortie dans un fichier",
+	"pane.saveOutput.saved": "Sortie enregistrée dans {path}",
+	"pane.link.hint": "Ctrl+clic pour ouvrir le lien",
+	"pane.link.hintMac": "Cmd+clic pour ouvrir le lien",
 
 	/* -- settings dialog ---------------------------------------------------- */
 	"settings.title": "Paramètres",
@@ -258,6 +269,8 @@ export const fr: Messages = {
 	"validation.baudRatePositive": "Le débit en bauds doit être un nombre positif",
 	"validation.remoteHost": "L'hôte distant est requis",
 	"validation.loopback": "L'adresse locale doit être une adresse de bouclage (ex. 127.0.0.1)",
+	"validation.serverPortTaken": "Une autre redirection distante utilise déjà ce port du serveur",
+	"validation.serverHost": "L'adresse du serveur est requise",
 
 	/* -- port-forwards editor ----------------------------------------------- */
 	"forwards.title": "Redirection de ports",
@@ -271,6 +284,10 @@ export const fr: Messages = {
 	"forwards.kind.local": "Locale",
 	"forwards.kind.dynamic": "Dynamique",
 	"forwards.socksProxy": "proxy SOCKS",
+	"forwards.serverPort.placeholder": "Port du serveur",
+	"forwards.serverHost.placeholder": "Adresse du serveur",
+	"forwards.localHost.placeholder": "Hôte local",
+	"forwards.kind.remote": "Distant",
 
 	/* -- profiles ----------------------------------------------------------- */
 	"profiles.title": "Profils",
@@ -321,6 +338,8 @@ export const fr: Messages = {
 	"tunnels.copy.title": "Copier l'adresse:port locale",
 	"tunnels.copied": "Copié dans le presse-papiers",
 	"tunnels.portInUse": "port déjà utilisé",
+	"tunnels.serverRefused": "refusée par le serveur",
+	"tunnels.copy.serverTitle": "Copier l'adresse:port du serveur",
 	"tunnels.error.generic": "le tunnel s'est arrêté sur une erreur",
 	"tunnels.error.jumpRemoved": "les tunnels de {name} ont été arrêtés : son hôte relais a été supprimé",
 

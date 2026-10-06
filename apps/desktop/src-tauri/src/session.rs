@@ -45,6 +45,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::known_hosts::{KnownHost, KnownHostsStore, Verdict};
+use crate::remote_forward::{serve_forwarded, RemoteRoutes};
 
 /// Default connect (TCP + handshake reachability) timeout — SPEC.md §6.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -423,6 +424,10 @@ pub(crate) struct SshHandler {
     /// The sending half, until taken by `take_owner_token`. Kept here otherwise,
     /// so an untaken token never reads as "gone".
     owner_token: Option<HandshakeOwner>,
+    /// A tunnel's remote forwards (`ssh -R`): where the server's
+    /// `forwarded-tcpip` channels go. `None` (shells, SFTP, jump hosts) rejects
+    /// every such channel.
+    remote_routes: Option<Arc<RemoteRoutes>>,
 }
 
 /// Held by the code that awaits a handshake: dropping it tells the handler to
@@ -460,7 +465,14 @@ impl SshHandler {
             agent_channel_limit: Arc::new(Semaphore::new(MAX_AGENT_CHANNELS)),
             owner_gone,
             owner_token: Some(HandshakeOwner(owner_tx)),
+            remote_routes: None,
         }
+    }
+
+    /// Route the server's `forwarded-tcpip` channels through `routes`.
+    pub(crate) fn with_remote_routes(mut self, routes: Arc<RemoteRoutes>) -> Self {
+        self.remote_routes = Some(routes);
+        self
     }
 
     /// Take the token whose drop abandons this handler's pending host-key
@@ -615,6 +627,25 @@ impl client::Handler for SshHandler {
                     .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
                     .await;
             }
+        }
+        Ok(())
+    }
+
+    /// A connection to one of a tunnel's remote forwards (`ssh -R`); one for a
+    /// port no forward asked for is rejected.
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        _connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        match &self.remote_routes {
+            Some(routes) => serve_forwarded(routes, channel, connected_port, reply),
+            None => drop(reply),
         }
         Ok(())
     }

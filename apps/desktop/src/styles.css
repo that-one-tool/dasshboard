@@ -1010,6 +1010,80 @@ body.grid-dragging-row * {
 	--chip-dot: var(--danger);
 }
 
+/* Find / save-output: quiet ghost icons just left of the status chip, which
+ * gives up its auto margin to them. */
+.pane-tools {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	flex: 0 0 auto;
+	margin-left: auto;
+}
+
+.pane-tools + .pane-status {
+	margin-left: 0;
+}
+
+.pane-tools .btn-icon,
+.pane-search .btn-icon {
+	background-color: transparent;
+	color: var(--text-secondary);
+}
+
+.pane-tools .btn-icon:hover:not(:disabled),
+.pane-search .btn-icon:hover:not(:disabled) {
+	background-color: var(--surface-3);
+	color: var(--text-primary);
+}
+
+/* Find bar, floating over the terminal's top-right corner (clear of the
+ * scrollbar); above the status overlay so an ended session stays searchable. */
+.pane-search {
+	position: absolute;
+	top: 6px;
+	right: 1.25rem;
+	z-index: 6;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	max-width: calc(100% - 2rem);
+	padding: 4px 4px 4px 6px;
+	background-color: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	box-shadow: var(--shadow-md);
+}
+
+.pane-search[hidden] {
+	display: none;
+}
+
+.pane-search-input {
+	flex: 0 1 12rem;
+	min-width: 0;
+	padding: 4px 6px;
+	background-color: var(--surface-1);
+	color: var(--text-primary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	font-family: inherit;
+	font-size: 0.85rem;
+}
+
+.pane-search-input:focus {
+	outline: 2px solid var(--accent);
+	outline-offset: -1px;
+}
+
+.pane-search-count {
+	flex: 0 0 auto;
+	min-width: 3.5rem;
+	color: var(--text-muted);
+	font-size: 0.75rem;
+	text-align: center;
+	white-space: nowrap;
+}
+
 .pane-body {
 	position: relative;
 	flex: 1 1 auto;

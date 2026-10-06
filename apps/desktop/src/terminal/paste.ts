@@ -6,6 +6,12 @@
  */
 
 import { tp } from "../i18n";
+import { isMacPlatform, isShortcutModifier } from "../ui/keyboard";
+
+/** Ctrl+Shift+V (Cmd+Shift+V on macOS): plain Ctrl+V stays the terminal's. */
+export function isPasteShortcut(e: KeyboardEvent, mac: boolean = isMacPlatform()): boolean {
+  return e.code === "KeyV" && e.shiftKey && isShortcutModifier(e, mac);
+}
 
 /** True when the pasted text contains any newline (so it could auto-run). */
 export function isMultilinePaste(text: string): boolean {

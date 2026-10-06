@@ -48,6 +48,7 @@ vi.mock("../ipc", () => ({
   disconnect: vi.fn(async () => {}),
   writeStdin: vi.fn(async () => {}),
   resizePty: vi.fn(async () => {}),
+  saveTextFile: vi.fn(async () => {}),
   newDataChannel: vi.fn(() => ({ onmessage: null })),
   onSessionStatus: vi.fn(async (handler: (e: SessionStatusEvent) => void) => {
     h.statusHandler = handler;
@@ -58,6 +59,15 @@ vi.mock("../ipc", () => ({
 const confirmMock = vi.hoisted(() => vi.fn(async () => false));
 vi.mock("../ui/confirm", () => ({ confirm: confirmMock }));
 
+const pickTextSavePathMock = vi.hoisted(() => vi.fn(async (): Promise<string | null> => "/home/me/out.txt"));
+vi.mock("../ui/fileDialog", () => ({ pickTextSavePath: pickTextSavePathMock }));
+
+const showToastMock = vi.hoisted(() => vi.fn());
+vi.mock("../ui/toast", () => ({ showToast: showToastMock }));
+
+const openUrlMock = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
+
 // The pane picks its session id up front; pin it so status events can target it.
 beforeEach(() => {
   vi.spyOn(crypto, "randomUUID").mockReturnValue(
@@ -67,7 +77,15 @@ beforeEach(() => {
 
 // Imported after the mock is registered so the module graph uses it.
 import { TerminalPane, deviceEndpoint, deviceOptionLabel } from "./pane";
-import { connect, disconnect, listDevices, newDataChannel, resizePty, writeStdin } from "../ipc";
+import {
+  connect,
+  disconnect,
+  listDevices,
+  newDataChannel,
+  resizePty,
+  saveTextFile,
+  writeStdin,
+} from "../ipc";
 import type { Device } from "../ipc";
 import { setLocale } from "../i18n";
 
@@ -1211,5 +1229,177 @@ describe("TerminalPane device picker and device reloads", () => {
     expect(vi.mocked(disconnect)).not.toHaveBeenCalled();
     expect(pane.getDeviceId()).toBe(h.device.id);
     expect(pane.isConnected()).toBe(true);
+  });
+});
+
+describe("TerminalPane find and save output", () => {
+  beforeEach(() => {
+    h.statusHandler = null;
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    vi.mocked(saveTextFile).mockReset().mockResolvedValue(undefined);
+    pickTextSavePathMock.mockReset().mockResolvedValue("/home/me/out.txt");
+    showToastMock.mockClear();
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  async function newPane(): Promise<{ root: HTMLElement; pane: TerminalPane }> {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+    return { root, pane };
+  }
+
+  async function connectPane(pane: TerminalPane): Promise<void> {
+    await (pane as unknown as { startSession(): Promise<void> }).startSession();
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+  }
+
+  it("disables find and save until a terminal exists", async () => {
+    const { root, pane } = await newPane();
+    expect(q<HTMLButtonElement>(root, ".pane-find").disabled).toBe(true);
+    expect(q<HTMLButtonElement>(root, ".pane-save-output").disabled).toBe(true);
+    await connectPane(pane);
+    expect(q<HTMLButtonElement>(root, ".pane-find").disabled).toBe(false);
+    expect(q<HTMLButtonElement>(root, ".pane-save-output").disabled).toBe(false);
+  });
+
+  it("opens the find bar from its header button", async () => {
+    const { root, pane } = await newPane();
+    await connectPane(pane);
+    q<HTMLButtonElement>(root, ".pane-find").click();
+    expect(q<HTMLElement>(root, ".pane-search").hidden).toBe(false);
+  });
+
+  it("keeps find and save usable once the session has ended", async () => {
+    const { root, pane } = await newPane();
+    await connectPane(pane);
+    h.statusHandler?.({ sessionId: h.sessionId, status: "exited" });
+    expect(q<HTMLButtonElement>(root, ".pane-find").disabled).toBe(false);
+    expect(q<HTMLButtonElement>(root, ".pane-save-output").disabled).toBe(false);
+  });
+
+  it("saves the output to the picked file, named after the device", async () => {
+    const { root, pane } = await newPane();
+    await connectPane(pane);
+    q<HTMLButtonElement>(root, ".pane-save-output").click();
+    await flush();
+    expect(pickTextSavePathMock).toHaveBeenCalledWith(expect.stringMatching(/^NAS-.*\.txt$/));
+    expect(saveTextFile).toHaveBeenCalledWith("/home/me/out.txt", expect.any(String));
+    expect(showToastMock).toHaveBeenCalledWith(expect.stringContaining("/home/me/out.txt"), "success");
+  });
+
+  it("writes nothing when the save dialog is cancelled", async () => {
+    pickTextSavePathMock.mockResolvedValue(null);
+    const { root, pane } = await newPane();
+    await connectPane(pane);
+    q<HTMLButtonElement>(root, ".pane-save-output").click();
+    await flush();
+    expect(saveTextFile).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed save", async () => {
+    vi.mocked(saveTextFile).mockRejectedValue({ code: "Io", message: "disk full" });
+    const onError = vi.fn();
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { onError });
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+    await connectPane(pane);
+    q<HTMLButtonElement>(root, ".pane-save-output").click();
+    await flush();
+    expect(onError).toHaveBeenCalledWith("disk full");
+  });
+});
+
+describe("TerminalPane terminal keys, links and copy-on-select", () => {
+  const writeText = vi.fn(async () => {});
+
+  beforeEach(() => {
+    h.statusHandler = null;
+    writeText.mockClear();
+    openUrlMock.mockClear();
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText, writeText },
+    });
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  type Internals = {
+    terminal: import("@xterm/xterm").Terminal;
+    startSession(): Promise<void>;
+  };
+
+  async function connectedPane(): Promise<{ root: HTMLElement; pane: TerminalPane; terminal: Internals["terminal"] }> {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+    await (pane as unknown as Internals).startSession();
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    const terminal = (pane as unknown as Internals).terminal;
+    await new Promise<void>((resolve) => terminal.write("hello world", resolve));
+    return { root, pane, terminal };
+  }
+
+  const nextTask = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("opens the find bar on Ctrl+Shift+F typed in the terminal", async () => {
+    const { root } = await connectedPane();
+    const key = new KeyboardEvent("keydown", {
+      code: "KeyF",
+      key: "F",
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    q<HTMLElement>(root, ".xterm-helper-textarea").dispatchEvent(key);
+    expect(q<HTMLElement>(root, ".pane-search").hidden).toBe(false);
+  });
+
+  it("opens OSC 8 links through the same Ctrl+click rule", async () => {
+    const { terminal } = await connectedPane();
+    const handler = terminal.options.linkHandler;
+    const range = { start: { x: 1, y: 1 }, end: { x: 5, y: 1 } };
+    handler?.activate(new MouseEvent("click"), "https://example.com", range);
+    handler?.activate(new MouseEvent("click", { ctrlKey: true }), "https://example.com", range);
+    expect(openUrlMock).toHaveBeenCalledTimes(1);
+    expect(openUrlMock).toHaveBeenCalledWith("https://example.com");
+  });
+
+  it("copies a mouse selection once the button is released", async () => {
+    const { root, terminal } = await connectedPane();
+    q<HTMLElement>(root, ".pane-terminal").dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    terminal.select(0, 0, 5);
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    await nextTask();
+    expect(writeText).toHaveBeenCalledWith("hello");
+  });
+
+  it("never copies a selection the search makes", async () => {
+    const { root, terminal } = await connectedPane();
+    q<HTMLButtonElement>(root, ".pane-find").click();
+    const input = q<HTMLInputElement>(root, ".pane-search-input");
+    input.value = "world";
+    input.dispatchEvent(new Event("input"));
+    terminal.select(6, 0, 5); // what the search addon does for a match
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    await nextTask();
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("stops listening for mouse releases once disposed", async () => {
+    const { root, pane, terminal } = await connectedPane();
+    q<HTMLElement>(root, ".pane-terminal").dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    terminal.select(0, 0, 5);
+    pane.dispose();
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    await nextTask();
+    expect(writeText).not.toHaveBeenCalled();
   });
 });

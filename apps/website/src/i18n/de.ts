@@ -47,7 +47,7 @@ export const de: SiteMessages = {
 			},
 			{
 				title: "Tunnel & Jump-Hosts",
-				body: "Lokale (ssh -L) und dynamische SOCKS-Portweiterleitung (ssh -D) mit Start/Stopp aus der Seitenleiste, ProxyJump über einen gespeicherten Bastion-Host und optionale Agent-Weiterleitung.",
+				body: "Lokale (ssh -L), Remote- (ssh -R) und dynamische SOCKS-Portweiterleitung (ssh -D) mit Start/Stopp aus der Seitenleiste, ProxyJump über einen gespeicherten Bastion-Host und optionale Agent-Weiterleitung.",
 			},
 			{
 				title: "SFTP-Dateibrowser",
@@ -59,7 +59,7 @@ export const de: SiteMessages = {
 			},
 			{
 				title: "Für den Alltag gemacht",
-				body: "Automatische Wiederverbindung mit Backoff, Keepalives, Befehle beim Verbinden, Eingabe-Broadcast, Dunkel/Hell-Umschalter mit einem Klick und eine Oberfläche in 7 Sprachen.",
+				body: "Automatische Wiederverbindung mit Backoff, Keepalives, Befehle beim Verbinden, Eingabe-Broadcast, Suchen und Speichern des Terminalverlaufs, klickbare Links, Dunkel/Hell-Umschalter mit einem Klick und eine Oberfläche in 7 Sprachen.",
 			},
 		],
 	},
@@ -111,7 +111,7 @@ export const de: SiteMessages = {
 				title: "Tunnel und Jump-Hosts, ohne Kommandozeilenoptionen",
 				body: "Definieren Sie die Portweiterleitungen eines Geräts einmal und starten oder stoppen Sie sie dann über die Tunnel-Karte in der Seitenleiste. Erreichen Sie private Hosts über einen gespeicherten Bastion-Host.",
 				points: [
-					"Lokale (ssh -L) und dynamische SOCKS-Weiterleitungen (ssh -D) mit Autostart",
+					"Lokale (ssh -L), Remote- (ssh -R) und dynamische SOCKS-Weiterleitungen (ssh -D) mit Autostart",
 					"ProxyJump (ssh -J) über ein gespeichertes Gerät",
 					"Optionale Agent-Weiterleitung (ssh -A)",
 					"Live-Status für jede Weiterleitung",

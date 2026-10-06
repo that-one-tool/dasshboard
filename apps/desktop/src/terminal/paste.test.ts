@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isMultilinePaste, lineCount, pasteConfirmMessage } from "./paste";
+import { isMultilinePaste, isPasteShortcut, lineCount, pasteConfirmMessage } from "./paste";
 
 describe("isMultilinePaste", () => {
   it("is false for a single line without a newline", () => {
@@ -28,5 +28,20 @@ describe("pasteConfirmMessage", () => {
   it("pluralizes and includes the line count", () => {
     expect(pasteConfirmMessage("a\nb")).toContain("2 lines");
     expect(pasteConfirmMessage("a\n")).toContain("1 line");
+  });
+});
+
+describe("isPasteShortcut", () => {
+  const key = (mods: Partial<KeyboardEvent>) =>
+    ({ ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, code: "KeyV", ...mods }) as KeyboardEvent;
+
+  it("is Ctrl+Shift+V, or Cmd+Shift+V on macOS", () => {
+    expect(isPasteShortcut(key({ ctrlKey: true, shiftKey: true }), false)).toBe(true);
+    expect(isPasteShortcut(key({ metaKey: true, shiftKey: true }), true)).toBe(true);
+  });
+
+  it("leaves plain Ctrl+V (a literal-next in the shell) to the terminal", () => {
+    expect(isPasteShortcut(key({ ctrlKey: true }), false)).toBe(false);
+    expect(isPasteShortcut(key({ ctrlKey: true, shiftKey: true, code: "KeyC" }), false)).toBe(false);
   });
 });

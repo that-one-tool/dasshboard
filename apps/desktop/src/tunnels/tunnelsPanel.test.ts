@@ -28,6 +28,7 @@ import {
   tunnelableDevices,
   statusLabel,
   forwardEndpoint,
+  copyTarget,
   forwardState,
   listeningForwardCount,
   forwardIdsToRun,
@@ -104,6 +105,25 @@ describe("pure helpers", () => {
         remotePort: 6543,
       }),
     ).toBe("127.0.0.1:5432 → db:6543");
+  });
+
+  it("forwardEndpoint shows a remote forward as local ← server", () => {
+    expect(
+      forwardEndpoint({
+        kind: "remote",
+        localAddr: "127.0.0.1",
+        localPort: 3000,
+        remoteHost: "localhost",
+        remotePort: 8080,
+      }),
+    ).toBe("127.0.0.1:3000 ← localhost:8080");
+  });
+
+  it("copyTarget is the local end, or the server's for a remote forward", () => {
+    expect(copyTarget(forward("f1", 5432))).toBe("127.0.0.1:5432");
+    expect(copyTarget({ ...forward("f1", 3000), kind: "remote", remoteHost: "localhost", remotePort: 8080 })).toBe(
+      "localhost:8080",
+    );
   });
 
   it("forwardEndpoint shows a dynamic forward as a SOCKS proxy", () => {
@@ -338,6 +358,21 @@ describe("TunnelsPanel", () => {
       ],
     });
     expect(document.querySelector(".tunnel-forward.is-unbound")).not.toBeNull();
+  });
+
+  it("says the server refused a remote forward it couldn't start", async () => {
+    const remote: Forward = { ...forward("f1", 3000), kind: "remote", remoteHost: "localhost", remotePort: 8080 };
+    h.devices = [sshDevice("dev-1", "NAS", [remote])];
+    const panel = new TunnelsPanel();
+    await panel.init();
+    const copy = document.querySelector<HTMLButtonElement>(".tunnel-forward .tunnel-copy")!;
+    expect(copy.title).toBe("Copy the server address:port");
+    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
+    await flush();
+    h.statusHandler!({ tunnelId: "t1", status: "listening", forwards: [bound("f1", false)] });
+    const dot = document.querySelector<HTMLElement>(".tunnel-forward-dot")!;
+    expect(dot.getAttribute("aria-label")).toBe("refused by the server");
+    expect(document.querySelector(".tunnel-forward-warn")!.textContent).toBe("refused by the server");
   });
 
   it("auto-starts a flagged device's tunnel on launch", async () => {

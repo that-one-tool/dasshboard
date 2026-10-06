@@ -18,7 +18,8 @@
 //! This is a Cargo integration test (`tests/`), so it drives `dasshboard_lib`
 //! through its public API rather than reaching into private internals.
 
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use russh::keys::{HashAlg, PrivateKey};
@@ -81,6 +82,28 @@ struct TestServer {
     /// When set, echoed bytes go back in packets of at most this many bytes
     /// (a chatty remote); `None` echoes each received chunk as one packet.
     echo_chunk: Option<usize>,
+    /// `ssh -R` misbehaviours: listen but answer "refused" (as a grant that
+    /// arrives after the client gave up looks), and never answer a cancel.
+    refuse_remote_listen: bool,
+    stall_cancel: bool,
+    /// When set, the server opens a `forwarded-tcpip` channel the client never
+    /// asked for (on shell request, or for the port after a granted one) and
+    /// reports whether the client accepted it.
+    forward_probe: Option<mpsc::UnboundedSender<bool>>,
+}
+
+impl TestServer {
+    fn new(password: &str) -> Self {
+        TestServer {
+            password: password.to_string(),
+            bridge_direct_tcpip: false,
+            agent_probe: None,
+            echo_chunk: None,
+            refuse_remote_listen: false,
+            stall_cancel: false,
+            forward_probe: None,
+        }
+    }
 }
 
 impl server::Server for TestServer {
@@ -91,6 +114,11 @@ impl server::Server for TestServer {
             bridge_direct_tcpip: self.bridge_direct_tcpip,
             agent_probe: self.agent_probe.clone(),
             echo_chunk: self.echo_chunk,
+            refuse_remote_listen: self.refuse_remote_listen,
+            stall_cancel: self.stall_cancel,
+            forward_probe: self.forward_probe.clone(),
+            remote_listeners: HashMap::new(),
+            forwarded: Arc::default(),
         }
     }
 }
@@ -100,6 +128,62 @@ struct TestServerHandler {
     bridge_direct_tcpip: bool,
     agent_probe: Option<mpsc::UnboundedSender<bool>>,
     echo_chunk: Option<usize>,
+    refuse_remote_listen: bool,
+    stall_cancel: bool,
+    forward_probe: Option<mpsc::UnboundedSender<bool>>,
+    /// `ssh -R`: one real listener per granted `tcpip-forward`, by port.
+    remote_listeners: HashMap<u32, tokio::task::JoinHandle<()>>,
+    /// The `forwarded-tcpip` channels opened back to the client: their bytes
+    /// are bridged to the server-side connection, never echoed.
+    forwarded: Arc<Mutex<HashSet<ChannelId>>>,
+}
+
+/// Like OpenSSH, stop listening for a client's remote forwards once it's gone.
+impl Drop for TestServerHandler {
+    fn drop(&mut self) {
+        for listener in self.remote_listeners.values() {
+            listener.abort();
+        }
+    }
+}
+
+/// Open a `forwarded-tcpip` channel for `port` and report whether the client
+/// accepted it (it should only accept one for a port it asked for).
+fn probe_forwarded(handle: server::Handle, port: u32, probe: mpsc::UnboundedSender<bool>) {
+    tokio::spawn(async move {
+        let opened = handle
+            .channel_open_forwarded_tcpip("localhost", port, "127.0.0.1", 40000)
+            .await;
+        let _ = probe.send(opened.is_ok());
+    });
+}
+
+/// Accept connections on a granted remote forward's port and carry each one
+/// over a `forwarded-tcpip` channel to the client; a channel the client
+/// refuses drops the connection.
+async fn serve_remote_forward(
+    listener: TcpListener,
+    handle: server::Handle,
+    address: String,
+    port: u32,
+    forwarded: Arc<Mutex<HashSet<ChannelId>>>,
+) {
+    while let Ok((mut tcp, peer)) = listener.accept().await {
+        let opened = handle
+            .channel_open_forwarded_tcpip(
+                address.clone(),
+                port,
+                peer.ip().to_string(),
+                u32::from(peer.port()),
+            )
+            .await;
+        let Ok(channel) = opened else { continue };
+        forwarded.lock().unwrap().insert(channel.id());
+        tokio::spawn(async move {
+            let mut stream = channel.into_stream();
+            let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
+        });
+    }
 }
 
 impl server::Handler for TestServerHandler {
@@ -165,6 +249,46 @@ impl server::Handler for TestServerHandler {
         Ok(())
     }
 
+    /// A real `ssh -R` listen on loopback; a port already taken is refused.
+    async fn tcpip_forward(
+        &mut self,
+        address: &str,
+        port: &mut u32,
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        let Ok(listener) = TcpListener::bind(("127.0.0.1", *port as u16)).await else {
+            return Ok(false);
+        };
+        let task = tokio::spawn(serve_remote_forward(
+            listener,
+            session.handle(),
+            address.to_string(),
+            *port,
+            Arc::clone(&self.forwarded),
+        ));
+        self.remote_listeners.insert(*port, task);
+        if let Some(probe) = &self.forward_probe {
+            probe_forwarded(session.handle(), *port + 1, probe.clone());
+        }
+        Ok(!self.refuse_remote_listen)
+    }
+
+    async fn cancel_tcpip_forward(
+        &mut self,
+        _address: &str,
+        port: u32,
+        _session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        if self.stall_cancel {
+            // Blocks this connection's server loop: a server that stopped answering.
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+        if let Some(listener) = self.remote_listeners.remove(&port) {
+            listener.abort();
+        }
+        Ok(true)
+    }
+
     async fn pty_request(
         &mut self,
         channel: ChannelId,
@@ -192,6 +316,9 @@ impl server::Handler for TestServerHandler {
         // test observes as a timeout (⇒ rejected).
         if self.agent_probe.is_some() {
             session.channel_open_agent()?;
+        }
+        if let Some(probe) = &self.forward_probe {
+            probe_forwarded(session.handle(), 8080, probe.clone());
         }
         Ok(())
     }
@@ -222,7 +349,7 @@ impl server::Handler for TestServerHandler {
         // echoing them back here would loop the target's SSH handshake into the
         // client's stream and corrupt it. Only the plain (target) server echoes,
         // standing in for a shell's tty.
-        if self.bridge_direct_tcpip {
+        if self.bridge_direct_tcpip || self.forwarded.lock().unwrap().contains(&channel) {
             return Ok(());
         }
         // Standing in for a shell's `exit [code]`: end the channel the way
@@ -289,10 +416,9 @@ async fn spawn_full_server(
     inactivity: Duration,
 ) -> u16 {
     let server = TestServer {
-        password: password.to_string(),
         bridge_direct_tcpip,
         agent_probe,
-        echo_chunk: None,
+        ..TestServer::new(password)
     };
     spawn_server(server, server_config(inactivity)).await
 }
@@ -302,10 +428,8 @@ async fn spawn_full_server(
 /// mid-way, and echoes every received chunk back as a burst of tiny packets.
 async fn spawn_flooding_echo_server(password: &str) -> u16 {
     let server = TestServer {
-        password: password.to_string(),
-        bridge_direct_tcpip: false,
-        agent_probe: None,
         echo_chunk: Some(64),
+        ..TestServer::new(password)
     };
     let config = server::Config {
         window_size: 16 * 1024,
@@ -2223,4 +2347,300 @@ async fn tunnel_bind_failure_errors_and_cleans_up() {
     }
     assert_eq!(manager.tunnel_count(), 0, "a failed tunnel must not leak");
     drop(occupied);
+}
+
+/* ------------------------------------------------------------------------- *
+ * Remote forwards (`ssh -R`)
+ * ------------------------------------------------------------------------- */
+
+/// The server listens on `server_port`; connections go to `local_port` here.
+fn remote_forward(id: &str, server_port: u16, local_port: u16) -> Forward {
+    Forward {
+        id: id.to_string(),
+        name: id.to_string(),
+        kind: ForwardKind::Remote,
+        local_addr: "127.0.0.1".to_string(),
+        local_port,
+        remote_host: "localhost".to_string(),
+        remote_port: server_port,
+    }
+}
+
+struct RemoteTunnel {
+    manager: Arc<TunnelManager>,
+    chans: TunnelSinkChannels,
+    _dir: tempfile::TempDir,
+}
+
+fn start_remote_tunnel(port: u16, dir: tempfile::TempDir, forwards: Vec<Forward>) -> RemoteTunnel {
+    seed_trusted(dir.path(), port);
+    let manager = tunnel_manager_with(dir.path());
+    let (sink, chans) = new_tunnel_sink();
+    manager.spawn_tunnel(
+        "t1".to_string(),
+        TunnelParams {
+            device_id: "dev-1".to_string(),
+            host: "127.0.0.1".to_string(),
+            port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            forwards,
+            keepalive: KeepaliveConfig::disabled(),
+            jump: None,
+        },
+        sink,
+    );
+    RemoteTunnel {
+        manager,
+        chans,
+        _dir: dir,
+    }
+}
+
+async fn remote_tunnel(forwards: Vec<Forward>) -> RemoteTunnel {
+    let port = spawn_test_server(TEST_PASSWORD).await;
+    start_remote_tunnel(port, tempfile::tempdir().unwrap(), forwards)
+}
+
+/// Wait until nothing accepts on `port` any more.
+async fn await_port_closed(port: u16) {
+    for _ in 0..50 {
+        if TcpStream::connect(("127.0.0.1", port)).await.is_err() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("port {port} must stop accepting");
+}
+
+/// A connection to the server's port reaches the local service through the
+/// tunnel; stopping the tunnel ends the server's listen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_forward_carries_server_connections_to_the_local_target() {
+    let echo_port = spawn_echo_service().await;
+    let server_port = free_local_port().await;
+    let mut tunnel = remote_tunnel(vec![remote_forward("r1", server_port, echo_port)]).await;
+
+    let forwards = await_listening(&mut tunnel.chans.status_rx).await;
+    assert!(forwards[0].bound, "the server must grant the listen");
+    assert_eq!(forwards[0].remote_port, server_port);
+    let mut stream = connect_local(server_port).await;
+    assert_echoes(&mut stream).await;
+    drop(stream);
+
+    tunnel.manager.stop_tunnel("t1").await;
+    await_no_tunnels(&tunnel.manager).await;
+    await_port_closed(server_port).await;
+}
+
+/// A local target that refuses the connection: the server's client sees its
+/// connection closed, and the forward keeps serving.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_forward_to_a_closed_local_target_drops_the_connection() {
+    use tokio::io::AsyncReadExt;
+
+    let closed_port = free_local_port().await;
+    let server_port = free_local_port().await;
+    let mut tunnel = remote_tunnel(vec![remote_forward("r1", server_port, closed_port)]).await;
+    await_listening(&mut tunnel.chans.status_rx).await;
+
+    let mut stream = connect_local(server_port).await;
+    let mut buf = [0u8; 1];
+    let read = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buf))
+        .await
+        .expect("the connection must close within 10s");
+    assert_eq!(read.unwrap_or(0), 0, "no bytes: the connection is closed");
+    assert_eq!(tunnel.manager.tunnel_count(), 1);
+}
+
+/// A server that refuses the listen (port taken there) reports the forward
+/// unbound; the tunnel's other forwards keep running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_forward_refused_by_the_server_is_reported_unbound() {
+    let taken = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let taken_port = taken.local_addr().unwrap().port();
+    let local_port = free_local_port().await;
+    let mut tunnel = remote_tunnel(vec![
+        echo_forward("f1", local_port),
+        remote_forward("r1", taken_port, 9),
+    ])
+    .await;
+
+    let forwards = await_listening(&mut tunnel.chans.status_rx).await;
+    let bound: Vec<(&str, bool)> = forwards
+        .iter()
+        .map(|f| (f.forward_id.as_str(), f.bound))
+        .collect();
+    assert_eq!(bound, [("f1", true), ("r1", false)]);
+    drop(taken);
+}
+
+/// Removing a remote forward from a live tunnel cancels the server's listen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removing_a_remote_forward_stops_the_server_listening() {
+    let echo_port = spawn_echo_service().await;
+    let (local_port, server_port) = (free_local_port().await, free_local_port().await);
+    let mut tunnel = remote_tunnel(vec![
+        echo_forward("f1", local_port),
+        remote_forward("r1", server_port, echo_port),
+    ])
+    .await;
+    await_listening(&mut tunnel.chans.status_rx).await;
+    let mut stream = connect_local(server_port).await;
+    assert_echoes(&mut stream).await;
+
+    tunnel.manager.remove_forward("t1", "r1".to_string()).await;
+    let forwards = await_listening(&mut tunnel.chans.status_rx).await;
+    assert_eq!(forwards.len(), 1);
+    await_port_closed(server_port).await;
+    // Its open connection is closed too, as for a removed local forward.
+    let mut buf = [0u8; 1];
+    let read = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::io::AsyncReadExt::read(&mut stream, &mut buf),
+    )
+    .await
+    .expect("the open connection must close within 10s");
+    assert_eq!(read.unwrap_or(0), 0);
+}
+
+async fn spawn_remote_test_server(configure: impl FnOnce(&mut TestServer)) -> u16 {
+    let mut server = TestServer::new(TEST_PASSWORD);
+    configure(&mut server);
+    spawn_server(server, server_config(Duration::from_secs(30))).await
+}
+
+/// A listen the server granted after reporting it refused (or past the
+/// client's timeout) must not carry connections: the forward reads as not
+/// running, so nothing may reach its local target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_remote_forward_carries_no_connections() {
+    use tokio::io::AsyncReadExt;
+
+    let echo_port = spawn_echo_service().await;
+    let (local_port, server_port) = (free_local_port().await, free_local_port().await);
+    let port = spawn_remote_test_server(|s| s.refuse_remote_listen = true).await;
+    let mut tunnel = start_remote_tunnel(
+        port,
+        tempfile::tempdir().unwrap(),
+        vec![
+            echo_forward("f1", local_port),
+            remote_forward("r1", server_port, echo_port),
+        ],
+    );
+    let forwards = await_listening(&mut tunnel.chans.status_rx).await;
+    assert!(!forwards[1].bound);
+
+    let mut stream = connect_local(server_port).await;
+    tokio::io::AsyncWriteExt::write_all(&mut stream, b"PING\n")
+        .await
+        .unwrap();
+    let mut buf = [0u8; 5];
+    let read = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buf))
+        .await
+        .expect("the connection must close within 10s");
+    assert_eq!(
+        read.unwrap_or(0),
+        0,
+        "an unrouted connection must be dropped"
+    );
+}
+
+/// Only a tunnel routes `forwarded-tcpip` channels: a shell rejects them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shell_connection_rejects_forwarded_tcpip_channels() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let port = spawn_remote_test_server(|s| s.forward_probe = Some(tx)).await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let (sink, _chans) = new_sink();
+    spawn_pw_session(&manager, "s1", port, sink);
+
+    let accepted = recv_timeout(&mut rx, Duration::from_secs(10))
+        .await
+        .expect("the probe must get an answer");
+    assert!(!accepted, "a shell must reject a forwarded-tcpip channel");
+}
+
+/// A tunnel accepts `forwarded-tcpip` only for the ports its forwards asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tunnel_rejects_forwarded_tcpip_for_a_port_no_forward_asked_for() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let echo_port = spawn_echo_service().await;
+    let server_port = free_local_port().await;
+    let port = spawn_remote_test_server(|s| s.forward_probe = Some(tx)).await;
+    let mut tunnel = start_remote_tunnel(
+        port,
+        tempfile::tempdir().unwrap(),
+        vec![remote_forward("r1", server_port, echo_port)],
+    );
+    await_listening(&mut tunnel.chans.status_rx).await;
+
+    let accepted = recv_timeout(&mut rx, Duration::from_secs(10))
+        .await
+        .expect("the probe must get an answer");
+    assert!(
+        !accepted,
+        "the port after the granted one was never asked for"
+    );
+}
+
+/// Through a jump host, the target's connection still routes the server's
+/// connections back to the local target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_forward_works_through_a_jump_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let target_port = spawn_test_server(TEST_PASSWORD).await;
+    let jump_port = spawn_jump_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), target_port);
+    seed_trusted(dir.path(), jump_port);
+    let manager = tunnel_manager_with(dir.path());
+    let (echo_port, server_port) = (spawn_echo_service().await, free_local_port().await);
+
+    let (sink, mut chans) = new_tunnel_sink();
+    manager.spawn_tunnel(
+        "t1".to_string(),
+        TunnelParams {
+            device_id: "dev-1".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: target_port,
+            username: TEST_USER.to_string(),
+            creds: password_creds(),
+            forwards: vec![remote_forward("r1", server_port, echo_port)],
+            keepalive: KeepaliveConfig::disabled(),
+            jump: Some(jump_hop(jump_port, TEST_PASSWORD)),
+        },
+        sink,
+    );
+    assert!(await_listening(&mut chans.status_rx).await[0].bound);
+    let mut stream = connect_local(server_port).await;
+    assert_echoes(&mut stream).await;
+}
+
+/// Ending a tunnel doesn't wait on the server to cancel each remote forward:
+/// closing the connection ends its listens anyway.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_a_tunnel_does_not_wait_on_an_unresponsive_server() {
+    let echo_port = spawn_echo_service().await;
+    let (first, second) = (free_local_port().await, free_local_port().await);
+    let port = spawn_remote_test_server(|s| s.stall_cancel = true).await;
+    let mut tunnel = start_remote_tunnel(
+        port,
+        tempfile::tempdir().unwrap(),
+        vec![
+            remote_forward("r1", first, echo_port),
+            remote_forward("r2", second, echo_port),
+        ],
+    );
+    await_listening(&mut tunnel.chans.status_rx).await;
+
+    let started = std::time::Instant::now();
+    tunnel.manager.stop_tunnel("t1").await;
+    await_no_tunnels(&tunnel.manager).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "stop took {:?}",
+        started.elapsed()
+    );
 }

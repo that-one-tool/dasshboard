@@ -47,7 +47,7 @@ export const en = {
 			},
 			{
 				title: "Tunnels & jump hosts",
-				body: "Local (ssh -L) and dynamic SOCKS (ssh -D) port forwarding with start/stop from the sidebar, ProxyJump through a saved bastion, and opt-in agent forwarding.",
+				body: "Local (ssh -L), remote (ssh -R) and dynamic SOCKS (ssh -D) port forwarding with start/stop from the sidebar, ProxyJump through a saved bastion, and opt-in agent forwarding.",
 			},
 			{
 				title: "SFTP file browser",
@@ -59,7 +59,7 @@ export const en = {
 			},
 			{
 				title: "Made to live in",
-				body: "Auto-reconnect with backoff, keepalives, commands on connect, broadcast input, a one-click dark/light theme toggle, and a UI in 7 languages.",
+				body: "Auto-reconnect with backoff, keepalives, commands on connect, broadcast input, search and save the scrollback, clickable links, a one-click dark/light theme toggle, and a UI in 7 languages.",
 			},
 		],
 	},
@@ -111,7 +111,7 @@ export const en = {
 				title: "Tunnels and jump hosts, without the flags",
 				body: "Define port forwards on a device once, then start and stop them from the Tunnels card in the sidebar. Reach private hosts through a saved bastion.",
 				points: [
-					"Local (ssh -L) and dynamic SOCKS (ssh -D) forwards with auto-start",
+					"Local (ssh -L), remote (ssh -R) and dynamic SOCKS (ssh -D) forwards with auto-start",
 					"ProxyJump (ssh -J) through a saved device",
 					"Opt-in agent forwarding (ssh -A)",
 					"Live status for every forward",

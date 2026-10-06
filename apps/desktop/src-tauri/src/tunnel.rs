@@ -1,4 +1,4 @@
-//! SSH port-forwarding (`ssh -L` / `ssh -D`) — the tunnel analogue of `session.rs`
+//! SSH port-forwarding (`ssh -L` / `ssh -D` / `ssh -R`) — the tunnel analogue of `session.rs`
 //! (SPEC tunnels §2). A [`TunnelManager`] owns a `HashMap<TunnelId, TunnelHandle>`,
 //! one `tokio` task per live tunnel, and reuses `session.rs`'s connect + auth +
 //! host-key-TOFU path verbatim, jump host included ([`establish_target`]). It
@@ -7,7 +7,10 @@
 //! accepted connection
 //! over a `direct-tcpip` channel to `remoteHost:remotePort` (resolved from the
 //! SSH server) — or, for a dynamic forward (`ssh -D`), to whatever target the
-//! connection's SOCKS request names (see `socks.rs`).
+//! connection's SOCKS request names (see `socks.rs`). A remote forward
+//! (`ssh -R`) binds nothing here: it asks the server to listen, and the
+//! connections the server sends back are dialed to its local target (see
+//! `remote_forward.rs`).
 //!
 //! **Like `session.rs`, this module is deliberately Tauri-free.** All
 //! frontend-facing effects go through the [`TunnelSink`] trait, whose production
@@ -48,6 +51,7 @@ use tokio::time::MissedTickBehavior;
 use crate::device::{Forward, ForwardKind};
 use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
+use crate::remote_forward::RemoteRoutes;
 use crate::session::{
     close_jump, establish_target, AuthCredentials, Endpoint, HostKeyPromptPayload, JumpHop,
     KeepaliveConfig, PromptRegistry, SessionSink, SessionStatus, SshHandler,
@@ -323,6 +327,7 @@ impl TunnelManager {
             },
         );
 
+        let routes = Arc::new(RemoteRoutes::default());
         let handler = SshHandler::new(
             Arc::new(HandshakeSink(Arc::clone(&sink))),
             Arc::clone(&self.known_hosts),
@@ -333,7 +338,8 @@ impl TunnelManager {
             params.keepalive,
             // Tunnels never forward the SSH agent.
             false,
-        );
+        )
+        .with_remote_routes(Arc::clone(&routes));
         let manager = Arc::clone(self);
         let connect_timeout = self.connect_timeout;
         let overall_timeout = self.overall_establish_timeout();
@@ -348,6 +354,7 @@ impl TunnelManager {
             let result = run_tunnel(
                 params,
                 handler,
+                routes,
                 connect_timeout,
                 overall_timeout,
                 publisher,
@@ -451,6 +458,7 @@ fn lock_snapshot(snapshot: &ForwardSnapshot) -> std::sync::MutexGuard<'_, Tunnel
 async fn run_tunnel(
     params: TunnelParams,
     mut handler: SshHandler,
+    routes: Arc<RemoteRoutes>,
     connect_timeout: Duration,
     overall_timeout: Duration,
     publisher: Publisher,
@@ -493,15 +501,15 @@ async fn run_tunnel(
 
     let handle = Arc::new(handle);
 
-    // Bind a listener per forward; a failure on one is non-fatal to the others.
-    let mut active = ActiveForwards::new(Arc::clone(&handle));
+    // Bind each forward; a failure on one is non-fatal to the others.
+    let mut active = ActiveForwards::new(Arc::clone(&handle), routes);
     for forward in &forwards {
         active.add(forward).await;
     }
 
     if !active.any_bound() {
         return Err(AppError::TunnelBind(
-            "none of the tunnel's local ports could be bound".to_string(),
+            "none of the tunnel's forwards could be started".to_string(),
         ));
     }
 
@@ -571,31 +579,92 @@ const TRANSPORT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// descriptors), so a transient failure doesn't end the forward or spin.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(250);
 
-/// One forward a live tunnel serves: its reported status plus, when its local
-/// port bound, the accept-loop task listening on it.
-struct ActiveForward {
-    status: ForwardStatus,
-    listener: Option<JoinHandle<()>>,
+/// How long the server gets to answer a remote forward's listen (or cancel)
+/// request before the forward is reported unbound.
+const SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What keeps a started forward serving. Each kind cleans up when dropped, so
+/// a forward dropped without `release` (e.g. its tunnel task aborted, or a
+/// refused request) never leaves a port bound or connections routed.
+enum Binding {
+    /// `-L` / `-D`: the accept loop on the local port.
+    Listener(LocalListener),
+    /// `-R`: the server listens; its connections are routed here.
+    Server(ServerListen),
 }
 
-impl ActiveForward {
+/// A local forward's accept-loop task. A dropped `JoinHandle` detaches rather
+/// than aborts, hence the `Drop`.
+struct LocalListener(JoinHandle<()>);
+
+impl LocalListener {
     /// Abort the accept loop and wait for it to drop its socket, so the port is
     /// free again by the time the change is reported.
-    async fn release(mut self) {
-        if let Some(listener) = self.listener.take() {
-            listener.abort();
-            let _ = listener.await;
-        }
+    async fn stop(mut self) {
+        self.0.abort();
+        let _ = (&mut self.0).await;
     }
 }
 
-/// A dropped `JoinHandle` detaches rather than aborts, so a forward dropped
-/// without `release` (e.g. its tunnel task aborted) must not leave its port
-/// bound.
-impl Drop for ActiveForward {
+impl Drop for LocalListener {
     fn drop(&mut self) {
-        if let Some(listener) = &self.listener {
-            listener.abort();
+        self.0.abort();
+    }
+}
+
+/// A remote forward's listen on the server, on `address:port`, and its route
+/// (owned by forward `owner`), released when this is dropped.
+struct ServerListen {
+    address: String,
+    port: u16,
+    owner: String,
+    routes: Arc<RemoteRoutes>,
+}
+
+impl ServerListen {
+    /// Stop routing first, so open connections close right away; then, unless
+    /// the whole connection is closing (which ends every listen anyway), ask
+    /// the server to stop listening.
+    async fn stop(self, handle: &client::Handle<SshHandler>, cancel_on_server: bool) {
+        self.routes.release(self.port, &self.owner);
+        if cancel_on_server {
+            let cancel = handle.cancel_tcpip_forward(self.address.clone(), u32::from(self.port));
+            let _ = tokio::time::timeout(SERVER_REQUEST_TIMEOUT, cancel).await;
+        }
+    }
+
+    /// Cancel without waiting: for a request that timed out, whose grant may
+    /// still arrive.
+    fn cancel_in_background(&self, handle: &Arc<client::Handle<SshHandler>>) {
+        let handle = Arc::clone(handle);
+        let (address, port) = (self.address.clone(), u32::from(self.port));
+        tokio::spawn(async move {
+            let cancel = handle.cancel_tcpip_forward(address, port);
+            let _ = tokio::time::timeout(SERVER_REQUEST_TIMEOUT, cancel).await;
+        });
+    }
+}
+
+impl Drop for ServerListen {
+    fn drop(&mut self) {
+        self.routes.release(self.port, &self.owner);
+    }
+}
+
+/// One forward a live tunnel serves: its reported status plus, when it
+/// started, what keeps it serving.
+struct ActiveForward {
+    status: ForwardStatus,
+    binding: Option<Binding>,
+}
+
+impl ActiveForward {
+    /// Stop serving; `cancel_on_server` as for [`ServerListen::stop`].
+    async fn release(self, handle: &client::Handle<SshHandler>, cancel_on_server: bool) {
+        match self.binding {
+            Some(Binding::Listener(listener)) => listener.stop().await,
+            Some(Binding::Server(listen)) => listen.stop(handle, cancel_on_server).await,
+            None => {}
         }
     }
 }
@@ -605,13 +674,15 @@ impl Drop for ActiveForward {
 /// frontend can flag it.
 struct ActiveForwards {
     handle: Arc<client::Handle<SshHandler>>,
+    routes: Arc<RemoteRoutes>,
     entries: Vec<ActiveForward>,
 }
 
 impl ActiveForwards {
-    fn new(handle: Arc<client::Handle<SshHandler>>) -> Self {
+    fn new(handle: Arc<client::Handle<SshHandler>>, routes: Arc<RemoteRoutes>) -> Self {
         ActiveForwards {
             handle,
+            routes,
             entries: Vec::new(),
         }
     }
@@ -620,17 +691,50 @@ impl ActiveForwards {
     /// recorded as `bound: false`; it never affects the other forwards.
     async fn add(&mut self, forward: &Forward) {
         self.remove(&forward.id).await;
-        let listener = listen(forward).await.map(|(listener, destination)| {
-            tokio::spawn(run_listener(
-                listener,
-                Arc::clone(&self.handle),
-                destination,
-            ))
-        });
+        let binding = self.bind(forward).await;
         self.entries.push(ActiveForward {
-            status: forward_status(forward, listener.is_some()),
-            listener,
+            status: forward_status(forward, binding.is_some()),
+            binding,
         });
+    }
+
+    async fn bind(&self, forward: &Forward) -> Option<Binding> {
+        if forward.kind == ForwardKind::Remote {
+            return self.bind_on_server(forward).await;
+        }
+        let (listener, destination) = listen(forward).await?;
+        let handle = Arc::clone(&self.handle);
+        let task = tokio::spawn(run_listener(listener, handle, destination));
+        Some(Binding::Listener(LocalListener(task)))
+    }
+
+    /// Ask the server to listen for a remote forward. The route goes in first,
+    /// so a connection arriving right after the server's reply finds it; a
+    /// refused or timed-out request drops the listen, and with it the route,
+    /// so a grant that comes late carries no connections.
+    async fn bind_on_server(&self, forward: &Forward) -> Option<Binding> {
+        let listen = self.claim_route(forward)?;
+        let request = self
+            .handle
+            .tcpip_forward(listen.address.clone(), u32::from(listen.port));
+        let reply = tokio::time::timeout(SERVER_REQUEST_TIMEOUT, request).await;
+        if reply.is_err() {
+            listen.cancel_in_background(&self.handle);
+        }
+        matches!(reply, Ok(Ok(_))).then_some(Binding::Server(listen))
+    }
+
+    /// `None` when another forward's route holds the server port.
+    fn claim_route(&self, forward: &Forward) -> Option<ServerListen> {
+        let (port, owner) = (forward.remote_port, forward.id.as_str());
+        let target = forward.local_addr.clone();
+        let claimed = self.routes.claim(port, owner, target, forward.local_port);
+        claimed.then(|| ServerListen {
+            address: forward.remote_host.clone(),
+            port,
+            owner: owner.to_string(),
+            routes: Arc::clone(&self.routes),
+        })
     }
 
     async fn remove(&mut self, forward_id: &str) {
@@ -639,18 +743,20 @@ impl ActiveForwards {
             .iter()
             .position(|e| e.status.forward_id == forward_id)
         {
-            self.entries.remove(index).release().await;
+            self.entries.remove(index).release(&self.handle, true).await;
         }
     }
 
+    /// Release every forward as the tunnel ends: the disconnect that follows
+    /// ends the server's listens, so an unresponsive server can't hold it up.
     async fn clear(&mut self) {
-        for entry in self.entries.drain(..) {
-            entry.release().await;
+        for entry in std::mem::take(&mut self.entries) {
+            entry.release(&self.handle, false).await;
         }
     }
 
     fn any_bound(&self) -> bool {
-        self.entries.iter().any(|e| e.listener.is_some())
+        self.entries.iter().any(|e| e.binding.is_some())
     }
 
     fn statuses(&self) -> Vec<ForwardStatus> {
@@ -690,8 +796,8 @@ enum Destination {
 }
 
 impl Destination {
-    /// `None` for a forward kind this version doesn't know (written by a newer
-    /// one); such a forward is left unbound.
+    /// `None` for a remote forward (the server listens for it) and for a kind
+    /// this version doesn't know (written by a newer one; left unbound).
     fn of(forward: &Forward) -> Option<Self> {
         match forward.kind {
             ForwardKind::Local => Some(Destination::Fixed {
@@ -699,7 +805,8 @@ impl Destination {
                 port: forward.remote_port,
             }),
             ForwardKind::Dynamic => Some(Destination::Socks),
-            ForwardKind::Unsupported => None,
+            // A remote forward listens on the server, never here.
+            ForwardKind::Remote | ForwardKind::Unsupported => None,
         }
     }
 }
@@ -1001,6 +1108,10 @@ mod tests {
             .await
             .is_none());
         assert!(listen(&forward_of(ForwardKind::Unsupported, "127.0.0.1"))
+            .await
+            .is_none());
+        // A remote forward's port is the server's: nothing binds here.
+        assert!(listen(&forward_of(ForwardKind::Remote, "127.0.0.1"))
             .await
             .is_none());
         assert!(listen(&forward_of(ForwardKind::Dynamic, "127.0.0.1"))

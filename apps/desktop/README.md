@@ -45,7 +45,8 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands.rs  ──�
   `lib.rs`), and each concern has its own module:
     - `session`: SSH shells over `russh`. `tunnel`, `sftp` and `agent` reuse its
       connect, auth and host-key path; `tunnel`'s dynamic forwards speak SOCKS
-      via `socks`.
+      via `socks`, and its remote forwards route the server's connections
+      through `remote_forward`.
     - `sftp_edit` and `editor`: edit in place. A private copy in the app cache
       dir (`sftp-edit/<id>/`, swept at startup after 24 h), watched for saves
       and uploaded back over the original, opened with the editor command from

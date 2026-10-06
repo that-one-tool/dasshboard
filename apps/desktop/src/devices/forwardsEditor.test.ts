@@ -99,6 +99,41 @@ describe("ForwardsEditor", () => {
     expect(port.value).toBe("");
   });
 
+  it("round-trips a remote forward", () => {
+    const forwards = [
+      sampleForward({ kind: "remote", localPort: 3000, remoteHost: "localhost", remotePort: 8080 }),
+    ];
+    editor.setForwards(forwards);
+    expect(editor.getForwards()).toEqual(forwards);
+  });
+
+  it("shows a remote row as this machine ← the server", () => {
+    editor.setForwards([sampleForward()]);
+    const row = container.querySelector<HTMLElement>(".forward-row")!;
+    const el = <T extends HTMLElement>(s: string) => row.querySelector<T>(s)!;
+    selectKind("remote");
+    expect(el(".forward-arrow").textContent).toBe("←");
+    expect(el<HTMLInputElement>(".forward-local-addr").placeholder).toBe("Local host");
+    expect(el<HTMLInputElement>(".forward-remote-host").placeholder).toBe("Server address");
+    expect(el<HTMLInputElement>(".forward-remote-port").title).toBe("Server port");
+    expect(el(".forward-remote-host").hidden).toBe(false);
+    selectKind("local");
+    expect(el(".forward-arrow").textContent).toBe("→");
+    expect(el<HTMLInputElement>(".forward-remote-host").placeholder).toBe("Remote host");
+  });
+
+  it("suggests the server's loopback for a new remote row", () => {
+    container.querySelector<HTMLButtonElement>(".forwards-add")!.click();
+    selectKind("remote");
+    expect(container.querySelector<HTMLInputElement>(".forward-remote-host")!.value).toBe("localhost");
+  });
+
+  it("keeps a typed server address when switching to remote", () => {
+    editor.setForwards([sampleForward({ remoteHost: "0.0.0.0" })]);
+    selectKind("remote");
+    expect(editor.getForwards()[0]!.remoteHost).toBe("0.0.0.0");
+  });
+
   it("starts a new row as a local forward", () => {
     container.querySelector<HTMLButtonElement>(".forwards-add")!.click();
     expect(editor.getForwards()[0]!.kind).toBe("local");

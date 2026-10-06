@@ -97,6 +97,17 @@ export const en = {
 	"pane.paste.confirm": "Paste",
 	"pane.paste.one": "Paste {count} line into the terminal? Each line may run as a command.",
 	"pane.paste.other": "Paste {count} lines into the terminal? Each line may run as a command.",
+	"pane.find": "Find (Ctrl+Shift+F)",
+	"pane.findMac": "Find (Cmd+F)",
+	"pane.search.placeholder": "Find",
+	"pane.search.previous": "Previous match (Shift+Enter)",
+	"pane.search.next": "Next match (Enter)",
+	"pane.search.close": "Close (Esc)",
+	"pane.search.none": "No results",
+	"pane.saveOutput": "Save the output to a file",
+	"pane.saveOutput.saved": "Output saved to {path}",
+	"pane.link.hint": "Ctrl+click to open the link",
+	"pane.link.hintMac": "Cmd+click to open the link",
 
 	/* -- settings dialog (settings/settingsController.ts) ------------------- */
 	"settings.title": "Settings",
@@ -264,6 +275,8 @@ export const en = {
 	"validation.baudRatePositive": "Baud rate must be a positive number",
 	"validation.remoteHost": "Remote host is required",
 	"validation.loopback": "Local address must be a loopback address (e.g. 127.0.0.1)",
+	"validation.serverPortTaken": "Another remote forward already uses this server port",
+	"validation.serverHost": "Server address is required",
 
 	/* -- port-forwards editor (devices/forwardsEditor.ts) ------------------- */
 	"forwards.title": "Port forwarding",
@@ -277,6 +290,10 @@ export const en = {
 	"forwards.kind.local": "Local",
 	"forwards.kind.dynamic": "Dynamic",
 	"forwards.socksProxy": "SOCKS proxy",
+	"forwards.serverPort.placeholder": "Server port",
+	"forwards.serverHost.placeholder": "Server address",
+	"forwards.localHost.placeholder": "Local host",
+	"forwards.kind.remote": "Remote",
 
 	/* -- profiles (profiles/profileManager.ts) ------------------------------ */
 	"profiles.title": "Profiles",
@@ -327,6 +344,8 @@ export const en = {
 	"tunnels.copy.title": "Copy the local address:port",
 	"tunnels.copied": "Copied to clipboard",
 	"tunnels.portInUse": "port in use",
+	"tunnels.serverRefused": "refused by the server",
+	"tunnels.copy.serverTitle": "Copy the server address:port",
 	"tunnels.error.generic": "the tunnel stopped with an error",
 	"tunnels.error.jumpRemoved": "the tunnels of {name} were stopped: its jump host was removed",
 

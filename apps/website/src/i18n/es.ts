@@ -47,7 +47,7 @@ export const es: SiteMessages = {
 			},
 			{
 				title: "Túneles y hosts de salto",
-				body: "Reenvío de puertos local (ssh -L) y dinámico SOCKS (ssh -D) que se inicia y detiene desde la barra lateral, ProxyJump a través de un bastión guardado y reenvío del agente opcional.",
+				body: "Reenvío de puertos local (ssh -L), remoto (ssh -R) y dinámico SOCKS (ssh -D) que se inicia y detiene desde la barra lateral, ProxyJump a través de un bastión guardado y reenvío del agente opcional.",
 			},
 			{
 				title: "Explorador de archivos SFTP",
@@ -59,7 +59,7 @@ export const es: SiteMessages = {
 			},
 			{
 				title: "Hecho para el día a día",
-				body: "Reconexión automática con espera progresiva, keepalives, comandos al conectar, difusión de la escritura, cambio de tema oscuro/claro en un clic y una interfaz en 7 idiomas.",
+				body: "Reconexión automática con espera progresiva, keepalives, comandos al conectar, difusión de la escritura, búsqueda y guardado del historial del terminal, enlaces clicables, cambio de tema oscuro/claro en un clic y una interfaz en 7 idiomas.",
 			},
 		],
 	},
@@ -111,7 +111,7 @@ export const es: SiteMessages = {
 				title: "Túneles y hosts de salto, sin las opciones",
 				body: "Define una vez los reenvíos de puertos de un dispositivo y luego inícialos y detenlos desde la tarjeta Túneles de la barra lateral. Llega a hosts privados a través de un bastión guardado.",
 				points: [
-					"Reenvíos locales (ssh -L) y dinámicos SOCKS (ssh -D) con inicio automático",
+					"Reenvíos locales (ssh -L), remotos (ssh -R) y dinámicos SOCKS (ssh -D) con inicio automático",
 					"ProxyJump (ssh -J) a través de un dispositivo guardado",
 					"Reenvío del agente opcional (ssh -A)",
 					"Estado en vivo de cada reenvío",

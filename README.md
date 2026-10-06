@@ -22,15 +22,18 @@
 - **Profiles** — save a workspace of one or more tabs and set a default that
   reconnects every pane on launch.
 - **SSH extras** — jump hosts (`-J`, for shells, SFTP and tunnels), agent
-  forwarding (`-A`), named local (`-L`) and dynamic SOCKS (`-D`) port forwards,
-  started one by one or all at once, that resume as you left them (or
-  auto-start), keepalive and auto-reconnect.
+  forwarding (`-A`), named local (`-L`), remote (`-R`) and dynamic SOCKS (`-D`)
+  port forwards, started one by one or all at once, that resume as you left
+  them (or auto-start), keepalive and auto-reconnect.
 - **SFTP browser** — docked file panel with folder transfers, a background queue,
   bulk actions, bookmarks and chmod.
 - **Edit remote files** — open a remote file in your editor; every save is
   uploaded back, with a warning if the file changed on the server meanwhile.
 - **Commands on connect** — a per-device snippet typed in as soon as the shell opens.
 - **Broadcast input** — type into several panes at once.
+- **In the terminal** — find text in the scrollback (Ctrl+Shift+F, Cmd+F on
+  macOS), Ctrl+click (Cmd+click) a URL to open it, and save a pane's output to
+  a text file.
 - **System tray** — opt in to keep running in the tray when the window is closed,
   with connections still live.
 - **Dark & light themes** with a one-click toggle in the top bar, configurable

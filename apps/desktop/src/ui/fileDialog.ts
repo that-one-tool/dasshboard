@@ -67,6 +67,15 @@ export async function pickSshConfigSavePath(): Promise<string | null> {
 }
 
 /**
+ * Opens a native "save file" dialog for a terminal's saved output, seeded with
+ * `defaultName` and filtered to `.txt`. Returns the chosen path, or `null` if
+ * the user cancels.
+ */
+export async function pickTextSavePath(defaultName: string): Promise<string | null> {
+  return save({ defaultPath: defaultName, filters: [{ name: "Text", extensions: ["txt"] }] });
+}
+
+/**
  * Opens a native "save file" dialog for an SFTP download, seeded with the remote
  * file's base name (no extension filter — a downloaded file may have any type).
  * Returns the chosen local path, or `null` if the user cancels.

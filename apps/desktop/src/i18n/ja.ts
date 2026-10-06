@@ -91,6 +91,17 @@ export const ja: Messages = {
 	"pane.paste.confirm": "貼り付け",
 	"pane.paste.one": "{count} 行をターミナルに貼り付けますか？各行がコマンドとして実行される場合があります。",
 	"pane.paste.other": "{count} 行をターミナルに貼り付けますか？各行がコマンドとして実行される場合があります。",
+	"pane.find": "検索 (Ctrl+Shift+F)",
+	"pane.findMac": "検索 (Cmd+F)",
+	"pane.search.placeholder": "検索",
+	"pane.search.previous": "前の一致 (Shift+Enter)",
+	"pane.search.next": "次の一致 (Enter)",
+	"pane.search.close": "閉じる (Esc)",
+	"pane.search.none": "一致なし",
+	"pane.saveOutput": "出力をファイルに保存",
+	"pane.saveOutput.saved": "出力を {path} に保存しました",
+	"pane.link.hint": "Ctrl+クリックでリンクを開く",
+	"pane.link.hintMac": "Cmd+クリックでリンクを開く",
 
 	/* -- settings dialog ---------------------------------------------------- */
 	"settings.title": "設定",
@@ -258,6 +269,8 @@ export const ja: Messages = {
 	"validation.baudRatePositive": "ボーレートは正の数値で指定してください",
 	"validation.remoteHost": "リモートホストは必須です",
 	"validation.loopback": "ローカルアドレスはループバックアドレスにしてください（例: 127.0.0.1）",
+	"validation.serverPortTaken": "別のリモート転送がこのサーバーのポートを使用しています",
+	"validation.serverHost": "サーバーのアドレスは必須です",
 
 	/* -- port-forwards editor ----------------------------------------------- */
 	"forwards.title": "ポート転送",
@@ -271,6 +284,10 @@ export const ja: Messages = {
 	"forwards.kind.local": "ローカル",
 	"forwards.kind.dynamic": "ダイナミック",
 	"forwards.socksProxy": "SOCKS プロキシ",
+	"forwards.serverPort.placeholder": "サーバーのポート",
+	"forwards.serverHost.placeholder": "サーバーのアドレス",
+	"forwards.localHost.placeholder": "ローカルホスト",
+	"forwards.kind.remote": "リモート",
 
 	/* -- profiles ----------------------------------------------------------- */
 	"profiles.title": "プロファイル",
@@ -321,6 +338,8 @@ export const ja: Messages = {
 	"tunnels.copy.title": "ローカルのアドレス:ポートをコピー",
 	"tunnels.copied": "クリップボードにコピーしました",
 	"tunnels.portInUse": "ポート使用中",
+	"tunnels.serverRefused": "サーバーに拒否されました",
+	"tunnels.copy.serverTitle": "サーバーのアドレス:ポートをコピー",
 	"tunnels.error.generic": "トンネルはエラーで停止しました",
 	"tunnels.error.jumpRemoved": "{name} のトンネルを停止しました：踏み台ホストが削除されました",
 

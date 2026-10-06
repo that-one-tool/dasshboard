@@ -90,6 +90,17 @@ export const pt: Messages = {
 	"pane.paste.confirm": "Colar",
 	"pane.paste.one": "Colar {count} linha no terminal? Cada linha pode ser executada como um comando.",
 	"pane.paste.other": "Colar {count} linhas no terminal? Cada linha pode ser executada como um comando.",
+	"pane.find": "Procurar (Ctrl+Shift+F)",
+	"pane.findMac": "Procurar (Cmd+F)",
+	"pane.search.placeholder": "Procurar",
+	"pane.search.previous": "Ocorrência anterior (Shift+Enter)",
+	"pane.search.next": "Próxima ocorrência (Enter)",
+	"pane.search.close": "Fechar (Esc)",
+	"pane.search.none": "Nenhum resultado",
+	"pane.saveOutput": "Salvar a saída em um arquivo",
+	"pane.saveOutput.saved": "Saída salva em {path}",
+	"pane.link.hint": "Ctrl+clique para abrir o link",
+	"pane.link.hintMac": "Cmd+clique para abrir o link",
 
 	/* -- settings dialog ---------------------------------------------------- */
 	"settings.title": "Configurações",
@@ -257,6 +268,8 @@ export const pt: Messages = {
 	"validation.baudRatePositive": "A taxa de baud deve ser um número positivo",
 	"validation.remoteHost": "O host remoto é obrigatório",
 	"validation.loopback": "O endereço local deve ser um endereço de loopback (ex. 127.0.0.1)",
+	"validation.serverPortTaken": "Outro redirecionamento remoto já usa esta porta do servidor",
+	"validation.serverHost": "O endereço do servidor é obrigatório",
 
 	/* -- port-forwards editor ----------------------------------------------- */
 	"forwards.title": "Reencaminhamento de portas",
@@ -270,6 +283,10 @@ export const pt: Messages = {
 	"forwards.kind.local": "Local",
 	"forwards.kind.dynamic": "Dinâmico",
 	"forwards.socksProxy": "proxy SOCKS",
+	"forwards.serverPort.placeholder": "Porta do servidor",
+	"forwards.serverHost.placeholder": "Endereço do servidor",
+	"forwards.localHost.placeholder": "Host local",
+	"forwards.kind.remote": "Remoto",
 
 	/* -- profiles ----------------------------------------------------------- */
 	"profiles.title": "Perfis",
@@ -321,6 +338,8 @@ export const pt: Messages = {
 	"tunnels.copy.title": "Copiar o endereço:porta local",
 	"tunnels.copied": "Copiado para a área de transferência",
 	"tunnels.portInUse": "porta em uso",
+	"tunnels.serverRefused": "recusado pelo servidor",
+	"tunnels.copy.serverTitle": "Copiar o endereço:porta do servidor",
 	"tunnels.error.generic": "o túnel parou com um erro",
 	"tunnels.error.jumpRemoved": "os túneis de {name} foram parados: o seu host de salto foi removido",
 

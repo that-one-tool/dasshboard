@@ -91,6 +91,17 @@ export const zh: Messages = {
 	"pane.paste.confirm": "粘贴",
 	"pane.paste.one": "将 {count} 行粘贴到终端？每行都可能作为命令执行。",
 	"pane.paste.other": "将 {count} 行粘贴到终端？每行都可能作为命令执行。",
+	"pane.find": "查找 (Ctrl+Shift+F)",
+	"pane.findMac": "查找 (Cmd+F)",
+	"pane.search.placeholder": "查找",
+	"pane.search.previous": "上一个匹配 (Shift+Enter)",
+	"pane.search.next": "下一个匹配 (Enter)",
+	"pane.search.close": "关闭 (Esc)",
+	"pane.search.none": "无结果",
+	"pane.saveOutput": "将输出保存到文件",
+	"pane.saveOutput.saved": "输出已保存到 {path}",
+	"pane.link.hint": "Ctrl+单击打开链接",
+	"pane.link.hintMac": "Cmd+单击打开链接",
 
 	/* -- settings dialog ---------------------------------------------------- */
 	"settings.title": "设置",
@@ -257,6 +268,8 @@ export const zh: Messages = {
 	"validation.baudRatePositive": "波特率必须是正数",
 	"validation.remoteHost": "远程主机为必填项",
 	"validation.loopback": "本地地址必须是回环地址（例如 127.0.0.1）",
+	"validation.serverPortTaken": "另一个远程转发已在使用此服务器端口",
+	"validation.serverHost": "服务器地址为必填项",
 
 	/* -- port-forwards editor ----------------------------------------------- */
 	"forwards.title": "端口转发",
@@ -270,6 +283,10 @@ export const zh: Messages = {
 	"forwards.kind.local": "本地",
 	"forwards.kind.dynamic": "动态",
 	"forwards.socksProxy": "SOCKS 代理",
+	"forwards.serverPort.placeholder": "服务器端口",
+	"forwards.serverHost.placeholder": "服务器地址",
+	"forwards.localHost.placeholder": "本地主机",
+	"forwards.kind.remote": "远程",
 
 	/* -- profiles ----------------------------------------------------------- */
 	"profiles.title": "配置文件",
@@ -320,6 +337,8 @@ export const zh: Messages = {
 	"tunnels.copy.title": "复制本地地址:端口",
 	"tunnels.copied": "已复制到剪贴板",
 	"tunnels.portInUse": "端口被占用",
+	"tunnels.serverRefused": "被服务器拒绝",
+	"tunnels.copy.serverTitle": "复制服务器地址:端口",
 	"tunnels.error.generic": "隧道因错误而停止",
 	"tunnels.error.jumpRemoved": "{name} 的隧道已停止：其跳板主机已被删除",
 

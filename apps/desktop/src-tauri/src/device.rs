@@ -149,14 +149,17 @@ pub enum Connection {
     },
 }
 
-/// One port-forward: the app binds `local_addr:local_port` locally and tunnels
-/// each accepted connection over SSH. A [`ForwardKind::Local`] forward (`ssh -L`)
-/// always goes to `remote_host:remote_port` as resolved *from the SSH server*; a
-/// [`ForwardKind::Dynamic`] one (`ssh -D`) is a SOCKS proxy whose client names
-/// the target per connection, so its remote fields are unused. Carries no
-/// secret material. `local_addr` defaults to loopback and validation rejects any
-/// non-loopback address (SPEC §8), so a saved forward is only ever reachable
-/// from this machine.
+/// One port-forward. `local_*` is always this machine's end and `remote_*`
+/// the SSH server's. A [`ForwardKind::Local`] forward (`ssh -L`) binds
+/// `local_addr:local_port` and sends each connection to `remote_host:remote_port`
+/// as resolved *from the SSH server*; a [`ForwardKind::Dynamic`] one (`ssh -D`)
+/// is a SOCKS proxy whose client names the target per connection, so its remote
+/// fields are unused. For both, validation only accepts a loopback `local_addr`
+/// (SPEC §8), so what they bind is only reachable from this machine. A
+/// [`ForwardKind::Remote`] one (`ssh -R`) is the reverse: the server listens on
+/// `remote_host:remote_port` and each connection is dialed from here to
+/// `local_addr:local_port` (any host this machine reaches, like `ssh -R`).
+/// Carries no secret material.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Forward {
@@ -169,12 +172,14 @@ pub struct Forward {
     /// local forwards.
     #[serde(default)]
     pub kind: ForwardKind,
-    /// Local bind address; defaults to `127.0.0.1`. Must be a loopback IP.
+    /// Local bind address; defaults to `127.0.0.1`. Must be a loopback IP,
+    /// except on a remote forward, where it is the host dialed.
     #[serde(default = "default_local_addr")]
     pub local_addr: String,
     pub local_port: u16,
-    /// Host the SSH server dials on our behalf (e.g. `127.0.0.1`, `db.internal`).
-    /// Empty for a dynamic forward.
+    /// Host the SSH server dials on our behalf (e.g. `127.0.0.1`, `db.internal`),
+    /// or, on a remote forward, the address the server listens on. Empty for a
+    /// dynamic forward.
     #[serde(default)]
     pub remote_host: String,
     /// `0` for a dynamic forward.
@@ -182,7 +187,8 @@ pub struct Forward {
     pub remote_port: u16,
 }
 
-/// How a forward picks its destination. Serializes to `"local"`/`"dynamic"`.
+/// How a forward picks its destination. Serializes to
+/// `"local"`/`"dynamic"`/`"remote"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum ForwardKind {
@@ -191,6 +197,8 @@ pub enum ForwardKind {
     Local,
     /// `ssh -D`: a SOCKS4/4a/5 proxy; each connection names its own target.
     Dynamic,
+    /// `ssh -R`: the server listens; connections come back to a local target.
+    Remote,
     /// A kind written by a newer version. Loading it as this (rather than
     /// failing) keeps one unknown forward from making the whole `devices.json`
     /// unreadable after a downgrade; such a forward fails validation and is
@@ -523,20 +531,50 @@ fn validate_ssh(
     validate_forwards(forwards)
 }
 
-/// Port-forward validation: every forward must have a non-empty name, a non-zero
-/// local port, a loopback `local_addr` (SPEC §8), a destination unless it is
-/// dynamic, and no two forwards may claim the same `(local_addr, local_port)`
-/// bind pair.
+/// The ports a device's forwards claim: local binds (`-L`/`-D`) and server
+/// ports (`-R`, which the incoming connections are routed by).
+#[derive(Default)]
+struct ClaimedPorts<'a> {
+    local_binds: std::collections::HashSet<(&'a str, u16)>,
+    server_ports: std::collections::HashSet<u16>,
+}
+
+impl<'a> ClaimedPorts<'a> {
+    fn claim(&mut self, forward: &'a Forward) -> Result<(), AppError> {
+        match forward.kind {
+            ForwardKind::Remote => self.claim_server_port(forward.remote_port),
+            _ => self.claim_local_bind(&forward.local_addr, forward.local_port),
+        }
+    }
+
+    fn claim_server_port(&mut self, port: u16) -> Result<(), AppError> {
+        if self.server_ports.insert(port) {
+            return Ok(());
+        }
+        Err(AppError::Validation(format!(
+            "two remote forwards both use server port {port}"
+        )))
+    }
+
+    fn claim_local_bind(&mut self, addr: &'a str, port: u16) -> Result<(), AppError> {
+        if self.local_binds.insert((addr, port)) {
+            return Ok(());
+        }
+        Err(AppError::Validation(format!(
+            "two forwards both bind {addr}:{port}"
+        )))
+    }
+}
+
+/// Port-forward validation: every forward must have a non-empty name, non-zero
+/// ports, a loopback `local_addr` unless it is remote (SPEC §8), a destination
+/// unless it is dynamic, and no two forwards may claim the same
+/// `(local_addr, local_port)` bind pair, or the same server port.
 fn validate_forwards(forwards: &[Forward]) -> Result<(), AppError> {
-    let mut seen = std::collections::HashSet::new();
+    let mut claimed = ClaimedPorts::default();
     for forward in forwards {
         validate_one_forward(forward)?;
-        if !seen.insert((forward.local_addr.as_str(), forward.local_port)) {
-            return Err(AppError::Validation(format!(
-                "two forwards both bind {}:{}",
-                forward.local_addr, forward.local_port
-            )));
-        }
+        claimed.claim(forward)?;
     }
     Ok(())
 }
@@ -547,21 +585,33 @@ fn validate_one_forward(forward: &Forward) -> Result<(), AppError> {
     require_non_empty(&forward.name, "forward name must not be empty")?;
     require_forward_port(forward.local_port)?;
     validate_forward_destination(forward)?;
-    validate_forward_local_addr(&forward.local_addr)
+    validate_forward_local_side(forward)
 }
 
-/// A local forward needs a fixed `remote_host:remote_port`; a dynamic one gets
-/// its target from the SOCKS client, so its remote fields are ignored.
+/// A local forward needs a fixed `remote_host:remote_port`, and a remote one
+/// the server address and port to listen on; a dynamic one gets its target
+/// from the SOCKS client, so its remote fields are ignored.
 fn validate_forward_destination(forward: &Forward) -> Result<(), AppError> {
     match forward.kind {
         ForwardKind::Dynamic => Ok(()),
         ForwardKind::Unsupported => Err(AppError::Validation(
             "this forward's type needs a newer version of DaSSHboard".to_string(),
         )),
-        ForwardKind::Local => {
+        ForwardKind::Local | ForwardKind::Remote => {
             require_non_empty(&forward.remote_host, "forward remoteHost must not be empty")?;
             require_forward_port(forward.remote_port)
         }
+    }
+}
+
+/// What a forward binds must be loopback; a remote forward binds nothing here,
+/// it dials its `local_addr`.
+fn validate_forward_local_side(forward: &Forward) -> Result<(), AppError> {
+    match forward.kind {
+        ForwardKind::Remote => {
+            require_non_empty(&forward.local_addr, "forward localAddr must not be empty")
+        }
+        _ => validate_forward_local_addr(&forward.local_addr),
     }
 }
 
@@ -1325,10 +1375,81 @@ mod tests {
 
     #[test]
     fn unknown_forward_kind_loads_as_unsupported_and_fails_validation() {
-        let future = r#"{ "id": "f1", "name": "Rev", "kind": "remote", "localPort": 8080, "remoteHost": "h", "remotePort": 80 }"#;
+        let future = r#"{ "id": "f1", "name": "Udp", "kind": "udp", "localPort": 8080, "remoteHost": "h", "remotePort": 80 }"#;
         let parsed: Forward = serde_json::from_str(future).unwrap();
         assert_eq!(parsed.kind, ForwardKind::Unsupported);
         let device = device_with_forwards(vec![parsed]);
+        assert!(matches!(
+            device.validate().unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    /// `ssh -R`: the server listens on `remote_host:remote_port`; connections go
+    /// to `local_addr:local_port`, dialed from this machine.
+    fn sample_remote_forward(name: &str, remote_port: u16) -> Forward {
+        Forward {
+            kind: ForwardKind::Remote,
+            local_addr: "127.0.0.1".to_string(),
+            local_port: 3000,
+            remote_host: "localhost".to_string(),
+            remote_port,
+            ..sample_forward(name, 3000)
+        }
+    }
+
+    #[test]
+    fn remote_forward_round_trips_as_remote() {
+        let forward = sample_remote_forward("Dev server", 8080);
+        let value = serde_json::to_value(&forward).unwrap();
+        assert_eq!(value["kind"], "remote");
+        let back: Forward = serde_json::from_value(value).unwrap();
+        assert_eq!(back, forward);
+    }
+
+    #[test]
+    fn accepts_remote_forward_to_any_local_target() {
+        let mut forward = sample_remote_forward("Printer", 8631);
+        forward.local_addr = "printer.lan".to_string();
+        forward.remote_host = "0.0.0.0".to_string();
+        let device = device_with_forwards(vec![forward]);
+        assert!(device.validate().is_ok());
+    }
+
+    #[test]
+    fn remote_forward_local_target_never_collides_with_a_local_bind() {
+        // The -R target 127.0.0.1:3000 is dialed, not bound.
+        let device = device_with_forwards(vec![
+            sample_forward("Web", 3000),
+            sample_remote_forward("Dev server", 8080),
+        ]);
+        assert!(device.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_remote_forward_without_a_bind_address_or_ports() {
+        let cases: [fn(&mut Forward); 4] = [
+            |f| f.remote_host = " ".to_string(),
+            |f| f.remote_port = 0,
+            |f| f.local_port = 0,
+            |f| f.local_addr = String::new(),
+        ];
+        for break_it in cases {
+            let mut forward = sample_remote_forward("Dev server", 8080);
+            break_it(&mut forward);
+            let device = device_with_forwards(vec![forward]);
+            assert!(matches!(
+                device.validate().unwrap_err(),
+                AppError::Validation(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_two_remote_forwards_on_the_same_server_port() {
+        let mut other = sample_remote_forward("Other", 8080);
+        other.remote_host = "0.0.0.0".to_string();
+        let device = device_with_forwards(vec![sample_remote_forward("Dev server", 8080), other]);
         assert!(matches!(
             device.validate().unwrap_err(),
             AppError::Validation(_)

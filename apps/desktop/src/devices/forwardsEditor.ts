@@ -19,6 +19,24 @@ const DEFAULT_LOCAL_ADDR = "127.0.0.1";
 const DESTINATION_SELECTOR =
   ".forward-arrow, .forward-remote-host, .forward-remote-port";
 
+/** What a remote forward's server listens on unless told otherwise. */
+const DEFAULT_SERVER_ADDR = "localhost";
+
+/** Each side's field labels: this machine's, then the server's. */
+const LOCAL_PLACEHOLDERS: Record<string, () => string> = {
+  ".forward-local-addr": () => DEFAULT_LOCAL_ADDR,
+  ".forward-local-port": () => t("forwards.localPort.placeholder"),
+  ".forward-remote-host": () => t("forwards.remoteHost.placeholder"),
+  ".forward-remote-port": () => t("forwards.remotePort.placeholder"),
+};
+
+const REMOTE_PLACEHOLDERS: Record<string, () => string> = {
+  ".forward-local-addr": () => t("forwards.localHost.placeholder"),
+  ".forward-local-port": () => t("forwards.localPort.placeholder"),
+  ".forward-remote-host": () => t("forwards.serverHost.placeholder"),
+  ".forward-remote-port": () => t("forwards.serverPort.placeholder"),
+};
+
 /** A unique id for a newly-added forward. UUID when available, else a fallback. */
 function newForwardId(): string {
   try {
@@ -123,10 +141,11 @@ export class ForwardsEditor {
         <select class="forward-kind" title="${t("forwards.kind.label")}" aria-label="${t("forwards.kind.label")}">
           <option value="local">${t("forwards.kind.local")}</option>
           <option value="dynamic">${t("forwards.kind.dynamic")}</option>
+          <option value="remote">${t("forwards.kind.remote")}</option>
         </select>
         <input class="forward-local-addr" type="text" placeholder="127.0.0.1" autocomplete="off" />
         <input class="forward-local-port" type="number" placeholder="${t("forwards.localPort.placeholder")}" min="1" max="65535" />
-        <span class="forward-arrow" aria-hidden="true">&rarr;</span>
+        <span class="forward-arrow" aria-hidden="true"></span>
         <input class="forward-remote-host" type="text" placeholder="${t("forwards.remoteHost.placeholder")}" autocomplete="off" />
         <input class="forward-remote-port" type="number" placeholder="${t("forwards.remotePort.placeholder")}" min="1" max="65535" />
         <span class="forward-socks-hint" hidden>&rarr; ${t("forwards.socksProxy")}</span>
@@ -141,9 +160,7 @@ export class ForwardsEditor {
     this.setInput(row, ".forward-remote-host", forward?.remoteHost ?? "");
     this.setInput(row, ".forward-remote-port", portText(forward?.remotePort));
     // A narrow field cuts its placeholder off; the tooltip keeps it readable.
-    row.querySelectorAll("input").forEach((input) => {
-      input.title = input.placeholder;
-    });
+    this.labelField(row, ".forward-name", t("forwards.name.placeholder"));
     const kindSelect = this.kindSelect(row);
     kindSelect.value = forward?.kind ?? "local";
     kindSelect.addEventListener("change", () => this.applyKind(row));
@@ -154,18 +171,45 @@ export class ForwardsEditor {
     this.rowsEl.appendChild(row);
   }
 
-  /** Local: show the destination fields. Dynamic: a "SOCKS proxy" hint instead. */
+  /** Local: show the destination fields. Dynamic: a "SOCKS proxy" hint instead.
+   * Remote: the same fields, this machine ← the server. */
   private applyKind(row: HTMLElement): void {
-    const dynamic = this.kindOf(row) === "dynamic";
+    const kind = this.kindOf(row);
     row.querySelectorAll<HTMLElement>(DESTINATION_SELECTOR).forEach((el) => {
-      el.hidden = dynamic;
+      el.hidden = kind === "dynamic";
     });
     const hint = row.querySelector<HTMLElement>(".forward-socks-hint");
-    if (hint) hint.hidden = !dynamic;
+    if (hint) hint.hidden = kind !== "dynamic";
+    this.applyEndpointLabels(row, kind === "remote");
+    if (kind === "remote") this.suggestServerAddr(row);
+  }
+
+  /** The arrow follows the traffic; placeholders name each side. */
+  private applyEndpointLabels(row: HTMLElement, remote: boolean): void {
+    const arrow = row.querySelector<HTMLElement>(".forward-arrow");
+    if (arrow) arrow.textContent = remote ? "←" : "→";
+    const labels = remote ? REMOTE_PLACEHOLDERS : LOCAL_PLACEHOLDERS;
+    for (const [selector, label] of Object.entries(labels)) {
+      this.labelField(row, selector, label());
+    }
+  }
+
+  /** Sets a field's placeholder, and its tooltip, as a narrow field cuts the
+   * placeholder off. */
+  private labelField(row: HTMLElement, selector: string, label: string): void {
+    const input = row.querySelector<HTMLInputElement>(selector);
+    if (input) input.placeholder = input.title = label;
+  }
+
+  private suggestServerAddr(row: HTMLElement): void {
+    if (!this.inputValue(row, ".forward-remote-host")) {
+      this.setInput(row, ".forward-remote-host", DEFAULT_SERVER_ADDR);
+    }
   }
 
   private kindOf(row: HTMLElement): ForwardKind {
-    return this.kindSelect(row).value === "dynamic" ? "dynamic" : "local";
+    const value = this.kindSelect(row).value;
+    return value === "dynamic" || value === "remote" ? value : "local";
   }
 
   private kindSelect(row: HTMLElement): HTMLSelectElement {

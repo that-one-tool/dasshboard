@@ -13,6 +13,7 @@ mod flatpak;
 mod local_shell;
 mod profile;
 mod profile_store;
+mod remote_forward;
 mod secret;
 mod serial;
 mod settings;
@@ -215,6 +216,7 @@ pub fn run() {
             commands::import_profiles,
             commands::import_ssh_config,
             commands::export_ssh_config,
+            commands::save_text_file,
             commands::ssh_agent_available,
             commands::list_agent_identities,
             commands::sftp_connect,

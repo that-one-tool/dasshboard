@@ -30,6 +30,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 import {
 	exportDevices,
 	importDevices,
+	saveTextFile,
 	exportProfiles,
 	importProfiles,
 	saveDevice,
@@ -105,6 +106,17 @@ describe("import/export IPC wrappers", () => {
 		await expect(importDevices("C:/tmp/bad.json")).rejects.toEqual({
 			code: "Validation",
 			message: "bad kind",
+		});
+	});
+});
+
+describe("saveTextFile", () => {
+	it("calls save_text_file with { path, contents }", async () => {
+		invokeMock.mockResolvedValue(undefined);
+		await saveTextFile("/home/me/out.txt", "$ ls\n");
+		expect(invokeMock).toHaveBeenCalledWith("save_text_file", {
+			path: "/home/me/out.txt",
+			contents: "$ ls\n",
 		});
 	});
 });

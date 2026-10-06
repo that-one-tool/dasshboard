@@ -31,6 +31,7 @@ import {
   type AppError,
   type Device,
   type Forward,
+  type ForwardKind,
   type ForwardStatus,
   type SshDevice,
   type TunnelStatus,
@@ -96,8 +97,13 @@ export function statusLabel(status: TunnelStatus | "stopped"): string {
 }
 
 /** Human label for a forward's status dot. */
-function forwardStateLabel(state: ForwardState): string {
-  return state === "unbound" ? t("tunnels.portInUse") : statusLabel(state);
+function forwardStateLabel(state: ForwardState, kind: ForwardKind): string {
+  return state === "unbound" ? unboundLabel(kind) : statusLabel(state);
+}
+
+/** Why a forward isn't serving: a remote one's port is the server's to grant. */
+function unboundLabel(kind: ForwardKind): string {
+  return kind === "remote" ? t("tunnels.serverRefused") : t("tunnels.portInUse");
 }
 
 /**
@@ -168,18 +174,28 @@ function forwardEdited(before: SshDevice, after: SshDevice, id: string): boolean
   return old !== undefined && now !== undefined && forwardKey(old) !== forwardKey(now);
 }
 
+type ForwardEndpoints = Pick<Forward, "kind" | "localAddr" | "localPort" | "remoteHost" | "remotePort">;
+
 /**
- * `127.0.0.1:5432 → db.internal:5432` for a forward's endpoints, or
- * `127.0.0.1:1080 → SOCKS proxy` for a dynamic one.
+ * `127.0.0.1:5432 → db.internal:5432` for a forward's endpoints,
+ * `127.0.0.1:1080 → SOCKS proxy` for a dynamic one, or
+ * `127.0.0.1:3000 ← localhost:8080` for a remote one (the server's port
+ * leads here).
  */
-export function forwardEndpoint(
-  forward: Pick<Forward, "kind" | "localAddr" | "localPort" | "remoteHost" | "remotePort">,
-): string {
-  const target =
-    forward.kind === "dynamic"
-      ? t("forwards.socksProxy")
-      : `${forward.remoteHost}:${forward.remotePort}`;
-  return `${forward.localAddr}:${forward.localPort} → ${target}`;
+export function forwardEndpoint(forward: ForwardEndpoints): string {
+  const local = `${forward.localAddr}:${forward.localPort}`;
+  const server = `${forward.remoteHost}:${forward.remotePort}`;
+  if (forward.kind === "remote") return `${local} ← ${server}`;
+  const target = forward.kind === "dynamic" ? t("forwards.socksProxy") : server;
+  return `${local} → ${target}`;
+}
+
+/** The address a client connects to: the local end, or the server's for a
+ * remote forward. */
+export function copyTarget(forward: ForwardEndpoints): string {
+  return forward.kind === "remote"
+    ? `${forward.remoteHost}:${forward.remotePort}`
+    : `${forward.localAddr}:${forward.localPort}`;
 }
 
 export class TunnelsPanel {
@@ -792,15 +808,14 @@ export class TunnelsPanel {
     li.dataset.forwardId = forward.id;
     if (state === "unbound") li.classList.add("is-unbound");
 
-    const copy = iconButton("btn-secondary tunnel-copy", copyIcon, t("tunnels.copy.title"));
-    copy.addEventListener("click", () => {
-      // Copy just the local `addr:port` (before the arrow) — what a DB client needs.
-      void this.copyEndpoint(text.split(" → ")[0] ?? text);
-    });
+    const copyTitle = forward.kind === "remote" ? t("tunnels.copy.serverTitle") : t("tunnels.copy.title");
+    const copy = iconButton("btn-secondary tunnel-copy", copyIcon, copyTitle);
+    copy.addEventListener("click", () => void this.copyEndpoint(copyTarget(forward)));
 
+    const warning = state === "unbound" ? unboundLabel(forward.kind) : null;
     li.append(
-      forwardDotEl(state),
-      forwardTextEl({ name: forward.name, text, unbound: state === "unbound" }),
+      forwardDotEl(state, forward.kind),
+      forwardTextEl({ name: forward.name, text, warning }),
       copy,
       this.renderForwardAction(deviceId, forward.id, state !== "stopped"),
     );
@@ -845,8 +860,8 @@ function statusIconEl(status: TunnelStatus | "stopped"): HTMLElement {
 
 /** A forward's status as a colored dot (gray / yellow / green / red), labelled
  * for the tooltip and assistive tech. */
-function forwardDotEl(state: ForwardState): HTMLElement {
-  const label = forwardStateLabel(state);
+function forwardDotEl(state: ForwardState, kind: ForwardKind): HTMLElement {
+  const label = forwardStateLabel(state, kind);
   const el = document.createElement("span");
   el.className = `tunnel-forward-dot is-${state}`;
   el.setAttribute("role", "img");
@@ -856,21 +871,22 @@ function forwardDotEl(state: ForwardState): HTMLElement {
 }
 
 /**
- * A forward's name (plus a "port in use" flag when it failed to bind) over its
+ * A forward's name (plus why, when it isn't serving: port in use, or refused
+ * by the server) over its
  * `local → remote` endpoint. Both lines truncate in a narrow sidebar, so each
  * keeps its full text as a tooltip.
  */
-function forwardTextEl(row: { name: string; text: string; unbound: boolean }): HTMLElement {
+function forwardTextEl(row: { name: string; text: string; warning: string | null }): HTMLElement {
   const text = document.createElement("div");
   text.className = "tunnel-forward-text";
 
   const label = document.createElement("div");
   label.className = "tunnel-forward-label";
   label.appendChild(truncatedEl("span", "tunnel-forward-name", row.name));
-  if (row.unbound) {
+  if (row.warning) {
     const warn = document.createElement("span");
     warn.className = "tunnel-forward-warn";
-    warn.textContent = t("tunnels.portInUse");
+    warn.textContent = row.warning;
     label.appendChild(warn);
   }
 

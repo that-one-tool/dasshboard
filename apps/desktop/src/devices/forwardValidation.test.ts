@@ -105,4 +105,35 @@ describe("validateForwards", () => {
     ]);
     expect(errors).toEqual([]);
   });
+
+  it("accepts a remote forward to any local host", () => {
+    const remote = sampleForward({
+      kind: "remote",
+      localAddr: "printer.lan",
+      localPort: 631,
+      remoteHost: "0.0.0.0",
+      remotePort: 8631,
+    });
+    expect(validateForwards([remote])).toEqual([]);
+  });
+
+  it("requires a remote forward's server address and ports", () => {
+    const remote = sampleForward({ kind: "remote", remoteHost: "", remotePort: 0, localPort: 0 });
+    const fields = validateForwards([remote]).map((e) => e.field);
+    expect(fields).toEqual(
+      expect.arrayContaining(["forward-0-remoteHost", "forward-0-remotePort", "forward-0-localPort"]),
+    );
+  });
+
+  it("never treats a remote forward's local target as a bind", () => {
+    const local = sampleForward({ localPort: 3000 });
+    const remote = sampleForward({ id: "f2", kind: "remote", localPort: 3000, remotePort: 8080 });
+    expect(validateForwards([local, remote])).toEqual([]);
+  });
+
+  it("flags two remote forwards on the same server port", () => {
+    const first = sampleForward({ kind: "remote", remoteHost: "localhost", remotePort: 8080 });
+    const second = { ...first, id: "f2", remoteHost: "0.0.0.0", localPort: 4000 };
+    expect(validateForwards([first, second]).map((e) => e.field)).toEqual(["forward-1-remotePort"]);
+  });
 });

@@ -14,6 +14,9 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { SearchAddon } from "@xterm/addon-search";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   connect,
   disconnect,
@@ -21,6 +24,7 @@ import {
   newDataChannel,
   onSessionStatus,
   resizePty,
+  saveTextFile,
   writeStdin,
   type Device,
   type SessionStatus,
@@ -28,7 +32,6 @@ import {
 } from "../ipc";
 import { overlayForStatus } from "./overlay";
 import { isTerminalReply } from "./terminalReplies";
-import { isShortcutModifier } from "../ui/keyboard";
 import {
   DEFAULT_TERMINAL_SETTINGS,
   withIconFont,
@@ -39,10 +42,20 @@ import {
   canReconnect,
   reconnectDelayMs,
 } from "./reconnect";
-import { isMultilinePaste, pasteConfirmMessage } from "./paste";
+import { isMultilinePaste, isPasteShortcut, pasteConfirmMessage } from "./paste";
+import { linkHandlers } from "./links";
+import {
+  SEARCH_HIGHLIGHT_LIMIT,
+  TerminalSearchBar,
+  findKeyHintKey,
+  isFindShortcut,
+} from "./searchBar";
+import { bufferText, outputFileName } from "./scrollbackText";
+import { pickTextSavePath } from "../ui/fileDialog";
+import { showToast } from "../ui/toast";
 import { confirm } from "../ui/confirm";
 import { requireEl } from "../ui/dom";
-import { disconnectIcon } from "../ui/icons";
+import { disconnectIcon, fileDownIcon, searchIcon } from "../ui/icons";
 import { t } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { deviceEndpoint } from "../devices/deviceEndpoint";
@@ -104,6 +117,15 @@ export class TerminalPane {
   private fitAddon: FitAddon | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private unlistenStatus: (() => void) | null = null;
+  private searchBar: TerminalSearchBar | null = null;
+  /** A mouse press in the terminal may be selecting: copied on release. */
+  private mouseSelecting = false;
+  /** The pane's own keys inside the terminal, each with what it does. */
+  private readonly terminalKeys: Array<[(e: KeyboardEvent) => boolean, () => void]> = [
+    // Ctrl+Shift+V paste (SPEC §7).
+    [isPasteShortcut, () => void this.pasteFromClipboard()],
+    [isFindShortcut, () => this.searchBar?.open()],
+  ];
 
   private sessionId: string | null = null;
   /** The id of a session being opened: status events for it can arrive before
@@ -258,6 +280,12 @@ export class TerminalPane {
             title="${t("pane.connect")}" aria-label="${t("pane.connect")}">${disconnectIcon}</button>
           <button type="button" class="btn btn-icon pane-disconnect" hidden
             title="${t("pane.disconnect")}" aria-label="${t("pane.disconnect")}">${disconnectIcon}</button>
+          <span class="pane-tools">
+            <button type="button" class="btn btn-icon pane-find" disabled
+              title="${t(findKeyHintKey())}" aria-label="${t(findKeyHintKey())}">${searchIcon}</button>
+            <button type="button" class="btn btn-icon pane-save-output" disabled
+              title="${t("pane.saveOutput")}" aria-label="${t("pane.saveOutput")}">${fileDownIcon}</button>
+          </span>
           <span class="pane-status">
             <span class="pane-status-dot" aria-hidden="true"></span>
             <span class="pane-status-label"></span>
@@ -291,6 +319,18 @@ export class TerminalPane {
       "click",
       () => void this.disconnectSession(),
     );
+    requireEl<HTMLButtonElement>(this.root, ".pane-find").addEventListener(
+      "click",
+      () => this.searchBar?.open(),
+    );
+    requireEl<HTMLButtonElement>(this.root, ".pane-save-output").addEventListener(
+      "click",
+      () => void this.saveOutput(),
+    );
+    this.searchBar = new TerminalSearchBar(requireEl<HTMLElement>(this.root, ".pane-body"), {
+      onClose: () => this.terminal?.focus(),
+      theme: () => this.currentSettings().theme,
+    });
     requireEl<HTMLButtonElement>(this.root, ".overlay-retry").addEventListener(
       "click",
       () => void this.manualRetry(),
@@ -324,6 +364,24 @@ export class TerminalPane {
     // A native paste (Cmd+V / Edit → Paste on macOS) would reach xterm's own
     // handler and skip the multi-line confirm; capture it first.
     terminalEl.addEventListener("paste", (e) => this.onNativePaste(e), true);
+    // Copy on select (SPEC §7) on the mouse release that ends a selection —
+    // not on every selection change, which the find bar's matches also make.
+    // Captured before xterm can stop the press; the release is on `document`,
+    // as a drag may end outside the pane.
+    terminalEl.addEventListener("mousedown", () => (this.mouseSelecting = true), true);
+    document.addEventListener("mouseup", this.onMouseUp);
+  }
+
+  private readonly onMouseUp = (): void => {
+    if (!this.mouseSelecting) return;
+    this.mouseSelecting = false;
+    // After xterm's own release handling has settled the selection.
+    window.setTimeout(() => this.copySelection(), 0);
+  };
+
+  private copySelection(): void {
+    const selection = this.terminal?.getSelection();
+    if (selection) void writeClipboard(selection);
   }
 
   private onNativePaste(e: ClipboardEvent): void {
@@ -344,6 +402,9 @@ export class TerminalPane {
     connectBtn.disabled = this.devices.length === 0;
     disconnectBtn.hidden = !busy;
     select.disabled = this.deviceLocked();
+    // An ended session's terminal stays readable, so these outlive it.
+    requireEl<HTMLButtonElement>(this.root, ".pane-find").disabled = !this.terminal;
+    requireEl<HTMLButtonElement>(this.root, ".pane-save-output").disabled = !this.terminal;
     this.updateHeaderTooltip();
   }
 
@@ -432,7 +493,9 @@ export class TerminalPane {
   private createSessionTerminal(): Terminal {
     // Fresh terminal per connection (no stale scrollback from a prior session).
     this.teardownTerminal();
-    const settings = this.options.getTerminalSettings?.() ?? DEFAULT_TERMINAL_SETTINGS;
+    const settings = this.currentSettings();
+    const terminalEl = requireEl<HTMLElement>(this.root, ".pane-terminal");
+    const links = linkHandlers(terminalEl, openUrl, (message) => this.options.onError?.(message));
     const terminal = new Terminal({
       cursorBlink: true,
       fontFamily: withIconFont(settings.fontFamily),
@@ -441,6 +504,7 @@ export class TerminalPane {
       theme: xtermThemeFor(settings.theme),
       // Required to access `terminal.unicode` and load the Unicode 11 addon.
       allowProposedApi: true,
+      linkHandler: links,
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
@@ -449,7 +513,9 @@ export class TerminalPane {
     // defaults to the older Unicode 6 table).
     terminal.loadAddon(new Unicode11Addon());
     terminal.unicode.activeVersion = "11";
-    const terminalEl = requireEl<HTMLElement>(this.root, ".pane-terminal");
+    terminal.loadAddon(new WebLinksAddon(links.activate, links));
+    const searchAddon = new SearchAddon({ highlightLimit: SEARCH_HIGHLIGHT_LIMIT });
+    terminal.loadAddon(searchAddon);
     terminal.open(terminalEl);
     fitAddon.fit();
 
@@ -461,25 +527,44 @@ export class TerminalPane {
         if (!isTerminalReply(data)) this.options.onInput?.(data);
       }
     });
-    // Copy on select (SPEC §7).
-    terminal.onSelectionChange(() => {
-      const selection = terminal.getSelection();
-      if (selection) void writeClipboard(selection);
-    });
-    // Ctrl+Shift+V paste (SPEC §7).
-    terminal.attachCustomKeyEventHandler((e) => {
-      if (e.type === "keydown" && isShortcutModifier(e) && e.shiftKey && e.code === "KeyV") {
-        void this.pasteFromClipboard();
-        return false;
-      }
-      return true;
-    });
+    terminal.attachCustomKeyEventHandler((e) => this.onTerminalKey(e));
     // (Right-click paste is wired once in renderUI(), not here — see comment
     // there; attaching it per-session leaked a listener on every reconnect.)
 
     this.terminal = terminal;
     this.fitAddon = fitAddon;
+    this.searchBar?.attach(searchAddon);
     return terminal;
+  }
+
+  private currentSettings(): TerminalSettings {
+    return this.options.getTerminalSettings?.() ?? DEFAULT_TERMINAL_SETTINGS;
+  }
+
+  /** Runs one of the pane's own keys; `false` keeps it from xterm. */
+  private onTerminalKey(e: KeyboardEvent): boolean {
+    if (e.type !== "keydown") return true;
+    const key = this.terminalKeys.find(([matches]) => matches(e));
+    key?.[1]();
+    return key === undefined;
+  }
+
+  /** Writes the scrollback + screen, as they are now, to a file the user picks. */
+  private async saveOutput(): Promise<void> {
+    if (!this.terminal) return;
+    const text = bufferText(this.terminal.buffer.normal);
+    const path = await pickTextSavePath(outputFileName(this.assignedDeviceName(), new Date()));
+    if (!path) return;
+    try {
+      await saveTextFile(path, text);
+      showToast(t("pane.saveOutput.saved", { path }), "success");
+    } catch (err) {
+      this.options.onError?.(errorMessage(err));
+    }
+  }
+
+  private assignedDeviceName(): string {
+    return this.devices.find((d) => d.id === this.deviceId)?.name ?? "";
   }
 
   /** Opens the backend session and wires the data channel into the terminal. */
@@ -728,6 +813,11 @@ export class TerminalPane {
     if (connect) setIconLabel(connect, t("pane.connect"));
     const disconnect = this.root.querySelector<HTMLButtonElement>(".pane-disconnect");
     if (disconnect) setIconLabel(disconnect, t("pane.disconnect"));
+    const find = this.root.querySelector<HTMLButtonElement>(".pane-find");
+    if (find) setIconLabel(find, t(findKeyHintKey()));
+    const saveOutput = this.root.querySelector<HTMLButtonElement>(".pane-save-output");
+    if (saveOutput) setIconLabel(saveOutput, t("pane.saveOutput"));
+    this.searchBar?.retranslate();
     const retry = this.root.querySelector<HTMLButtonElement>(".overlay-retry");
     if (retry) retry.textContent = t("pane.retry");
     const cancel = this.root.querySelector<HTMLButtonElement>(".overlay-cancel");
@@ -899,6 +989,7 @@ export class TerminalPane {
 
   private teardownTerminal(): void {
     this.stopResizeObserver();
+    this.searchBar?.attach(null);
     this.terminal?.dispose();
     this.terminal = null;
     this.fitAddon = null;
@@ -919,6 +1010,7 @@ export class TerminalPane {
     this.reconnecting = false;
     this.unlistenStatus?.();
     this.unlistenStatus = null;
+    document.removeEventListener("mouseup", this.onMouseUp);
     if (this.sessionId) {
       void disconnect(this.sessionId);
       this.sessionId = null;

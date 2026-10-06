@@ -91,6 +91,17 @@ export const de: Messages = {
 	"pane.paste.confirm": "Einfügen",
 	"pane.paste.one": "{count} Zeile in das Terminal einfügen? Jede Zeile kann als Befehl ausgeführt werden.",
 	"pane.paste.other": "{count} Zeilen in das Terminal einfügen? Jede Zeile kann als Befehl ausgeführt werden.",
+	"pane.find": "Suchen (Strg+Umschalt+F)",
+	"pane.findMac": "Suchen (Cmd+F)",
+	"pane.search.placeholder": "Suchen",
+	"pane.search.previous": "Vorheriger Treffer (Umschalt+Eingabe)",
+	"pane.search.next": "Nächster Treffer (Eingabe)",
+	"pane.search.close": "Schließen (Esc)",
+	"pane.search.none": "Keine Treffer",
+	"pane.saveOutput": "Ausgabe in einer Datei speichern",
+	"pane.saveOutput.saved": "Ausgabe gespeichert unter {path}",
+	"pane.link.hint": "Strg+Klick öffnet den Link",
+	"pane.link.hintMac": "Cmd+Klick öffnet den Link",
 
 	/* -- settings dialog ---------------------------------------------------- */
 	"settings.title": "Einstellungen",
@@ -259,6 +270,8 @@ export const de: Messages = {
 	"validation.baudRatePositive": "Die Baudrate muss eine positive Zahl sein",
 	"validation.remoteHost": "Remote-Host ist erforderlich",
 	"validation.loopback": "Die lokale Adresse muss eine Loopback-Adresse sein (z. B. 127.0.0.1)",
+	"validation.serverPortTaken": "Eine andere Remote-Weiterleitung nutzt diesen Server-Port bereits",
+	"validation.serverHost": "Serveradresse ist erforderlich",
 
 	/* -- port-forwards editor ----------------------------------------------- */
 	"forwards.title": "Portweiterleitung",
@@ -272,6 +285,10 @@ export const de: Messages = {
 	"forwards.kind.local": "Lokal",
 	"forwards.kind.dynamic": "Dynamisch",
 	"forwards.socksProxy": "SOCKS-Proxy",
+	"forwards.serverPort.placeholder": "Server-Port",
+	"forwards.serverHost.placeholder": "Serveradresse",
+	"forwards.localHost.placeholder": "Lokaler Host",
+	"forwards.kind.remote": "Remote",
 
 	/* -- profiles ----------------------------------------------------------- */
 	"profiles.title": "Profile",
@@ -322,6 +339,8 @@ export const de: Messages = {
 	"tunnels.copy.title": "Lokale Adresse:Port kopieren",
 	"tunnels.copied": "In die Zwischenablage kopiert",
 	"tunnels.portInUse": "Port belegt",
+	"tunnels.serverRefused": "vom Server abgelehnt",
+	"tunnels.copy.serverTitle": "Serveradresse:Port kopieren",
 	"tunnels.error.generic": "der Tunnel wurde mit einem Fehler beendet",
 	"tunnels.error.jumpRemoved": "die Tunnel von {name} wurden gestoppt: sein Sprunghost wurde entfernt",
 

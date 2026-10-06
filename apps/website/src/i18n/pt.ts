@@ -48,7 +48,7 @@ export const pt: SiteMessages = {
 			},
 			{
 				title: "Túneis e anfitriões de salto",
-				body: "Reencaminhamento de portas local (ssh -L) e dinâmico SOCKS (ssh -D) iniciado e parado a partir da barra lateral, ProxyJump através de um bastião guardado e reencaminhamento do agente opcional.",
+				body: "Reencaminhamento de portas local (ssh -L), remoto (ssh -R) e dinâmico SOCKS (ssh -D) iniciado e parado a partir da barra lateral, ProxyJump através de um bastião guardado e reencaminhamento do agente opcional.",
 			},
 			{
 				title: "Explorador de ficheiros SFTP",
@@ -60,7 +60,7 @@ export const pt: SiteMessages = {
 			},
 			{
 				title: "Feito para o dia a dia",
-				body: "Religação automática com espera progressiva, keepalives, comandos ao ligar, difusão da escrita, alternância de tema escuro/claro num clique e uma interface em 7 idiomas.",
+				body: "Religação automática com espera progressiva, keepalives, comandos ao ligar, difusão da escrita, pesquisa e gravação do histórico do terminal, ligações clicáveis, alternância de tema escuro/claro num clique e uma interface em 7 idiomas.",
 			},
 		],
 	},
@@ -112,7 +112,7 @@ export const pt: SiteMessages = {
 				title: "Túneis e anfitriões de salto, sem as opções",
 				body: "Defina uma vez os reencaminhamentos de portas de um dispositivo e depois inicie-os e pare-os a partir do cartão Túneis na barra lateral. Chegue a anfitriões privados através de um bastião guardado.",
 				points: [
-					"Reencaminhamentos locais (ssh -L) e dinâmicos SOCKS (ssh -D) com início automático",
+					"Reencaminhamentos locais (ssh -L), remotos (ssh -R) e dinâmicos SOCKS (ssh -D) com início automático",
 					"ProxyJump (ssh -J) através de um dispositivo guardado",
 					"Reencaminhamento do agente opcional (ssh -A)",
 					"Estado em direto de cada reencaminhamento",

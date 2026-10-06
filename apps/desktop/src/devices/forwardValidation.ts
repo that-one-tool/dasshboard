@@ -46,10 +46,23 @@ export function isLoopbackAddress(addr: string): boolean {
   return octets[0] === 127;
 }
 
-/** The `(localAddr, localPort)` bind pair a forward claims, addr defaulted. */
+/** The `(localAddr, localPort)` bind pair a forward claims, addr defaulted —
+ * or, for a remote forward, the server port its connections are routed by. */
 function bindKey(forward: ForwardFormValues): string {
+  if (forward.kind === "remote") return `server:${forward.remotePort ?? ""}`;
   const addr = (forward.localAddr ?? "").trim() || DEFAULT_LOCAL_ADDR;
   return `${addr}:${forward.localPort ?? ""}`;
+}
+
+/** Where a claimed pair is flagged when another forward already holds it. */
+function duplicateError(forward: ForwardFormValues, prefix: string): ValidationError {
+  if (forward.kind === "remote") {
+    return { field: `${prefix}-remotePort`, message: t("validation.serverPortTaken") };
+  }
+  return {
+    field: `${prefix}-localPort`,
+    message: "Another forward already binds this address and port",
+  };
 }
 
 function pushIfEmpty(
@@ -93,14 +106,18 @@ function forwardFieldErrors(
   const errors: ValidationError[] = [];
   pushIfEmpty(errors, forward.name, `${prefix}-name`, t("validation.name"));
   pushIfInvalidPort(errors, forward.localPort, `${prefix}-localPort`);
-  pushIfNotLoopback(errors, forward.localAddr, `${prefix}-localAddr`);
+  // A remote forward dials its local address (any host) rather than binding it.
+  if (forward.kind !== "remote") {
+    pushIfNotLoopback(errors, forward.localAddr, `${prefix}-localAddr`);
+  }
   if (forward.kind !== "dynamic") {
     errors.push(...destinationErrors(forward, prefix));
   }
   return errors;
 }
 
-/** A local forward's fixed target; a dynamic one gets it from the SOCKS client. */
+/** A local forward's fixed target, or the address a remote one listens on;
+ * a dynamic one gets its target from the SOCKS client. */
 function destinationErrors(
   forward: ForwardFormValues,
   prefix: string,
@@ -110,7 +127,7 @@ function destinationErrors(
     errors,
     forward.remoteHost,
     `${prefix}-remoteHost`,
-    t("validation.remoteHost"),
+    t(forward.kind === "remote" ? "validation.serverHost" : "validation.remoteHost"),
   );
   pushIfInvalidPort(errors, forward.remotePort, `${prefix}-remotePort`);
   return errors;
@@ -118,7 +135,8 @@ function destinationErrors(
 
 /**
  * Validates a list of forwards: every forward's fields, plus the rule that no
- * two forwards may claim the same `(localAddr, localPort)` bind pair. Error
+ * two forwards may claim the same `(localAddr, localPort)` bind pair (or, for
+ * remote forwards, the same server port). Error
  * fields are namespaced `forward-<index>-<field>` so the editor can mark the
  * right row. Empty list ⇒ no errors.
  */
@@ -131,14 +149,8 @@ export function validateForwards(
     const prefix = `forward-${index}`;
     errors.push(...forwardFieldErrors(forward, prefix));
     const key = bindKey(forward);
-    if (seen.has(key)) {
-      errors.push({
-        field: `${prefix}-localPort`,
-        message: "Another forward already binds this address and port",
-      });
-    } else {
-      seen.add(key);
-    }
+    if (seen.has(key)) errors.push(duplicateError(forward, prefix));
+    else seen.add(key);
   });
   return errors;
 }

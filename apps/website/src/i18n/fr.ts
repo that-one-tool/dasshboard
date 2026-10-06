@@ -47,7 +47,7 @@ export const fr: SiteMessages = {
 			},
 			{
 				title: "Tunnels et hôtes de rebond",
-				body: "Redirection de ports locale (ssh -L) et dynamique SOCKS (ssh -D) démarrée et arrêtée depuis la barre latérale, ProxyJump via un bastion enregistré et transfert d'agent sur demande.",
+				body: "Redirection de ports locale (ssh -L), distante (ssh -R) et dynamique SOCKS (ssh -D) démarrée et arrêtée depuis la barre latérale, ProxyJump via un bastion enregistré et transfert d'agent sur demande.",
 			},
 			{
 				title: "Navigateur de fichiers SFTP",
@@ -59,7 +59,7 @@ export const fr: SiteMessages = {
 			},
 			{
 				title: "Pensé pour le quotidien",
-				body: "Reconnexion automatique progressive, keepalives, commandes à la connexion, diffusion de la saisie, bascule sombre/clair en un clic et une interface en 7 langues.",
+				body: "Reconnexion automatique progressive, keepalives, commandes à la connexion, diffusion de la saisie, recherche et enregistrement de l'historique du terminal, liens cliquables, bascule sombre/clair en un clic et une interface en 7 langues.",
 			},
 		],
 	},
@@ -111,7 +111,7 @@ export const fr: SiteMessages = {
 				title: "Tunnels et hôtes de rebond, sans les options",
 				body: "Définissez une fois les redirections de ports d'un appareil, puis démarrez-les et arrêtez-les depuis la carte Tunnels de la barre latérale. Atteignez les hôtes privés via un bastion enregistré.",
 				points: [
-					"Redirections locales (ssh -L) et dynamiques SOCKS (ssh -D) avec démarrage automatique",
+					"Redirections locales (ssh -L), distantes (ssh -R) et dynamiques SOCKS (ssh -D) avec démarrage automatique",
 					"ProxyJump (ssh -J) via un appareil enregistré",
 					"Transfert d'agent sur demande (ssh -A)",
 					"État en direct de chaque redirection",

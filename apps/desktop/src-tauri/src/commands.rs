@@ -1627,6 +1627,13 @@ pub fn export_ssh_config(
     crate::ssh_config::export_ssh_config_impl(&state, Path::new(&path))
 }
 
+/// Write a terminal's saved output to `path`, chosen in the native save dialog.
+#[tauri::command]
+pub fn save_text_file(path: String, contents: String) -> Result<(), AppError> {
+    std::fs::write(path, contents)?;
+    Ok(())
+}
+
 /// Whether a local SSH agent looks reachable, for the device editor's
 /// agent-forwarding hint. Best-effort: the toggle stays usable either way, since
 /// forwarding simply no-ops per channel if the agent is unavailable at connect

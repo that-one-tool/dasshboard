@@ -90,6 +90,17 @@ export const es: Messages = {
 	"pane.paste.confirm": "Pegar",
 	"pane.paste.one": "¿Pegar {count} línea en el terminal? Cada línea puede ejecutarse como un comando.",
 	"pane.paste.other": "¿Pegar {count} líneas en el terminal? Cada línea puede ejecutarse como un comando.",
+	"pane.find": "Buscar (Ctrl+Mayús+F)",
+	"pane.findMac": "Buscar (Cmd+F)",
+	"pane.search.placeholder": "Buscar",
+	"pane.search.previous": "Coincidencia anterior (Mayús+Intro)",
+	"pane.search.next": "Coincidencia siguiente (Intro)",
+	"pane.search.close": "Cerrar (Esc)",
+	"pane.search.none": "Sin resultados",
+	"pane.saveOutput": "Guardar la salida en un archivo",
+	"pane.saveOutput.saved": "Salida guardada en {path}",
+	"pane.link.hint": "Ctrl+clic para abrir el enlace",
+	"pane.link.hintMac": "Cmd+clic para abrir el enlace",
 
 	/* -- settings dialog ---------------------------------------------------- */
 	"settings.title": "Ajustes",
@@ -257,6 +268,8 @@ export const es: Messages = {
 	"validation.baudRatePositive": "La velocidad en baudios debe ser un número positivo",
 	"validation.remoteHost": "El host remoto es obligatorio",
 	"validation.loopback": "La dirección local debe ser una dirección de bucle invertido (p. ej. 127.0.0.1)",
+	"validation.serverPortTaken": "Otra redirección remota ya usa este puerto del servidor",
+	"validation.serverHost": "La dirección del servidor es obligatoria",
 
 	/* -- port-forwards editor ----------------------------------------------- */
 	"forwards.title": "Redirección de puertos",
@@ -270,6 +283,10 @@ export const es: Messages = {
 	"forwards.kind.local": "Local",
 	"forwards.kind.dynamic": "Dinámica",
 	"forwards.socksProxy": "proxy SOCKS",
+	"forwards.serverPort.placeholder": "Puerto del servidor",
+	"forwards.serverHost.placeholder": "Dirección del servidor",
+	"forwards.localHost.placeholder": "Host local",
+	"forwards.kind.remote": "Remoto",
 
 	/* -- profiles ----------------------------------------------------------- */
 	"profiles.title": "Perfiles",
@@ -321,6 +338,8 @@ export const es: Messages = {
 	"tunnels.copy.title": "Copiar la dirección:puerto local",
 	"tunnels.copied": "Copiado al portapapeles",
 	"tunnels.portInUse": "puerto en uso",
+	"tunnels.serverRefused": "rechazada por el servidor",
+	"tunnels.copy.serverTitle": "Copiar la dirección:puerto del servidor",
 	"tunnels.error.generic": "el túnel se detuvo con un error",
 	"tunnels.error.jumpRemoved": "los túneles de {name} se detuvieron: se eliminó su host de salto",
 

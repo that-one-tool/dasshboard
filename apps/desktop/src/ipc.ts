@@ -80,18 +80,21 @@ interface DeviceCommon {
 /**
  * How a forward picks its destination: `local` (`ssh -L`) always goes to
  * `remoteHost:remotePort`; `dynamic` (`ssh -D`) is a SOCKS proxy whose client
- * names the target per connection. `unsupported` is a kind written by a newer
+ * names the target per connection; `remote` (`ssh -R`) is the reverse: the
+ * server listens on `remoteHost:remotePort` and each connection is dialed from
+ * here to `localAddr:localPort`. `unsupported` is a kind written by a newer
  * version (the backend loads it as such rather than failing, and never binds
  * it). Mirrors the Rust `ForwardKind`.
  */
-export type ForwardKind = "local" | "dynamic" | "unsupported";
+export type ForwardKind = "local" | "dynamic" | "remote" | "unsupported";
 
 /**
- * One port-forward on an SSH device: bind `localAddr:localPort` locally and
- * tunnel each connection over SSH — to `remoteHost:remotePort` (resolved from
- * the SSH server) for a `local` forward; a `dynamic` one carries `""`/`0` there.
- * Mirrors the Rust `Forward`. `localAddr` is always a loopback address
- * (enforced by validation). The backend always emits `forwards` (empty as
+ * One port-forward on an SSH device: `local*` is this machine's end, `remote*`
+ * the server's. A `local` forward binds `localAddr:localPort` and tunnels each
+ * connection to `remoteHost:remotePort` (resolved from the SSH server); a
+ * `dynamic` one carries `""`/`0` there. Both only bind a loopback `localAddr`
+ * (enforced by validation). A `remote` one dials `localAddr:localPort`, any
+ * host. Mirrors the Rust `Forward`. The backend always emits `forwards` (empty as
  * `[]`) and every forward's `kind`, so both fields are always present.
  */
 export interface Forward {
@@ -849,6 +852,14 @@ export async function exportProfiles(path: string): Promise<number> {
  */
 export async function importProfiles(path: string): Promise<number> {
   return invokeMutation<number>("import_profiles", { path });
+}
+
+/**
+ * Writes `contents` to the text file at `path` (a terminal's saved output;
+ * `path` comes from the native save dialog, `pickTextSavePath`).
+ */
+export async function saveTextFile(path: string, contents: string): Promise<void> {
+  return invokeChecked<void>("save_text_file", { path, contents });
 }
 
 /** Result of an SSH-config import: how many devices were added vs. skipped
