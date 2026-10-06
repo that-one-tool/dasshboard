@@ -51,7 +51,7 @@ export const de: SiteMessages = {
 			},
 			{
 				title: "SFTP-Dateibrowser",
-				body: "Ein angedocktes Dateien-Panel mit gestreamten Uploads und Downloads, einer Übertragungswarteschlange im Hintergrund, Lesezeichen, Sortierung, Filter und chmod.",
+				body: "Ein angedocktes Dateien-Panel mit gestreamten Uploads und Downloads, einer Übertragungswarteschlange im Hintergrund, Lesezeichen, Sortierung, Filter und chmod – dazu entfernte Dateien, die Sie in Ihrem eigenen Editor bearbeiten.",
 			},
 			{
 				title: "Arbeitsbereiche per Klick",
@@ -98,12 +98,12 @@ export const de: SiteMessages = {
 			},
 			sftp: {
 				title: "Das Dateien-Panel, direkt neben Ihrer Shell",
-				body: "Durchsuchen Sie die Dateien eines Geräts per SFTP in einem Panel neben Ihren Terminals. Übertragungen laufen im Hintergrund, sodass Sie währenddessen weiterarbeiten.",
+				body: "Durchsuchen Sie die Dateien eines Geräts per SFTP in einem Panel neben Ihren Terminals. Übertragungen laufen im Hintergrund, sodass Sie währenddessen weiterarbeiten. Öffnen Sie eine entfernte Datei in Ihrem Editor: Jedes Speichern landet direkt wieder auf dem Server, mit einer Warnung, falls sie zwischendurch jemand geändert hat.",
 				points: [
 					"Ganze Ordner hoch- und herunterladen",
 					"Übertragungswarteschlange im Hintergrund mit Fortschritt",
-					"Massenaktionen, Sortierung und Filter",
-					"Lesezeichen pro Gerät und chmod",
+					"Massenaktionen, Lesezeichen, Sortierung und Filter",
+					"Entfernte Dateien im eigenen Editor bearbeiten",
 				],
 				alt: "Das Dateien-Panel zeigt ein entferntes Verzeichnis mit laufender Übertragung",
 			},

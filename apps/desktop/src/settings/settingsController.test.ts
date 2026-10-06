@@ -36,7 +36,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     lastProfileId: null,
     language: null,
     keepalive: { intervalSecs: 30, countMax: 3 },
-    sftp: { idleDisconnectMins: 10 },
+    sftp: { idleDisconnectMins: 10, editorCommand: "" },
     updates: { checkOnLaunch: false },
     tray: { closeToTray: false },
     ...overrides,
@@ -249,6 +249,48 @@ describe("SettingsController live-apply round trip", () => {
     expect(saved?.sftp.idleDisconnectMins).toBe(0);
   });
 
+  it("saves the editor command without touching the idle timeout", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => ({
+      ...s,
+      sftp: { ...s.sftp, editorCommand: s.sftp.editorCommand.trim() },
+    }));
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+    const input = document.querySelector<HTMLInputElement>(".settings-sftp-editor");
+    if (!input) throw new Error("missing editor field");
+    expect(input.value).toBe("");
+
+    input.value = "  code --new-window ";
+    input.dispatchEvent(new Event("change"));
+    await flush();
+
+    const saved = vi.mocked(saveSettings).mock.calls.at(-1)?.[0];
+    expect(saved?.sftp).toEqual({ idleDisconnectMins: 10, editorCommand: "  code --new-window " });
+    expect(controller.sftpSettings().editorCommand).toBe("code --new-window");
+    expect(input.value).toBe("code --new-window");
+  });
+
+  it("keeps the editor command when the idle timeout changes", async () => {
+    vi.mocked(getSettings).mockResolvedValue(
+      settings({ sftp: { idleDisconnectMins: 10, editorCommand: "gedit" } }),
+    );
+    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
+    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+    const idle = document.querySelector<HTMLInputElement>(".settings-sftp-idle");
+    if (!idle) throw new Error("missing idle field");
+
+    idle.value = "3";
+    idle.dispatchEvent(new Event("change"));
+    await flush();
+
+    const saved = vi.mocked(saveSettings).mock.calls.at(-1)?.[0];
+    expect(saved?.sftp).toEqual({ idleDisconnectMins: 3, editorCommand: "gedit" });
+  });
+
   it("keeps the current font size when the field is non-numeric", async () => {
     const g = fakeGrid();
     vi.mocked(getSettings).mockResolvedValue(
@@ -457,6 +499,7 @@ describe("SettingsController dialog tabs", () => {
       "settings-keepalive-interval",
       "settings-keepalive-count",
       "settings-sftp-idle",
+      "settings-sftp-editor",
     ]);
 
     document.querySelector<HTMLButtonElement>('[data-tab="connections"]')?.click();

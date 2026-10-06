@@ -34,6 +34,9 @@ export interface TransferItem {
   readonly isDir: boolean;
   /** Display name (basename of the file/folder). */
   readonly name: string;
+  /** Whether the user may cancel it (an edit-in-place upload may not: a
+   * cancel would leave the remote file half-written). */
+  readonly cancellable: boolean;
   state: TransferState;
   transferred: number;
   /** Total bytes (0 until known); for a folder it tracks the current file only. */
@@ -47,6 +50,8 @@ export interface EnqueueSpec {
   direction: TransferDirection;
   isDir: boolean;
   name: string;
+  /** Defaults to true; see {@link TransferItem.cancellable}. */
+  cancellable?: boolean;
   /** Performs the transfer; resolves on success, rejects with an `AppError`
    * (`code === "Cancelled"` for a user cancel). */
   run: () => Promise<unknown>;
@@ -106,6 +111,7 @@ export class TransferQueue {
       direction: spec.direction,
       isDir: spec.isDir,
       name: spec.name,
+      cancellable: spec.cancellable ?? true,
       state: "queued",
       transferred: 0,
       total: 0,
@@ -122,10 +128,11 @@ export class TransferQueue {
   /**
    * Cancel one item by id: a queued item is marked cancelled and never runs; an
    * active item is cancelled through the backend (its `run` rejects and the
-   * worker records the cancellation). Terminal items are ignored.
+   * worker records the cancellation). Terminal and non-cancellable items are
+   * ignored.
    */
   cancel(id: number): void {
-    const item = this.queue.find((i) => i.id === id);
+    const item = this.queue.find((i) => i.id === id && i.cancellable);
     if (!item) return;
     if (item.state === "queued") {
       item.state = "cancelled";

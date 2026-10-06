@@ -27,6 +27,8 @@
   auto-start), keepalive and auto-reconnect.
 - **SFTP browser** — docked file panel with folder transfers, a background queue,
   bulk actions, bookmarks and chmod.
+- **Edit remote files** — open a remote file in your editor; every save is
+  uploaded back, with a warning if the file changed on the server meanwhile.
 - **Commands on connect** — a per-device snippet typed in as soon as the shell opens.
 - **Broadcast input** — type into several panes at once.
 - **System tray** — opt in to keep running in the tray when the window is closed,

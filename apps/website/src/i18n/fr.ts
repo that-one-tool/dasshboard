@@ -51,7 +51,7 @@ export const fr: SiteMessages = {
 			},
 			{
 				title: "Navigateur de fichiers SFTP",
-				body: "Un panneau Fichiers ancré avec envois et téléchargements en flux, une file de transferts en arrière-plan, des favoris, le tri, le filtrage et chmod.",
+				body: "Un panneau Fichiers ancré avec envois et téléchargements en flux, une file de transferts en arrière-plan, des favoris, le tri, le filtrage et chmod — et des fichiers distants modifiés dans votre propre éditeur.",
 			},
 			{
 				title: "Espaces de travail en un clic",
@@ -98,12 +98,12 @@ export const fr: SiteMessages = {
 			},
 			sftp: {
 				title: "Le panneau Fichiers, juste à côté de votre shell",
-				body: "Parcourez les fichiers d'un appareil en SFTP dans un panneau ancré à côté de vos terminaux. Les transferts se font en arrière-plan : vous continuez à travailler pendant ce temps.",
+				body: "Parcourez les fichiers d'un appareil en SFTP dans un panneau ancré à côté de vos terminaux. Les transferts se font en arrière-plan : vous continuez à travailler pendant ce temps. Ouvrez un fichier distant dans votre éditeur : chaque enregistrement repart directement sur le serveur, avec un avertissement si quelqu'un l'a modifié entre-temps.",
 				points: [
 					"Envoi et téléchargement de dossiers entiers",
 					"File de transferts en arrière-plan avec progression",
-					"Actions groupées, tri et filtrage",
-					"Favoris par appareil et chmod",
+					"Actions groupées, favoris, tri et filtrage",
+					"Modification des fichiers distants dans votre éditeur",
 				],
 				alt: "Le panneau Fichiers affichant un dossier distant avec un transfert en cours",
 			},

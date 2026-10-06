@@ -13,6 +13,7 @@ use crate::serial::SerialSessionManager;
 use crate::session::SessionManager;
 use crate::settings::SettingsStore;
 use crate::sftp::SftpManager;
+use crate::sftp_edit::EditManager;
 use crate::store::DeviceStore;
 use crate::tunnel::TunnelManager;
 use crate::workspace_store::WorkspaceStore;
@@ -44,6 +45,9 @@ pub struct AppState {
     /// manager's host-key TOFU store like the tunnel manager, so a trust
     /// decision applies to shells, tunnels and SFTP to the same host alike.
     pub sftp_manager: Arc<SftpManager>,
+    /// SFTP files open for editing in an external editor; each rides its
+    /// device's SFTP connection and ends with it.
+    pub edit_manager: EditManager,
     /// Owns the live serial/COM sessions — the serial analogue of
     /// `session_manager`. A session id belongs to exactly one of the
     /// session managers; the command layer routes write/resize/disconnect by
@@ -84,6 +88,7 @@ impl AppState {
         self.local_shell_manager.disconnect_all().await;
         // Release every bound local listener.
         self.tunnel_manager.stop_all().await;
+        self.edit_manager.close_all();
         self.sftp_manager.disconnect_all().await;
     }
 }

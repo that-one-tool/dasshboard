@@ -52,7 +52,11 @@ files, releasing),
     - `tunnels/` — the Tunnels sidebar card (start/stop all or one forward,
       device status icon + per-forward status dots; backend calls serialized per
       device; a connection-settings edit restarts the running tunnel)
-    - `sftp/` — the docked Files panel (browser + transfer queue)
+    - `sftp/` — the docked Files panel (browser + transfer queue); edit in
+      place: `editSessions` (DOM-free: open/sync/conflict/stop per edit,
+      transfers through the queue; uploads are not cancellable) and
+      `editList` (the "Synced with the server" list; it says an edit lasts
+      until ×, since closing the editor can't be detected)
     - `tabs/` — tab strip + per-tab workspaces (every tab's `Grid` stays alive;
       hidden tabs keep their sessions running and refit on activation);
       `tabShortcuts` maps the tab keys (incl. Cmd+W on macOS)
@@ -105,6 +109,20 @@ files, releasing),
       against an in-memory pipe
     - `sftp.rs` — SFTP browse/transfer over `russh-sftp`, reusing the same
       connect path
+    - `sftp_edit.rs` — edit in place: per-edit `0700` dir in the app cache dir
+      (`<id>/copy/<remote name, made portable>` plus scratch files every
+      transfer goes through, so digests match the bytes moved), a debounced
+      `notify` watch on `copy/` (editors save by rename), and the sync
+      baseline (remote size+mtime, local content digest) behind check / upload
+      / discard. Uploads truncate in place, never delete the remote, and after
+      a failure stop comparing the remote (our own partial write is no
+      conflict); an edit registers only while its connection exists; a
+      startup sweep deletes copies untouched for 24 h (crash leftovers)
+    - `editor.rs` — opens an edit's copy: the settings editor command (split
+      without a shell, `{file}` placeholder; `flatpak-spawn --host` in
+      Flatpak), else a text editor — never the file's default action, which
+      on Windows would run a `.bat`/`.exe` (Notepad; `open -t` on macOS;
+      `xdg-open` on Linux)
     - `agent.rs` — SSH agent forwarding (relays the remote's agent channels to
       the local agent); `agent_ident.rs` — agent identity listing + agent-backed auth
     - `ssh_config.rs` — import/export devices ↔ `~/.ssh/config`

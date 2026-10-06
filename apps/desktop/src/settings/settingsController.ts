@@ -55,6 +55,7 @@ export const DEFAULT_KEEPALIVE_SETTINGS = {
 /** Matches the backend `SftpSettings` defaults. */
 export const DEFAULT_SFTP_SETTINGS = {
   idleDisconnectMins: 10,
+  editorCommand: "",
 } as const;
 
 const FALLBACK_SETTINGS: Settings = {
@@ -230,6 +231,18 @@ export class SettingsController {
     });
   }
 
+  /** The edit-in-place editor command: saved as typed, shown as stored (the
+   * backend trims it). */
+  private wireEditorCommand(root: HTMLElement): void {
+    const input = root.querySelector<HTMLInputElement>(".settings-sftp-editor");
+    if (!input) return;
+    input.value = this.settings.sftp.editorCommand;
+    input.addEventListener("change", async () => {
+      await this.applySftp({ ...this.settings.sftp, editorCommand: input.value });
+      input.value = this.settings.sftp.editorCommand;
+    });
+  }
+
   /** Reflects and persists the opt-in close-to-tray (the backend shows or
    * hides the tray icon on save). */
   private wireTrayCheckbox(root: HTMLElement): void {
@@ -335,6 +348,11 @@ export class SettingsController {
               <input type="number" class="settings-sftp-idle" min="0" max="1440" step="1" />
               <small class="form-hint" data-i18n="settings.sftp.idleDisconnect.hint">${t("settings.sftp.idleDisconnect.hint")}</small>
             </label>
+            <label class="form-field">
+              <span data-i18n="settings.sftp.editor">${t("settings.sftp.editor")}</span>
+              <input type="text" class="settings-sftp-editor" spellcheck="false" autocomplete="off" />
+              <small class="form-hint" data-i18n="settings.sftp.editor.hint">${t("settings.sftp.editor.hint")}</small>
+            </label>
           </div>
         </div>
         <div class="form-actions">
@@ -407,13 +425,15 @@ export class SettingsController {
 
     // SFTP idle-disconnect: clamped, and reflected back.
     const applySftp = async (): Promise<void> => {
-      const current = this.settings.sftp.idleDisconnectMins;
+      const current = this.settings.sftp;
       await this.applySftp({
-        idleDisconnectMins: parseBounded(sftpIdle?.value ?? "", current, SFTP_IDLE_MINS),
+        ...current,
+        idleDisconnectMins: parseBounded(sftpIdle?.value ?? "", current.idleDisconnectMins, SFTP_IDLE_MINS),
       });
       if (sftpIdle) sftpIdle.value = String(this.settings.sftp.idleDisconnectMins);
     };
     sftpIdle?.addEventListener("change", () => void applySftp());
+    this.wireEditorCommand(root);
 
     this.wireUpdateCheckbox(root);
     this.wireTrayCheckbox(root);

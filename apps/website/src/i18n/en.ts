@@ -51,7 +51,7 @@ export const en = {
 			},
 			{
 				title: "SFTP file browser",
-				body: "A docked Files panel with streamed uploads and downloads, a background transfer queue, bookmarks, sorting, filtering and chmod.",
+				body: "A docked Files panel with streamed uploads and downloads, a background transfer queue, bookmarks, sorting, filtering and chmod — plus remote files you edit in your own editor.",
 			},
 			{
 				title: "One-click workspaces",
@@ -98,12 +98,12 @@ export const en = {
 			},
 			sftp: {
 				title: "Files panel, right next to your shell",
-				body: "Browse a device's files over SFTP in a panel docked beside your terminals. Transfers stream in the background, so you keep working while they run.",
+				body: "Browse a device's files over SFTP in a panel docked beside your terminals. Transfers stream in the background, so you keep working while they run. Open a remote file in your own editor: every save goes straight back to the server, with a warning if someone changed it meanwhile.",
 				points: [
 					"Upload and download whole folders",
 					"Background transfer queue with progress",
-					"Bulk actions, sorting and filtering",
-					"Per-device bookmarks and chmod",
+					"Bulk actions, bookmarks, sorting and filtering",
+					"Edit remote files in your own editor",
 				],
 				alt: "The Files panel browsing a remote directory with a transfer in progress",
 			},

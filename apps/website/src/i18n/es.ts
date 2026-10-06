@@ -51,7 +51,7 @@ export const es: SiteMessages = {
 			},
 			{
 				title: "Explorador de archivos SFTP",
-				body: "Un panel de Archivos acoplado con subidas y descargas en streaming, una cola de transferencias en segundo plano, marcadores, ordenación, filtrado y chmod.",
+				body: "Un panel de Archivos acoplado con subidas y descargas en streaming, una cola de transferencias en segundo plano, marcadores, ordenación, filtrado y chmod, y archivos remotos que editas en tu propio editor.",
 			},
 			{
 				title: "Espacios de trabajo en un clic",
@@ -98,12 +98,12 @@ export const es: SiteMessages = {
 			},
 			sftp: {
 				title: "El panel de Archivos, junto a tu shell",
-				body: "Explora los archivos de un dispositivo por SFTP en un panel acoplado junto a tus terminales. Las transferencias se ejecutan en segundo plano, así que sigues trabajando mientras tanto.",
+				body: "Explora los archivos de un dispositivo por SFTP en un panel acoplado junto a tus terminales. Las transferencias se ejecutan en segundo plano, así que sigues trabajando mientras tanto. Abre un archivo remoto en tu editor: cada vez que guardas, vuelve directo al servidor, con un aviso si alguien lo cambió mientras tanto.",
 				points: [
 					"Sube y descarga carpetas completas",
 					"Cola de transferencias en segundo plano con progreso",
-					"Acciones en bloque, ordenación y filtrado",
-					"Marcadores por dispositivo y chmod",
+					"Acciones en bloque, marcadores, ordenación y filtrado",
+					"Edita archivos remotos en tu propio editor",
 				],
 				alt: "El panel de Archivos mostrando un directorio remoto con una transferencia en curso",
 			},

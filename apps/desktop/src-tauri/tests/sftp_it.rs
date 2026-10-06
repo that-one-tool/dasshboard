@@ -1125,3 +1125,475 @@ async fn reading_a_missing_file_is_an_sftp_error() {
 }
 
 use dasshboard_lib::error::AppError;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_stamp_tracks_a_files_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+
+    manager
+        .write_file("dev-1", "/a.conf", b"short", &noop_progress())
+        .await
+        .unwrap();
+    let before = manager.remote_stamp("dev-1", "/a.conf").await.unwrap();
+    assert_eq!(before.size, 5);
+
+    manager
+        .write_file("dev-1", "/a.conf", b"much longer now", &noop_progress())
+        .await
+        .unwrap();
+    let after = manager.remote_stamp("dev-1", "/a.conf").await.unwrap();
+    assert_ne!(before, after);
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overwrite_replaces_the_remote_contents_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+
+    manager
+        .write_file(
+            "dev-1",
+            "/a.conf",
+            b"a much longer original",
+            &noop_progress(),
+        )
+        .await
+        .unwrap();
+    manager.chmod("dev-1", "/a.conf", 0o600).await.unwrap();
+    let src = dir.path().join("a.conf");
+    std::fs::write(&src, b"edited").unwrap();
+
+    let written = manager
+        .overwrite_from_path("dev-1", &src, "/a.conf", &noop_progress())
+        .await
+        .unwrap();
+
+    assert_eq!(written, 6);
+    let got = manager
+        .read_file("dev-1", "/a.conf", &noop_progress())
+        .await
+        .unwrap();
+    assert_eq!(got, b"edited");
+    let entries = manager.list("dev-1", "/").await.unwrap();
+    assert_eq!(entries[0].mode, Some(0o600));
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_overwrite_never_deletes_the_remote_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+
+    manager
+        .write_file("dev-1", "/big.conf", b"original", &noop_progress())
+        .await
+        .unwrap();
+    // Several chunks long, so the loop sees the cancel after the first one.
+    let src = dir.path().join("big.conf");
+    std::fs::write(&src, vec![b'x'; 100_000]).unwrap();
+    let cancel_on_first_chunk = |_: u64, _: u64| {
+        manager.cancel_transfer("dev-1");
+    };
+
+    let err = manager
+        .overwrite_from_path("dev-1", &src, "/big.conf", &cancel_on_first_chunk)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, AppError::Cancelled(_)), "got {err:?}");
+    assert!(manager.remote_exists("dev-1", "/big.conf").await.unwrap());
+
+    manager.disconnect("dev-1").await;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Edit in place (`sftp_edit::EditManager`)
+ * ------------------------------------------------------------------------- */
+
+use dasshboard_lib::sftp_edit::{EditCheck, EditManager, EditSink, EditUpload};
+
+/// Records which edits reported a local change.
+#[derive(Default)]
+struct RecordingEditSink(StdMutex<Vec<String>>);
+
+impl EditSink for RecordingEditSink {
+    fn on_local_change(&self, edit_id: &str) {
+        self.0.lock().unwrap().push(edit_id.to_string());
+    }
+}
+
+/// A connected manager with `/etc/app.conf` holding `contents`, plus an edit
+/// manager rooted in its own temp dir.
+async fn edit_fixture(contents: &[u8]) -> (tempfile::TempDir, SftpManager, EditManager) {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_sftp_server().await;
+    let manager = manager_with_trust(dir.path(), port, &fp);
+    connect(&manager, "dev-1", port).await;
+    manager.mkdir("dev-1", "/etc").await.unwrap();
+    manager
+        .write_file("dev-1", "/etc/app.conf", contents, &noop_progress())
+        .await
+        .unwrap();
+    let edits = EditManager::new(dir.path().join("edits"));
+    (dir, manager, edits)
+}
+
+async fn open_edit(manager: &SftpManager, edits: &EditManager) -> String {
+    edits
+        .open(
+            manager,
+            "dev-1",
+            "/etc/app.conf",
+            Arc::new(RecordingEditSink::default()),
+            &noop_progress(),
+        )
+        .await
+        .expect("open edit")
+        .edit_id
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn opening_an_edit_downloads_the_file_under_its_own_name() {
+    let (dir, manager, edits) = edit_fixture(b"port = 80\n").await;
+
+    let info = edits
+        .open(
+            &manager,
+            "dev-1",
+            "/etc/app.conf",
+            Arc::new(RecordingEditSink::default()),
+            &noop_progress(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(info.device_id, "dev-1");
+    assert_eq!(info.remote_path, "/etc/app.conf");
+    assert_eq!(info.name, "app.conf");
+    let local = edits.local_path(&info.edit_id).unwrap();
+    assert!(local.starts_with(dir.path().join("edits")));
+    assert_eq!(local.file_name().unwrap(), "app.conf");
+    assert_eq!(std::fs::read(&local).unwrap(), b"port = 80\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(local.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "edit dir must be private, got {mode:o}");
+    }
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn check_tells_unchanged_clean_and_conflict_apart() {
+    let (_dir, manager, edits) = edit_fixture(b"port = 80\n").await;
+    let id = open_edit(&manager, &edits).await;
+    let local = edits.local_path(&id).unwrap();
+
+    assert_eq!(
+        edits.check(&manager, &id).await.unwrap(),
+        EditCheck::Unchanged
+    );
+
+    std::fs::write(&local, b"port = 8080\n").unwrap();
+    assert_eq!(edits.check(&manager, &id).await.unwrap(), EditCheck::Clean);
+
+    manager
+        .write_file(
+            "dev-1",
+            "/etc/app.conf",
+            b"changed by someone else\n",
+            &noop_progress(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        edits.check(&manager, &id).await.unwrap(),
+        EditCheck::Conflict
+    );
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_clean_upload_writes_back_and_resyncs() {
+    let (_dir, manager, edits) = edit_fixture(b"port = 80\n").await;
+    let id = open_edit(&manager, &edits).await;
+    std::fs::write(edits.local_path(&id).unwrap(), b"port = 8080\n").unwrap();
+
+    let outcome = edits
+        .upload(&manager, &id, false, &noop_progress())
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, EditUpload::Uploaded);
+    let remote = manager
+        .read_file("dev-1", "/etc/app.conf", &noop_progress())
+        .await
+        .unwrap();
+    assert_eq!(remote, b"port = 8080\n");
+    assert_eq!(
+        edits.check(&manager, &id).await.unwrap(),
+        EditCheck::Unchanged
+    );
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn uploading_unchanged_content_is_a_no_op() {
+    let (_dir, manager, edits) = edit_fixture(b"port = 80\n").await;
+    let id = open_edit(&manager, &edits).await;
+
+    let outcome = edits
+        .upload(&manager, &id, false, &noop_progress())
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, EditUpload::Unchanged);
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_conflicting_upload_is_refused_unless_overwriting() {
+    let (_dir, manager, edits) = edit_fixture(b"port = 80\n").await;
+    let id = open_edit(&manager, &edits).await;
+    std::fs::write(edits.local_path(&id).unwrap(), b"mine\n").unwrap();
+    manager
+        .write_file(
+            "dev-1",
+            "/etc/app.conf",
+            b"theirs, longer\n",
+            &noop_progress(),
+        )
+        .await
+        .unwrap();
+
+    let refused = edits
+        .upload(&manager, &id, false, &noop_progress())
+        .await
+        .unwrap();
+    let remote = manager
+        .read_file("dev-1", "/etc/app.conf", &noop_progress())
+        .await
+        .unwrap();
+    assert_eq!(refused, EditUpload::Conflict);
+    assert_eq!(remote, b"theirs, longer\n");
+
+    let forced = edits
+        .upload(&manager, &id, true, &noop_progress())
+        .await
+        .unwrap();
+    let remote = manager
+        .read_file("dev-1", "/etc/app.conf", &noop_progress())
+        .await
+        .unwrap();
+    assert_eq!(forced, EditUpload::Uploaded);
+    assert_eq!(remote, b"mine\n");
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discarding_replaces_the_local_copy_with_the_remote_one() {
+    let (_dir, manager, edits) = edit_fixture(b"port = 80\n").await;
+    let id = open_edit(&manager, &edits).await;
+    let local = edits.local_path(&id).unwrap();
+    std::fs::write(&local, b"mine\n").unwrap();
+    manager
+        .write_file(
+            "dev-1",
+            "/etc/app.conf",
+            b"theirs, longer\n",
+            &noop_progress(),
+        )
+        .await
+        .unwrap();
+
+    edits
+        .discard(&manager, &id, &noop_progress())
+        .await
+        .unwrap();
+
+    assert_eq!(std::fs::read(&local).unwrap(), b"theirs, longer\n");
+    assert_eq!(
+        edits.check(&manager, &id).await.unwrap(),
+        EditCheck::Unchanged
+    );
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saving_the_local_copy_notifies_the_sink() {
+    let (_dir, manager, edits) = edit_fixture(b"port = 80\n").await;
+    let sink = Arc::new(RecordingEditSink::default());
+    let id = edits
+        .open(
+            &manager,
+            "dev-1",
+            "/etc/app.conf",
+            sink.clone(),
+            &noop_progress(),
+        )
+        .await
+        .unwrap()
+        .edit_id;
+
+    std::fs::write(edits.local_path(&id).unwrap(), b"port = 8080\n").unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while sink.0.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(*sink.0.lock().unwrap(), vec![id]);
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_an_edit_deletes_its_local_copy() {
+    let (_dir, manager, edits) = edit_fixture(b"port = 80\n").await;
+    let id = open_edit(&manager, &edits).await;
+    let edit_dir = edits
+        .local_path(&id)
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    edits.close(&id);
+
+    assert!(!edit_dir.exists());
+    assert!(edits.local_path(&id).is_err());
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_a_device_ends_only_its_own_edits() {
+    let (_dir, manager, edits) = edit_fixture(b"port = 80\n").await;
+    let id = open_edit(&manager, &edits).await;
+
+    edits.close_device("dev-2");
+    assert!(edits.local_path(&id).is_ok());
+
+    edits.close_device("dev-1");
+    assert!(edits.local_path(&id).is_err());
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_upload_is_retried_without_a_false_conflict() {
+    let (_dir, manager, edits) = edit_fixture(b"port = 80\n").await;
+    let id = open_edit(&manager, &edits).await;
+    // Several chunks, so the cancel lands after the remote was truncated.
+    std::fs::write(edits.local_path(&id).unwrap(), vec![b'x'; 100_000]).unwrap();
+    let cancel_on_first_chunk = |_: u64, _: u64| {
+        manager.cancel_transfer("dev-1");
+    };
+
+    let err = edits
+        .upload(&manager, &id, false, &cancel_on_first_chunk)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, AppError::Cancelled(_)), "got {err:?}");
+    // Our own partial write is not someone else's change.
+    assert_eq!(edits.check(&manager, &id).await.unwrap(), EditCheck::Clean);
+    let retried = edits
+        .upload(&manager, &id, false, &noop_progress())
+        .await
+        .unwrap();
+    assert_eq!(retried, EditUpload::Uploaded);
+    let remote = manager
+        .read_file("dev-1", "/etc/app.conf", &noop_progress())
+        .await
+        .unwrap();
+    assert_eq!(remote.len(), 100_000);
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_watched_folder_only_ever_holds_the_copy() {
+    let (_dir, manager, edits) = edit_fixture(b"port = 80\n").await;
+    let id = open_edit(&manager, &edits).await;
+    let local = edits.local_path(&id).unwrap();
+    let names = || -> Vec<String> {
+        std::fs::read_dir(local.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    };
+    assert_eq!(names(), ["app.conf"]);
+
+    std::fs::write(&local, b"port = 8080\n").unwrap();
+    edits
+        .upload(&manager, &id, false, &noop_progress())
+        .await
+        .unwrap();
+    assert_eq!(names(), ["app.conf"]);
+
+    edits
+        .discard(&manager, &id, &noop_progress())
+        .await
+        .unwrap();
+    assert_eq!(names(), ["app.conf"]);
+
+    manager.disconnect("dev-1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edit_cannot_open_on_a_closed_connection() {
+    let (dir, manager, edits) = edit_fixture(b"port = 80\n").await;
+    manager.disconnect("dev-1").await;
+
+    let opened = edits
+        .open(
+            &manager,
+            "dev-1",
+            "/etc/app.conf",
+            Arc::new(RecordingEditSink::default()),
+            &noop_progress(),
+        )
+        .await;
+
+    assert!(opened.is_err());
+    let left = std::fs::read_dir(dir.path().join("edits"))
+        .map(|d| d.count())
+        .unwrap_or(0);
+    assert_eq!(left, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn editable_size_follows_the_target_and_refuses_folders() {
+    let (_dir, manager, _edits) = edit_fixture(b"port = 80\n").await;
+
+    assert_eq!(
+        manager
+            .editable_size("dev-1", "/etc/app.conf")
+            .await
+            .unwrap(),
+        10
+    );
+    let err = manager.editable_size("dev-1", "/etc").await.unwrap_err();
+    assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+
+    manager.disconnect("dev-1").await;
+}

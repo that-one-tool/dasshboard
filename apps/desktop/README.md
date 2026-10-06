@@ -32,7 +32,8 @@ From the repo root, `npm run tauri dev` and `npm run check` delegate here.
 src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands.rs  ──▶  domain modules
                        ◀──events──  session_status, host_key_prompt,
                                     host_key_prompt_closed, tunnel_status,
-                                    sftp_progress, config_changed
+                                    sftp_progress, sftp_edit_changed,
+                                    config_changed
 ```
 
 - **Frontend (`src/`)**: one folder per feature: `terminal/`, `devices/`, `tabs/`,
@@ -45,6 +46,10 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands.rs  ──�
     - `session`: SSH shells over `russh`. `tunnel`, `sftp` and `agent` reuse its
       connect, auth and host-key path; `tunnel`'s dynamic forwards speak SOCKS
       via `socks`.
+    - `sftp_edit` and `editor`: edit in place. A private copy in the app cache
+      dir (`sftp-edit/<id>/`, swept at startup after 24 h), watched for saves
+      and uploaded back over the original, opened with the editor command from
+      settings or a text editor (never the file's own default action).
     - `serial` and `local_shell`: plug into the same `SessionSink`/`SessionStatus`
       seam as SSH shells.
     - `*_store`: JSON stores built on `atomic_file` (atomic writes, recovery from
@@ -84,7 +89,7 @@ the Flatpak):
 | ---------------------- | ------------------------------------------------------------------------- |
 | `devices.json`         | Saved devices (never secrets)                                             |
 | `profiles.json`        | Profiles (one or more tabs each) and the default profile id               |
-| `settings.json`        | Terminal appearance, language, keepalive, SFTP idle timeout, last profile, update check on launch, close to tray |
+| `settings.json`        | Terminal appearance, language, keepalive, SFTP idle timeout and editor command, last profile, update check on launch, close to tray |
 | `known_hosts.json`     | Trusted host keys (TOFU)                                                  |
 | `sftp_bookmarks.json`  | SFTP bookmarks for each device                                            |
 | `workspace_state.json` | Open tabs, Files panel and side-menu widths, side menu collapsed, tunnels left running/stopped, collapsed device sections, per instance (not synced) |

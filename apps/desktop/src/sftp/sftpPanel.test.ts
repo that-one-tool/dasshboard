@@ -22,6 +22,9 @@ const h = vi.hoisted(() => ({
   permsChoice: null as number | null,
   bookmarks: [] as string[],
   progressHandler: null as ((e: SftpProgressEvent) => void) | null,
+  editChangedHandler: null as ((editId: string) => void) | null,
+  editCheck: "clean" as "unchanged" | "clean" | "conflict",
+  editConflictChoice: null as "overwrite" | "discard" | null,
 }));
 
 vi.mock("../ipc", () => ({
@@ -64,6 +67,22 @@ vi.mock("../ipc", () => ({
     h.progressHandler = handler;
     return () => {};
   }),
+  sftpEditOpen: vi.fn(async (deviceId: string, remotePath: string) => ({
+    editId: "e1",
+    deviceId,
+    remotePath,
+    name: remotePath.split("/").pop(),
+  })),
+  sftpEditLaunch: vi.fn(async () => {}),
+  sftpEditCheck: vi.fn(async () => h.editCheck),
+  sftpEditUpload: vi.fn(async () => "uploaded"),
+  sftpEditDiscard: vi.fn(async () => {}),
+  sftpEditClose: vi.fn(async () => {}),
+  sftpEditableSize: vi.fn(async () => 42),
+  onSftpEditChanged: vi.fn(async (handler: (editId: string) => void) => {
+    h.editChangedHandler = handler;
+    return () => {};
+  }),
 }));
 
 vi.mock("../ui/fileDialog", () => ({
@@ -78,6 +97,7 @@ vi.mock("../ui/confirm", () => ({
   prompt: vi.fn(async () => "newname"),
   chooseConflict: vi.fn(async () => h.conflictChoice),
   choosePermissions: vi.fn(async () => h.permsChoice),
+  chooseEditConflict: vi.fn(async () => h.editConflictChoice),
 }));
 
 vi.mock("@tauri-apps/api/path", () => ({
@@ -101,7 +121,11 @@ import {
   sftpChmod,
   sftpBookmarkAdd,
   sftpBookmarkRemove,
+  sftpEditOpen,
+  sftpEditUpload,
+  sftpEditClose,
 } from "../ipc";
+import { confirm } from "../ui/confirm";
 import type { AppError } from "../ipc";
 import { connectIcon, disconnectIcon } from "../ui/icons";
 
@@ -194,6 +218,8 @@ describe("SftpPanel", () => {
     h.conflictChoice = "overwrite";
     h.permsChoice = null;
     h.bookmarks = [];
+    h.editCheck = "clean";
+    h.editConflictChoice = null;
     vi.clearAllMocks();
   });
 
@@ -1117,5 +1143,139 @@ describe("SftpPanel", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /* ----- edit in place ---------------------------------------------------- */
+
+  function editButton(rowSel: string): HTMLButtonElement | null {
+    return document.querySelector<HTMLButtonElement>(`${rowSel} [aria-label="Edit"]`);
+  }
+
+  async function editReadme(): Promise<void> {
+    editButton(".sftp-entry.is-file")?.click();
+    await flush();
+  }
+
+  it("offers Edit on files but not on folders", async () => {
+    await setup();
+    await browse();
+
+    expect(editButton(".sftp-entry.is-file")).not.toBeNull();
+    expect(editButton(".sftp-entry.is-dir")).toBeNull();
+  });
+
+  it("Edit opens the file through the transfer queue and lists it as being edited", async () => {
+    await setup();
+    await browse();
+
+    await editReadme();
+
+    expect(sftpEditOpen).toHaveBeenCalledWith("a", "/home/j/readme.txt");
+    expect(q(".sftp-edits").hidden).toBe(false);
+    expect(q(".sftp-edit-row .sftp-edit-name").textContent).toBe("readme.txt");
+  });
+
+  it("a save of the edited copy is uploaded", async () => {
+    await setup();
+    await browse();
+    await editReadme();
+
+    h.editChangedHandler?.("e1");
+    await flush();
+
+    expect(sftpEditUpload).toHaveBeenCalledWith("e1", false);
+  });
+
+  it("an edit upload in the queue cannot be cancelled", async () => {
+    await setup();
+    await browse();
+    await editReadme();
+    vi.mocked(sftpEditUpload).mockImplementationOnce(() => new Promise(() => {}));
+
+    h.editChangedHandler?.("e1");
+    await flush();
+
+    expect(document.querySelector(".sftp-queue-item.is-active")).not.toBeNull();
+    expect(document.querySelector(".sftp-queue-item.is-active .sftp-queue-cancel")).toBeNull();
+  });
+
+  it("Stop in the Editing list ends the edit", async () => {
+    await setup();
+    await browse();
+    await editReadme();
+
+    q<HTMLButtonElement>(".sftp-edit-stop").click();
+    await flush();
+
+    expect(sftpEditClose).toHaveBeenCalledWith("e1");
+    expect(q(".sftp-edits").hidden).toBe(true);
+  });
+
+  it("a collapsed panel with an open edit is never idle-disconnected", async () => {
+    vi.useFakeTimers();
+    try {
+      await setup({ getIdleDisconnectMins: () => 5 });
+      await browse();
+      await editReadme();
+      q<HTMLButtonElement>('.sftp-panel [data-action="collapse"]').click();
+      await flush();
+
+      vi.advanceTimersByTime(60 * 60_000);
+      await flush();
+
+      expect(sftpDisconnect).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the idle timer arms again once the last edit stops", async () => {
+    vi.useFakeTimers();
+    try {
+      await setup({ getIdleDisconnectMins: () => 5 });
+      await browse();
+      await editReadme();
+      q<HTMLButtonElement>('.sftp-panel [data-action="collapse"]').click();
+      await flush();
+
+      q<HTMLButtonElement>(".sftp-edit-stop").click();
+      await flush();
+      vi.advanceTimersByTime(5 * 60_000 + 100);
+      await flush();
+
+      expect(sftpDisconnect).toHaveBeenCalledWith("a");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("disconnecting with changes not uploaded asks first, and declining stays connected", async () => {
+    h.editCheck = "conflict"; // left open: the change stays pending
+    await setup();
+    await browse();
+    await editReadme();
+    h.editChangedHandler?.("e1");
+    await flush();
+    vi.mocked(confirm).mockResolvedValueOnce(false);
+
+    q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]').click();
+    await flush();
+
+    expect(confirm).toHaveBeenCalled();
+    expect(sftpDisconnect).not.toHaveBeenCalled();
+    expect(document.querySelector(".sftp-edit-row")).not.toBeNull();
+  });
+
+  it("disconnecting ends the device's edits", async () => {
+    await setup();
+    await browse();
+    await editReadme();
+
+    q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]').click();
+    await flush();
+
+    expect(confirm).not.toHaveBeenCalled(); // everything was in sync
+    expect(sftpDisconnect).toHaveBeenCalledWith("a");
+    expect(q(".sftp-edits").hidden).toBe(true);
   });
 });

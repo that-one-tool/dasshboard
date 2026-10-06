@@ -101,21 +101,26 @@ impl Default for KeepaliveSettings {
     }
 }
 
-/// SFTP file-browser behavior. App-wide, not per-device. Purely a frontend
-/// concern (the backend keeps a connection alive until told to drop it), stored
-/// here so the preference persists like every other app setting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// SFTP file-browser behavior. App-wide, not per-device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SftpSettings {
     /// Minutes an idle (collapsed) SFTP connection lives before it is
-    /// auto-disconnected; `0` disables the idle timeout.
+    /// auto-disconnected; `0` disables the idle timeout. Enforced by the
+    /// frontend (the backend keeps a connection until told to drop it).
     pub idle_disconnect_mins: u32,
+    /// The command that opens a file for edit-in-place (`{file}` marks where
+    /// the path goes, else it is appended); empty means the OS default app.
+    /// See `editor.rs`.
+    #[serde(default)]
+    pub editor_command: String,
 }
 
 impl Default for SftpSettings {
     fn default() -> Self {
         SftpSettings {
             idle_disconnect_mins: DEFAULT_SFTP_IDLE_DISCONNECT_MINS,
+            editor_command: String::new(),
         }
     }
 }
@@ -233,6 +238,7 @@ impl Settings {
             .sftp
             .idle_disconnect_mins
             .clamp(MIN_SFTP_IDLE_DISCONNECT_MINS, MAX_SFTP_IDLE_DISCONNECT_MINS);
+        self.sftp.editor_command = self.sftp.editor_command.trim().to_string();
         self
     }
 }
@@ -556,6 +562,25 @@ mod tests {
         .unwrap();
         let store = SettingsStore::load(dir.path().to_path_buf());
         assert_eq!(store.get().sftp, SftpSettings::default());
+    }
+
+    #[test]
+    fn the_editor_command_defaults_to_empty_and_is_trimmed_on_save() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(SETTINGS_FILE),
+            r#"{ "version": 1, "sftp": { "idleDisconnectMins": 5 } }"#,
+        )
+        .unwrap();
+        let store = SettingsStore::load(dir.path().to_path_buf());
+        assert_eq!(store.get().sftp.editor_command, "");
+
+        let mut s = store.get();
+        s.sftp.editor_command = "  code --new-window  ".to_string();
+        let saved = store.save(s).unwrap();
+        assert_eq!(saved.sftp.editor_command, "code --new-window");
+        let value = serde_json::to_value(&saved).unwrap();
+        assert_eq!(value["sftp"]["editorCommand"], "code --new-window");
     }
 
     #[test]

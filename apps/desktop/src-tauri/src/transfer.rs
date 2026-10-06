@@ -203,6 +203,7 @@ mod tests {
             session_manager,
             tunnel_manager,
             sftp_manager,
+            edit_manager: crate::sftp_edit::EditManager::new(dir.join("sftp-edit")),
             serial_manager: Arc::new(SerialSessionManager::new()),
             local_shell_manager: Arc::new(crate::local_shell::LocalShellManager::new()),
             bookmark_store: crate::bookmark_store::BookmarkStore::load(dir.to_path_buf()),

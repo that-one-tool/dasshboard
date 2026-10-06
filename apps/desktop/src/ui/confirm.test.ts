@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { confirm, prompt } from "./confirm";
+import { confirm, prompt, chooseEditConflict } from "./confirm";
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -101,5 +101,40 @@ describe("prompt", () => {
     if (input) input.value = "entered";
     input?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     expect(await p).toBe("entered");
+  });
+});
+
+describe("chooseEditConflict", () => {
+  it("names the file and resolves the chosen action", async () => {
+    const p1 = chooseEditConflict("app.conf");
+    expect(document.querySelector(".confirm-message")?.textContent).toContain("app.conf");
+    click('.confirm-dialog [data-action="overwrite"]');
+    expect(await p1).toBe("overwrite");
+
+    const p2 = chooseEditConflict("app.conf");
+    click('.confirm-dialog [data-action="discard"]');
+    expect(await p2).toBe("discard");
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+  });
+
+  it("resolves null for later, the overlay and Escape", async () => {
+    const p1 = chooseEditConflict("app.conf");
+    click('.confirm-dialog [data-action="cancel"]');
+    expect(await p1).toBeNull();
+
+    const p2 = chooseEditConflict("app.conf");
+    click(".confirm-dialog .dialog-overlay");
+    expect(await p2).toBeNull();
+
+    const p3 = chooseEditConflict("app.conf");
+    press("Escape");
+    expect(await p3).toBeNull();
+  });
+
+  it("does not pick a destructive action on Enter", async () => {
+    const p = chooseEditConflict("app.conf");
+    press("Enter");
+    click('.confirm-dialog [data-action="cancel"]');
+    expect(await p).toBeNull();
   });
 });

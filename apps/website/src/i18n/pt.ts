@@ -52,7 +52,7 @@ export const pt: SiteMessages = {
 			},
 			{
 				title: "Explorador de ficheiros SFTP",
-				body: "Um painel Ficheiros ancorado com envios e transferências em streaming, uma fila de transferências em segundo plano, marcadores, ordenação, filtragem e chmod.",
+				body: "Um painel Ficheiros ancorado com envios e transferências em streaming, uma fila de transferências em segundo plano, marcadores, ordenação, filtragem e chmod, e ficheiros remotos que edita no seu próprio editor.",
 			},
 			{
 				title: "Espaços de trabalho num clique",
@@ -99,12 +99,12 @@ export const pt: SiteMessages = {
 			},
 			sftp: {
 				title: "O painel Ficheiros, mesmo ao lado da sua shell",
-				body: "Explore os ficheiros de um dispositivo por SFTP num painel ancorado junto aos seus terminais. As transferências decorrem em segundo plano, por isso continua a trabalhar entretanto.",
+				body: "Explore os ficheiros de um dispositivo por SFTP num painel ancorado junto aos seus terminais. As transferências decorrem em segundo plano, por isso continua a trabalhar entretanto. Abra um ficheiro remoto no seu editor: cada gravação volta diretamente ao servidor, com um aviso se alguém o alterou entretanto.",
 				points: [
 					"Envie e transfira pastas inteiras",
 					"Fila de transferências em segundo plano com progresso",
-					"Ações em massa, ordenação e filtragem",
-					"Marcadores por dispositivo e chmod",
+					"Ações em massa, marcadores, ordenação e filtragem",
+					"Edite ficheiros remotos no seu próprio editor",
 				],
 				alt: "O painel Ficheiros a mostrar uma pasta remota com uma transferência em curso",
 			},

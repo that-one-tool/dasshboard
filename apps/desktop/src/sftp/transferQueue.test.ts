@@ -223,4 +223,32 @@ describe("TransferQueue", () => {
     live.resolve(undefined);
     await flush();
   });
+
+  it("ignores cancel for an item enqueued as not cancellable", async () => {
+    const h = hooks();
+    const q = makeQueue(h);
+    const a = deferred();
+    const b = deferred();
+    const spec = { deviceId: "d", direction: "upload" as const, isDir: false, cancellable: false };
+    const first = q.enqueue({ ...spec, name: "a", run: () => a.promise });
+    const second = q.enqueue({ ...spec, name: "b", run: () => b.promise });
+
+    q.cancel(first);
+    q.cancel(second);
+
+    expect(h.cancelActive).not.toHaveBeenCalled();
+    expect(q.items().map((i) => [i.state, i.cancellable])).toEqual([
+      ["active", false],
+      ["queued", false],
+    ]);
+    a.resolve();
+    b.resolve();
+    await flush();
+  });
+
+  it("items are cancellable by default", () => {
+    const q = makeQueue(hooks());
+    q.enqueue({ deviceId: "d", direction: "download", isDir: false, name: "a", run: () => new Promise(() => {}) });
+    expect(q.items()[0]?.cancellable).toBe(true);
+  });
 });

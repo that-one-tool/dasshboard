@@ -42,6 +42,7 @@ import {
   sftpBookmarkAdd,
   sftpBookmarkRemove,
   onSftpProgress,
+  onSftpEditChanged,
   type AppError,
   type ConflictPolicy,
   type Device,
@@ -56,7 +57,13 @@ import {
   pickUploadOpenPath,
   pickUploadDirPath,
 } from "../ui/fileDialog";
-import { confirm, prompt, chooseConflict, choosePermissions } from "../ui/confirm";
+import {
+  confirm,
+  prompt,
+  chooseConflict,
+  choosePermissions,
+  chooseEditConflict,
+} from "../ui/confirm";
 import {
   trashIcon,
   pencilIcon,
@@ -68,6 +75,7 @@ import {
   uploadIcon,
   uploadFolderIcon,
   downloadIcon,
+  fileEditIcon,
   folderPlusIcon,
   chevronLeftIcon,
   chevronRightIcon,
@@ -79,6 +87,8 @@ import {
 } from "../ui/icons";
 import { joinRemote, parentOf, formatSize, formatMtime, formatMode } from "./sftpFormat";
 import { TransferQueue, type TransferItem } from "./transferQueue";
+import { EditSessions, type EditTransferSpec } from "./editSessions";
+import { renderEditList } from "./editList";
 import { basename, join } from "@tauri-apps/api/path";
 import { t, tp } from "../i18n";
 import { remToPx } from "../ui/dom";
@@ -145,6 +155,7 @@ export class SftpPanel {
   private statusEl: HTMLElement | null = null;
   /** Container for the background transfer-queue list (rendered from `queue`). */
   private queueEl: HTMLElement | null = null;
+  private editsEl: HTMLElement | null = null;
 
   /** The background transfer queue: up/downloads run here while browsing stays
    * live. Rebuilt on every panel rebuild so its hooks close over fresh DOM refs. */
@@ -154,6 +165,13 @@ export class SftpPanel {
 
   /** `sftp_progress` event subscription (live while the panel exists). */
   private unlistenProgress: UnlistenFn | null = null;
+  private unlistenEditChanged: UnlistenFn | null = null;
+  /** Files open in an external editor (edit in place). */
+  private edits: EditSessions;
+  /** Settles the queued edit transfers that end without running (cancelled
+   * while queued, or dropped on disconnect); an active one settles through its
+   * own `run`. Keyed by queue item id. */
+  private editTransfers = new Map<number, { deviceId: string; reject: (error: AppError) => void }>();
   /** Idle-disconnect timer, armed while collapsed + connected. */
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -224,10 +242,21 @@ export class SftpPanel {
       onProgress: (item) => this.updateQueueRowProgress(item),
       onComplete: (item, ctx) => this.onTransferComplete(item, ctx),
     });
+    this.edits = new EditSessions({
+      runTransfer: (spec) => this.runEditTransfer(spec),
+      confirm: (message) => confirm(message),
+      chooseConflict: chooseEditConflict,
+      onChange: () => this.onEditsChange(),
+      onError: (err) => this.reportError(err),
+      onSuccess: (message) => this.options.onSuccess?.(message),
+    });
   }
 
   async init(): Promise<void> {
     this.buildPanel();
+    void onSftpEditChanged((editId) => void this.edits.handleChange(editId)).then((un) => {
+      this.unlistenEditChanged = un;
+    });
     this.devices = await this.safeListDevices();
     this.refreshDeviceSelect();
     this.applyInitialState();
@@ -316,6 +345,8 @@ export class SftpPanel {
   dispose(): void {
     this.unlistenProgress?.();
     this.unlistenProgress = null;
+    this.unlistenEditChanged?.();
+    this.unlistenEditChanged = null;
     this.clearQueueHideTimers();
     this.clearIdleTimer();
   }
@@ -397,6 +428,7 @@ export class SftpPanel {
           </div>
         </div>
         <div class="sftp-entries" role="list"></div>
+        <div class="sftp-edits" hidden></div>
         <div class="sftp-queue" role="status" aria-live="polite" hidden></div>
         <div class="sftp-status" aria-live="polite"></div>
       </div>
@@ -415,7 +447,9 @@ export class SftpPanel {
     this.pasteBtnEl = panel.querySelector(".sftp-bulk-paste");
     this.statusEl = panel.querySelector(".sftp-status");
     this.queueEl = panel.querySelector(".sftp-queue");
+    this.editsEl = panel.querySelector(".sftp-edits");
     this.renderQueue();
+    this.renderEdits();
 
     this.pathEl?.addEventListener("keydown", (e) => {
       const ev = e as KeyboardEvent;
@@ -591,6 +625,7 @@ export class SftpPanel {
   /** Fully close the panel: disconnect the live connection immediately (the
    * "closed" state's rule) and hide the panel + splitter. */
   private async hide(): Promise<void> {
+    if (!(await this.confirmEndEdits())) return;
     this.panelOpen = false;
     this.clearIdleTimer();
     this.applyOpenState();
@@ -641,6 +676,10 @@ export class SftpPanel {
   private async selectDevice(deviceId: string, force = false): Promise<void> {
     if (!force && deviceId === this.activeDeviceId) return;
     if (this.activeDeviceId && this.activeDeviceId !== deviceId) {
+      if (!(await this.confirmEndEdits())) {
+        this.syncDeviceSelect(); // put the picker back on the device we kept
+        return;
+      }
       await this.disconnectActive();
     }
     this.selectedDeviceId = deviceId;
@@ -708,6 +747,8 @@ export class SftpPanel {
       // Cancel + drop any transfers for this device — the connection is going
       // away, so nothing more can run against it.
       this.queue.cancelDevice(deviceId);
+      this.rejectEditTransfers(deviceId);
+      this.edits.closeDevice(deviceId); // the backend ends them with the connection
       try {
         await sftpDisconnect(deviceId);
       } catch {
@@ -721,10 +762,24 @@ export class SftpPanel {
   private handleConnToggle(): void {
     if (this.connecting) return;
     if (this.activeDeviceId) {
-      void this.handleDisconnect();
+      void this.confirmThenDisconnect();
     } else if (this.selectedDeviceId) {
       void this.selectDevice(this.selectedDeviceId, true);
     }
+  }
+
+  /** The user's Disconnect: ask first when edited files have changes not
+   * uploaded (disconnecting ends the edits). */
+  private async confirmThenDisconnect(): Promise<void> {
+    if (await this.confirmEndEdits()) await this.handleDisconnect();
+  }
+
+  /** Whether closing the active connection may end its edits: true unless some
+   * have saved changes not uploaded and the user declines. */
+  private async confirmEndEdits(): Promise<boolean> {
+    const deviceId = this.activeDeviceId;
+    const count = deviceId ? this.edits.unsyncedCount(deviceId) : 0;
+    return count === 0 || confirm(tp("sftp.edit.disconnectConfirm", count));
   }
 
   /** Drop the connection but keep the panel open, showing the disconnected
@@ -745,7 +800,8 @@ export class SftpPanel {
    * live setting; `0` disables it). */
   private armIdleTimer(): void {
     this.clearIdleTimer();
-    if (!this.activeDeviceId) return;
+    // An open edit keeps the connection: its saves still need uploading.
+    if (!this.activeDeviceId || this.edits.hasEdits(this.activeDeviceId)) return;
     const mins = this.options.getIdleDisconnectMins?.() ?? 0;
     if (mins <= 0) return;
     this.idleTimer = setTimeout(() => void this.onIdleTimeout(), mins * 60_000);
@@ -1097,6 +1153,48 @@ export class SftpPanel {
     });
   }
 
+  /** Open a remote file in the external editor (edit in place). */
+  private async handleEdit(entry: SftpEntry): Promise<void> {
+    if (this.activeDeviceId === null) return;
+    this.clearHover();
+    const remote = joinRemote(this.cwd, entry.name);
+    await this.edits.open(this.activeDeviceId, remote, entry.name);
+  }
+
+  /** Run an edit's download/upload through the transfer queue, settling with
+   * its result. A failure is reported by the queue (`onTransferComplete`). */
+  private runEditTransfer<T>(spec: EditTransferSpec<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const id = this.queue.enqueue({
+        deviceId: spec.deviceId,
+        direction: spec.direction,
+        isDir: false,
+        name: spec.name,
+        cancellable: spec.cancellable,
+        run: () => spec.run().then(resolve, (err: unknown) => {
+          reject(err);
+          throw err;
+        }),
+      });
+      this.editTransfers.set(id, { deviceId: spec.deviceId, reject });
+    });
+  }
+
+  private onEditsChange(): void {
+    this.renderEdits();
+    // The last edit ending lets a collapsed panel idle out again (and a new
+    // one stops the countdown).
+    if (this.collapsed) this.armIdleTimer();
+  }
+
+  private renderEdits(): void {
+    if (!this.editsEl) return;
+    renderEditList(this.editsEl, this.edits.entries(), {
+      onReopen: (editId) => void this.edits.relaunch(editId),
+      onStop: (editId) => void this.edits.stop(editId),
+    });
+  }
+
   private async handleUpload(): Promise<void> {
     if (this.activeDeviceId === null) return;
     const local = await pickUploadOpenPath();
@@ -1199,6 +1297,7 @@ export class SftpPanel {
     item: TransferItem,
     ctx: { successToast?: string; refreshDir?: string },
   ): void {
+    this.settleEditTransfer(item);
     if (item.state === "done") {
       if (ctx.successToast) this.options.onSuccess?.(ctx.successToast);
       // Reflect a new upload if we're still showing the directory it landed in.
@@ -1215,6 +1314,25 @@ export class SftpPanel {
       this.reportError(item.error);
     }
     // "cancelled": quiet — the row stays until dismissed/cleared.
+  }
+
+  /** Reject an edit transfer the queue ended without running it to success
+   * (cancelled while queued), so the edit doesn't wait on it forever. */
+  private settleEditTransfer(item: TransferItem): void {
+    const pending = this.editTransfers.get(item.id);
+    this.editTransfers.delete(item.id);
+    if (item.state === "done") return;
+    pending?.reject(item.error ?? cancelledError());
+  }
+
+  /** Settle a device's edit transfers that `queue.cancelDevice` dropped
+   * without completing them. */
+  private rejectEditTransfers(deviceId: string): void {
+    for (const [id, pending] of this.editTransfers) {
+      if (pending.deviceId !== deviceId) continue;
+      this.editTransfers.delete(id);
+      pending.reject(cancelledError());
+    }
   }
 
   /** Queue hook: ask the backend to cancel the in-flight transfer for a device. */
@@ -1679,6 +1797,11 @@ export class SftpPanel {
         else void this.handleDownload(entry);
       }),
     );
+    if (!isDir) {
+      actions.appendChild(
+        this.iconButton(fileEditIcon, t("sftp.entry.edit"), () => void this.handleEdit(entry)),
+      );
+    }
     actions.appendChild(
       this.iconButton(pencilIcon, t("sftp.entry.rename"), () => void this.handleRename(entry)),
     );
@@ -1916,6 +2039,7 @@ export class SftpPanel {
         break;
     }
 
+    if (!item.cancellable && cancelAction === "tx-cancel") cancelAction = null;
     row.append(icon, name, detail);
     if (cancelAction) {
       const label =
@@ -1935,6 +2059,10 @@ export class SftpPanel {
 
 /** A client-side validation error shaped like the backend `AppError`, for the
  * quiet-skip paths in bulk operations (move-into-self, name collision, …). */
+function cancelledError(): AppError {
+  return { code: "Cancelled", message: t("sftp.transferCancelled") };
+}
+
 function validationError(message: string): AppError {
   return { code: "Validation", message } as AppError;
 }

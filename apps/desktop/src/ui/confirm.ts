@@ -199,6 +199,80 @@ export function chooseConflict(message: string): Promise<ConflictChoice | null> 
   });
 }
 
+/** How to resolve an edited file that also changed on the server. */
+export type EditConflictChoice = "overwrite" | "discard";
+
+/**
+ * The edit-in-place conflict dialog: overwrite the server copy with the saved
+ * edit, discard the edit (re-download), or decide later (`null`, also on
+ * overlay / Escape). Focus starts on "later", and Enter is not a shortcut, so
+ * a stray keypress never picks one of the two destructive choices.
+ */
+export function chooseEditConflict(name: string): Promise<EditConflictChoice | null> {
+  return new Promise((resolve) => {
+    const root = document.createElement("div");
+    root.className = "dialog confirm-dialog";
+    root.setAttribute("role", "dialog");
+    root.setAttribute("aria-modal", "true");
+    root.innerHTML = `
+      <div class="dialog-overlay"></div>
+      <div class="dialog-content confirm-content">
+        <div class="dialog-header"><h2 class="confirm-title"></h2></div>
+        <p class="confirm-message"></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" data-action="cancel"></button>
+          <button type="button" class="btn btn-danger" data-action="discard"></button>
+          <button type="button" class="btn btn-primary" data-action="overwrite"></button>
+        </div>
+      </div>
+    `;
+    const set = (sel: string, text: string): void => {
+      const el = root.querySelector(sel);
+      if (el) el.textContent = text;
+    };
+    set(".confirm-title", t("sftp.edit.conflict.title"));
+    set(".confirm-message", t("sftp.edit.conflict.message", { name }));
+    set('[data-action="cancel"]', t("sftp.edit.conflict.later"));
+    set('[data-action="discard"]', t("sftp.edit.conflict.discard"));
+    set('[data-action="overwrite"]', t("sftp.edit.conflict.overwrite"));
+
+    const previouslyFocused = document.activeElement;
+    const finish = (result: EditConflictChoice | null): void => {
+      document.removeEventListener("keydown", onKey, true);
+      root.remove();
+      restoreFocus(previouslyFocused);
+      resolve(result);
+    };
+    root.addEventListener("click", (e) => {
+      const choice = editConflictChoiceOf(e.target);
+      if (choice !== undefined) finish(choice);
+    });
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(null);
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(root);
+    root.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.focus();
+  });
+}
+
+const EDIT_CONFLICT_ACTIONS: Record<string, EditConflictChoice | null> = {
+  overwrite: "overwrite",
+  discard: "discard",
+  cancel: null,
+};
+
+/** The edit-conflict choice a click picks (`null` = later, including the
+ * overlay), or `undefined` for a click elsewhere in the dialog. */
+function editConflictChoiceOf(target: EventTarget | null): EditConflictChoice | null | undefined {
+  if (!(target instanceof HTMLElement)) return undefined;
+  if (target.classList.contains("dialog-overlay")) return null;
+  return EDIT_CONFLICT_ACTIONS[String(target.dataset.action)];
+}
+
 /**
  * A chmod dialog: a 3×3 grid of read/write/execute checkboxes for
  * owner/group/other, prefilled from `mode`, with a live octal readout. Resolves

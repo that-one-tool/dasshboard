@@ -78,6 +78,27 @@ pub struct SftpEntry {
     pub mode: Option<u32>,
 }
 
+/// A remote file's size + modification time, compared before an edit-in-place
+/// upload to tell whether someone else changed the file since we fetched it.
+/// `mtime` has one-second resolution (SFTP v3), so a same-size change within
+/// the same second goes unnoticed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteStamp {
+    pub size: u64,
+    pub mtime: Option<u32>,
+}
+
+/// What a failed upload does with the remote file it already created or
+/// truncated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PartialUpload {
+    /// A fresh upload: drop the incomplete file.
+    Remove,
+    /// An edit-in-place upload over a file the user cares about: leave it
+    /// (owner, mode, links intact) so a retry can complete it.
+    Keep,
+}
+
 /// The connection-shaped parameters for an SFTP connect, built by the
 /// `sftp_connect` command from a device + its resolved credentials. Mirrors
 /// `TunnelParams` (minus the forwards).
@@ -199,6 +220,11 @@ impl SftpManager {
             .get(device_id)
             .cloned()
             .ok_or_else(|| AppError::NotFound(format!("no SFTP connection for device {device_id}")))
+    }
+
+    /// Whether `device_id` has a connection (live or not yet noticed dead).
+    pub fn is_connected(&self, device_id: &str) -> bool {
+        self.lock_conns().contains_key(device_id)
     }
 
     /// Number of live connections (used by the app-close handler to decide
@@ -427,7 +453,73 @@ impl SftpManager {
             manager: self,
             device_id: device_id.to_string(),
         };
-        upload_from_file(&conn, local_path, remote_path, &cancel, on_progress).await
+        upload_from_file(
+            &conn,
+            local_path,
+            remote_path,
+            PartialUpload::Remove,
+            &cancel,
+            on_progress,
+        )
+        .await
+    }
+
+    /// Like [`upload_from_path`](Self::upload_from_path), but for writing an
+    /// edited copy back over its original: the remote file is truncated in place
+    /// (keeping its owner, mode and hard/symbolic links) and is **never deleted**
+    /// on failure or cancel — at worst it is left incomplete until the next
+    /// upload. Returns the bytes uploaded.
+    pub async fn overwrite_from_path(
+        &self,
+        device_id: &str,
+        local_path: &Path,
+        remote_path: &str,
+        on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<u64, AppError> {
+        let conn = self.conn_of(device_id)?;
+        let cancel = self.begin_transfer(device_id);
+        let _guard = TransferGuard {
+            manager: self,
+            device_id: device_id.to_string(),
+        };
+        upload_from_file(
+            &conn,
+            local_path,
+            remote_path,
+            PartialUpload::Keep,
+            &cancel,
+            on_progress,
+        )
+        .await
+    }
+
+    /// The size of the file `path` points to (following symlinks), refusing a
+    /// directory: what the Files panel checks before opening it for editing.
+    pub async fn editable_size(&self, device_id: &str, path: &str) -> Result<u64, AppError> {
+        let conn = self.conn_of(device_id)?;
+        let metadata = conn
+            .session
+            .metadata(path.to_string())
+            .await
+            .map_err(|e| sftp_err(&format!("could not stat {path}"), e))?;
+        if metadata.is_dir() {
+            return Err(AppError::Validation(format!("{path} is a folder")));
+        }
+        Ok(metadata.size.unwrap_or(0))
+    }
+
+    /// The remote file's current size + mtime (following symlinks).
+    pub async fn remote_stamp(&self, device_id: &str, path: &str) -> Result<RemoteStamp, AppError> {
+        let conn = self.conn_of(device_id)?;
+        let metadata = conn
+            .session
+            .metadata(path.to_string())
+            .await
+            .map_err(|e| sftp_err(&format!("could not stat {path}"), e))?;
+        Ok(RemoteStamp {
+            size: metadata.size.unwrap_or(0),
+            mtime: metadata.mtime,
+        })
     }
 
     /// Download a remote file into memory (whole-file), chunking only the network
@@ -862,10 +954,11 @@ async fn download_into_scratch(
 }
 
 /// Stream one local file to a remote path (create/truncate), chunk by chunk,
-/// holding at most one [`TRANSFER_CHUNK`] in memory. The remote file is removed
-/// only if the transfer fails **after** we created it — a failure reading the
-/// local source (missing/unreadable) happens first and leaves any pre-existing
-/// remote file untouched. Returns the bytes uploaded. Shared by the single-file
+/// holding at most one [`TRANSFER_CHUNK`] in memory. With
+/// [`PartialUpload::Remove`] the remote file is removed only if the transfer
+/// fails **after** we created it — a failure reading the local source
+/// (missing/unreadable) happens first and leaves any pre-existing remote file
+/// untouched. Returns the bytes uploaded. Shared by the single-file
 /// upload command and the recursive [`upload_tree`].
 ///
 /// Unlike download, upload does not use a scratch-then-rename dance: SFTP rename
@@ -875,6 +968,7 @@ async fn upload_from_file(
     conn: &Arc<SftpConn>,
     local_path: &Path,
     remote_path: &str,
+    partial: PartialUpload,
     cancel: &Arc<AtomicBool>,
     on_progress: &(dyn Fn(u64, u64) + Send + Sync),
 ) -> Result<u64, AppError> {
@@ -921,7 +1015,9 @@ async fn upload_from_file(
         }
         Err(e) => {
             let _ = remote.close().await;
-            let _ = conn.session.remove_file(remote_path.to_string()).await;
+            if partial == PartialUpload::Remove {
+                let _ = conn.session.remove_file(remote_path.to_string()).await;
+            }
             Err(e)
         }
     }
@@ -1069,7 +1165,15 @@ async fn upload_tree(
             }
             let local_file = local_dir.join(&entry.rel);
             // Stream straight from disk — no whole-file buffer per entry.
-            upload_from_file(conn, &local_file, &remote_child, cancel, on_progress).await?;
+            upload_from_file(
+                conn,
+                &local_file,
+                &remote_child,
+                PartialUpload::Remove,
+                cancel,
+                on_progress,
+            )
+            .await?;
         }
     }
     Ok(())

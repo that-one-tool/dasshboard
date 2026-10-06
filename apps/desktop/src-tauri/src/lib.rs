@@ -8,6 +8,7 @@ mod atomic_file;
 mod bookmark_store;
 mod commands;
 mod config_watch;
+mod editor;
 mod flatpak;
 mod local_shell;
 mod profile;
@@ -41,6 +42,8 @@ pub mod known_hosts;
 pub mod session;
 #[doc(hidden)]
 pub mod sftp;
+#[doc(hidden)]
+pub mod sftp_edit;
 #[doc(hidden)]
 pub mod tunnel;
 
@@ -134,6 +137,17 @@ pub fn run() {
             let sftp_manager = Arc::new(sftp::SftpManager::with_defaults(
                 session_manager.known_hosts(),
             ));
+            // Local copies of SFTP files open for editing. The cache dir is per
+            // user, and under Flatpak the host sees it at the same path, so a
+            // host editor can open the copies.
+            let edit_dir = app.path().app_cache_dir()?.join("sftp-edit");
+            // Copies a crash left behind may hold secrets; clear them off the
+            // startup path.
+            let sweep_dir = edit_dir.clone();
+            std::thread::spawn(move || {
+                sftp_edit::sweep_stale_copies(&sweep_dir, sftp_edit::STALE_COPY_AGE)
+            });
+            let edit_manager = sftp_edit::EditManager::new(edit_dir);
             // Serial/COM sessions live in their own manager, alongside the SSH one.
             let serial_manager = Arc::new(SerialSessionManager::new());
             // Local shell sessions (PTY-backed) live in their own manager too.
@@ -148,6 +162,7 @@ pub fn run() {
                 session_manager,
                 tunnel_manager,
                 sftp_manager,
+                edit_manager,
                 serial_manager,
                 local_shell_manager,
                 bookmark_store,
@@ -221,6 +236,13 @@ pub fn run() {
             commands::sftp_bookmarks,
             commands::sftp_bookmark_add,
             commands::sftp_bookmark_remove,
+            commands::sftp_editable_size,
+            commands::sftp_edit_open,
+            commands::sftp_edit_launch,
+            commands::sftp_edit_check,
+            commands::sftp_edit_upload,
+            commands::sftp_edit_discard,
+            commands::sftp_edit_close,
             commands::check_update,
             commands::download_update,
             commands::install_update,
