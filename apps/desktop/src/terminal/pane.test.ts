@@ -267,6 +267,34 @@ describe("TerminalPane native paste (Cmd+V / Edit → Paste)", () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
+  // WebView2 still fires that native paste now and then despite the
+  // preventDefault: the shortcut has already pasted, so it is dropped.
+  it("drops a native paste fired by the paste shortcut's own key press", async () => {
+    const { root, paste } = await connectedPane();
+    const textarea = q<HTMLElement>(root, ".xterm-helper-textarea");
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", { code: "KeyV", key: "V", ctrlKey: true, shiftKey: true, bubbles: true }),
+    );
+    const event = nativePaste(textarea, "PASTED");
+    await flush();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(paste).toHaveBeenCalledOnce();
+  });
+
+  it("pastes natively again once the shortcut's key is released", async () => {
+    const { root, paste } = await connectedPane();
+    const textarea = q<HTMLElement>(root, ".xterm-helper-textarea");
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", { code: "KeyV", key: "V", ctrlKey: true, shiftKey: true, bubbles: true }),
+    );
+    textarea.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyV", key: "V", bubbles: true }));
+    nativePaste(textarea, "uptime");
+    await flush();
+
+    expect(paste).toHaveBeenCalledWith("uptime");
+  });
+
   it("pastes a single line straight away", async () => {
     const { root, paste } = await connectedPane();
     nativePaste(q<HTMLElement>(root, ".xterm-helper-textarea"), "uptime");

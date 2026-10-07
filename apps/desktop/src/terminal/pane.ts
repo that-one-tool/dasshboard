@@ -126,11 +126,15 @@ export class TerminalPane {
   private searchBar: TerminalSearchBar | null = null;
   /** A mouse press in the terminal may be selecting: copied on release. */
   private mouseSelecting = false;
+  /** From the paste shortcut's press to the next key release (or window blur):
+   * WebView2 can still fire a native paste for that press despite the
+   * keydown's preventDefault, and the shortcut has already pasted. */
+  private shortcutPasteHeld = false;
   private readonly input = new SerialQueue();
   /** The pane's own keys inside the terminal, each with what it does. */
   private readonly terminalKeys: Array<[(e: KeyboardEvent) => boolean, () => void]> = [
     // Ctrl+Shift+V paste (SPEC §7).
-    [isPasteShortcut, () => void this.pasteFromClipboard()],
+    [isPasteShortcut, () => this.pasteFromShortcut()],
     [isFindShortcut, () => this.searchBar?.open()],
   ];
 
@@ -379,6 +383,17 @@ export class TerminalPane {
     // as a drag may end outside the pane.
     terminalEl.addEventListener("mousedown", () => (this.mouseSelecting = true), true);
     document.addEventListener("mouseup", this.onMouseUp);
+    window.addEventListener("keyup", this.endShortcutPaste, true);
+    window.addEventListener("blur", this.endShortcutPaste);
+  }
+
+  private readonly endShortcutPaste = (): void => {
+    this.shortcutPasteHeld = false;
+  };
+
+  private pasteFromShortcut(): void {
+    this.shortcutPasteHeld = true;
+    void this.pasteFromClipboard();
   }
 
   private readonly onMouseUp = (): void => {
@@ -396,6 +411,7 @@ export class TerminalPane {
   private onNativePaste(e: ClipboardEvent): void {
     e.preventDefault();
     e.stopImmediatePropagation();
+    if (this.shortcutPasteHeld) return;
     void this.pasteText(e.clipboardData?.getData("text/plain") ?? "");
   }
 
@@ -1048,6 +1064,8 @@ export class TerminalPane {
     this.unlistenStatus?.();
     this.unlistenStatus = null;
     document.removeEventListener("mouseup", this.onMouseUp);
+    window.removeEventListener("keyup", this.endShortcutPaste, true);
+    window.removeEventListener("blur", this.endShortcutPaste);
     if (this.sessionId) {
       void disconnect(this.sessionId);
       this.sessionId = null;
