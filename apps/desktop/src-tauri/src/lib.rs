@@ -11,15 +11,17 @@ mod config_watch;
 mod editor;
 mod flatpak;
 mod local_shell;
+mod main_window;
+mod output_stream;
 mod profile;
 mod profile_store;
+mod relay;
 mod remote_forward;
 mod secret;
 mod serial;
 mod settings;
 mod socks;
 mod ssh_config;
-mod stall_guard;
 mod state;
 mod store;
 mod transfer;
@@ -108,7 +110,11 @@ pub fn run() {
         // In-app updates; only ever invoked by `check_update`/`install_update`.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updater::PendingUpdate::default())
+        // Live sessions' unread terminal output (`read_output`).
+        .manage(output_stream::OutputStreams::default())
         .setup(|app| {
+            // Built here, not by Tauri, to grant it clipboard access (paste).
+            main_window::create(app)?;
             // SPEC.md §4: all persisted JSON lives in the Tauri app-config
             // dir. DeviceStore itself takes a plain directory path (not an
             // AppHandle), so this is the only place that couples it to
@@ -192,6 +198,7 @@ pub fn run() {
             commands::save_device,
             commands::delete_device,
             commands::connect,
+            commands::read_output,
             commands::write_stdin,
             commands::resize_pty,
             commands::disconnect,

@@ -25,12 +25,12 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::flatpak;
+use crate::main_window::MAIN_WINDOW;
 use crate::state::AppState;
 
 /// Emitted with the new count whenever the number of live sessions changes.
 pub const LIVE_SESSION_COUNT_EVENT: &str = "live_session_count";
 
-const MAIN_WINDOW: &str = "main";
 const TRAY_ID: &str = "main";
 const CONNECTIONS_ID: &str = "tray-connections";
 const SHOW_ID: &str = "tray-show";

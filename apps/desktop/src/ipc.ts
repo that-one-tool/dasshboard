@@ -1,4 +1,4 @@
-import { invoke, Channel } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { GridModel } from "./gridModel";
 
@@ -369,21 +369,50 @@ export interface HostKeyPromptEvent {
 }
 
 /**
- * Opens a live SSH shell session (SPEC §5). Returns the new `sessionId`.
- *
- * `onData` is a per-session `Channel`; the backend streams verbatim terminal
- * bytes over it. Tauri delivers `InvokeResponseBody::Raw` to the channel as an
- * `ArrayBuffer`, so the handler wraps each message in a `Uint8Array` before
- * writing it to xterm.js.
+ * Opens a live SSH shell session (SPEC §5). Returns the new `sessionId`; its
+ * output is read with `readOutput`.
  */
 export async function connect(
   sessionId: string,
   deviceId: string,
   cols: number,
   rows: number,
-  onData: Channel<ArrayBuffer>,
 ): Promise<string> {
-  return invokeChecked<string>("connect", { sessionId, deviceId, cols, rows, onData });
+  return invokeChecked<string>("connect", { sessionId, deviceId, cols, rows });
+}
+
+/** A piece of a session's output: `bytes` from offset `start` on, or `end`
+ * once the session is over and all of it was read. */
+export interface OutputChunk {
+  start: number;
+  bytes: Uint8Array;
+  end: boolean;
+}
+
+/** Bytes before the data in `read_output`'s reply: the start offset (u64,
+ * big-endian) and the end flag. */
+const OUTPUT_HEADER = 9;
+
+/**
+ * A session's output after offset `from` (acknowledging everything before it),
+ * waiting a while for some. Reading again from the same offset returns the same
+ * bytes, so a failed read is simply retried.
+ */
+export async function readOutput(sessionId: string, from: number): Promise<OutputChunk> {
+  const reply = asBuffer(await invokeChecked<ArrayBuffer | number[]>("read_output", { sessionId, from }));
+  const view = new DataView(reply);
+  return {
+    start: Number(view.getBigUint64(0)),
+    end: view.getUint8(8) === 1,
+    bytes: new Uint8Array(reply, OUTPUT_HEADER),
+  };
+}
+
+/** A binary command reply as bytes. Once one IPC request has failed, Tauri
+ * falls back to postMessage for the rest of the page's life, and that path
+ * delivers binary replies as a JSON array of numbers. */
+function asBuffer(reply: ArrayBuffer | number[]): ArrayBuffer {
+  return reply instanceof ArrayBuffer ? reply : Uint8Array.from(reply).buffer;
 }
 
 /** Sends keystrokes to a session (SPEC §5). */
@@ -467,11 +496,6 @@ export async function testConnection(deviceId: string): Promise<void> {
   await invokeChecked<void>("test_connection", { deviceId });
 }
 
-/** Constructs a fresh per-session data `Channel<ArrayBuffer>`. */
-export function newDataChannel(): Channel<ArrayBuffer> {
-  return new Channel<ArrayBuffer>();
-}
-
 /** Subscribes to `session_status` events. Returns an unlisten function. */
 export function onSessionStatus(
   handler: (event: SessionStatusEvent) => void,
@@ -524,6 +548,8 @@ export interface TunnelStatusEvent {
   tunnelId: string;
   status: TunnelStatus;
   message?: string;
+  /** The `AppError` code of an `error` status. */
+  code?: ErrorCode;
   forwards: ForwardStatus[];
 }
 

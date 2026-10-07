@@ -17,11 +17,10 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use russh::{client, Channel, ChannelOpenFailure};
-use tokio::io::copy_bidirectional;
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 
-use crate::stall_guard::{StallGuard, STALL_TIMEOUT};
+use crate::relay::{bridge, Pace};
 
 /// How long dialing a local target may take before the server's channel is
 /// refused (a filtered host would otherwise hold it for the OS's full timeout).
@@ -39,21 +38,21 @@ struct Route {
 
 pub(crate) struct RemoteRoutes {
     routes: Mutex<HashMap<u16, Route>>,
-    /// How long a bridged connection's local target may stop reading.
-    stall_timeout: Duration,
+    /// The pace a bridged connection's local target must keep.
+    pace: Pace,
 }
 
 impl Default for RemoteRoutes {
     fn default() -> Self {
-        Self::new(STALL_TIMEOUT)
+        Self::new(Pace::DEFAULT)
     }
 }
 
 impl RemoteRoutes {
-    pub(crate) fn new(stall_timeout: Duration) -> Self {
+    pub(crate) fn new(pace: Pace) -> Self {
         RemoteRoutes {
             routes: Mutex::default(),
-            stall_timeout,
+            pace,
         }
     }
 
@@ -112,8 +111,8 @@ pub(crate) fn serve_forwarded(
 ) {
     match routes.lookup(connected_port) {
         Some((host, port, live)) => {
-            let stall_timeout = routes.stall_timeout;
-            tokio::spawn(bridge(host, port, live, channel, reply, stall_timeout));
+            let pace = routes.pace;
+            tokio::spawn(serve(host, port, live, channel, reply, pace));
         }
         // Dropping the reply rejects the channel (administratively prohibited).
         None => drop(reply),
@@ -122,23 +121,21 @@ pub(crate) fn serve_forwarded(
 
 /// Accept the channel only once the local target answered, so a refused
 /// target reads as "connect failed" to the server's client.
-async fn bridge(
+async fn serve(
     host: String,
     port: u16,
     mut live: watch::Receiver<()>,
     channel: Channel<client::Msg>,
     reply: client::ChannelOpenHandle,
-    stall_timeout: Duration,
+    pace: Pace,
 ) {
     let Some(tcp) = dial(&host, port).await else {
         reply.reject(ChannelOpenFailure::ConnectFailed).await;
         return;
     };
     reply.accept().await;
-    let mut tcp = StallGuard::new(tcp, stall_timeout);
-    let mut stream = channel.into_stream();
     tokio::select! {
-        _ = copy_bidirectional(&mut tcp, &mut stream) => {}
+        _ = bridge(tcp, channel.into_stream(), pace) => {}
         // Only ever an error: the route's sender was dropped.
         _ = live.changed() => {}
     }

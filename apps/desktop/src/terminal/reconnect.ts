@@ -13,12 +13,14 @@ export const MAX_RECONNECT_ATTEMPTS = 5;
 
 /** Failures a retry would only repeat: a wrong password (each try counts
  * toward a server lockout / fail2ban ban), a host key the user rejected (it
- * would prompt again), an invalid or deleted device. */
+ * would prompt again), an invalid or deleted device, a tunnel none of whose
+ * ports could be opened. */
 const FINAL_FAILURES: ReadonlySet<ErrorCode> = new Set([
   "SshAuth",
   "HostKeyRejected",
   "Validation",
   "NotFound",
+  "TunnelBind",
 ]);
 
 /** A keychain that is locked or not ready yet (at login, after resume) gets

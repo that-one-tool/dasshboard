@@ -50,7 +50,8 @@ vi.mock("../ipc", () => ({
   writeStdinBinary: vi.fn(async () => {}),
   resizePty: vi.fn(async () => {}),
   saveTextFile: vi.fn(async () => {}),
-  newDataChannel: vi.fn(() => ({ onmessage: null })),
+  // No output unless a test scripts some.
+  readOutput: vi.fn(() => new Promise(() => {})),
   onSessionStatus: vi.fn(async (handler: (e: SessionStatusEvent) => void) => {
     h.statusHandler = handler;
     return () => {};
@@ -82,12 +83,12 @@ import {
   connect,
   disconnect,
   listDevices,
-  newDataChannel,
+  readOutput,
   resizePty,
   saveTextFile,
   writeStdin,
 } from "../ipc";
-import type { Device, ErrorCode } from "../ipc";
+import type { Device, ErrorCode, OutputChunk } from "../ipc";
 import { setLocale } from "../i18n";
 
 const readText = vi.fn(async () => "PASTED");
@@ -635,17 +636,35 @@ describe("TerminalPane auto-reconnect (Phase 5)", () => {
     expect(vi.mocked(connect)).toHaveBeenCalledTimes(1);
   });
 
+  it("shows the session's output in its terminal", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    pane.assignDevice(h.device.id);
+    const replies: Array<(c: OutputChunk) => void> = [];
+    vi.mocked(readOutput).mockImplementation(
+      () => new Promise<OutputChunk>((resolve) => replies.push(resolve)),
+    );
+
+    await start(pane);
+    await flush();
+    const writeSpy = vi.spyOn(terminalOf(pane)!, "write");
+    replies[0]?.({ start: 0, bytes: new TextEncoder().encode("$ "), end: false });
+    await flush();
+
+    expect(vi.mocked(readOutput).mock.calls[0]?.[1]).toBe(0);
+    expect(writeSpy).toHaveBeenCalledWith(new TextEncoder().encode("$ "), expect.any(Function));
+  });
+
   it("output from a replaced session never reaches the new terminal", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
     const pane = new TerminalPane(root);
     await pane.init();
     pane.assignDevice(h.device.id);
-    const channels: { onmessage: ((b: ArrayBuffer) => void) | null }[] = [];
-    vi.mocked(newDataChannel).mockImplementation(() => {
-      const channel = { onmessage: null };
-      channels.push(channel);
-      return channel as never;
-    });
+    const replies: Array<(c: OutputChunk) => void> = [];
+    vi.mocked(readOutput).mockImplementation(
+      () => new Promise<OutputChunk>((resolve) => replies.push(resolve)),
+    );
 
     await start(pane);
     await flush();
@@ -655,7 +674,8 @@ describe("TerminalPane auto-reconnect (Phase 5)", () => {
     const second = terminalOf(pane);
     const writeSpy = vi.spyOn(second!, "write");
 
-    channels[0]?.onmessage?.(new TextEncoder().encode("stale").buffer);
+    replies[0]?.({ start: 0, bytes: new TextEncoder().encode("stale"), end: false });
+    await flush();
     expect(first).not.toBe(second);
     expect(writeSpy).not.toHaveBeenCalled();
   });

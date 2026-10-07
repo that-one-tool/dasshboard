@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
@@ -22,6 +22,7 @@ use crate::editor;
 use crate::error::AppError;
 use crate::known_hosts::KnownHostEntry;
 use crate::local_shell::LocalShellParams;
+use crate::output_stream::{Chunk, OutputStream, OutputStreams, MAX_READ, READ_WAIT};
 use crate::profile::Profile;
 use crate::profile_store::ProfileList;
 use crate::serial::SerialParams;
@@ -413,15 +414,37 @@ struct SessionStatusPayload {
     code: Option<&'static str>,
 }
 
-/// Production [`SessionSink`]: streams terminal bytes over the per-session IPC
-/// `Channel` and emits `session_status` / `host_key_prompt` Tauri events. It
-/// carries only the session id and non-secret payloads — never a credential.
+/// How long a finished session's unread output waits for the frontend to read
+/// it (a pane closed meanwhile never will).
+const ENDED_OUTPUT_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Production [`SessionSink`]: keeps terminal bytes for the frontend to read
+/// (`read_output`) and emits `session_status` / `host_key_prompt` Tauri events.
+/// It carries only the session id and non-secret payloads — never a credential.
 struct TauriSessionSink {
     app: AppHandle,
     session_id: String,
-    /// `Some` for a live session (its per-session data channel); `None` for
-    /// `test_connection`, which has no shell and streams no data.
-    channel: Option<Channel<InvokeResponseBody>>,
+    /// `Some` for a live session; `None` for `test_connection`, which has no
+    /// shell and streams no data.
+    output: Option<Arc<OutputStream>>,
+}
+
+impl TauriSessionSink {
+    /// The session is over: mark its output ended, and let it go once the
+    /// frontend had time to read the rest.
+    fn end_output(&self) {
+        let Some(output) = &self.output else { return };
+        output.close();
+        let (app, id, output) = (
+            self.app.clone(),
+            self.session_id.clone(),
+            Arc::clone(output),
+        );
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(ENDED_OUTPUT_GRACE).await;
+            app.state::<OutputStreams>().remove(&id, &output);
+        });
+    }
 }
 
 impl TauriSessionSink {
@@ -445,20 +468,21 @@ impl TauriSessionSink {
 
 impl SessionSink for TauriSessionSink {
     fn on_data(&self, bytes: &[u8]) {
-        if let Some(channel) = &self.channel {
-            // Verbatim server output (SPEC §3). `InvokeResponseBody::Raw` is
-            // delivered to JS as an `ArrayBuffer`, which the frontend wraps in a
-            // `Uint8Array` for `terminal.write()`. A send error just means the
-            // frontend dropped the channel; the session loop ends on its own.
-            let _ = channel.send(InvokeResponseBody::Raw(bytes.to_vec()));
+        // Verbatim server output (SPEC §3), until the frontend reads it.
+        if let Some(output) = &self.output {
+            output.push(bytes);
         }
     }
 
     fn on_status(&self, status: SessionStatus, message: Option<String>) {
+        if status.is_final() {
+            self.end_output();
+        }
         self.emit_status(status, message, None);
     }
 
     fn on_error(&self, err: &AppError) {
+        self.end_output();
         self.emit_status(
             SessionStatus::Error,
             Some(err.to_string()),
@@ -501,6 +525,36 @@ fn id_in_use(state: &AppState, id: &str) -> bool {
         || state.serial_manager.owns(id)
         || state.local_shell_manager.owns(id)
         || state.tunnel_manager.owns(id)
+}
+
+/// The output of session `id` after offset `from` (see `output_stream.rs`).
+/// An unknown session reads as ended; reading a session's end lets its output
+/// go.
+async fn read_session_output(streams: &OutputStreams, id: &str, from: u64) -> Chunk {
+    let Some(stream) = streams.get(id) else {
+        return Chunk {
+            start: from,
+            bytes: Vec::new(),
+            end: true,
+        };
+    };
+    let chunk = stream.read(from, MAX_READ, READ_WAIT).await;
+    if chunk.end {
+        streams.remove(id, &stream);
+    }
+    chunk
+}
+
+/// A session's next output after offset `from`, waiting a while for some
+/// (SPEC §3). Binary: `start` (u64, big-endian), an end flag byte, the bytes.
+#[tauri::command]
+pub async fn read_output(
+    streams: State<'_, OutputStreams>,
+    session_id: String,
+    from: u64,
+) -> Result<Response, AppError> {
+    let chunk = read_session_output(&streams, &session_id, from).await;
+    Ok(Response::new(chunk.encode()))
 }
 
 /// Look up a device by id (SPEC §5 `NotFound` on miss).
@@ -637,26 +691,46 @@ fn ssh_auth_of(device: &Device) -> Result<&Auth, AppError> {
 }
 
 /// Open a live shell session (SPEC §5). Returns the new `sessionId`; the shell
-/// itself is driven on a background task and reports over `on_data` +
-/// `session_status`. Async so the command runs on Tauri's tokio runtime, which
-/// `spawn_session`'s `tokio::spawn` needs.
+/// itself is driven on a background task, its output read with `read_output`
+/// and its lifecycle reported as `session_status`. Async so the command runs on
+/// Tauri's tokio runtime, which `spawn_session`'s `tokio::spawn` needs.
 #[tauri::command]
 pub async fn connect(
     app: AppHandle,
     state: State<'_, AppState>,
+    streams: State<'_, OutputStreams>,
     session_id: String,
     device_id: String,
     cols: u32,
     rows: u32,
-    on_data: Channel<InvokeResponseBody>,
 ) -> Result<String, AppError> {
-    let session_id = client_chosen_id(session_id, |id| id_in_use(&state, id))?;
+    let session_id = client_chosen_id(session_id, |id| {
+        id_in_use(&state, id) || streams.contains(id)
+    })?;
     let device = find_device(&state, &device_id)?;
+    // Open before the session starts, so its first bytes have somewhere to go.
+    let output = streams.open(&session_id);
     let sink: Arc<dyn SessionSink> = Arc::new(TauriSessionSink {
         app,
         session_id: session_id.clone(),
-        channel: Some(on_data),
+        output: Some(Arc::clone(&output)),
     });
+    let spawned = spawn_device_session(&state, &session_id, &device, (cols, rows), sink).await;
+    if spawned.is_err() {
+        streams.remove(&session_id, &output);
+    }
+    spawned.map(|()| session_id)
+}
+
+/// Start `device`'s session under `session_id`, reporting to `sink`.
+async fn spawn_device_session(
+    state: &AppState,
+    session_id: &str,
+    device: &Device,
+    (cols, rows): (u32, u32),
+    sink: Arc<dyn SessionSink>,
+) -> Result<(), AppError> {
+    let session_id = session_id.to_string();
     match &device.connection {
         Connection::Ssh {
             host,
@@ -664,13 +738,13 @@ pub async fn connect(
             username,
             ..
         } => {
-            let creds = resolve_credentials(&state, &device).await?;
+            let creds = resolve_credentials(state, device).await?;
             // Resolve the optional jump host (ProxyJump) up front, so a
             // misconfigured jump surfaces as a connect error rather than a
             // half-open session.
-            let jump = resolve_jump_hop(&state, &device).await?;
+            let jump = resolve_jump_hop(state, device).await?;
             state.session_manager.spawn_session(
-                session_id.clone(),
+                session_id,
                 ConnectParams {
                     host: host.clone(),
                     port: *port,
@@ -679,7 +753,7 @@ pub async fn connect(
                     cols,
                     rows,
                     jump,
-                    keepalive: keepalive_config(&state),
+                    keepalive: keepalive_config(state),
                     forward_agent: device.forward_agent_enabled(),
                     connect_snippet: device.connect_snippet().map(str::to_string),
                 },
@@ -688,14 +762,14 @@ pub async fn connect(
         }
         Connection::Serial { .. } => {
             state.serial_manager.spawn_session(
-                session_id.clone(),
+                session_id,
                 serial_params_of(&device.connection, device.connect_snippet()),
                 sink,
             );
         }
         Connection::LocalShell { shell, cwd } => {
             state.local_shell_manager.spawn_session(
-                session_id.clone(),
+                session_id,
                 LocalShellParams {
                     shell: shell.clone(),
                     cwd: cwd.clone(),
@@ -707,7 +781,7 @@ pub async fn connect(
             );
         }
     }
-    Ok(session_id)
+    Ok(())
 }
 
 /// Resolve the app-wide SSH keepalive settings into a [`KeepaliveConfig`] for a
@@ -900,7 +974,7 @@ pub async fn test_connection(
             let sink: Arc<dyn SessionSink> = Arc::new(TauriSessionSink {
                 app,
                 session_id: format!("test-{device_id}"),
-                channel: None,
+                output: None,
             });
             manager
                 .test_connection(host.clone(), *port, username.clone(), creds, jump, sink)
@@ -935,6 +1009,10 @@ struct TunnelStatusPayload {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
+    /// The `AppError` code of an `error` status (absent otherwise), so the
+    /// frontend can tell a drop worth reconnecting from a final failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
     forwards: Vec<ForwardStatus>,
 }
 
@@ -947,11 +1025,12 @@ struct TauriTunnelSink {
     tunnel_id: String,
 }
 
-impl TunnelSink for TauriTunnelSink {
-    fn on_status(
+impl TauriTunnelSink {
+    fn emit_status(
         &self,
         status: TunnelStatus,
         message: Option<String>,
+        code: Option<&'static str>,
         forwards: Vec<ForwardStatus>,
     ) {
         let _ = self.app.emit(
@@ -960,8 +1039,29 @@ impl TunnelSink for TauriTunnelSink {
                 tunnel_id: self.tunnel_id.clone(),
                 status: status.as_str(),
                 message,
+                code,
                 forwards,
             },
+        );
+    }
+}
+
+impl TunnelSink for TauriTunnelSink {
+    fn on_status(
+        &self,
+        status: TunnelStatus,
+        message: Option<String>,
+        forwards: Vec<ForwardStatus>,
+    ) {
+        self.emit_status(status, message, None, forwards);
+    }
+
+    fn on_error(&self, err: &AppError) {
+        self.emit_status(
+            TunnelStatus::Error,
+            Some(err.to_string()),
+            Some(err.code()),
+            Vec::new(),
         );
     }
 
@@ -1798,6 +1898,43 @@ mod tests {
         let with_code = serde_json::to_value(payload(Some("SshAuth"))).unwrap();
         assert_eq!(with_code["code"], "SshAuth");
         assert_eq!(with_code["sessionId"], "s1");
+        let without = serde_json::to_value(payload(None)).unwrap();
+        assert!(without.get("code").is_none());
+    }
+
+    #[tokio::test]
+    async fn reading_an_unknown_session_reports_its_end() {
+        let streams = OutputStreams::default();
+        let chunk = read_session_output(&streams, "gone", 42).await;
+        assert!(chunk.end);
+        assert_eq!(chunk.start, 42);
+    }
+
+    #[tokio::test]
+    async fn reading_a_session_to_its_end_lets_its_output_go() {
+        let streams = OutputStreams::default();
+        let stream = streams.open("s1");
+        stream.push(b"bye");
+        stream.close();
+
+        assert_eq!(read_session_output(&streams, "s1", 0).await.bytes, b"bye");
+        assert!(streams.contains("s1"), "kept until read to the end");
+        assert!(read_session_output(&streams, "s1", 3).await.end);
+        assert!(!streams.contains("s1"));
+    }
+
+    #[test]
+    fn tunnel_status_payload_carries_the_error_code_only_when_set() {
+        let payload = |code| TunnelStatusPayload {
+            tunnel_id: "t1".to_string(),
+            status: "error",
+            message: Some("authentication failed".to_string()),
+            code,
+            forwards: Vec::new(),
+        };
+        let with_code = serde_json::to_value(payload(Some("SshAuth"))).unwrap();
+        assert_eq!(with_code["code"], "SshAuth");
+        assert_eq!(with_code["tunnelId"], "t1");
         let without = serde_json::to_value(payload(None)).unwrap();
         assert!(without.get("code").is_none());
     }

@@ -1,7 +1,8 @@
 /**
  * The single SSH terminal pane (SPEC §7, Phase 2). Device dropdown + Connect;
  * on connect it creates a real xterm.js terminal wired to the backend session:
- * keystrokes → `write_stdin`, the per-session `Channel` → `terminal.write`, and
+ * keystrokes → `write_stdin`, the session's output (`read_output`, pulled by an
+ * `OutputReader`) → `terminal.write`, and
  * a `ResizeObserver` → fit addon → `resize_pty`. Status overlays (connecting
  * spinner; error/disconnected + Retry) react to `session_status` events. Copy
  * on select; paste on Ctrl+Shift+V (Cmd+Shift+V on macOS), right-click, and
@@ -21,8 +22,8 @@ import {
   connect,
   disconnect,
   listDevices,
-  newDataChannel,
   onSessionStatus,
+  readOutput,
   resizePty,
   saveTextFile,
   writeStdin,
@@ -35,6 +36,7 @@ import {
 import { overlayForStatus } from "./overlay";
 import { isTerminalReply } from "./terminalReplies";
 import { SerialQueue } from "./inputQueue";
+import { OutputReader } from "./outputReader";
 import {
   DEFAULT_TERMINAL_SETTINGS,
   withIconFont,
@@ -131,6 +133,8 @@ export class TerminalPane {
    * keydown's preventDefault, and the shortcut has already pasted. */
   private shortcutPasteHeld = false;
   private readonly input = new SerialQueue();
+  /** Pulls the current session's output into the terminal. */
+  private output: OutputReader | null = null;
   /** The pane's own keys inside the terminal, each with what it does. */
   private readonly terminalKeys: Array<[(e: KeyboardEvent) => boolean, () => void]> = [
     // Ctrl+Shift+V paste (SPEC §7).
@@ -603,16 +607,11 @@ export class TerminalPane {
 
   /** Opens the backend session and wires the data channel into the terminal. */
   private async establishConnection(deviceId: string, terminal: Terminal): Promise<void> {
-    const channel = newDataChannel();
-    // Only into the terminal this session was opened with — never a later one.
-    channel.onmessage = (buffer) => {
-      if (this.terminal === terminal) terminal.write(new Uint8Array(buffer));
-    };
-
     const sessionId = crypto.randomUUID();
     this.pendingSessionId = sessionId;
     try {
-      await connect(sessionId, deviceId, terminal.cols, terminal.rows, channel);
+      await connect(sessionId, deviceId, terminal.cols, terminal.rows);
+      this.readOutputInto(sessionId, terminal);
       this.adoptSession(sessionId);
     } catch (err) {
       // Released (cancelled / replaced) while opening: nothing left to report.
@@ -622,6 +621,25 @@ export class TerminalPane {
       this.applyStatus("error", message, errorCodeOf(err));
       this.options.onError?.(message);
     }
+  }
+
+  /** Pull the session's output into `terminal` until it ends or the terminal
+   * is replaced. */
+  private readOutputInto(sessionId: string, terminal: Terminal): void {
+    this.output?.stop();
+    const output = new OutputReader({
+      read: (from) => readOutput(sessionId, from),
+      write: (bytes) => this.writeOutput(terminal, bytes),
+    });
+    this.output = output;
+    void output.run();
+  }
+
+  /** Resolves once xterm has processed `bytes` — only into the terminal the
+   * session was opened with, never a later one. */
+  private writeOutput(terminal: Terminal, bytes: Uint8Array): Promise<void> {
+    if (this.terminal !== terminal) return Promise.resolve();
+    return new Promise((resolve) => terminal.write(bytes, resolve));
   }
 
   /** Take ownership of a session `connect()` just opened — unless the pane
@@ -1041,6 +1059,8 @@ export class TerminalPane {
   }
 
   private teardownTerminal(): void {
+    this.output?.stop();
+    this.output = null;
     this.stopResizeObserver();
     this.searchBar?.attach(null);
     this.terminal?.dispose();

@@ -5,22 +5,18 @@
  * seam. Each wrapper must forward the correct backend command name with the
  * exact camelCase payload the matching Rust `#[tauri::command]` expects (a typo
  * here is a silent runtime `undefined` TypeScript can't catch), and event
- * subscriptions must unwrap `e.payload`. `@tauri-apps/api`'s `invoke`, `listen`,
- * and `Channel` are mocked.
+ * subscriptions must unwrap `e.payload`. `@tauri-apps/api`'s `invoke` and
+ * `listen` are mocked.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const { invokeMock, listenMock, ChannelMock } = vi.hoisted(() => {
-	class ChannelMock {
-		onmessage: unknown = null;
-	}
-	return { invokeMock: vi.fn(), listenMock: vi.fn(), ChannelMock };
+const { invokeMock, listenMock } = vi.hoisted(() => {
+	return { invokeMock: vi.fn(), listenMock: vi.fn() };
 });
 
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: (...args: unknown[]) => invokeMock(...args),
-	Channel: ChannelMock,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -38,6 +34,7 @@ import {
 	listDevices,
 	deleteDevice,
 	connect,
+	readOutput,
 	writeStdin,
 	writeStdinBinary,
 	resizePty,
@@ -61,7 +58,6 @@ import {
 	onLiveSessionCount,
 	setTrayLabels,
 	getLiveSessionCount,
-	newDataChannel,
 	isLocalConfigWriteRecent,
 	sftpEditOpen,
 	sftpEditLaunch,
@@ -230,17 +226,43 @@ describe("IPC command wrapper argument shapes", () => {
 		expect(invokeMock).toHaveBeenCalledWith("delete_device", { deviceId: "dev-1" });
 	});
 
-	it("connect sends { sessionId, deviceId, cols, rows, onData }", async () => {
+	it("connect sends { sessionId, deviceId, cols, rows }", async () => {
 		invokeMock.mockResolvedValue("sess-1");
-		const channel = { onmessage: null };
-		await connect("sess-1", "dev-1", 80, 24, channel as never);
+		await connect("sess-1", "dev-1", 80, 24);
 		expect(invokeMock).toHaveBeenCalledWith("connect", {
 			sessionId: "sess-1",
 			deviceId: "dev-1",
 			cols: 80,
 			rows: 24,
-			onData: channel,
 		});
+	});
+
+	it("readOutput sends { sessionId, from } and decodes the reply", async () => {
+		// start = 258 (big-endian u64), end flag 0, then the bytes "hi".
+		const wire = new Uint8Array([0, 0, 0, 0, 0, 0, 1, 2, 0, 104, 105]);
+		invokeMock.mockResolvedValue(wire.buffer);
+		const chunk = await readOutput("sess-1", 256);
+		expect(invokeMock).toHaveBeenCalledWith("read_output", { sessionId: "sess-1", from: 256 });
+		expect(chunk.start).toBe(258);
+		expect(chunk.end).toBe(false);
+		expect([...chunk.bytes]).toEqual([104, 105]);
+	});
+
+	it("readOutput decodes a reply that arrives as plain numbers (IPC postMessage fallback)", async () => {
+		// After one failed IPC fetch Tauri falls back to postMessage, which hands
+		// a binary reply over as a JSON array of bytes, not an ArrayBuffer.
+		invokeMock.mockResolvedValue([0, 0, 0, 0, 0, 0, 0, 5, 0, 104, 105]);
+		const chunk = await readOutput("sess-1", 5);
+		expect(chunk.start).toBe(5);
+		expect(chunk.end).toBe(false);
+		expect([...chunk.bytes]).toEqual([104, 105]);
+	});
+
+	it("readOutput reports a session's end", async () => {
+		invokeMock.mockResolvedValue(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 7, 1]).buffer);
+		const chunk = await readOutput("sess-1", 7);
+		expect(chunk).toMatchObject({ start: 7, end: true });
+		expect(chunk.bytes).toHaveLength(0);
 	});
 
 	it("writeStdin sends { sessionId, data }", async () => {
@@ -416,12 +438,11 @@ describe("IPC command wrapper argument shapes", () => {
 });
 
 /**
- * F5: the event subscriptions and the data-channel factory. `onSessionStatus`
- * / `onHostKeyPrompt` wrap `@tauri-apps/api/event`'s `listen`, subscribe to the
- * right event name, and must hand the caller `e.payload` (not the raw event);
- * `newDataChannel` mints a fresh `Channel` per call.
+ * F5: the event subscriptions. `onSessionStatus` / `onHostKeyPrompt` wrap
+ * `@tauri-apps/api/event`'s `listen`, subscribe to the right event name, and
+ * must hand the caller `e.payload` (not the raw event).
  */
-describe("event subscriptions and data channel", () => {
+describe("event subscriptions", () => {
 	it("onSessionStatus subscribes to session_status and unwraps the payload", async () => {
 		const unlisten = vi.fn();
 		let captured: ((e: { payload: unknown }) => void) | undefined;
@@ -475,14 +496,6 @@ describe("event subscriptions and data channel", () => {
 		const payload = { promptId: "pr1", host: "h", port: 22, changed: false };
 		captured?.({ payload });
 		expect(handler).toHaveBeenCalledWith(payload);
-	});
-
-	it("newDataChannel returns a fresh Channel each call", () => {
-		const a = newDataChannel();
-		const b = newDataChannel();
-		expect(a).toBeInstanceOf(ChannelMock);
-		expect(b).toBeInstanceOf(ChannelMock);
-		expect(a).not.toBe(b);
 	});
 });
 

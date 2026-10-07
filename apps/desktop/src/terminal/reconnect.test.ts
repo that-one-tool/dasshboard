@@ -15,7 +15,7 @@ describe("isRetryableFailure", () => {
     }
   });
   it("never retries what a retry would only repeat (lockouts, re-prompts)", () => {
-    for (const code of ["SshAuth", "HostKeyRejected", "Validation", "NotFound"] as const) {
+    for (const code of ["SshAuth", "HostKeyRejected", "Validation", "NotFound", "TunnelBind"] as const) {
       expect(isRetryableFailure(code), code).toBe(false);
     }
   });

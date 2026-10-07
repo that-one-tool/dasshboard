@@ -34,9 +34,9 @@
 //! - A remote forward's listen and cancel requests go through one
 //!   [`ServerRequests`] task, in order, so a slow server never holds up the
 //!   serve loop; the answers come back to it.
-//! - A forwarded connection whose local peer stops reading is closed after
-//!   [`STALL_TIMEOUT`] (see `stall_guard.rs`): russh would otherwise stop the
-//!   whole connection behind it.
+//! - Every forwarded connection drains its channel into its own backlog (see
+//!   `relay.rs`), so a local client that pauses reading doesn't stop the whole
+//!   SSH connection; one far behind that stops reading altogether is closed.
 //! - Each tunnel task removes its own map entry on **every** terminal reason
 //!   (auth failure, all binds failing, stop, transport drop). Cleanup has a
 //!   single owner, exactly as `SessionManager` does.
@@ -48,7 +48,7 @@ use std::time::Duration;
 
 use russh::{client, Channel, ChannelOpenFailure};
 use serde::Serialize;
-use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
@@ -57,6 +57,7 @@ use tokio::time::MissedTickBehavior;
 use crate::device::{Forward, ForwardKind};
 use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
+use crate::relay::{bridge, Pace};
 use crate::remote_forward::RemoteRoutes;
 use crate::session::{
     close_jump, establish_target, AuthCredentials, Endpoint, HostKeyPromptPayload, JumpHop,
@@ -64,7 +65,6 @@ use crate::session::{
     DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
 };
 use crate::socks;
-use crate::stall_guard::{StallGuard, STALL_TIMEOUT};
 
 /// Control-channel bound. A tunnel's control channel carries the occasional
 /// user-driven forward add/remove and a final `Stop`; the bound just keeps it
@@ -133,6 +133,12 @@ pub trait TunnelSink: Send + Sync {
         message: Option<String>,
         forwards: Vec<ForwardStatus>,
     );
+    /// The tunnel ended on `err` → an `error` `tunnel_status` event. The
+    /// production sink adds the error's code, so the frontend can tell a drop
+    /// worth reconnecting from a failure a retry would only repeat.
+    fn on_error(&self, err: &AppError) {
+        self.on_status(TunnelStatus::Error, Some(err.to_string()), Vec::new());
+    }
     /// An unknown/changed host key needs the user's decision → `host_key_prompt`
     /// event (the same event a shell session raises; the dialog is shared).
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload);
@@ -232,7 +238,7 @@ pub struct TunnelManager {
     connect_timeout: Duration,
     prompt_timeout: Duration,
     handshake_timeout: Duration,
-    stall_timeout: Duration,
+    pace: Pace,
 }
 
 impl TunnelManager {
@@ -249,14 +255,21 @@ impl TunnelManager {
             connect_timeout,
             prompt_timeout,
             handshake_timeout,
-            stall_timeout: STALL_TIMEOUT,
+            pace: Pace::DEFAULT,
         }
     }
 
-    /// Close a forwarded connection whose local peer stops reading for
-    /// `timeout` (default [`STALL_TIMEOUT`]); tests shorten it.
+    /// Read a forwarded connection's channel at most `limit` bytes ahead of its
+    /// local client (default: [`Pace::DEFAULT`]); tests change it.
+    pub fn with_backlog_limit(mut self, limit: usize) -> Self {
+        self.pace.backlog = limit;
+        self
+    }
+
+    /// Close a forwarded connection whose local client, that far behind,
+    /// stops reading for `timeout` (default: [`Pace::DEFAULT`]); tests change it.
     pub fn with_stall_timeout(mut self, timeout: Duration) -> Self {
-        self.stall_timeout = timeout;
+        self.pace.stall = timeout;
         self
     }
 
@@ -358,7 +371,7 @@ impl TunnelManager {
             },
         );
 
-        let routes = Arc::new(RemoteRoutes::new(self.stall_timeout));
+        let routes = Arc::new(RemoteRoutes::new(self.pace));
         let handler = SshHandler::new(
             Arc::new(HandshakeSink(Arc::clone(&sink))),
             Arc::clone(&self.known_hosts),
@@ -375,7 +388,7 @@ impl TunnelManager {
         let timeouts = TunnelTimeouts {
             connect: self.connect_timeout,
             overall: self.overall_establish_timeout(),
-            stall: self.stall_timeout,
+            pace: self.pace,
         };
 
         tokio::spawn(async move {
@@ -390,7 +403,7 @@ impl TunnelManager {
             match result {
                 Ok(()) => sink.on_status(TunnelStatus::Disconnected, None, Vec::new()),
                 // AppError messages are always secret-free (see error.rs).
-                Err(err) => sink.on_status(TunnelStatus::Error, Some(err.to_string()), Vec::new()),
+                Err(err) => sink.on_error(&err),
             }
 
             manager.lock_tunnels().remove(&tunnel_id);
@@ -481,12 +494,12 @@ fn lock_snapshot(snapshot: &ForwardSnapshot) -> std::sync::MutexGuard<'_, Tunnel
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// A tunnel's deadlines: the TCP connect, the whole establish flow, and how
-/// long a forwarded connection's local peer may stop reading.
+/// A tunnel's deadlines (the TCP connect, the whole establish flow) and the
+/// pace its forwarded connections' local clients must keep.
 struct TunnelTimeouts {
     connect: Duration,
     overall: Duration,
-    stall: Duration,
+    pace: Pace,
 }
 
 /// The full lifecycle of one tunnel task: connect+auth (racing an early stop,
@@ -539,12 +552,10 @@ async fn run_tunnel(
 
     let handle = Arc::new(handle);
 
-    let mut active = ActiveForwards::new(Arc::clone(&handle), routes, timeouts.stall);
+    let mut active = ActiveForwards::new(Arc::clone(&handle), routes, timeouts.pace);
     let end = if bind_until_stop(&mut active, &forwards, &mut controls.stop).await {
         if !active.any_bound() {
-            return Err(AppError::TunnelBind(
-                "none of the tunnel's forwards could be started".to_string(),
-            ));
+            return Err(active.none_started());
         }
         publisher.listening(&active);
         serve_until_stopped(&handle, &mut controls, keepalive, &mut active, &publisher).await
@@ -689,6 +700,8 @@ struct ActiveForward {
     binding: Option<Binding>,
     /// The listen request the server has yet to answer, for a remote forward.
     pending: Option<u64>,
+    /// A remote forward: the server, not this machine, decides if it starts.
+    remote: bool,
 }
 
 impl ActiveForward {
@@ -698,6 +711,7 @@ impl ActiveForward {
             status: forward_status(forward, bound),
             binding,
             pending,
+            remote: forward.kind == ForwardKind::Remote,
         }
     }
 
@@ -839,22 +853,18 @@ struct ActiveForwards {
     requests: ServerRequests,
     /// The last listen request's number.
     attempts: u64,
-    stall_timeout: Duration,
+    pace: Pace,
     entries: Vec<ActiveForward>,
 }
 
 impl ActiveForwards {
-    fn new(
-        handle: Arc<client::Handle<SshHandler>>,
-        routes: Arc<RemoteRoutes>,
-        stall_timeout: Duration,
-    ) -> Self {
+    fn new(handle: Arc<client::Handle<SshHandler>>, routes: Arc<RemoteRoutes>, pace: Pace) -> Self {
         ActiveForwards {
             requests: ServerRequests::start(Arc::clone(&handle)),
             handle,
             routes,
             attempts: 0,
-            stall_timeout,
+            pace,
             entries: Vec::new(),
         }
     }
@@ -875,12 +885,7 @@ impl ActiveForwards {
     async fn bind(&self, forward: &Forward) -> Option<Binding> {
         let (listener, destination) = listen(forward).await?;
         let handle = Arc::clone(&self.handle);
-        let task = tokio::spawn(run_listener(
-            listener,
-            handle,
-            destination,
-            self.stall_timeout,
-        ));
+        let task = tokio::spawn(run_listener(listener, handle, destination, self.pace));
         Some(Binding::Listener(LocalListener(task)))
     }
 
@@ -974,6 +979,20 @@ impl ActiveForwards {
         self.entries.iter().any(|e| e.binding.is_some())
     }
 
+    /// Why none of the forwards started. A server that refused a remote
+    /// forward may only be holding its port for a session of ours that just
+    /// dropped, so that is worth a retry; a local port in use is not.
+    fn none_started(&self) -> AppError {
+        if self.entries.iter().any(|e| e.remote) {
+            return AppError::SshConnect(
+                "the server refused the tunnel's remote forwards (it may still hold their \
+                 ports from an earlier connection)"
+                    .to_string(),
+            );
+        }
+        AppError::TunnelBind("none of the tunnel's forwards could be started".to_string())
+    }
+
     fn ids(&self) -> Vec<String> {
         self.entries
             .iter()
@@ -1063,10 +1082,6 @@ fn is_loopback(addr: &str) -> bool {
 /// dropped, so an idle or non-SOCKS client can't hold a task forever.
 const SOCKS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A forwarded connection's local socket, closed if its peer stops reading
-/// (see `stall_guard.rs`).
-type LocalStream = StallGuard<TcpStream>;
-
 /// Accept loop for one forward: every accepted local connection opens a
 /// `direct-tcpip` channel and is copied bidirectionally. Per-connection tasks
 /// live in a local `JoinSet` that is reaped as connections finish (bounding
@@ -1076,7 +1091,7 @@ async fn run_listener(
     listener: TcpListener,
     handle: Arc<client::Handle<SshHandler>>,
     destination: Destination,
-    stall_timeout: Duration,
+    pace: Pace,
 ) {
     let mut conns = JoinSet::new();
     loop {
@@ -1084,10 +1099,11 @@ async fn run_listener(
             accepted = listener.accept() => match accepted {
                 Ok((tcp, peer)) => {
                     conns.spawn(handle_connection(
-                        StallGuard::new(tcp, stall_timeout),
+                        tcp,
                         Arc::clone(&handle),
                         destination.clone(),
                         peer,
+                        pace,
                     ));
                 }
                 // Usually transient (e.g. out of file descriptors): back off and
@@ -1105,46 +1121,56 @@ async fn run_listener(
 /// back until either side closes. A failure (channel open, SOCKS handshake)
 /// only drops this local connection; it never affects the tunnel.
 async fn handle_connection(
-    tcp: LocalStream,
+    tcp: TcpStream,
     handle: Arc<client::Handle<SshHandler>>,
     destination: Destination,
     peer: SocketAddr,
+    pace: Pace,
 ) {
+    let conn = Accepted { tcp, peer, pace };
     match destination {
-        Destination::Fixed { host, port } => forward_fixed(tcp, &handle, host, port, peer).await,
-        Destination::Socks => forward_socks(tcp, &handle, peer).await,
+        Destination::Fixed { host, port } => forward_fixed(conn, &handle, host, port).await,
+        Destination::Socks => forward_socks(conn, &handle).await,
+    }
+}
+
+/// One accepted local connection, and how far its client may fall behind.
+struct Accepted {
+    tcp: TcpStream,
+    peer: SocketAddr,
+    pace: Pace,
+}
+
+impl Accepted {
+    async fn pump(self, channel: Channel<client::Msg>) {
+        let _ = bridge(self.tcp, channel.into_stream(), self.pace).await;
     }
 }
 
 /// `ssh -L`: a channel-open failure drops the local connection (the DB client
 /// sees a closed socket).
 async fn forward_fixed(
-    tcp: LocalStream,
+    conn: Accepted,
     handle: &client::Handle<SshHandler>,
     host: String,
     port: u16,
-    peer: SocketAddr,
 ) {
-    if let Ok(channel) = open_direct_tcpip(handle, host, port, peer).await {
-        pump(tcp, channel).await;
+    if let Ok(channel) = open_direct_tcpip(handle, host, port, conn.peer).await {
+        conn.pump(channel).await;
     }
 }
 
 /// `ssh -D`: learn the target from the SOCKS request, open the channel, and
 /// tell the client whether it worked before pumping.
-async fn forward_socks(
-    mut tcp: LocalStream,
-    handle: &client::Handle<SshHandler>,
-    peer: SocketAddr,
-) {
-    let Some(request) = socks_handshake(&mut tcp, SOCKS_HANDSHAKE_TIMEOUT).await else {
+async fn forward_socks(mut conn: Accepted, handle: &client::Handle<SshHandler>) {
+    let Some(request) = socks_handshake(&mut conn.tcp, SOCKS_HANDSHAKE_TIMEOUT).await else {
         return;
     };
-    let opened = open_direct_tcpip(handle, request.host, request.port, peer).await;
-    let _ = socks::reply(&mut tcp, request.version, socks_outcome(&opened)).await;
+    let opened = open_direct_tcpip(handle, request.host, request.port, conn.peer).await;
+    let _ = socks::reply(&mut conn.tcp, request.version, socks_outcome(&opened)).await;
     match opened {
-        Ok(channel) => pump(tcp, channel).await,
-        Err(_) => socks::close(&mut tcp).await,
+        Ok(channel) => conn.pump(channel).await,
+        Err(_) => socks::close(&mut conn.tcp).await,
     }
 }
 
@@ -1197,11 +1223,6 @@ async fn open_direct_tcpip(
             u32::from(peer.port()),
         )
         .await
-}
-
-async fn pump(mut tcp: LocalStream, channel: Channel<client::Msg>) {
-    let mut stream = channel.into_stream();
-    let _ = copy_bidirectional(&mut tcp, &mut stream).await;
 }
 
 /// Serve the tunnel — applying and reporting forward adds/removes as they

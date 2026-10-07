@@ -155,6 +155,11 @@ impl SessionStatus {
         }
     }
 
+    /// Whether the session is over (no more output will come).
+    pub(crate) fn is_final(self) -> bool {
+        !matches!(self, SessionStatus::Connecting | SessionStatus::Connected)
+    }
+
     /// The final status of a shell that ended on its own, from its exit code
     /// (`None` when none was reported): only a clean exit is `Exited`.
     pub(crate) fn for_shell_exit(exit_code: Option<u32>) -> SessionStatus {
@@ -766,6 +771,18 @@ async fn establish(
     handler: SshHandler,
     connect_timeout: Duration,
 ) -> Result<client::Handle<SshHandler>, AppError> {
+    let stream = connect_tcp(host, port, connect_timeout).await?;
+    establish_over_stream(stream, username, creds, handler).await
+}
+
+/// Reach `host:port` within `connect_timeout`. Nagle is turned off (as
+/// OpenSSH does): with it, each keystroke waits for the previous one's ACK,
+/// a full round trip on a slow link.
+async fn connect_tcp(
+    host: &str,
+    port: u16,
+    connect_timeout: Duration,
+) -> Result<TcpStream, AppError> {
     let stream = match timeout(connect_timeout, TcpStream::connect((host, port))).await {
         Err(_) => {
             return Err(AppError::SshConnect(format!(
@@ -779,7 +796,9 @@ async fn establish(
         }
         Ok(Ok(stream)) => stream,
     };
-    establish_over_stream(stream, username, creds, handler).await
+    // Best-effort: a socket that refuses it still works, only slower.
+    let _ = stream.set_nodelay(true);
+    Ok(stream)
 }
 
 /// The transport-agnostic half of [`establish`]: run the SSH version exchange,
@@ -1546,6 +1565,23 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn the_ssh_socket_sends_small_writes_without_delay() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let stream = connect_tcp("127.0.0.1", port, Duration::from_secs(5))
+            .await
+            .expect("connects");
+
+        assert!(
+            stream.nodelay().unwrap(),
+            "Nagle must be off for keystrokes"
+        );
+    }
+
+    #[tokio::test]
     async fn a_resize_during_the_handshake_sets_the_pty_size() {
         let (tx, mut rx) = mpsc::channel(8);
         for control in [
@@ -1577,6 +1613,15 @@ mod tests {
         assert_eq!(SessionStatus::Disconnected.as_str(), "disconnected");
         assert_eq!(SessionStatus::Error.as_str(), "error");
         assert_eq!(SessionStatus::Exited.as_str(), "exited");
+    }
+
+    #[test]
+    fn only_an_ended_session_has_a_final_status() {
+        assert!(!SessionStatus::Connecting.is_final());
+        assert!(!SessionStatus::Connected.is_final());
+        assert!(SessionStatus::Disconnected.is_final());
+        assert!(SessionStatus::Exited.is_final());
+        assert!(SessionStatus::Error.is_final());
     }
 
     #[test]

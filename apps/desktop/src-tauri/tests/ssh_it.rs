@@ -1923,6 +1923,7 @@ async fn connect_disconnect_churn_leaks_nothing() {
 struct TestTunnelSink {
     status_tx: mpsc::UnboundedSender<(TunnelStatus, Vec<ForwardStatus>)>,
     message_tx: mpsc::UnboundedSender<Option<String>>,
+    code_tx: mpsc::UnboundedSender<&'static str>,
     prompt_tx: mpsc::UnboundedSender<HostKeyPromptPayload>,
 }
 
@@ -1936,6 +1937,10 @@ impl TunnelSink for TestTunnelSink {
         let _ = self.message_tx.send(message);
         let _ = self.status_tx.send((status, forwards));
     }
+    fn on_error(&self, err: &AppError) {
+        let _ = self.code_tx.send(err.code());
+        self.on_status(TunnelStatus::Error, Some(err.to_string()), Vec::new());
+    }
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.prompt_tx.send(payload);
     }
@@ -1945,6 +1950,8 @@ struct TunnelSinkChannels {
     status_rx: mpsc::UnboundedReceiver<(TunnelStatus, Vec<ForwardStatus>)>,
     /// The message of each status, in the same order as `status_rx`.
     message_rx: mpsc::UnboundedReceiver<Option<String>>,
+    /// The `AppError` code of each error the tunnel ended on.
+    code_rx: mpsc::UnboundedReceiver<&'static str>,
     #[allow(dead_code)]
     prompt_rx: mpsc::UnboundedReceiver<HostKeyPromptPayload>,
 }
@@ -1952,10 +1959,12 @@ struct TunnelSinkChannels {
 fn new_tunnel_sink() -> (Arc<dyn TunnelSink>, TunnelSinkChannels) {
     let (status_tx, status_rx) = mpsc::unbounded_channel();
     let (message_tx, message_rx) = mpsc::unbounded_channel();
+    let (code_tx, code_rx) = mpsc::unbounded_channel();
     let (prompt_tx, prompt_rx) = mpsc::unbounded_channel();
     let sink: Arc<dyn TunnelSink> = Arc::new(TestTunnelSink {
         status_tx,
         message_tx,
+        code_tx,
         prompt_tx,
     });
     (
@@ -1963,6 +1972,7 @@ fn new_tunnel_sink() -> (Arc<dyn TunnelSink>, TunnelSinkChannels) {
         TunnelSinkChannels {
             status_rx,
             message_rx,
+            code_rx,
             prompt_rx,
         },
     )
@@ -2320,19 +2330,21 @@ async fn tunnel_adds_and_removes_forwards_while_live() {
     );
 }
 
-/// russh blocks its whole connection while one channel's reader is full, so a
-/// local client that stops reading used to freeze every connection of the
-/// tunnel. Once its writes make no progress for the stall timeout, only that
-/// connection is closed and the others flow again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_client_that_stops_reading_does_not_freeze_the_tunnel() {
-    use tokio::io::AsyncWriteExt;
-
-    let dir = tempfile::tempdir().unwrap();
+/// Start a one-forward echo tunnel whose connections' clients may fall
+/// `backlog_limit` bytes behind and then stall for `stall`; returns the manager
+/// (to stop it) and the local port.
+async fn start_echo_tunnel_with_backlog(
+    dir: &std::path::Path,
+    backlog_limit: usize,
+    stall: Duration,
+) -> (Arc<TunnelManager>, u16) {
     let port = spawn_test_server(TEST_PASSWORD).await;
-    seed_trusted(dir.path(), port);
-    let manager =
-        Arc::new(new_tunnel_manager(dir.path()).with_stall_timeout(Duration::from_secs(1)));
+    seed_trusted(dir, port);
+    let manager = Arc::new(
+        new_tunnel_manager(dir)
+            .with_backlog_limit(backlog_limit)
+            .with_stall_timeout(stall),
+    );
     let local_port = free_local_port().await;
     let (sink, mut chans) = new_tunnel_sink();
     manager.spawn_tunnel(
@@ -2350,15 +2362,59 @@ async fn a_client_that_stops_reading_does_not_freeze_the_tunnel() {
         sink,
     );
     await_listening(&mut chans.status_rx).await;
+    (manager, local_port)
+}
+
+/// russh blocks its whole connection while one channel's reader is full, so a
+/// local client that paused reading used to freeze every connection of the
+/// tunnel. Its data now waits in its own backlog: the others flow right away,
+/// and the paused client still gets every byte once it reads again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_that_pauses_reading_does_not_hold_up_the_tunnel() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const FLOOD: usize = 24 << 20;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (manager, local_port) =
+        start_echo_tunnel_with_backlog(dir.path(), 64 << 20, Duration::from_secs(20)).await;
+
+    // Far more than russh's and the sockets' buffers hold, never read back yet.
+    let paused = connect_local(local_port).await;
+    let (mut paused_rd, mut paused_wr) = paused.into_split();
+    let flood = tokio::spawn(async move { paused_wr.write_all(&vec![0u8; FLOOD]).await });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let mut other = connect_local(local_port).await;
+    assert_echoes(&mut other).await;
+
+    let mut echoed = vec![0u8; FLOOD];
+    tokio::time::timeout(Duration::from_secs(60), paused_rd.read_exact(&mut echoed))
+        .await
+        .expect("the paused client gets its data back")
+        .unwrap();
+    flood.await.unwrap().unwrap();
+    manager.stop_tunnel("t1").await;
+}
+
+/// A client that falls further behind than the backlog limit and then stops
+/// reading is cut off, and only it: the tunnel's other connections flow again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_too_far_behind_is_closed_alone() {
+    use tokio::io::AsyncWriteExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (manager, local_port) =
+        start_echo_tunnel_with_backlog(dir.path(), 1 << 20, Duration::from_secs(1)).await;
 
     // Flood the echo and never read it back, keeping the socket open.
     let mut stalled = connect_local(local_port).await;
-    tokio::spawn(async move {
-        let _ = stalled.write_all(&vec![0u8; 64 << 20]).await;
-        std::future::pending::<()>().await;
-    });
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let flood = tokio::spawn(async move { stalled.write_all(&vec![0u8; 64 << 20]).await });
 
+    let cut = tokio::time::timeout(Duration::from_secs(30), flood)
+        .await
+        .expect("the stalled client must be cut off")
+        .unwrap();
+    assert!(cut.is_err(), "its connection is closed under it");
     let mut other = connect_local(local_port).await;
     assert_echoes(&mut other).await;
     manager.stop_tunnel("t1").await;
@@ -2643,6 +2699,8 @@ async fn tunnel_bind_failure_errors_and_cleans_up() {
         saw_error,
         "a tunnel that binds nothing must surface an error"
     );
+    // A local port in use won't free itself: not worth reconnecting.
+    assert_eq!(chans.code_rx.try_recv().unwrap(), "TunnelBind");
 
     for _ in 0..50 {
         if manager.tunnel_count() == 0 {
@@ -2777,6 +2835,23 @@ async fn remote_forward_refused_by_the_server_is_reported_unbound() {
         .map(|f| (f.forward_id.as_str(), f.bound))
         .collect();
     assert_eq!(bound, [("f1", true), ("r1", false)]);
+    drop(taken);
+}
+
+/// A tunnel whose only forwards are remote ones the server refused ends with
+/// an error worth reconnecting: after a network drop the server's stale
+/// session often still holds the ports for a while.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tunnel_whose_remote_forwards_were_all_refused_may_be_retried() {
+    let taken = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let taken_port = taken.local_addr().unwrap().port();
+    let mut tunnel = remote_tunnel(vec![remote_forward("r1", taken_port, 9)]).await;
+
+    let code = recv_timeout(&mut tunnel.chans.code_rx, Duration::from_secs(15))
+        .await
+        .expect("the tunnel must end on an error");
+
+    assert_eq!(code, "SshConnect");
     drop(taken);
 }
 

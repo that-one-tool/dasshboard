@@ -45,7 +45,10 @@ files, releasing),
     - `terminal/` — pane, overlay, reconnect, paste, host-key dialog, terminal
       settings, `terminalReplies` (keeps xterm's own query replies / mouse
       reports out of broadcast input), `inputQueue` (a pane's `write_stdin`
-      calls one at a time, so keys arrive in order), `searchBar` (find bar over the
+      calls one at a time, so keys arrive in order), `outputReader` (pulls a
+      session's output with `read_output`: a failed read is retried from the
+      same offset, and the next read waits until xterm took the last chunk),
+      `searchBar` (find bar over the
       scrollback, Ctrl+Shift+F / Cmd+F), `links` (Ctrl/Cmd+click opens an
       http(s) URL or OSC 8 link via the opener plugin), `scrollbackText`
       ("save output": buffer → plain text + suggested file name)
@@ -56,7 +59,9 @@ files, releasing),
       confirmation listing an import file's risky settings
     - `tunnels/` — the Tunnels sidebar card (start/stop all or one forward,
       device status icon + per-forward status dots; backend calls serialized per
-      device; a connection-settings edit restarts the running tunnel)
+      device; a connection-settings edit restarts the running tunnel; a tunnel
+      that drops is reopened when its device opted into auto-reconnect, with
+      the panes' policy — `tunnelReconnect`)
     - `sftp/` — the docked Files panel (browser + transfer queue); edit in
       place: `editSessions` (DOM-free: open/sync/conflict/stop per edit,
       transfers through the queue; uploads are not cancellable) and
@@ -108,7 +113,8 @@ files, releasing),
     - `config_watch.rs` — watches the app-config dir and emits `config_changed`
       so a second running instance picks up on-disk changes
     - `secret.rs` — OS keychain access; secrets never touch the JSON stores
-    - `session.rs` — SSH shell sessions via `russh`; a disconnect is an
+    - `session.rs` — SSH shell sessions via `russh` (the SSH socket has
+      TCP_NODELAY, as in OpenSSH); a disconnect is an
       out-of-band `watch` stop flag (never queued behind writes a stalled
       server isn't taking, like serial and tunnels), and a shell ends with a
       bounded channel close + SSH disconnect of the target and jump host;
@@ -128,11 +134,19 @@ files, releasing),
       its connections. A tunnel's listen/cancel requests go through one
       sequential worker (`ServerRequests`), so the serve loop never waits on
       the server; a forward still waiting is left out of `Listening`
-    - `stall_guard.rs` — wraps a forwarded connection's local socket so a
-      write making no progress for 20 s fails: russh blocks the whole SSH
-      connection while one channel's reader is full, so one client that
-      stops reading would otherwise freeze every forward of the tunnel (a
-      client that reads slowly still sets the whole connection's pace)
+    - `relay.rs` — bridges a forwarded connection's local socket and its
+      channel, draining the channel into a per-connection backlog: russh
+      blocks the whole SSH connection while one channel's reader is full, so
+      a client that pauses would otherwise freeze every forward of the
+      tunnel. Past 8 MiB of backlog the channel is no longer read (a client
+      that far behind sets the connection's pace again), and one that then
+      makes no progress for 20 s is closed
+    - `output_stream.rs` — a terminal session's output, kept until the
+      frontend fetched it (`read_output(from)`: reading from offset `from`
+      acknowledges what came before, so a lost or retried read loses
+      nothing; unread output past 50 MB, xterm's own discard point, drops
+      the oldest). Replaces the push `Channel`, where one lost message froze
+      the terminal for good
     - `socks.rs` — server side of the SOCKS4/4a/5 handshake (no-auth,
       `CONNECT` only) for dynamic forwards; stream-generic, unit-tested
       against an in-memory pipe
@@ -205,6 +219,9 @@ files, releasing),
       AppIndicator library is probed first (tray-icon panics without it)
     - `app_menu.rs` — the macOS menu bar (Tauri's default minus Close Window,
       so Cmd+W closes a tab)
+    - `main_window.rs` — builds the main window (`"create": false` in
+      `tauri.conf.json`) with clipboard access, without which WebKitGTK and
+      WebView2 refuse `navigator.clipboard.readText()` and paste does nothing
     - `state.rs` — `AppState` (managed Tauri state), `error.rs` — `AppError`
 - `src-tauri/tests/` — `ssh_it.rs`, `sftp_it.rs`: integration tests against an
   in-process throwaway `russh` server, no Docker/external daemon needed

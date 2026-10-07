@@ -18,6 +18,11 @@
  * Launch restores what the user last did: the forwards they left running are
  * started again, the rest stay stopped. A device with no such remembered
  * choice follows its `tunnelAutoStart` flag (all forwards, or none).
+ *
+ * A tunnel that drops on its own is reopened, with the forwards the user still
+ * wants, when its device opted into auto-reconnect — the terminal panes'
+ * policy (`tunnelReconnect.ts`). While it waits it shows as connecting, and a
+ * Stop cancels it.
  */
 
 import {
@@ -30,6 +35,7 @@ import {
   stopTunnelForward,
   type AppError,
   type Device,
+  type ErrorCode,
   type Forward,
   type ForwardKind,
   type ForwardStatus,
@@ -39,6 +45,8 @@ import {
 } from "../ipc";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { t } from "../i18n";
+import { errorCodeOf } from "../terminal/reconnect";
+import { TunnelReconnects } from "./tunnelReconnect";
 import { copyIcon, playIcon, stopIcon, wifiIcon, wifiOffIcon } from "../ui/icons";
 
 /** Per-device tunnel state the panel tracks between renders. */
@@ -219,6 +227,10 @@ export class TunnelsPanel {
   /** deviceId → the tail of its pending backend calls. Forward adds/removes
    * are deltas, so they must reach the tunnel in click order. */
   private readonly calls = new Map<string, Promise<void>>();
+  /** Dropped tunnels waiting to be reopened: forward changes wait for the
+   * replacement, which carries whatever the user wants by then. */
+  private readonly waiting = new Set<string>();
+  private readonly reconnects = new TunnelReconnects((deviceId) => this.reconnect(deviceId));
   private unlisten: UnlistenFn | null = null;
   private readonly container: HTMLElement | null;
   private body: HTMLElement | null = null;
@@ -351,8 +363,11 @@ export class TunnelsPanel {
     });
   }
 
-  /** Stop the tunnel now; `onEnded` starts its replacement once it is gone. */
+  /** Stop the tunnel now; `onEnded` starts its replacement once it is gone. A
+   * dropped tunnel waiting to reconnect needs nothing: it reopens with the new
+   * settings. */
   private restart(deviceId: string, state: DeviceTunnelState): void {
+    if (this.waiting.has(state.tunnelId)) return;
     this.restarts.add(state.tunnelId);
     state.status = "connecting";
     state.forwards = [];
@@ -372,7 +387,9 @@ export class TunnelsPanel {
   /** Whether forward changes to this tunnel must wait (it is starting, or
    * being replaced) rather than be sent now. */
   private isDeferred(tunnelId: string): boolean {
-    return this.startsInFlight.has(tunnelId) || this.restarts.has(tunnelId);
+    return (
+      this.startsInFlight.has(tunnelId) || this.restarts.has(tunnelId) || this.waiting.has(tunnelId)
+    );
   }
 
   /** Run a backend call after the device's earlier ones. */
@@ -425,6 +442,7 @@ export class TunnelsPanel {
   dispose(): void {
     this.unlisten?.();
     this.unlisten = null;
+    this.reconnects.dispose();
   }
 
   /** The device list, or `null` when it couldn't be loaded (error toasted). */
@@ -475,10 +493,14 @@ export class TunnelsPanel {
     this.render();
   }
 
-  /** A tunnel ended: forget it, report an error, and start its replacement if
-   * it was stopped to restart. */
+  /** A tunnel ended: wait to reopen it if it dropped on its own, else forget
+   * it, report an error, and start its replacement if it was stopped to
+   * restart. */
   private onEnded(deviceId: string, event: TunnelStatusEvent): void {
     const restartWith = this.takeRestart(deviceId, event.tunnelId);
+    if (restartWith.length === 0 && this.waitToReconnect(deviceId, event.tunnelId, event.code)) {
+      return;
+    }
     this.forgetTunnel(deviceId, event.tunnelId);
     if (event.status === "error") {
       this.options.onError?.({
@@ -498,13 +520,63 @@ export class TunnelsPanel {
     return runningInOrder(device, state.requested);
   }
 
+  /** Keep a tunnel that dropped while still wanted, showing it as connecting
+   * until it is reopened; `false` when it should stay down. */
+  private waitToReconnect(deviceId: string, tunnelId: string, code?: ErrorCode): boolean {
+    const device = this.droppedWhileWanted(deviceId, tunnelId);
+    if (!device || !this.reconnects.schedule(deviceId, device.autoReconnect, code)) return false;
+    const state = this.byDevice.get(deviceId)!;
+    state.status = "connecting";
+    state.forwards = [];
+    this.waiting.add(tunnelId);
+    this.deviceByTunnel.delete(tunnelId);
+    return true;
+  }
+
+  /** The device, if `tunnelId` is its current tunnel and still carries forwards
+   * the user wants (a Stop clears them first). */
+  private droppedWhileWanted(deviceId: string, tunnelId: string): SshDevice | undefined {
+    const state = this.byDevice.get(deviceId);
+    if (state?.tunnelId !== tunnelId || state.requested.size === 0) return undefined;
+    return this.tunnelable(deviceId);
+  }
+
+  /** Reopen a dropped tunnel with the forwards the user still wants; none left
+   * (all stopped meanwhile, or the device deleted) leaves it stopped. */
+  private reconnect(deviceId: string): void {
+    const state = this.byDevice.get(deviceId);
+    if (!state || !this.waiting.delete(state.tunnelId)) return;
+    this.forgetTunnel(deviceId, state.tunnelId);
+    this.reopen(deviceId, state.requested);
+    this.render();
+  }
+
+  private reopen(deviceId: string, requested: Set<string>): void {
+    const ids = this.wantedForwards(deviceId, requested);
+    if (ids.length > 0) void this.startTunnelWith(deviceId, ids, false, true);
+    else this.reconnects.reset(deviceId);
+  }
+
+  /** The device's forwards among `requested`, in its order (none once it is
+   * deleted or lost its forwards). */
+  private wantedForwards(deviceId: string, requested: Set<string>): string[] {
+    const device = this.tunnelable(deviceId);
+    return device ? runningInOrder(device, requested) : [];
+  }
+
   /** Record a `connecting` / `listening` status on the device's tunnel (a
    * tunnel being replaced keeps showing connecting). */
   private applyLive(deviceId: string, event: TunnelStatusEvent): void {
     const state = this.byDevice.get(deviceId);
     if (state?.tunnelId !== event.tunnelId || this.restarts.has(event.tunnelId)) return;
     state.status = event.status;
-    if (event.status === "listening") state.forwards = event.forwards;
+    if (event.status === "listening") this.applyListening(deviceId, state, event.forwards);
+  }
+
+  /** The tunnel is up: its next drop gets a full reconnect budget. */
+  private applyListening(deviceId: string, state: DeviceTunnelState, forwards: ForwardStatus[]): void {
+    state.forwards = forwards;
+    this.reconnects.reset(deviceId);
   }
 
   /** Drop an ended tunnel — but not a newer one started for the same device. */
@@ -531,8 +603,17 @@ export class TunnelsPanel {
     const previous = [...state.requested];
     state.requested.clear();
     this.rememberRunning(deviceId, state.requested);
+    this.cancelReconnect(deviceId);
     this.render();
     void this.requestStop(deviceId, state.tunnelId, previous);
+  }
+
+  /** The user took over: drop a pending reconnect and the tunnel shown
+   * waiting for it. */
+  private cancelReconnect(deviceId: string): void {
+    this.reconnects.reset(deviceId);
+    const state = this.byDevice.get(deviceId);
+    if (state && this.waiting.delete(state.tunnelId)) this.forgetTunnel(deviceId, state.tunnelId);
   }
 
   /** Start one forward: on the device's running tunnel, else on a new one. */
@@ -611,15 +692,19 @@ export class TunnelsPanel {
    * Open a device's tunnel carrying `forwardIds`. `manual` marks a user click,
    * remembered once the backend accepted it. A start the backend rejects
    * outright is a configuration problem (not a flaky network), so it is
-   * remembered as stopped rather than retried — and failing — on every launch.
+   * remembered as stopped rather than retried — and failing — on every launch;
+   * only an automatic reconnect (`reconnecting`) retries one that may pass
+   * (e.g. a keychain not unlocked yet).
    */
   private async startTunnelWith(
     deviceId: string,
     forwardIds: string[],
     manual = false,
+    reconnecting = false,
   ): Promise<void> {
     // The id is chosen here so status events (which can beat the command's
     // return) route to this row, and Stop works while the start is in flight.
+    if (manual) this.cancelReconnect(deviceId);
     const tunnelId = crypto.randomUUID();
     this.deviceByTunnel.set(tunnelId, deviceId);
     // Optimistically mark connecting so the row reflects the click immediately.
@@ -637,11 +722,32 @@ export class TunnelsPanel {
       this.afterStarted(deviceId, tunnelId, forwardIds, manual);
     } catch (err) {
       this.startsInFlight.delete(tunnelId);
-      this.forgetTunnel(deviceId, tunnelId);
-      this.remember(deviceId, false);
-      this.render();
-      this.options.onError?.(err as AppError);
+      this.onStartRejected(deviceId, tunnelId, err, reconnecting);
     }
+  }
+
+  /** The backend refused to open the tunnel: wait to retry a reconnect that
+   * may yet pass, else give up and say why. */
+  private onStartRejected(
+    deviceId: string,
+    tunnelId: string,
+    err: unknown,
+    reconnecting: boolean,
+  ): void {
+    if (reconnecting && this.waitToReconnect(deviceId, tunnelId, errorCodeOf(err))) {
+      this.render();
+      return;
+    }
+    this.dropRejectedStart(deviceId, tunnelId, reconnecting);
+    this.options.onError?.(err as AppError);
+  }
+
+  private dropRejectedStart(deviceId: string, tunnelId: string, reconnecting: boolean): void {
+    this.forgetTunnel(deviceId, tunnelId);
+    // A reconnect that fails for good is not the user stopping the tunnel: the
+    // next launch still restores it.
+    if (!reconnecting) this.remember(deviceId, false);
+    this.render();
   }
 
   /** The backend has the tunnel now. If the row has moved on (stopped and

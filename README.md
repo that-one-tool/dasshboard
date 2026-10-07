@@ -24,7 +24,7 @@
 - **SSH extras** — jump hosts (`-J`, for shells, SFTP and tunnels), agent
   forwarding (`-A`), named local (`-L`), remote (`-R`) and dynamic SOCKS (`-D`)
   port forwards, started one by one or all at once, that resume as you left
-  them (or auto-start), keepalive and auto-reconnect.
+  them (or auto-start), keepalive and auto-reconnect (terminals and tunnels).
 - **SFTP browser** — docked file panel with folder transfers, a background queue,
   bulk actions, bookmarks and chmod.
 - **Edit remote files** — open a remote file in your editor; every save is

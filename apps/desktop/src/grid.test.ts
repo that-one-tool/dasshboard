@@ -38,7 +38,7 @@ vi.mock("./ipc", () => ({
   writeStdin: vi.fn(async () => {}),
   writeStdinBinary: vi.fn(async () => {}),
   resizePty: vi.fn(async () => {}),
-  newDataChannel: vi.fn(() => ({ onmessage: null })),
+  readOutput: vi.fn(() => new Promise(() => {})),
   onSessionStatus: vi.fn(
     async (_handler: (e: SessionStatusEvent) => void) => () => {},
   ),

@@ -1,9 +1,10 @@
 /**
  * @vitest-environment happy-dom
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Device, Forward, TunnelStatusEvent } from "../ipc";
 import { t } from "../i18n";
+import { MAX_RECONNECT_ATTEMPTS } from "../terminal/reconnect";
 
 const h = vi.hoisted(() => ({
   devices: [] as Device[],
@@ -1014,5 +1015,205 @@ describe("TunnelsPanel", () => {
     expect(startTunnelForward).toHaveBeenCalledWith("t1", "f1");
     expect(stopTunnel).not.toHaveBeenCalled();
     expect(dot("f1").classList.contains("is-connecting")).toBe(true);
+  });
+
+  describe("auto-reconnect", () => {
+    const reconnecting = (): Device => ({ ...sshDevice("dev-1", "NAS", [forward("f1", 5432)]), autoReconnect: true }) as Device;
+
+    async function runningTunnel(onError = vi.fn()): Promise<TunnelsPanel> {
+      vi.mocked(crypto.randomUUID)
+        .mockReturnValueOnce("t1" as ReturnType<typeof crypto.randomUUID>)
+        .mockReturnValueOnce("t2" as ReturnType<typeof crypto.randomUUID>);
+      const panel = new TunnelsPanel({ onError, onPersist: vi.fn() });
+      await panel.init();
+      headerButton().click();
+      await flush();
+      listening(bound("f1"));
+      return panel;
+    }
+
+    function lost(code = "SshConnect"): void {
+      h.statusHandler!({ tunnelId: "t1", status: "error", message: "lost", code, forwards: [] } as TunnelStatusEvent);
+    }
+
+    function tunnelStatus(): HTMLElement {
+      return document.querySelector<HTMLElement>(".tunnel-status")!;
+    }
+
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => {
+      vi.useRealTimers();
+      // Unused one-off ids would leak into the next test.
+      vi.mocked(crypto.randomUUID).mockReset();
+    });
+
+    it("reconnects a dropped tunnel of a device that opted in, with the same forwards", async () => {
+      h.devices = [reconnecting()];
+      const onError = vi.fn();
+      await runningTunnel(onError);
+      vi.mocked(startTunnel).mockClear();
+
+      lost();
+      expect(tunnelStatus().classList.contains("is-connecting")).toBe(true);
+      expect(onError).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2000);
+      await flush();
+
+      expect(startTunnel).toHaveBeenCalledWith("dev-1", "t2", ["f1"]);
+    });
+
+    it("leaves a dropped tunnel stopped when its device did not opt in", async () => {
+      const onError = vi.fn();
+      await runningTunnel(onError);
+      vi.mocked(startTunnel).mockClear();
+
+      lost();
+      await vi.runAllTimersAsync();
+
+      expect(startTunnel).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalled();
+      expect(tunnelStatus().classList.contains("is-stopped")).toBe(true);
+    });
+
+    it("never retries a tunnel the server refused to authenticate", async () => {
+      h.devices = [reconnecting()];
+      const onError = vi.fn();
+      await runningTunnel(onError);
+      vi.mocked(startTunnel).mockClear();
+
+      lost("SshAuth");
+      await vi.runAllTimersAsync();
+
+      expect(startTunnel).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalled();
+    });
+
+    it("a Stop while waiting to reconnect keeps the tunnel stopped", async () => {
+      h.devices = [reconnecting()];
+      await runningTunnel();
+      vi.mocked(startTunnel).mockClear();
+
+      lost();
+      headerButton().click(); // Stop all
+      await vi.runAllTimersAsync();
+      await flush();
+
+      expect(startTunnel).not.toHaveBeenCalled();
+      expect(tunnelStatus().classList.contains("is-stopped")).toBe(true);
+    });
+
+    it("a forward stopped while waiting is left out of the reconnect", async () => {
+      h.devices = [{ ...twoForwards(), autoReconnect: true } as Device];
+      vi.mocked(crypto.randomUUID)
+        .mockReturnValueOnce("t1" as ReturnType<typeof crypto.randomUUID>)
+        .mockReturnValueOnce("t2" as ReturnType<typeof crypto.randomUUID>);
+      const panel = new TunnelsPanel({ onPersist: vi.fn() });
+      await panel.init();
+      headerButton().click(); // Start all
+      await flush();
+      listening(bound("f1"), bound("f2"));
+      vi.mocked(startTunnel).mockClear();
+
+      lost();
+      forwardButton("f2").click(); // Stop f2
+      await vi.advanceTimersByTimeAsync(2000);
+      await flush();
+
+      expect(stopTunnelForward).not.toHaveBeenCalled();
+      expect(startTunnel).toHaveBeenCalledWith("dev-1", "t2", ["f1"]);
+    });
+
+    it("a reconnect the backend rejects for good is not remembered as a stop", async () => {
+      h.devices = [reconnecting()];
+      const panel = await runningTunnel();
+      vi.mocked(startTunnel).mockRejectedValueOnce({ code: "NotFound", message: "gone" });
+
+      lost();
+      await vi.advanceTimersByTimeAsync(2000);
+      await flush();
+
+      // Launch still restores it: the user never stopped it.
+      expect(panel.layoutState()).toEqual({ "dev-1": ["f1"] });
+    });
+
+    it("Stop all then Start all while waiting starts one tunnel, not two", async () => {
+      h.devices = [reconnecting()];
+      await runningTunnel();
+      vi.mocked(startTunnel).mockClear();
+
+      lost();
+      headerButton().click(); // Stop all
+      await flush();
+      headerButton().click(); // Start all
+      await flush();
+      await vi.runAllTimersAsync();
+      await flush();
+
+      expect(startTunnel).toHaveBeenCalledTimes(1);
+    });
+
+    it("a connection edit while waiting is picked up by the reconnect, not a restart", async () => {
+      h.devices = [reconnecting()];
+      const panel = await runningTunnel();
+      vi.mocked(startTunnel).mockClear();
+
+      lost();
+      panel.setDevices([{ ...reconnecting(), host: "10.0.0.2" } as Device]);
+      await flush();
+      expect(stopTunnel).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2000);
+      await flush();
+
+      expect(startTunnel).toHaveBeenCalledTimes(1);
+    });
+
+    it("dispose cancels a pending reconnect", async () => {
+      h.devices = [reconnecting()];
+      const panel = await runningTunnel();
+      vi.mocked(startTunnel).mockClear();
+
+      lost();
+      panel.dispose();
+      await vi.runAllTimersAsync();
+
+      expect(startTunnel).not.toHaveBeenCalled();
+    });
+
+    it("keeps retrying while the server stays unreachable, then reports it", async () => {
+      h.devices = [reconnecting()];
+      const onError = vi.fn();
+      await runningTunnel(onError);
+      // Every reopened tunnel is "t1" again, so `lost()` reaches it.
+      vi.mocked(crypto.randomUUID).mockReset().mockReturnValue("t1" as ReturnType<typeof crypto.randomUUID>);
+      vi.mocked(startTunnel).mockClear();
+
+      for (let attempt = 0; attempt <= MAX_RECONNECT_ATTEMPTS; attempt++) {
+        lost();
+        await vi.runAllTimersAsync();
+        await flush();
+      }
+
+      expect(startTunnel).toHaveBeenCalledTimes(MAX_RECONNECT_ATTEMPTS);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(tunnelStatus().classList.contains("is-stopped")).toBe(true);
+    });
+
+    it("a tunnel back up gets a full budget for its next drop", async () => {
+      h.devices = [reconnecting()];
+      await runningTunnel();
+      // Every reopened tunnel is "t1" again, so `lost()` reaches it.
+      vi.mocked(crypto.randomUUID).mockReset().mockReturnValue("t1" as ReturnType<typeof crypto.randomUUID>);
+      for (let round = 0; round < 2 * MAX_RECONNECT_ATTEMPTS; round++) {
+        lost();
+        await vi.runAllTimersAsync();
+        await flush();
+        listening(bound("f1"));
+      }
+      vi.mocked(startTunnel).mockClear();
+
+      lost();
+      await vi.runAllTimersAsync();
+      expect(startTunnel).toHaveBeenCalledTimes(1);
+    });
   });
 });
