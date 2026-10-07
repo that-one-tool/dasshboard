@@ -2365,9 +2365,15 @@ async fn start_echo_tunnel_with_backlog(
     (manager, local_port)
 }
 
+/// A deadline for the tests that push megabytes through a tunnel: generous
+/// enough that only a stuck tunnel misses it, however slow the machine (a CI
+/// runner with a debug build), so the outcome never depends on throughput.
+const STUCK: Duration = Duration::from_secs(120);
+
 /// russh blocks its whole connection while one channel's reader is full, so a
 /// local client that paused reading used to freeze every connection of the
-/// tunnel. Its data now waits in its own backlog: the others flow right away,
+/// tunnel. Its data now waits in its own backlog: the connection keeps
+/// flowing, so the paused client's whole upload goes through, the others echo,
 /// and the paused client still gets every byte once it reads again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_client_that_pauses_reading_does_not_hold_up_the_tunnel() {
@@ -2375,24 +2381,29 @@ async fn a_client_that_pauses_reading_does_not_hold_up_the_tunnel() {
     const FLOOD: usize = 24 << 20;
 
     let dir = tempfile::tempdir().unwrap();
+    // A stall timeout far past `STUCK`: a tunnel that froze must stay frozen
+    // for the whole test, not recover by cutting the paused client.
     let (manager, local_port) =
-        start_echo_tunnel_with_backlog(dir.path(), 64 << 20, Duration::from_secs(20)).await;
+        start_echo_tunnel_with_backlog(dir.path(), 64 << 20, 5 * STUCK).await;
 
-    // Far more than russh's and the sockets' buffers hold, never read back yet.
+    // Far more than russh's and the sockets' buffers hold, never read back
+    // yet: a frozen tunnel would stop taking the upload before its end.
     let paused = connect_local(local_port).await;
     let (mut paused_rd, mut paused_wr) = paused.into_split();
-    let flood = tokio::spawn(async move { paused_wr.write_all(&vec![0u8; FLOOD]).await });
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::timeout(STUCK, paused_wr.write_all(&vec![0u8; FLOOD]))
+        .await
+        .expect("the tunnel takes the paused client's whole upload")
+        .unwrap();
 
+    // The flood's echo may still be queued ahead of this one.
     let mut other = connect_local(local_port).await;
-    assert_echoes(&mut other).await;
+    assert_echoes_within(&mut other, STUCK).await;
 
     let mut echoed = vec![0u8; FLOOD];
-    tokio::time::timeout(Duration::from_secs(60), paused_rd.read_exact(&mut echoed))
+    tokio::time::timeout(STUCK, paused_rd.read_exact(&mut echoed))
         .await
         .expect("the paused client gets its data back")
         .unwrap();
-    flood.await.unwrap().unwrap();
     manager.stop_tunnel("t1").await;
 }
 
@@ -2410,13 +2421,13 @@ async fn a_client_too_far_behind_is_closed_alone() {
     let mut stalled = connect_local(local_port).await;
     let flood = tokio::spawn(async move { stalled.write_all(&vec![0u8; 64 << 20]).await });
 
-    let cut = tokio::time::timeout(Duration::from_secs(30), flood)
+    let cut = tokio::time::timeout(STUCK, flood)
         .await
         .expect("the stalled client must be cut off")
         .unwrap();
     assert!(cut.is_err(), "its connection is closed under it");
     let mut other = connect_local(local_port).await;
-    assert_echoes(&mut other).await;
+    assert_echoes_within(&mut other, STUCK).await;
     manager.stop_tunnel("t1").await;
 }
 
@@ -2517,19 +2528,27 @@ async fn stop_and_assert_cleanup(tunnel: &DynamicTunnel) {
 }
 
 async fn read_exactly(stream: &mut TcpStream, len: usize) -> Vec<u8> {
+    read_exactly_within(stream, len, Duration::from_secs(10)).await
+}
+
+async fn read_exactly_within(stream: &mut TcpStream, len: usize, limit: Duration) -> Vec<u8> {
     use tokio::io::AsyncReadExt;
     let mut buf = vec![0u8; len];
-    tokio::time::timeout(Duration::from_secs(10), stream.read_exact(&mut buf))
+    tokio::time::timeout(limit, stream.read_exact(&mut buf))
         .await
-        .expect("bytes within 10s")
+        .unwrap_or_else(|_| panic!("bytes within {limit:?}"))
         .unwrap();
     buf
 }
 
 async fn assert_echoes(stream: &mut TcpStream) {
+    assert_echoes_within(stream, Duration::from_secs(10)).await;
+}
+
+async fn assert_echoes_within(stream: &mut TcpStream, limit: Duration) {
     use tokio::io::AsyncWriteExt;
     stream.write_all(b"PING\n").await.unwrap();
-    assert_eq!(read_exactly(stream, 5).await, b"PING\n");
+    assert_eq!(read_exactly_within(stream, 5, limit).await, b"PING\n");
 }
 
 /// A SOCKS5 greeting + CONNECT to `host` (as a domain name) on `port`.
