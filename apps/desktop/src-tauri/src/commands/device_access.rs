@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::device::{Auth, Connection, Device};
 use crate::error::AppError;
-use crate::session::{AuthCredentials, JumpHop, KeepaliveConfig};
+use crate::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig};
 use crate::state::AppState;
 
 /// Look up a device by id (SPEC §5 `NotFound` on miss).

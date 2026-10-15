@@ -10,7 +10,7 @@ use super::device_access::{find_device, keepalive_config, resolve_credentials, r
 use super::host_keys::{emit_host_key_prompt_closed, HOST_KEY_PROMPT_EVENT};
 use crate::device::{Connection, Device, Forward};
 use crate::error::AppError;
-use crate::session::HostKeyPromptPayload;
+use crate::ssh::prompts::HostKeyPromptPayload;
 use crate::state::AppState;
 use crate::tunnel::{ForwardStatus, TunnelInfo, TunnelParams, TunnelSink, TunnelStatus};
 

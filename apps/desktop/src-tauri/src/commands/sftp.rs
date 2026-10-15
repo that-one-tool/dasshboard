@@ -13,8 +13,8 @@ use super::device_access::{find_device, keepalive_config, resolve_credentials, r
 use super::host_keys::{emit_host_key_prompt_closed, HOST_KEY_PROMPT_EVENT};
 use crate::device::{Connection, Device};
 use crate::error::AppError;
-use crate::session::HostKeyPromptPayload;
 use crate::sftp::{SftpEntry, SftpParams, SftpSink};
+use crate::ssh::prompts::HostKeyPromptPayload;
 use crate::state::AppState;
 
 /// Event name for streamed SFTP transfer progress (see `sftp_progress_emitter`).

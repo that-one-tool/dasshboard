@@ -31,10 +31,10 @@ use tokio::sync::mpsc;
 use dasshboard_lib::device::{Forward, ForwardKind};
 use dasshboard_lib::error::AppError;
 use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
-use dasshboard_lib::session::{
-    AuthCredentials, ConnectParams, HostKeyPromptPayload, JumpHop, KeepaliveConfig, SessionManager,
-    SessionSink, SessionStatus,
-};
+use dasshboard_lib::session::{ConnectParams, SessionManager};
+use dasshboard_lib::session_sink::{SessionSink, SessionStatus};
+use dasshboard_lib::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig};
+use dasshboard_lib::ssh::prompts::HostKeyPromptPayload;
 use dasshboard_lib::tunnel::{
     ForwardStatus, TunnelManager, TunnelParams, TunnelSink, TunnelStatus,
 };

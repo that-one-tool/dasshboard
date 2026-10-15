@@ -44,8 +44,8 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands/    ──�
   types mirror the Rust `serde` structs and are camelCase on the wire.
 - **Backend (`src-tauri/src/`)**: `commands/` holds the handlers, one file per domain
   (registered in `lib.rs`), and each concern has its own module:
-    - `session`: SSH shells over `russh`. `tunnel`, `sftp` and `agent` reuse its
-      connect, auth and host-key path; `tunnel`'s dynamic forwards speak SOCKS
+    - `ssh`: the connect, auth and host-key path over `russh`, shared by
+      `session` (SSH shells), `tunnel`, `sftp` and `agent`; `tunnel`'s dynamic forwards speak SOCKS
       via `socks`, and its remote forwards route the server's connections
       through `remote_forward`.
     - `sftp_edit` and `editor`: edit in place. A private copy in the app cache

@@ -2,7 +2,7 @@
 //!
 //! The SFTP analogue of [`crate::session`] / [`crate::tunnel`]: an
 //! [`SftpManager`] owns a `HashMap<device_id, SftpConn>` of live connections and
-//! **reuses `session.rs`'s connect + auth + host-key-TOFU path verbatim**, jump
+//! **reuses `ssh`'s connect + auth + host-key-TOFU path verbatim**, jump
 //! host included ([`establish_target`]), diverging only after the handshake —
 //! instead of a PTY/shell (session) or `direct-tcpip` listeners (tunnel), it opens one
 //! `session` channel, requests the `sftp` subsystem, and wraps the channel
@@ -51,11 +51,14 @@ const TRANSFER_CHUNK: usize = 32 * 1024;
 
 use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
-use crate::session::{
-    close_jump, establish_target, AuthCredentials, Endpoint, HostKeyPromptPayload, JumpHop,
-    KeepaliveConfig, PromptRegistry, SessionSink, SessionStatus, SshHandler,
-    DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
+use crate::session_sink::{SessionSink, SessionStatus};
+use crate::ssh::establish::{
+    close_jump, establish_target, DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT,
+    DEFAULT_PROMPT_TIMEOUT,
 };
+use crate::ssh::handler::SshHandler;
+use crate::ssh::params::{AuthCredentials, Endpoint, JumpHop, KeepaliveConfig};
+use crate::ssh::prompts::{HostKeyPromptPayload, PromptRegistry};
 
 /// One directory entry returned to the frontend for the file browser. Non-secret
 /// (a remote path/name and public stat fields only).

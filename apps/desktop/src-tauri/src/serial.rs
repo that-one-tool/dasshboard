@@ -32,7 +32,7 @@ use tokio_serial::SerialPortBuilderExt;
 
 use crate::device::{FlowControl, Parity};
 use crate::error::AppError;
-use crate::session::{SessionSink, SessionStatus};
+use crate::session_sink::{SessionSink, SessionStatus};
 
 /// Bound on the per-session control channel — same rationale as the SSH
 /// session's: keeps it from being unbounded; keyboard-rate input never
@@ -378,7 +378,7 @@ mod tests {
         fn on_status(&self, status: SessionStatus, _message: Option<String>) {
             self.statuses.lock().unwrap().push(status);
         }
-        fn on_host_key_prompt(&self, _payload: crate::session::HostKeyPromptPayload) {
+        fn on_host_key_prompt(&self, _payload: crate::ssh::prompts::HostKeyPromptPayload) {
             unreachable!("serial sessions never prompt for a host key");
         }
     }

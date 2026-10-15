@@ -4,7 +4,7 @@
 //! Like `ssh_it.rs`, these run entirely in-process: a minimal `russh` **server**
 //! that accepts the `sftp` subsystem and serves it from an in-memory filesystem
 //! via `russh_sftp::server`. The real client stack — `SftpManager`, which reuses
-//! `session.rs`'s connect + auth + host-key-TOFU path, then `russh_sftp`'s client
+//! `ssh`'s connect + auth + host-key-TOFU path, then `russh_sftp`'s client
 //! over the channel — is driven end to end: connect, list, upload, download,
 //! mkdir, rename, and remove all round-trip over a real SSH channel with no
 //! Docker and no external SFTP daemon.
@@ -24,8 +24,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as TokioMutex;
 
 use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
-use dasshboard_lib::session::{AuthCredentials, JumpHop, KeepaliveConfig};
 use dasshboard_lib::sftp::{SftpManager, SftpParams, SftpSink};
+use dasshboard_lib::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig};
 
 const TEST_USER: &str = "tester";
 const TEST_PASSWORD: &str = "correct-horse";
@@ -660,7 +660,7 @@ impl SftpSink for NoopSftpSink {
 }
 
 // Bring the payload type into scope for the sink impl above.
-use dasshboard_lib::session::HostKeyPromptPayload;
+use dasshboard_lib::ssh::prompts::HostKeyPromptPayload;
 
 fn manager_with_trust(dir: &std::path::Path, port: u16, fingerprint: &str) -> SftpManager {
     manager_trusting(dir, &[port], fingerprint)

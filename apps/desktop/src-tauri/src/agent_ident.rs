@@ -4,7 +4,7 @@
 //! for `ssh -A` — this module speaks the agent protocol itself, via russh-keys'
 //! `AgentClient`, to answer one question: **which public keys does the local
 //! agent hold?** — and to hand a live connection to the auth path
-//! (`connect_agent_for_auth` → `session.rs` → `authenticate_publickey_with`): the
+//! (`connect_agent_for_auth` → `ssh/establish.rs` → `authenticate_publickey_with`): the
 //! agent owns the token and performs the touch/PIN/PKCS#11 work, so we only ever
 //! see public keys and relayed signatures, never key material.
 //!

@@ -1,6 +1,6 @@
 //! SSH port-forwarding (`ssh -L` / `ssh -D` / `ssh -R`) — the tunnel analogue of `session.rs`
 //! (SPEC tunnels §2). A [`TunnelManager`] owns a `HashMap<TunnelId, TunnelHandle>`,
-//! one `tokio` task per live tunnel, and reuses `session.rs`'s connect + auth +
+//! one `tokio` task per live tunnel, and reuses `ssh`'s connect + auth +
 //! host-key-TOFU path verbatim, jump host included ([`establish_target`]). It
 //! diverges only *after* authentication: instead of requesting a PTY + shell,
 //! it binds a local `TcpListener` for each configured forward and pumps every
@@ -59,12 +59,15 @@ use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
 use crate::relay::{bridge, Pace};
 use crate::remote_forward::RemoteRoutes;
-use crate::session::{
-    close_jump, establish_target, AuthCredentials, Endpoint, HostKeyPromptPayload, JumpHop,
-    KeepaliveConfig, PromptRegistry, SessionSink, SessionStatus, SshHandler,
-    DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
-};
+use crate::session_sink::{SessionSink, SessionStatus};
 use crate::socks;
+use crate::ssh::establish::{
+    close_jump, establish_target, DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT,
+    DEFAULT_PROMPT_TIMEOUT,
+};
+use crate::ssh::handler::SshHandler;
+use crate::ssh::params::{AuthCredentials, Endpoint, JumpHop, KeepaliveConfig};
+use crate::ssh::prompts::{HostKeyPromptPayload, PromptRegistry};
 
 /// Control-channel bound. A tunnel's control channel carries the occasional
 /// user-driven forward add/remove and a final `Stop`; the bound just keeps it

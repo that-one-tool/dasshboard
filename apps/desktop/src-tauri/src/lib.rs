@@ -45,9 +45,13 @@ pub mod known_hosts;
 #[doc(hidden)]
 pub mod session;
 #[doc(hidden)]
+pub mod session_sink;
+#[doc(hidden)]
 pub mod sftp;
 #[doc(hidden)]
 pub mod sftp_edit;
+#[doc(hidden)]
+pub mod ssh;
 #[doc(hidden)]
 pub mod tunnel;
 

@@ -16,8 +16,8 @@ use crate::local_shell::LocalShellParams;
 use crate::output_stream::{Chunk, OutputStream, OutputStreams, MAX_READ, READ_WAIT};
 use crate::serial::SerialParams;
 use crate::session::ConnectParams;
-use crate::session::HostKeyPromptPayload;
-use crate::session::{SessionSink, SessionStatus};
+use crate::session_sink::{SessionSink, SessionStatus};
+use crate::ssh::prompts::HostKeyPromptPayload;
 use crate::state::AppState;
 
 const SESSION_STATUS_EVENT: &str = "session_status";

@@ -115,14 +115,20 @@ files, releasing),
     - `config_watch.rs` — watches the app-config dir and emits `config_changed`
       so a second running instance picks up on-disk changes
     - `secret.rs` — OS keychain access; secrets never touch the JSON stores
-    - `session.rs` — SSH shell sessions via `russh` (the SSH socket has
-      TCP_NODELAY, as in OpenSSH); a disconnect is an
+    - `ssh/` — the SSH connection layer shells, tunnels and SFTP share:
+      `params` (credentials, jump hop, keepalive), `prompts` (host-key prompt
+      registry), `handler` (russh client handler: host-key TOFU, agent
+      forwarding, remote-forward routing; server-opened channels we never
+      asked for are rejected), `establish` (TCP with TCP_NODELAY as in
+      OpenSSH, auth, jump host, overall deadline)
+    - `session_sink.rs` — `SessionSink`/`SessionStatus`, how any terminal
+      session (SSH, serial, local shell) reports to the frontend
+    - `session.rs` — SSH shell sessions via `russh`; a disconnect is an
       out-of-band `watch` stop flag (never queued behind writes a stalled
       server isn't taking, like serial and tunnels), and a shell ends with a
-      bounded channel close + SSH disconnect of the target and jump host;
-      server-opened channels we never asked for are rejected
+      bounded channel close + SSH disconnect of the target and jump host
     - `tunnel.rs` — SSH local (`ssh -L`), dynamic (`ssh -D`) and remote
-      (`ssh -R`) port forwarding; reuses `session.rs`'s connect + auth +
+      (`ssh -R`) port forwarding; reuses `ssh/`'s connect + auth +
       host-key-TOFU path, then binds a local `TcpListener` per forward (added/removed one at a time
       on the live connection; the last one removed ends it) and pumps each connection
       over a `direct-tcpip` channel (to the fixed target, or the one a dynamic
@@ -177,7 +183,7 @@ files, releasing),
       the local agent); `agent_ident.rs` — agent identity listing + agent-backed auth
     - `ssh_config.rs` — import/export devices ↔ `~/.ssh/config`
     - `serial.rs` — serial/COM sessions via `tokio-serial`, reusing
-      `session.rs`'s `SessionSink`/`SessionStatus`; the byte pump is
+      `session_sink.rs`'s `SessionSink`/`SessionStatus`; the byte pump is
       stream-generic so it unit-tests against an in-memory pipe (no COM port)
     - `local_shell.rs` — local PTY shells (PowerShell/bash/zsh) via `portable-pty`,
       reusing the same `SessionSink`/`SessionStatus` seam; bridges the crate's
