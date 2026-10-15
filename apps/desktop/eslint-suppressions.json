@@ -178,14 +178,6 @@
       "count": 2
     }
   },
-  "src/terminal/pane.ts": {
-    "complexity": {
-      "count": 14
-    },
-    "max-lines-per-function": {
-      "count": 2
-    }
-  },
   "src/terminal/paste.ts": {
     "complexity": {
       "count": 1

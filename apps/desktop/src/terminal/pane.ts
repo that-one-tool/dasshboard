@@ -4,19 +4,15 @@
  * keystrokes → `write_stdin`, the session's output (`read_output`, pulled by an
  * `OutputReader`) → `terminal.write`, and
  * a `ResizeObserver` → fit addon → `resize_pty`. Status overlays (connecting
- * spinner; error/disconnected + Retry) react to `session_status` events. Copy
- * on select; paste on Ctrl+Shift+V (Cmd+Shift+V on macOS), right-click, and
- * native paste events (Cmd+V on macOS), all through the multi-line confirm.
+ * spinner; error/disconnected + Retry) react to `session_status` events.
  *
- * This module is deliberately thin glue over the DOM/terminal; the testable
- * decisions (status → overlay) live in `overlay.ts`.
+ * This class is the controller; its parts live in `pane/` (markup, overlay,
+ * device dropdown, clipboard, terminal factory, session ownership) and the
+ * reconnect policy in `reconnectBudget.ts`.
  */
 
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { SearchAddon } from "@xterm/addon-search";
-import { WebLinksAddon } from "@xterm/addon-web-links";
+import type { Terminal } from "@xterm/xterm";
+import type { FitAddon } from "@xterm/addon-fit";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   connect,
@@ -37,45 +33,29 @@ import { overlayForStatus } from "./overlay";
 import { isTerminalReply } from "./terminalReplies";
 import { SerialQueue } from "./inputQueue";
 import { OutputReader } from "./outputReader";
-import {
-  DEFAULT_TERMINAL_SETTINGS,
-  withIconFont,
-  xtermThemeFor,
-} from "./terminalSettings";
-import {
-  MAX_RECONNECT_ATTEMPTS,
-  canReconnect,
-  countKeyringFailure,
-  errorCodeOf,
-  isRetryableFailure,
-  reconnectDelayMs,
-} from "./reconnect";
-import { isMultilinePaste, isPasteShortcut, pasteConfirmMessage, sanitizePaste } from "./paste";
+import { DEFAULT_TERMINAL_SETTINGS } from "./terminalSettings";
+import { errorCodeOf } from "./reconnect";
+import { ReconnectBudget } from "./reconnectBudget";
+import { isPasteShortcut } from "./paste";
 import { linkHandlers } from "./links";
-import {
-  SEARCH_HIGHLIGHT_LIMIT,
-  TerminalSearchBar,
-  findKeyHintKey,
-  isFindShortcut,
-} from "./searchBar";
+import { TerminalSearchBar, isFindShortcut } from "./searchBar";
 import { bufferText, outputFileName } from "./scrollbackText";
+import { paneMarkup, relabelPane } from "./pane/paneTemplate";
+import { PaneOverlay } from "./pane/paneOverlay";
+import { DeviceSelect } from "./pane/deviceSelect";
+import { PaneClipboard } from "./pane/paneClipboard";
+import { SessionSlot } from "./pane/sessionSlot";
+import { applyTerminalOptions, makeTerminal } from "./pane/terminalFactory";
 import { pickTextSavePath } from "../ui/fileDialog";
 import { showToast } from "../ui/toast";
-import { confirm } from "../ui/confirm";
 import { requireEl } from "../ui/dom";
-import { disconnectIcon, fileDownIcon, searchIcon } from "../ui/icons";
 import { t } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { deviceEndpoint } from "../devices/deviceEndpoint";
 
-// Re-exported so callers already importing it from this module keep working;
-// the implementation lives in the device domain (`../devices/deviceEndpoint`).
+// Re-exported so callers already importing them from this module keep working.
 export { deviceEndpoint };
-
-/** Dropdown label for a device: its name plus its endpoint. */
-export function deviceOptionLabel(device: Device): string {
-  return `${device.name} (${deviceEndpoint(device)})`;
-}
+export { deviceOptionLabel } from "./pane/deviceSelect";
 
 export interface TerminalPaneOptions {
   onError?: (message: string) => void;
@@ -117,44 +97,36 @@ const STATUS_LABEL_KEYS: Record<PaneStatus, MessageKey> = {
 };
 
 export class TerminalPane {
-  private root: HTMLElement;
-  private options: TerminalPaneOptions;
+  private readonly root: HTMLElement;
+  private readonly options: TerminalPaneOptions;
   private devices: Device[] = [];
 
   private terminal: Terminal | null = null;
   private fitAddon: FitAddon | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private unlistenStatus: (() => void) | null = null;
-  private searchBar: TerminalSearchBar | null = null;
-  /** A mouse press in the terminal may be selecting: copied on release. */
-  private mouseSelecting = false;
-  /** From the paste shortcut's press to the next key release (or window blur):
-   * WebView2 can still fire a native paste for that press despite the
-   * keydown's preventDefault, and the shortcut has already pasted. */
-  private shortcutPasteHeld = false;
+  private readonly overlay: PaneOverlay;
+  private readonly deviceSelect: DeviceSelect;
+  private readonly searchBar: TerminalSearchBar;
+  private readonly clipboard: PaneClipboard;
   private readonly input = new SerialQueue();
   /** Pulls the current session's output into the terminal. */
   private output: OutputReader | null = null;
   /** The pane's own keys inside the terminal, each with what it does. */
   private readonly terminalKeys: Array<[(e: KeyboardEvent) => boolean, () => void]> = [
     // Ctrl+Shift+V paste (SPEC §7).
-    [isPasteShortcut, () => this.pasteFromShortcut()],
-    [isFindShortcut, () => this.searchBar?.open()],
+    [isPasteShortcut, () => this.clipboard.pasteFromShortcut()],
+    [isFindShortcut, () => this.searchBar.open()],
   ];
 
-  private sessionId: string | null = null;
-  /** The id of a session being opened: status events for it can arrive before
-   * `connect()` returns, so the listener must recognize it already. Cleared
-   * when that session ends (so a late `connect()` return doesn't adopt it). */
-  private pendingSessionId: string | null = null;
+  private readonly session = new SessionSlot();
   private deviceId: string | null = null;
-  private connected = false;
   // Re-entrancy guard: `startSession()` mutates state across an
   // `await connect(...)` that can take seconds (a real SSH handshake). Without
   // this, a double-click on Connect re-enters while the first call is still
-  // suspended, disposing the in-flight terminal, cross-wiring the channel's
-  // `onmessage` into the new one, and orphaning the first call's backend
-  // session (never reachable again). Mirrors `Grid.transitioning`.
+  // suspended, disposing the in-flight terminal, wiring the first session's
+  // output into the new one, and orphaning the first call's backend session
+  // (never reachable again). Mirrors `Grid.transitioning`.
   private connecting = false;
   // While a splitter drag is in progress the grid throttles PTY resizes: the
   // terminal still re-fits visually on every layout change, but `resize_pty` is
@@ -164,38 +136,31 @@ export class TerminalPane {
   // Auto-reconnect (Phase 5). `userInitiated` marks a disconnect the user (or a
   // grid teardown) asked for, so it is NOT treated as an unexpected drop.
   private userInitiated = false;
-  private reconnecting = false;
-  private reconnectAttempts = 0;
-  // Keychain failures in the current reconnect sequence (one retry allowed).
-  private keyringFailures = 0;
-  private reconnectTimer: number | null = null;
+  private readonly reconnect = new ReconnectBudget(() => void this.startSession(true));
   /** Set by `dispose()`: a connect resolving afterwards must close its session. */
   private disposed = false;
-
-  // The thunk that re-renders whatever overlay is currently shown. Set every
-  // time an overlay is displayed so `retranslate()` can rebuild it in the new
-  // language (the overlay's own text goes through `t()` inside the thunk).
-  private overlayRenderer: () => void = () => this.hideOverlay();
   // Kept so `retranslate()` can relabel the header status chip.
   private paneStatus: PaneStatus = "idle";
 
   constructor(root: HTMLElement, options: TerminalPaneOptions = {}) {
     this.root = root;
     this.options = options;
+    root.innerHTML = paneMarkup();
+    this.overlay = new PaneOverlay(root);
+    this.deviceSelect = new DeviceSelect(root, (deviceId) => this.pickDevice(deviceId));
+    this.searchBar = this.makeSearchBar();
+    this.clipboard = this.makeClipboard();
+    this.renderStatus();
+    this.wireButtons();
   }
 
   async init(): Promise<void> {
-    this.renderUI();
     this.unlistenStatus = await onSessionStatus((event) => {
-      if (this.ownsSession(event.sessionId)) {
+      if (this.session.isOwnerOf(event.sessionId)) {
         this.applyStatus(event.status, event.message, event.code);
       }
     });
     await this.refreshDevices();
-  }
-
-  private ownsSession(sessionId: string): boolean {
-    return sessionId === this.sessionId || sessionId === this.pendingSessionId;
   }
 
   /** Reloads the device dropdown (call after devices are added/edited/deleted). */
@@ -204,7 +169,7 @@ export class TerminalPane {
     // transient IPC error would drop every pane's live session.
     const devices = await listDevices().catch(() => null);
     if (devices) this.applyDevices(devices);
-    this.renderDeviceOptions();
+    this.deviceSelect.render(this.devices, this.deviceId);
     this.updateControls();
   }
 
@@ -214,233 +179,91 @@ export class TerminalPane {
     // re-persisted into a profile on the next Save (referential integrity: the
     // backend already nulled it out of profiles.json, and getDeviceId() feeds the
     // profile snapshot). `onChange` lets the dirty-state dot recompute.
-    if (this.assignedDeviceWasDeleted()) {
-      this.deviceId = null;
-      this.abandonSessionForDeletedDevice();
-      this.options.onChange?.();
-    }
+    if (!this.assignedDeviceWasDeleted()) return;
+    this.deviceId = null;
+    this.abandonSessionForDeletedDevice();
+    this.options.onChange?.();
   }
 
-  /** True when this pane's assigned device is no longer in the device list. */
   private assignedDeviceWasDeleted(): boolean {
-    return (
-      !!this.deviceId &&
-      this.deviceId !== "" &&
-      !this.devices.some((d) => d.id === this.deviceId)
-    );
+    return !!this.deviceId && this.assignedDevice() === undefined;
+  }
+
+  private assignedDevice(): Device | undefined {
+    return this.devices.find((d) => d.id === this.deviceId);
   }
 
   /**
    * The device we were connected to / reconnecting toward is gone: abandon any
    * pending auto-reconnect (there's nothing to reconnect to) and force down any
-   * live session rather than merely hiding the overlay — leaving
-   * `connected`/`sessionId` set while showing an idle dot would let the pane lie
-   * about being idle while a real backend session is still open. Ends at the
-   * idle empty-pane state either way.
+   * live session rather than merely hiding the overlay — leaving it open while
+   * showing an idle dot would let the pane lie about being idle while a real
+   * backend session is still open. Ends at the idle empty-pane state either way.
    */
   private abandonSessionForDeletedDevice(): void {
-    this.cancelReconnectTimer();
-    this.reconnecting = false;
-    this.resetReconnectBudget();
-    this.userInitiated = true;
-    if (this.sessionId) void disconnect(this.sessionId);
-    this.connected = false;
-    this.sessionId = null;
+    this.reconnect.reset();
+    this.closeCurrentSession();
     this.stopResizeObserver();
-    this.userInitiated = false;
     this.hideOverlay();
   }
 
-  /** (Re)populates the device `<select>`, preserving the current selection. */
-  private renderDeviceOptions(): void {
-    const select = requireEl<HTMLSelectElement>(this.root, ".pane-device-select");
-    const previous = this.deviceId ?? select.value;
-    select.innerHTML = "";
-    if (this.devices.length === 0) {
-      this.appendEmptyDeviceOption(select);
-      return;
-    }
-    for (const device of this.devices) {
-      this.appendDeviceOption(select, device, previous);
-    }
+  private closeCurrentSession(): void {
+    const sessionId = this.session.dropCurrent();
+    if (sessionId) void disconnect(sessionId);
   }
 
-  /** The disabled placeholder shown when there are no devices to pick from. */
-  private appendEmptyDeviceOption(select: HTMLSelectElement): void {
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = t("pane.noDevices");
-    opt.disabled = true;
-    opt.selected = true;
-    select.appendChild(opt);
-  }
-
-  /** One device option, selected if it matches the prior selection. */
-  private appendDeviceOption(
-    select: HTMLSelectElement,
-    device: Device,
-    previous: string,
-  ): void {
-    const opt = document.createElement("option");
-    opt.value = device.id;
-    opt.textContent = deviceOptionLabel(device);
-    if (device.id === previous) opt.selected = true;
-    select.appendChild(opt);
-  }
-
-  private renderUI(): void {
-    this.root.innerHTML = `
-      <div class="pane">
-        <div class="pane-header">
-          <select class="pane-device-select" aria-label="${t("pane.deviceSelect.aria")}"></select>
-          <button type="button" class="btn btn-icon pane-connect"
-            title="${t("pane.connect")}" aria-label="${t("pane.connect")}">${disconnectIcon}</button>
-          <button type="button" class="btn btn-icon pane-disconnect" hidden
-            title="${t("pane.disconnect")}" aria-label="${t("pane.disconnect")}">${disconnectIcon}</button>
-          <span class="pane-tools">
-            <button type="button" class="btn btn-icon pane-find" disabled
-              title="${t(findKeyHintKey())}" aria-label="${t(findKeyHintKey())}">${searchIcon}</button>
-            <button type="button" class="btn btn-icon pane-save-output" disabled
-              title="${t("pane.saveOutput")}" aria-label="${t("pane.saveOutput")}">${fileDownIcon}</button>
-          </span>
-          <span class="pane-status">
-            <span class="pane-status-dot" aria-hidden="true"></span>
-            <span class="pane-status-label"></span>
-          </span>
-        </div>
-        <div class="pane-body">
-          <div class="pane-terminal"></div>
-          <div class="pane-overlay dialog-hidden" role="status">
-            <div class="overlay-inner">
-              <div class="overlay-spinner" hidden></div>
-              <div class="overlay-title"></div>
-              <div class="overlay-detail"></div>
-              <button type="button" class="btn btn-primary overlay-retry" hidden>
-                ${t("pane.retry")}
-              </button>
-              <button type="button" class="btn btn-secondary overlay-cancel" hidden>
-                ${t("pane.cancel")}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-    this.renderStatus();
-
-    requireEl<HTMLButtonElement>(this.root, ".pane-connect").addEventListener(
-      "click",
-      () => void this.startSession(),
-    );
-    requireEl<HTMLButtonElement>(this.root, ".pane-disconnect").addEventListener(
-      "click",
-      () => void this.disconnectSession(),
-    );
-    requireEl<HTMLButtonElement>(this.root, ".pane-find").addEventListener(
-      "click",
-      () => this.searchBar?.open(),
-    );
-    requireEl<HTMLButtonElement>(this.root, ".pane-save-output").addEventListener(
-      "click",
-      () => void this.saveOutput(),
-    );
-    this.searchBar = new TerminalSearchBar(requireEl<HTMLElement>(this.root, ".pane-body"), {
+  private makeSearchBar(): TerminalSearchBar {
+    return new TerminalSearchBar(requireEl<HTMLElement>(this.root, ".pane-body"), {
       onClose: () => this.terminal?.focus(),
       theme: () => this.currentSettings().theme,
     });
-    requireEl<HTMLButtonElement>(this.root, ".overlay-retry").addEventListener(
-      "click",
-      () => void this.manualRetry(),
-    );
-    requireEl<HTMLButtonElement>(this.root, ".overlay-cancel").addEventListener(
-      "click",
-      () => this.cancelReconnect(),
-    );
-    requireEl<HTMLSelectElement>(this.root, ".pane-device-select").addEventListener(
-      "change",
-      (e) => {
-        const target = e.target;
-        if (target instanceof HTMLSelectElement) {
-          this.deviceId = target.value;
-          this.updateHeaderTooltip();
-          this.options.onChange?.();
-        }
-      },
-    );
-    // Right-click paste (SPEC §7). Attached ONCE here for the pane's lifetime,
-    // not per-session: `.pane-terminal` is a persistent DOM node that survives
-    // reconnects, so attaching this inside `startSession()` would accumulate a
-    // duplicate listener on every Retry/reconnect and fire paste N times.
-    // `pasteFromClipboard()` already self-guards on `this.connected`/`terminal`,
-    // so it is safe to have live before the first connect.
-    const terminalEl = requireEl<HTMLElement>(this.root, ".pane-terminal");
-    terminalEl.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      void this.pasteFromClipboard();
+  }
+
+  private makeClipboard(): PaneClipboard {
+    return new PaneClipboard(requireEl<HTMLElement>(this.root, ".pane-terminal"), {
+      selection: () => this.terminal?.getSelection(),
+      canPaste: () => this.session.isConnected() && this.terminal !== null,
+      paste: (text) => this.terminal?.paste(text),
     });
-    // A native paste (Cmd+V / Edit → Paste on macOS) would reach xterm's own
-    // handler and skip the multi-line confirm; capture it first.
-    terminalEl.addEventListener("paste", (e) => this.onNativePaste(e), true);
-    // Copy on select (SPEC §7) on the mouse release that ends a selection —
-    // not on every selection change, which the find bar's matches also make.
-    // Captured before xterm can stop the press; the release is on `document`,
-    // as a drag may end outside the pane.
-    terminalEl.addEventListener("mousedown", () => (this.mouseSelecting = true), true);
-    document.addEventListener("mouseup", this.onMouseUp);
-    window.addEventListener("keyup", this.endShortcutPaste, true);
-    window.addEventListener("blur", this.endShortcutPaste);
   }
 
-  private readonly endShortcutPaste = (): void => {
-    this.shortcutPasteHeld = false;
-  };
-
-  private pasteFromShortcut(): void {
-    this.shortcutPasteHeld = true;
-    void this.pasteFromClipboard();
+  private wireButtons(): void {
+    const actions: Array<[string, () => void]> = [
+      [".pane-connect", () => void this.startSession()],
+      [".pane-disconnect", () => void this.disconnectSession()],
+      [".pane-find", () => this.searchBar.open()],
+      [".pane-save-output", () => void this.saveOutput()],
+      [".overlay-retry", () => void this.startSession()],
+      [".overlay-cancel", () => this.cancelReconnect()],
+    ];
+    for (const [selector, action] of actions) {
+      requireEl<HTMLButtonElement>(this.root, selector).addEventListener("click", () => action());
+    }
   }
 
-  private readonly onMouseUp = (): void => {
-    if (!this.mouseSelecting) return;
-    this.mouseSelecting = false;
-    // After xterm's own release handling has settled the selection.
-    window.setTimeout(() => this.copySelection(), 0);
-  };
-
-  private copySelection(): void {
-    const selection = this.terminal?.getSelection();
-    if (selection) void writeClipboard(selection);
-  }
-
-  private onNativePaste(e: ClipboardEvent): void {
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    if (this.shortcutPasteHeld) return;
-    void this.pasteText(e.clipboardData?.getData("text/plain") ?? "");
+  private pickDevice(deviceId: string): void {
+    this.deviceId = deviceId;
+    this.showEndpoint();
+    this.options.onChange?.();
   }
 
   private updateControls(): void {
-    const select = requireEl<HTMLSelectElement>(this.root, ".pane-device-select");
+    const busy = this.session.current !== null;
     const connectBtn = requireEl<HTMLButtonElement>(this.root, ".pane-connect");
-    const disconnectBtn = requireEl<HTMLButtonElement>(
-      this.root,
-      ".pane-disconnect",
-    );
-    const busy = this.sessionId !== null;
     connectBtn.hidden = busy;
     connectBtn.disabled = this.devices.length === 0;
-    disconnectBtn.hidden = !busy;
-    select.disabled = this.deviceLocked();
+    requireEl<HTMLButtonElement>(this.root, ".pane-disconnect").hidden = !busy;
+    this.deviceSelect.setLocked(this.deviceLocked());
     // An ended session's terminal stays readable, so these outlive it.
     requireEl<HTMLButtonElement>(this.root, ".pane-find").disabled = !this.terminal;
     requireEl<HTMLButtonElement>(this.root, ".pane-save-output").disabled = !this.terminal;
-    this.updateHeaderTooltip();
+    this.showEndpoint();
   }
 
   /** The device can't change while a session is open or still opening: the
    * pane would end up connected to one device while claiming another. */
   private deviceLocked(): boolean {
-    return this.sessionId !== null || this.pendingSessionId !== null || this.connecting;
+    return this.session.isBusy() || this.connecting;
   }
 
   private setStatus(status: PaneStatus): void {
@@ -463,48 +286,52 @@ export class TerminalPane {
     // field comment for why the async window is dangerous.
     if (this.connecting) return;
     this.connecting = true;
-    // A manual connect supersedes a pending auto-reconnect; left armed, its timer
-    // would start a second session and dispose this one's terminal.
-    if (!fromReconnect) this.stopReconnecting();
-    // One session per pane: close whatever this one replaces.
-    this.releaseSession();
     try {
-      const deviceId = this.resolveConnectDeviceId(fromReconnect);
-      if (!deviceId) return;
-
-      this.claimDevice(deviceId);
-      const terminal = this.createSessionTerminal();
-
-      // Immediate feedback before the backend's own `connecting` event arrives.
-      this.applyStatus("connecting");
-      this.setStatus("connecting");
-
-      await this.establishConnection(deviceId, terminal);
+      await this.connectDevice(this.beginAttempt(fromReconnect));
     } finally {
       this.connecting = false;
       this.updateControls();
     }
   }
 
-  /**
-   * Resolves which device a connect attempt targets. A reconnect must target
-   * the pane's *assigned* device only — never the dropdown's fallback, which
-   * after a device deletion could be some other device sitting at index 0. The
-   * `?? select.value` fallback is only for the initial manual connect (user
-   * picked from the dropdown, no change event yet). Returns `null` and, for a
-   * reconnect with nothing left to reconnect to (device removed), renders the
-   * terminal error overlay instead of hanging.
-   */
-  private resolveConnectDeviceId(fromReconnect: boolean): string | null {
-    const select = requireEl<HTMLSelectElement>(this.root, ".pane-device-select");
-    const deviceId = fromReconnect ? this.deviceId : (this.deviceId ?? select.value);
-    if (deviceId) return deviceId;
-    if (fromReconnect) {
-      this.reconnecting = false;
-      this.resetReconnectBudget();
-      this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus("error", t("pane.overlay.deviceGone"))));
-    }
-    return null;
+  /** Clears the way for a connect attempt; returns the device it targets. */
+  private beginAttempt(fromReconnect: boolean): string | null {
+    // A manual connect supersedes a pending auto-reconnect; left armed, its timer
+    // would start a second session and dispose this one's terminal.
+    if (!fromReconnect) this.reconnect.reset();
+    // One session per pane: close whatever this one replaces.
+    this.releaseSession();
+    return fromReconnect ? this.reconnectDeviceId() : this.pickedDeviceId();
+  }
+
+  /** The initial manual connect may use the dropdown's own choice (user
+   * picked from the dropdown, no change event yet). */
+  private pickedDeviceId(): string | null {
+    return this.deviceId ?? this.deviceSelect.value();
+  }
+
+  /** A reconnect must target the pane's *assigned* device only — never the
+   * dropdown's fallback, which after a device deletion could be some other
+   * device sitting at index 0. With nothing left to reconnect to, it says so
+   * instead of hanging. */
+  private reconnectDeviceId(): string | null {
+    if (!this.deviceId) this.showDeviceGone();
+    return this.deviceId;
+  }
+
+  private showDeviceGone(): void {
+    this.reconnect.reset();
+    this.overlay.show(() => overlayForStatus("error", t("pane.overlay.deviceGone")));
+  }
+
+  private async connectDevice(deviceId: string | null): Promise<void> {
+    if (!deviceId) return;
+    this.claimDevice(deviceId);
+    const terminal = this.createSessionTerminal();
+    // Immediate feedback before the backend's own `connecting` event arrives.
+    this.applyStatus("connecting");
+    this.setStatus("connecting");
+    await this.establishConnection(deviceId, terminal);
   }
 
   /** Records the target device as this pane's assignment and clears drop state. */
@@ -518,57 +345,43 @@ export class TerminalPane {
     if (deviceChanged) this.options.onChange?.();
   }
 
-  /** Builds a fresh xterm.js terminal for a new connection attempt. */
+  /** Builds a fresh xterm.js terminal for a new connection attempt (no stale
+   * scrollback from a prior session). */
   private createSessionTerminal(): Terminal {
-    // Fresh terminal per connection (no stale scrollback from a prior session).
     this.teardownTerminal();
-    const settings = this.currentSettings();
     const terminalEl = requireEl<HTMLElement>(this.root, ".pane-terminal");
     const links = linkHandlers(terminalEl, openUrl, (message) => this.options.onError?.(message));
-    const terminal = new Terminal({
-      cursorBlink: true,
-      fontFamily: withIconFont(settings.fontFamily),
-      fontSize: settings.fontSize,
-      scrollback: settings.scrollback,
-      theme: xtermThemeFor(settings.theme),
-      // Required to access `terminal.unicode` and load the Unicode 11 addon.
-      allowProposedApi: true,
-      linkHandler: links,
-    });
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    // Unicode 11 width table: measure CJK, emoji, and combining marks at the
-    // correct cell width so wide glyphs don't misalign the cursor (xterm.js
-    // defaults to the older Unicode 6 table).
-    terminal.loadAddon(new Unicode11Addon());
-    terminal.unicode.activeVersion = "11";
-    terminal.loadAddon(new WebLinksAddon(links.activate, links));
-    const searchAddon = new SearchAddon({ highlightLimit: SEARCH_HIGHLIGHT_LIMIT });
-    terminal.loadAddon(searchAddon);
-    terminal.open(terminalEl);
-    fitAddon.fit();
-
-    terminal.onData((data) => {
-      if (this.connected && this.sessionId) {
-        this.write(this.sessionId, data);
-        // Let the grid mirror what the user typed into other panes (broadcast
-        // mode) — never the terminal's own query replies or mouse reports.
-        if (!isTerminalReply(data)) this.options.onInput?.(data);
-      }
-    });
-    // Mouse reports that aren't UTF-8 (the legacy encoding): never mirrored.
-    terminal.onBinary((data) => {
-      const sessionId = this.sessionId;
-      if (this.connected && sessionId) this.input.push(() => writeStdinBinary(sessionId, data));
-    });
-    terminal.attachCustomKeyEventHandler((e) => this.onTerminalKey(e));
-    // (Right-click paste is wired once in renderUI(), not here — see comment
-    // there; attaching it per-session leaked a listener on every reconnect.)
-
+    const { terminal, fitAddon, searchAddon } = makeTerminal(terminalEl, this.currentSettings(), links);
+    this.wireTerminalInput(terminal);
     this.terminal = terminal;
     this.fitAddon = fitAddon;
-    this.searchBar?.attach(searchAddon);
+    this.searchBar.attach(searchAddon);
     return terminal;
+  }
+
+  private wireTerminalInput(terminal: Terminal): void {
+    terminal.onData((data) => this.onTypedData(data));
+    // Mouse reports that aren't UTF-8 (the legacy encoding): never mirrored.
+    terminal.onBinary((data) => this.onTypedBinary(data));
+    terminal.attachCustomKeyEventHandler((e) => this.onTerminalKey(e));
+  }
+
+  private onTypedData(data: string): void {
+    const sessionId = this.session.writableId();
+    if (!sessionId) return;
+    this.write(sessionId, data);
+    this.mirrorInput(data);
+  }
+
+  /** Lets the grid mirror what the user typed into other panes (broadcast
+   * mode) — never the terminal's own query replies or mouse reports. */
+  private mirrorInput(data: string): void {
+    if (!isTerminalReply(data)) this.options.onInput?.(data);
+  }
+
+  private onTypedBinary(data: string): void {
+    const sessionId = this.session.writableId();
+    if (sessionId) this.input.push(() => writeStdinBinary(sessionId, data));
   }
 
   private currentSettings(): TerminalSettings {
@@ -592,7 +405,10 @@ export class TerminalPane {
     if (!this.terminal) return;
     const text = bufferText(this.terminal.buffer.normal);
     const path = await pickTextSavePath(outputFileName(this.assignedDeviceName(), new Date()));
-    if (!path) return;
+    if (path) await this.writeOutputFile(path, text);
+  }
+
+  private async writeOutputFile(path: string, text: string): Promise<void> {
     try {
       await saveTextFile(path, text);
       showToast(t("pane.saveOutput.saved", { path }), "success");
@@ -602,25 +418,28 @@ export class TerminalPane {
   }
 
   private assignedDeviceName(): string {
-    return this.devices.find((d) => d.id === this.deviceId)?.name ?? "";
+    return this.assignedDevice()?.name ?? "";
   }
 
-  /** Opens the backend session and wires the data channel into the terminal. */
+  /** Opens the backend session and wires its output into the terminal. */
   private async establishConnection(deviceId: string, terminal: Terminal): Promise<void> {
     const sessionId = crypto.randomUUID();
-    this.pendingSessionId = sessionId;
+    this.session.open(sessionId);
     try {
       await connect(sessionId, deviceId, terminal.cols, terminal.rows);
       this.readOutputInto(sessionId, terminal);
       this.adoptSession(sessionId);
     } catch (err) {
-      // Released (cancelled / replaced) while opening: nothing left to report.
-      if (this.pendingSessionId !== sessionId) return;
-      this.pendingSessionId = null;
-      const message = err instanceof Error ? err.message : errorMessage(err);
-      this.applyStatus("error", message, errorCodeOf(err));
-      this.options.onError?.(message);
+      this.onConnectFailed(sessionId, err);
     }
+  }
+
+  private onConnectFailed(sessionId: string, err: unknown): void {
+    // Released (cancelled / replaced) while opening: nothing left to report.
+    if (!this.session.failOpen(sessionId)) return;
+    const message = errorMessage(err);
+    this.applyStatus("error", message, errorCodeOf(err));
+    this.options.onError?.(message);
   }
 
   /** Pull the session's output into `terminal` until it ends or the terminal
@@ -647,37 +466,34 @@ export class TerminalPane {
    * status beat the command's return), in which case close it (a no-op for a
    * session that already ended). */
   private adoptSession(sessionId: string): void {
-    if (this.disposed || this.pendingSessionId !== sessionId) {
+    if (this.disposed || !this.session.adopt(sessionId)) {
       void disconnect(sessionId);
       return;
     }
-    this.pendingSessionId = null;
-    this.sessionId = sessionId;
     this.updateControls();
     this.observeResize();
   }
 
   private observeResize(): void {
-    const terminalEl = requireEl<HTMLElement>(this.root, ".pane-terminal");
-    this.resizeObserver = new ResizeObserver(() => {
-      if (!this.fitAddon || !this.terminal) return;
-      this.fitAddon.fit();
-      if (!this.resizeThrottled && this.connected && this.sessionId) {
-        void resizePty(this.sessionId, this.terminal.cols, this.terminal.rows);
-      }
-    });
-    this.resizeObserver.observe(terminalEl);
+    this.resizeObserver = new ResizeObserver(() => this.onResize());
+    this.resizeObserver.observe(requireEl<HTMLElement>(this.root, ".pane-terminal"));
+  }
+
+  private onResize(): void {
+    this.fitAddon?.fit();
+    if (!this.resizeThrottled) this.pushSize(this.session.writableId());
+  }
+
+  private pushSize(sessionId: string | null): void {
+    if (sessionId && this.terminal) void resizePty(sessionId, this.terminal.cols, this.terminal.rows);
   }
 
   private async disconnectSession(): Promise<void> {
     // A user-requested disconnect is expected — don't auto-reconnect from it.
     this.userInitiated = true;
-    this.cancelReconnectTimer();
-    this.reconnecting = false;
-    this.resetReconnectBudget();
-    if (this.sessionId) {
-      await disconnect(this.sessionId);
-    }
+    this.reconnect.reset();
+    const sessionId = this.session.current;
+    if (sessionId) await disconnect(sessionId);
   }
 
   private applyStatus(status: SessionStatus, message?: string, code?: ErrorCode): void {
@@ -695,26 +511,21 @@ export class TerminalPane {
   /** During an auto-reconnect the connecting frame keeps the reconnect context
    * (attempt N of M + Cancel) rather than a bare "Connecting…". */
   private applyConnectingStatus(status: SessionStatus, message?: string): void {
-    if (this.reconnecting) {
-      this.setOverlayRenderer(() => this.renderReconnectOverlay());
-    } else {
-      this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus(status, message)));
-    }
+    if (this.reconnect.isInProgress()) this.showReconnectOverlay();
+    else this.overlay.show(() => overlayForStatus(status, message));
   }
 
   private applyConnectedStatus(status: SessionStatus, message?: string): void {
-    this.connected = true;
+    this.session.markConnected();
     // A successful connect ends any reconnect sequence. Clear `userInitiated`
     // (a cancel-then-connect must not suppress reconnecting a *future* drop).
-    this.reconnecting = false;
-    this.resetReconnectBudget();
+    this.reconnect.reset();
     this.userInitiated = false;
-    this.cancelReconnectTimer();
     this.terminal?.focus();
     // The backend drops resizes sent while connecting, so a layout change since
     // the PTY was requested (e.g. the startup layout settling) must be pushed now.
     this.syncSize();
-    this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus(status, message)));
+    this.overlay.show(() => overlayForStatus(status, message));
   }
 
   /** disconnected | error: the session is over. Stop forwarding input and free
@@ -722,64 +533,46 @@ export class TerminalPane {
    * Schedules a backoff reconnect instead of the normal error overlay when the
    * drop was unexpected and the device opted into auto-reconnect. */
   private applyTerminatedStatus(status: SessionStatus, message?: string, code?: ErrorCode): void {
-    const unexpected = this.isUnexpectedDrop(status, code);
-    this.connected = false;
-    this.sessionId = null;
-    this.pendingSessionId = null;
+    const reconnecting = this.scheduleReconnect(status, code);
+    this.session.end();
     this.stopResizeObserver();
     this.updateControls();
     this.userInitiated = false;
-
-    if (unexpected && canReconnect(this.deviceAutoReconnect(), this.reconnectAttempts)) {
-      this.scheduleReconnect();
+    if (reconnecting) {
+      this.showReconnectOverlay();
       return;
     }
-
-    this.reconnecting = false;
-    this.resetReconnectBudget();
-    this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus(status, message)));
+    this.overlay.show(() => overlayForStatus(status, message));
   }
 
-  /** Whether a session end should start (or continue) an auto-reconnect.
-   * Neither a drop the user asked for nor a shell they exited is unexpected,
-   * and a failure a retry would only repeat (wrong password, rejected host
-   * key) is final: retrying would re-prompt and risk a lockout. */
-  private isUnexpectedDrop(status: SessionStatus, code?: ErrorCode): boolean {
-    if (this.userInitiated || status === "exited") return false;
-    this.keyringFailures = countKeyringFailure(code, this.keyringFailures);
-    return isRetryableFailure(code, this.keyringFailures);
-  }
-
-  /** A new reconnect sequence starts from a full budget. */
-  private resetReconnectBudget(): void {
-    this.reconnectAttempts = 0;
-    this.keyringFailures = 0;
+  /** Neither a drop the user asked for nor a shell they exited is unexpected;
+   * the budget turns down a failure a retry would only repeat (wrong
+   * password, rejected host key: retrying would re-prompt and risk a lockout). */
+  private scheduleReconnect(status: SessionStatus, code?: ErrorCode): boolean {
+    if (this.userInitiated || status === "exited") {
+      this.reconnect.reset();
+      return false;
+    }
+    return this.reconnect.schedule(this.deviceAutoReconnect(), code);
   }
 
   /** Whether this pane's assigned device opted into auto-reconnect (Phase 5). */
   private deviceAutoReconnect(): boolean {
-    return this.devices.find((d) => d.id === this.deviceId)?.autoReconnect ?? false;
+    return this.assignedDevice()?.autoReconnect ?? false;
   }
 
-  /** Schedule the next backoff reconnect attempt (Phase 5). */
-  private scheduleReconnect(): void {
-    this.reconnecting = true;
-    this.reconnectAttempts += 1;
-    this.setOverlayRenderer(() => this.renderReconnectOverlay());
-    this.cancelReconnectTimer();
-    this.reconnectTimer = window.setTimeout(() => {
-      this.reconnectTimer = null;
-      void this.startSession(true);
-    }, reconnectDelayMs(this.reconnectAttempts));
+  private showReconnectOverlay(): void {
+    this.setStatus("connecting");
+    this.overlay.showReconnecting(this.reconnect.attempts);
   }
 
   /** Cancel a pending/active auto-reconnect — closing an attempt that is
    * already opening — and show a manual-retry overlay. */
   private cancelReconnect(): void {
-    this.stopReconnecting();
+    this.reconnect.reset();
     this.releaseSession();
     this.setStatus("disconnected");
-    this.setOverlayRenderer(() => this.renderOverlay(overlayForStatus("disconnected", t("pane.overlay.reconnectCancelled"))));
+    this.overlay.show(() => overlayForStatus("disconnected", t("pane.overlay.reconnectCancelled")));
   }
 
   /**
@@ -789,82 +582,16 @@ export class TerminalPane {
    * ended (or one not spawned yet — `adoptSession` closes that one later).
    */
   private releaseSession(): void {
-    const ids = [this.sessionId, this.pendingSessionId];
-    this.sessionId = null;
-    this.pendingSessionId = null;
-    this.connected = false;
+    const ids = this.session.release();
     this.stopResizeObserver();
-    for (const id of ids) if (id) void disconnect(id);
+    for (const id of ids) void disconnect(id);
     this.updateControls();
-  }
-
-  private cancelReconnectTimer(): void {
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-  }
-
-  /** Manual Retry: reset the reconnect budget and connect fresh. */
-  private async manualRetry(): Promise<void> {
-    await this.startSession();
-  }
-
-  /** End any auto-reconnect sequence (pending timer + attempt budget). */
-  private stopReconnecting(): void {
-    this.cancelReconnectTimer();
-    this.reconnecting = false;
-    this.resetReconnectBudget();
-  }
-
-  /** The six overlay nodes both overlay-rendering paths manipulate. */
-  private overlayEls(): {
-    overlay: HTMLElement;
-    spinner: HTMLElement;
-    title: HTMLElement;
-    detail: HTMLElement;
-    retry: HTMLButtonElement;
-    cancel: HTMLButtonElement;
-  } {
-    return {
-      overlay: requireEl<HTMLElement>(this.root, ".pane-overlay"),
-      spinner: requireEl<HTMLElement>(this.root, ".overlay-spinner"),
-      title: requireEl<HTMLElement>(this.root, ".overlay-title"),
-      detail: requireEl<HTMLElement>(this.root, ".overlay-detail"),
-      retry: requireEl<HTMLButtonElement>(this.root, ".overlay-retry"),
-      cancel: requireEl<HTMLButtonElement>(this.root, ".overlay-cancel"),
-    };
-  }
-
-  private renderReconnectOverlay(): void {
-    this.setStatus("connecting");
-    const { overlay, spinner, title, detail, retry, cancel } = this.overlayEls();
-
-    overlay.classList.remove("dialog-hidden");
-    overlay.classList.remove("overlay-error");
-    spinner.hidden = false;
-    title.textContent = t("pane.overlay.reconnecting");
-    detail.textContent = t("pane.overlay.attempt", { n: this.reconnectAttempts, max: MAX_RECONNECT_ATTEMPTS });
-    retry.hidden = true;
-    cancel.hidden = false;
   }
 
   /** Hide the overlay entirely (return the pane to its idle empty state). */
   private hideOverlay(): void {
-    this.overlayRenderer = () => this.hideOverlay();
-    const overlay = this.root.querySelector<HTMLElement>(".pane-overlay");
-    overlay?.classList.add("dialog-hidden");
+    this.overlay.hide();
     this.setStatus("idle");
-  }
-
-  /**
-   * Records the thunk that reproduces the currently-shown overlay and runs it.
-   * Because the thunk calls `t()` when invoked, `retranslate()` can re-render
-   * the same overlay in a newly-selected language.
-   */
-  private setOverlayRenderer(render: () => void): void {
-    this.overlayRenderer = render;
-    render();
   }
 
   /**
@@ -874,37 +601,11 @@ export class TerminalPane {
    * whatever overlay is currently displayed. The terminal itself is untouched.
    */
   retranslate(): void {
-    // Icon buttons: relabel the tooltip + accessible name, never the content.
-    const connect = this.root.querySelector<HTMLButtonElement>(".pane-connect");
-    if (connect) setIconLabel(connect, t("pane.connect"));
-    const disconnect = this.root.querySelector<HTMLButtonElement>(".pane-disconnect");
-    if (disconnect) setIconLabel(disconnect, t("pane.disconnect"));
-    const find = this.root.querySelector<HTMLButtonElement>(".pane-find");
-    if (find) setIconLabel(find, t(findKeyHintKey()));
-    const saveOutput = this.root.querySelector<HTMLButtonElement>(".pane-save-output");
-    if (saveOutput) setIconLabel(saveOutput, t("pane.saveOutput"));
-    this.searchBar?.retranslate();
-    const retry = this.root.querySelector<HTMLButtonElement>(".overlay-retry");
-    if (retry) retry.textContent = t("pane.retry");
-    const cancel = this.root.querySelector<HTMLButtonElement>(".overlay-cancel");
-    if (cancel) cancel.textContent = t("pane.cancel");
-    const select = this.root.querySelector<HTMLSelectElement>(".pane-device-select");
-    select?.setAttribute("aria-label", t("pane.deviceSelect.aria"));
-    this.renderDeviceOptions();
+    relabelPane(this.root);
+    this.searchBar.retranslate();
+    this.deviceSelect.render(this.devices, this.deviceId);
     this.renderStatus();
-    this.overlayRenderer();
-  }
-
-  private renderOverlay(state: ReturnType<typeof overlayForStatus>): void {
-    const { overlay, spinner, title, detail, retry, cancel } = this.overlayEls();
-
-    overlay.classList.toggle("dialog-hidden", !state.visible);
-    overlay.classList.toggle("overlay-error", state.variant === "error");
-    spinner.hidden = !state.showSpinner;
-    title.textContent = state.title;
-    detail.textContent = state.detail;
-    retry.hidden = !state.showRetry;
-    cancel.hidden = true;
+    this.overlay.retranslate();
   }
 
   /** Moves keyboard focus into this pane's terminal (no-op if none yet). */
@@ -918,7 +619,7 @@ export class TerminalPane {
    * confirmation (SPEC §7).
    */
   hasLiveSession(): boolean {
-    return this.sessionId !== null || this.connecting;
+    return this.session.current !== null || this.connecting;
   }
 
   /** Whether the status chip reads "connected" (what the side menu counts). */
@@ -931,19 +632,18 @@ export class TerminalPane {
    * connecting). The grid uses it to decide which panes broadcast input reaches.
    */
   isConnected(): boolean {
-    return this.connected && this.sessionId !== null;
+    return this.session.isConnected();
   }
 
   /**
    * Write input to this pane's live session — the receiving end of the grid's
-   * broadcast fan-out. Self-guards on `connected`/`sessionId`, so it is a no-op
-   * for an idle, connecting, or errored pane. Deliberately does NOT go through
-   * `terminal.onData`, so a broadcast never re-triggers `onInput` (no loop).
+   * broadcast fan-out. A no-op for an idle, connecting, or errored pane.
+   * Deliberately does NOT go through `terminal.onData`, so a broadcast never
+   * re-triggers `onInput` (no loop).
    */
   sendInput(data: string): void {
-    if (this.connected && this.sessionId) {
-      this.write(this.sessionId, data);
-    }
+    const sessionId = this.session.writableId();
+    if (sessionId) this.write(sessionId, data);
   }
 
   private write(sessionId: string, data: string): void {
@@ -967,9 +667,8 @@ export class TerminalPane {
    */
   assignDevice(deviceId: string | null): void {
     this.deviceId = deviceId;
-    const select = this.root.querySelector<HTMLSelectElement>(".pane-device-select");
-    if (select) select.value = deviceId ?? "";
-    this.updateHeaderTooltip();
+    this.deviceSelect.select(deviceId);
+    this.showEndpoint();
   }
 
   /**
@@ -994,24 +693,15 @@ export class TerminalPane {
    * to the PTY since a font change alters the cols/rows that fit.
    */
   applyTerminalSettings(settings: TerminalSettings): void {
-    const terminal = this.terminal;
-    if (!terminal) return;
-    terminal.options.fontSize = settings.fontSize;
-    terminal.options.fontFamily = withIconFont(settings.fontFamily);
-    terminal.options.scrollback = settings.scrollback;
-    terminal.options.theme = xtermThemeFor(settings.theme);
+    if (!this.terminal) return;
+    applyTerminalOptions(this.terminal, settings);
     this.syncSize();
   }
 
   /** Fits and, if connected, pushes the resulting size to the backend PTY. */
   syncSize(): void {
-    if (!this.fitAddon || !this.terminal) return;
-    this.fitAddon.fit();
-    // `connected` can arrive before `connect()` returns: the session is still pending.
-    const sessionId = this.sessionId ?? this.pendingSessionId;
-    if (this.connected && sessionId) {
-      void resizePty(sessionId, this.terminal.cols, this.terminal.rows);
-    }
+    this.fitAddon?.fit();
+    this.pushSize(this.session.resizableId());
   }
 
   /**
@@ -1023,34 +713,8 @@ export class TerminalPane {
     this.resizeThrottled = throttled;
   }
 
-  private async pasteFromClipboard(): Promise<void> {
-    if (!this.connected || !this.terminal) return;
-    await this.pasteText(await readClipboard());
-  }
-
-  private async pasteText(clipboardText: string): Promise<void> {
-    const text = sanitizePaste(clipboardText);
-    if (!text || !this.connected || !this.terminal) return;
-    // Multi-line paste can run several commands at once — confirm first (Phase 5).
-    if (isMultilinePaste(text)) {
-      const ok = await confirm(pasteConfirmMessage(text), {
-        title: t("pane.paste.title"),
-        confirmLabel: t("pane.paste.confirm"),
-      });
-      if (!ok) return;
-    }
-    // `connected`/`terminal` may have changed while the dialog was open.
-    if (this.connected && this.terminal) this.terminal.paste(text);
-  }
-
-  /** Show the assigned device's endpoint as a tooltip on the pane header
-   * (`host:port` for SSH, `portName @ baudRate` for serial). */
-  private updateHeaderTooltip(): void {
-    const header = this.root.querySelector<HTMLElement>(".pane-header");
-    if (!header) return;
-    const device = this.devices.find((d) => d.id === this.deviceId);
-    if (device) header.title = deviceEndpoint(device);
-    else header.removeAttribute("title");
+  private showEndpoint(): void {
+    this.deviceSelect.showEndpoint(this.assignedDevice());
   }
 
   private stopResizeObserver(): void {
@@ -1062,7 +726,7 @@ export class TerminalPane {
     this.output?.stop();
     this.output = null;
     this.stopResizeObserver();
-    this.searchBar?.attach(null);
+    this.searchBar.attach(null);
     this.terminal?.dispose();
     this.terminal = null;
     this.fitAddon = null;
@@ -1079,49 +743,18 @@ export class TerminalPane {
     // after this pane is gone (would leak a session / touch a dead DOM).
     this.userInitiated = true;
     this.disposed = true;
-    this.cancelReconnectTimer();
-    this.reconnecting = false;
+    this.reconnect.reset();
     this.unlistenStatus?.();
     this.unlistenStatus = null;
-    document.removeEventListener("mouseup", this.onMouseUp);
-    window.removeEventListener("keyup", this.endShortcutPaste, true);
-    window.removeEventListener("blur", this.endShortcutPaste);
-    if (this.sessionId) {
-      void disconnect(this.sessionId);
-      this.sessionId = null;
-    }
+    this.clipboard.dispose();
+    this.closeCurrentSession();
     this.teardownTerminal();
     this.paneStatus = "idle";
     this.options.onStatusChange?.();
   }
 }
 
-async function writeClipboard(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    /* clipboard unavailable — ignore (copy-on-select is best effort) */
-  }
-}
-
-async function readClipboard(): Promise<string> {
-  try {
-    return await navigator.clipboard.readText();
-  } catch {
-    return "";
-  }
-}
-
 function errorMessage(err: unknown): string {
-  if (err && typeof err === "object" && "message" in err) {
-    const m = (err as { message: unknown }).message;
-    if (typeof m === "string") return m;
-  }
-  return String(err);
-}
-
-/** Sets an icon-only button's tooltip and accessible name together. */
-function setIconLabel(button: HTMLButtonElement, label: string): void {
-  button.title = label;
-  button.setAttribute("aria-label", label);
+  const message = (err as { message?: unknown } | null | undefined)?.message;
+  return typeof message === "string" ? message : String(err);
 }

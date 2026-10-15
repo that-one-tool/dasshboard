@@ -1,7 +1,7 @@
 /**
  * Pure auto-reconnect policy (Phase 5): the backoff schedule and the decision
  * of whether another attempt is allowed. No timers, no DOM — unit-tested in
- * `reconnect.test.ts`; the `TerminalPane` drives the actual timers.
+ * `reconnect.test.ts`; `ReconnectBudget` drives the actual timers.
  *
  * SPEC/PLAN Phase 5: on an unexpected drop, retry with backoff (2s / 4s / 8s),
  * max 5 attempts, with a cancel control in the overlay.

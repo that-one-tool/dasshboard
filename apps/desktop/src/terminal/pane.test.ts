@@ -1011,6 +1011,61 @@ describe("TerminalPane PTY size on connect", () => {
   });
 });
 
+describe("TerminalPane layout resizes", () => {
+  let onResize: (() => void) | null;
+
+  beforeEach(() => {
+    onResize = null;
+    h.statusHandler = null;
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    document.body.innerHTML = '<div id="pane-root"></div>';
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: () => void) {
+          onResize = callback;
+        }
+        observe(): void {}
+        disconnect(): void {}
+      },
+    );
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function connectedPane(): Promise<TerminalPane> {
+    const pane = new TerminalPane(q<HTMLElement>(document, "#pane-root"));
+    await pane.init();
+    pane.assignDevice(h.device.id);
+    await (pane as unknown as { startSession(): Promise<void> }).startSession();
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    vi.mocked(resizePty).mockClear();
+    expect(onResize).not.toBeNull();
+    return pane;
+  }
+
+  it("pushes a layout change to the PTY", async () => {
+    await connectedPane();
+    onResize?.();
+    expect(resizePty).toHaveBeenCalledWith(h.sessionId, expect.any(Number), expect.any(Number));
+  });
+
+  it("holds the PTY size back while throttled", async () => {
+    const pane = await connectedPane();
+    pane.setResizeThrottled(true);
+    onResize?.();
+    expect(resizePty).not.toHaveBeenCalled();
+  });
+
+  it("stops pushing once the session ended", async () => {
+    await connectedPane();
+    const callback = onResize;
+    h.statusHandler?.({ sessionId: h.sessionId, status: "disconnected" });
+    callback?.();
+    expect(resizePty).not.toHaveBeenCalled();
+  });
+});
+
 describe("TerminalPane wide-character support", () => {
   const start = (pane: TerminalPane) =>
     (pane as unknown as { startSession(): Promise<void> }).startSession();

@@ -42,7 +42,11 @@ files, releasing),
 
 - `src/` — frontend (TypeScript, no framework):
     - `grid.ts` / `gridModel.ts` — multi-pane grid layout
-    - `terminal/` — pane, overlay, reconnect, paste, host-key dialog, terminal
+    - `terminal/` — pane (controller; its parts in `terminal/pane/`: markup,
+      overlay view, device dropdown, clipboard, xterm factory, DOM-free
+      `sessionSlot` owning the open/opening session), overlay, reconnect
+      (`reconnectBudget`: one backoff sequence, shared with the Tunnels
+      panel's per-device retries), paste, host-key dialog, terminal
       settings, `terminalReplies` (keeps xterm's own query replies / mouse
       reports out of broadcast input), `inputQueue` (a pane's `write_stdin`
       calls one at a time, so keys arrive in order), `outputReader` (pulls a
