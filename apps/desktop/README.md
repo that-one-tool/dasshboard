@@ -20,7 +20,8 @@ You don't need a system NASM install: `aws-lc-rs` uses its `prebuilt-nasm` featu
 npm ci
 npm run tauri dev     # full app with hot-reload
 npm run dev           # Vite frontend only, without the backend
-npm run check         # the gate: tsc, Vitest, cargo fmt --check, cargo test, clippy -D warnings
+npm run check         # the gate: tsc, ESLint, Vitest + coverage, cargo fmt --check, cargo test, clippy -D warnings
+npm run coverage      # Vitest with coverage (HTML report in coverage/)
 npm run tauri build   # installers in src-tauri/target/release/bundle/ (NSIS + MSI, .app + dmg, or deb + rpm)
 ```
 
@@ -68,6 +69,11 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands.rs  ──�
   you don't need Docker or an SSH daemon.
 - The serial byte pump is tested against an in-memory pipe, so you don't need a
   COM port. Local-shell tests spawn a real `cmd.exe` or `/bin/sh`.
+- **Ratchets**: ESLint caps functions at complexity 3 and 20 lines; older
+  violations are frozen in `eslint-suppressions.json` (shrink it with
+  `npx eslint . --prune-suppressions` after a fix). Clippy's limits live in
+  `src-tauri/clippy.toml`, and the coverage floor in `vite.config.ts`: lower
+  the limits and raise the floor as code improves, never the reverse.
 
 ## Adding things
 

@@ -1,6 +1,7 @@
 name: check
 
-# Reusable check gate: TypeScript typecheck, the Vitest suite, cargo fmt --check,
+# Reusable check gate: TypeScript typecheck, ESLint, the Vitest suite with its
+# coverage floor, cargo fmt --check,
 # cargo test (with a job-summary report), and clippy (-D warnings). Mirrors
 # `npm run check` (still the local gate), split into steps so each suite reports
 # its own status and the Rust results get a summary card alongside Vitest's.
@@ -95,10 +96,13 @@ jobs:
             - name: typecheck (tsc)
               run: npx tsc --noEmit
 
+            - name: lint (ESLint)
+              run: npx eslint .
+
             # Vitest auto-enables its GitHub Actions reporter in CI, which writes
             # the "Vitest Test Report" card to the job summary.
-            - name: frontend tests (Vitest)
-              run: npx vitest run
+            - name: frontend tests (Vitest + coverage)
+              run: npx vitest run --coverage
 
             - name: rustfmt --check
               working-directory: apps/desktop/src-tauri

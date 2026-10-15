@@ -1379,7 +1379,6 @@ export class SftpPanel {
   private async freshLocalName(path: string): Promise<string> {
     if (!(await sftpLocalExists(path))) return path;
     let i = 2;
-    // eslint-disable-next-line no-constant-condition
     for (;;) {
       const candidate = `${path} (${i})`;
       if (!(await sftpLocalExists(candidate))) return candidate;

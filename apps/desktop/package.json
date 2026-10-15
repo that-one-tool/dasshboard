@@ -15,7 +15,9 @@
 		"preview": "vite preview",
 		"tauri": "tauri",
 		"test": "vitest run",
-		"check": "tsc --noEmit && vitest run && cd src-tauri && cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings"
+		"coverage": "vitest run --coverage",
+		"lint": "eslint .",
+		"check": "tsc --noEmit && eslint . && vitest run --coverage && cd src-tauri && cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings"
 	},
 	"dependencies": {
 		"@tauri-apps/api": "2.11.1",
@@ -28,9 +30,13 @@
 		"@xterm/xterm": "6.0.0"
 	},
 	"devDependencies": {
+		"@eslint/js": "10.0.1",
 		"@tauri-apps/cli": "2.11.5",
+		"@vitest/coverage-v8": "4.1.10",
+		"eslint": "10.12.0",
 		"happy-dom": "20.11.0",
 		"typescript": "5.6.3",
+		"typescript-eslint": "8.71.2",
 		"vite": "6.4.3",
 		"vitest": "4.1.10"
 	}

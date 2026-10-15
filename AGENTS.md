@@ -239,9 +239,11 @@ From the repo root (each delegates to the app's own `package.json`; inside
 npm run dev          # vite dev server only
 npm run tauri dev    # full app, hot-reload
 npm run check        # the full gate — run before considering any task done:
-                      # tsc --noEmit && vitest run && cargo fmt --check &&
-                      # cargo test && cargo clippy --all-targets -- -D warnings
+                      # tsc --noEmit && eslint . && vitest run --coverage &&
+                      # cargo fmt --check && cargo test &&
+                      # cargo clippy --all-targets -- -D warnings
 npm test             # vitest only
+npm run coverage     # vitest with coverage (floor in vite.config.ts)
 npm run site:dev     # website dev server (http://localhost:4321/dasshboard/)
 npm run site:check   # website gate: astro check && vitest run && astro build
 npm run check:all    # both gates
@@ -260,6 +262,12 @@ npm run check:all    # both gates
   ask rather than guess. If two approaches are both reasonable, present both
   and let the user pick.
 - Keep functions small, single-purpose, cyclomatic complexity < 4.
+- Quality ratchets only tighten: never add to `eslint-suppressions.json`
+  (prune it with `npx eslint . --prune-suppressions` after fixing code), never
+  raise `src-tauri/clippy.toml` limits, never lower the coverage floor in
+  `vite.config.ts` (raise it when coverage grows). Suppressions are counts
+  per file and rule, so a new violation in a file with frozen ones can slip
+  in by fixing an old one: hold new code to the limits regardless.
 - Keep the UI responsive (desktop app and website): never hardcode a px
   width/height (CSS `width`, `height`, `min-*`/`max-*`, `flex-basis`, grid
   tracks, `<img>`/SVG size attributes). Use rem for component sizes, em in media

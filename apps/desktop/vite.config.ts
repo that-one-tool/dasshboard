@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 
 // @ts-expect-error process is a nodejs global
@@ -25,6 +26,16 @@ export default defineConfig(async () => ({
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
+    },
+  },
+  test: {
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.ts"],
+      exclude: ["src/**/*.test.ts"],
+      reporter: ["text-summary", "html"],
+      // A floor at the measured baseline (target 90%): raise it, never lower it.
+      thresholds: { statements: 85, branches: 76, functions: 82, lines: 87 },
     },
   },
 }));

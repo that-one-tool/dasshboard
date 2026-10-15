@@ -82,6 +82,7 @@ pub(crate) fn app_version() -> String {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[expect(clippy::too_many_lines, reason = "one app-builder chain; to be split")]
 pub fn run() {
     // Before GTK starts and before any thread exists.
     wayland::disable_nvidia_explicit_sync();

@@ -1,0 +1,3 @@
+# Ratchet at today's worst offenders: lower these as functions get split.
+too-many-lines-threshold = 69
+cognitive-complexity-threshold = 18

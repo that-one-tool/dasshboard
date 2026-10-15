@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+coverage
 *.local
 
 # Rust build output (src-tauri/.gitignore also covers this from inside src-tauri)
