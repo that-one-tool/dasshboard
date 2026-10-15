@@ -62,7 +62,10 @@ files, releasing),
       device; a connection-settings edit restarts the running tunnel; a tunnel
       that drops is reopened when its device opted into auto-reconnect, with
       the panes' policy — `tunnelReconnect`)
-    - `sftp/` — the docked Files panel (browser + transfer queue); edit in
+    - `sftp/` — the docked Files panel (browser + transfer queue); the
+      panel's parts live in `sftp/panel/` (markup, entry rows, queue view,
+      bookmarks bar, and the DOM-free history / sort+filter / selection /
+      free-name models); edit in
       place: `editSessions` (DOM-free: open/sync/conflict/stop per edit,
       transfers through the queue; uploads are not cancellable) and
       `editList` (the "Synced with the server" list; it says an edit lasts

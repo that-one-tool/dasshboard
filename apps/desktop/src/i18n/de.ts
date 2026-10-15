@@ -421,6 +421,7 @@ export const de: Messages = {
 	"sftp.downloadedToast": "{name} heruntergeladen",
 	"sftp.download.unsafeName": "„{name}“ kann nicht heruntergeladen werden: Der Name enthält ein Pfadtrennzeichen oder einen Laufwerksbuchstaben.",
 	"sftp.upload.noFreeName": "Für „{name}“ wurde auf dem Server kein freier Name gefunden.",
+	"sftp.download.noFreeName": "Für „{name}“ wurde im Download-Ordner kein freier Name gefunden.",
 	"sftp.download.skipped.one": "{count} Element in „{name}“ übersprungen (Link auf einen Ordner, defekter Link, Spezialdatei oder ein Name, den dieser Computer nicht speichern kann): {items}",
 	"sftp.download.skipped.other": "{count} Elemente in „{name}“ übersprungen (Links auf Ordner, defekte Links, Spezialdateien oder Namen, die dieser Computer nicht speichern kann): {items}",
 	"sftp.upload.skipped.one": "{count} Element in „{name}“ übersprungen (der Name ist kein gültiges Unicode und kann nicht gesendet werden): {items}",

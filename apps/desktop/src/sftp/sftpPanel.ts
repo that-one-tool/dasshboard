@@ -64,36 +64,8 @@ import {
   choosePermissions,
   chooseEditConflict,
 } from "../ui/confirm";
-import {
-  trashIcon,
-  pencilIcon,
-  arrowUpIcon,
-  copyIcon,
-  arrowLeftIcon,
-  arrowRightIcon,
-  reloadIcon,
-  uploadIcon,
-  uploadFolderIcon,
-  downloadIcon,
-  fileEditIcon,
-  folderPlusIcon,
-  chevronLeftIcon,
-  chevronRightIcon,
-  connectIcon,
-  disconnectIcon,
-  lockIcon,
-  bookmarkIcon,
-  bookmarkFilledIcon,
-} from "../ui/icons";
-import {
-  joinRemote,
-  parentOf,
-  formatSize,
-  formatMtime,
-  formatMode,
-  isLocalFileName,
-  skippedSummary,
-} from "./sftpFormat";
+import { connectIcon, disconnectIcon } from "../ui/icons";
+import { joinRemote, parentOf, isLocalFileName, skippedSummary } from "./sftpFormat";
 import { TransferQueue, type TransferItem } from "./transferQueue";
 import { EditSessions, type EditTransferSpec } from "./editSessions";
 import { renderEditList } from "./editList";
@@ -101,6 +73,14 @@ import { basename, join } from "@tauri-apps/api/path";
 import { t, tp } from "../i18n";
 import { remToPx } from "../ui/dom";
 import { MIN_GRID_REM, wireSplitter, type WidthBounds } from "../ui/splitter";
+import { sftpPanelMarkup } from "./panel/panelTemplate";
+import { DirHistory } from "./panel/dirHistory";
+import { DEFAULT_SORT, nextSort, viewEntries, type SortKey, type SortState } from "./panel/entryView";
+import { EntrySelection } from "./panel/entrySelection";
+import { findFreeName } from "./panel/freeName";
+import { renderEntryRow, type EntryRowActions } from "./panel/entryRow";
+import * as queueView from "./panel/queueView";
+import { renderBookmarks, renderBookmarkToggle } from "./panel/bookmarksBar";
 
 export interface SftpPanelOptions {
   onError?: (error: AppError) => void;
@@ -126,9 +106,6 @@ export interface SftpPanelOptions {
    * last device). Applied at the end of `init`; never auto-reconnects. */
   initialState?: SftpPanelState;
 }
-
-/** "Keep both" tries `name (2)` … `name (101)` before giving up. */
-const MAX_FREE_NAME_TRIES = 100;
 
 /** The SSH devices — the only ones that can be browsed over SFTP. */
 export function browsableDevices(devices: Device[]): SshDevice[] {
@@ -211,25 +188,20 @@ export class SftpPanel {
    * mirrors DOM order for select-all + shift-range + kind lookup. */
   private currentEntries: SftpEntry[] = [];
   /** Active sort column + direction (folders always stay grouped on top). */
-  private sortKey: "name" | "size" | "modified" = "name";
-  private sortDir: "asc" | "desc" = "asc";
+  private sort: SortState = DEFAULT_SORT;
   /** Live name filter for the current directory (cleared on navigation). */
   private filterText = "";
   /** The connected device's saved bookmark paths (loaded on connect). */
   private bookmarks: string[] = [];
-  /** Names (cwd-relative) selected via the checkboxes; cleared on navigation. */
-  private selected = new Set<string>();
-  /** Row index of the last checkbox toggled, for shift-click range selection. */
-  private lastClickedIndex = -1;
+  /** The checked entries; cleared on navigation. */
+  private selection = new EntrySelection();
   /**
    * The pending Move ("cut") set: the source device + directory and the entry
    * names to move on the next Paste. Survives navigation (cut here → open a
    * folder → paste), but is tied to one connection.
    */
   private moveClipboard: { deviceId: string; dir: string; names: string[] } | null = null;
-  /** Visited-directory stack for Back/Forward (see `goTo`/`goBack`). */
-  private history: string[] = [];
-  private historyIndex = -1;
+  private history = new DirHistory();
   /** True while a connect/list/transfer is in flight (disables the toolbar). */
   private busy = false;
   /** True while `sftpConnect` is in flight (the connect toggle is inert). */
@@ -394,67 +366,7 @@ export class SftpPanel {
   private buildPanel(): void {
     const panel = this.panel;
     if (!panel) return;
-    panel.innerHTML = `
-      <div class="sftp-rail">
-        <button type="button" class="btn btn-icon" data-action="expand"
-          title="${t("sftp.expand")}" aria-label="${t("sftp.expand")}">${chevronLeftIcon}</button>
-        <span class="sftp-conn-dot" aria-hidden="true"></span>
-      </div>
-      <div class="sftp-panel-body">
-        <div class="sftp-panel-header">
-          <span class="sftp-panel-title">${t("sftp.panelTitle")}</span>
-          <select class="sftp-device-select" aria-label="${t("sftp.selectDevice")}"></select>
-          <div class="sftp-panel-header-actions">
-            <button type="button" class="btn btn-icon sftp-conn-toggle" data-action="conn-toggle"
-              title="${t("sftp.disconnect")}" aria-label="${t("sftp.disconnect")}">${disconnectIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="collapse"
-              title="${t("sftp.collapse")}" aria-label="${t("sftp.collapse")}">${chevronRightIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="hide"
-              title="${t("common.close")}" aria-label="${t("common.close")}">&times;</button>
-          </div>
-        </div>
-        <div class="sftp-toolbar">
-          <input type="text" class="sftp-path" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="${t("sftp.path.aria")}" title="${t("sftp.path.edit")}" />
-          <div class="sftp-toolbar-actions">
-            <button type="button" class="btn btn-icon" data-action="copy-path" title="${t("sftp.nav.copyPath")}" aria-label="${t("sftp.nav.copyPath")}">${copyIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="back" title="${t("sftp.nav.back")}" aria-label="${t("sftp.nav.back")}">${arrowLeftIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="forward" title="${t("sftp.nav.forward")}" aria-label="${t("sftp.nav.forward")}">${arrowRightIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="up" title="${t("sftp.nav.up")}" aria-label="${t("sftp.nav.up")}">${arrowUpIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="refresh" title="${t("sftp.nav.refresh")}" aria-label="${t("sftp.nav.refresh")}">${reloadIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="upload" title="${t("sftp.nav.upload")}" aria-label="${t("sftp.nav.upload")}">${uploadIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="upload-dir" title="${t("sftp.nav.uploadDir")}" aria-label="${t("sftp.nav.uploadDir")}">${uploadFolderIcon}</button>
-            <button type="button" class="btn btn-icon" data-action="mkdir" title="${t("sftp.nav.mkdir")}" aria-label="${t("sftp.nav.mkdir")}">${folderPlusIcon}</button>
-            <button type="button" class="btn btn-icon sftp-bookmark-toggle" data-action="bookmark-toggle" title="${t("sftp.bookmark.add")}" aria-label="${t("sftp.bookmark.add")}">${bookmarkIcon}</button>
-          </div>
-        </div>
-        <div class="sftp-bookmarks" role="list" hidden></div>
-        <div class="sftp-listhead">
-          <input type="text" class="sftp-filter" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="${t("sftp.filter.aria")}" placeholder="${t("sftp.filter.placeholder")}" />
-          <div class="sftp-sortbtns" role="group" aria-label="${t("sftp.sort.aria")}">
-            <button type="button" class="btn btn-small" data-action="sort" data-sort="name">${t("sftp.sort.name")}</button>
-            <button type="button" class="btn btn-small" data-action="sort" data-sort="size">${t("sftp.sort.size")}</button>
-            <button type="button" class="btn btn-small" data-action="sort" data-sort="modified">${t("sftp.sort.modified")}</button>
-          </div>
-        </div>
-        <div class="sftp-bulkbar" hidden>
-          <label class="sftp-selectall">
-            <input type="checkbox" data-action="select-all" aria-label="${t("sftp.selectAll")}" />
-            <span class="sftp-sel-count"></span>
-          </label>
-          <div class="sftp-bulk-actions">
-            <button type="button" class="btn btn-small" data-action="bulk-download">${t("sftp.bulk.download")}</button>
-            <button type="button" class="btn btn-small" data-action="bulk-cut">${t("sftp.bulk.move")}</button>
-            <button type="button" class="btn btn-small sftp-bulk-paste" data-action="bulk-paste" hidden>${t("sftp.bulk.paste")}</button>
-            <button type="button" class="btn btn-small btn-danger" data-action="bulk-delete">${t("common.delete")}</button>
-            <button type="button" class="btn btn-small" data-action="bulk-clear">${t("sftp.bulk.clear")}</button>
-          </div>
-        </div>
-        <div class="sftp-entries" role="list"></div>
-        <div class="sftp-edits" hidden></div>
-        <div class="sftp-queue" role="status" aria-live="polite" hidden></div>
-        <div class="sftp-status" aria-live="polite"></div>
-      </div>
-    `;
+    panel.innerHTML = sftpPanelMarkup();
 
     this.deviceSelectEl = panel.querySelector(".sftp-device-select");
     this.connDotEl = panel.querySelector(".sftp-conn-dot");
@@ -494,111 +406,11 @@ export class SftpPanel {
     this.filterEl?.addEventListener("input", () => {
       this.filterText = this.filterEl?.value ?? "";
       // A changed filter changes the visible set, so drop the stale selection.
-      this.selected.clear();
-      this.lastClickedIndex = -1;
+      this.selection.clear();
       this.applyView();
     });
 
-    panel.addEventListener("click", (e) => {
-      const target = e.target;
-      // Use `Element` (not `HTMLElement`): a click on a button's inline SVG has
-      // an `SVGElement` target; `closest` still resolves the enclosing button.
-      if (!(target instanceof Element)) return;
-      const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
-      switch (action) {
-        case "hide":
-          void this.hide();
-          break;
-        case "collapse":
-          this.setCollapsed(true);
-          break;
-        case "expand":
-          this.setCollapsed(false);
-          break;
-        case "conn-toggle":
-          void this.handleConnToggle();
-          break;
-        case "copy-path":
-          void this.handleCopyPath();
-          break;
-        case "back":
-          if (!this.busy) void this.goBack();
-          break;
-        case "forward":
-          if (!this.busy) void this.goForward();
-          break;
-        case "up":
-          if (!this.busy) void this.goUp();
-          break;
-        case "refresh":
-          if (!this.busy) void this.loadDir(this.cwd);
-          break;
-        case "upload":
-          if (!this.busy) void this.handleUpload();
-          break;
-        case "upload-dir":
-          if (!this.busy) void this.handleUploadFolder();
-          break;
-        case "mkdir":
-          if (!this.busy) void this.handleMkdir();
-          break;
-        case "sort": {
-          const key = target.closest<HTMLElement>("[data-sort]")?.dataset.sort;
-          if (key === "name" || key === "size" || key === "modified") this.setSort(key);
-          break;
-        }
-        case "bookmark-toggle":
-          if (!this.busy) void this.handleBookmarkToggle();
-          break;
-        case "bookmark-go": {
-          const path = target.closest<HTMLElement>("[data-path]")?.dataset.path;
-          if (path && !this.busy) void this.goTo(path);
-          break;
-        }
-        case "bookmark-del": {
-          const path = target.closest<HTMLElement>("[data-path]")?.dataset.path;
-          if (path) void this.handleBookmarkRemove(path);
-          break;
-        }
-        case "tx-cancel": {
-          const id = Number(target.closest<HTMLElement>("[data-tx-id]")?.dataset.txId);
-          if (Number.isFinite(id)) this.queue.cancel(id);
-          break;
-        }
-        case "tx-dismiss": {
-          const id = Number(target.closest<HTMLElement>("[data-tx-id]")?.dataset.txId);
-          if (Number.isFinite(id)) {
-            const timer = this.queueHideTimers.get(id);
-            if (timer) clearTimeout(timer);
-            this.queueHideTimers.delete(id);
-            this.queue.remove(id);
-          }
-          break;
-        }
-        case "tx-clear":
-          this.clearQueueHideTimers();
-          this.queue.clearFinished();
-          break;
-        case "select-all":
-          this.toggleSelectAll();
-          break;
-        case "bulk-download":
-          if (!this.busy) void this.handleBulkDownload();
-          break;
-        case "bulk-cut":
-          this.handleBulkCut();
-          break;
-        case "bulk-paste":
-          if (!this.busy) void this.handleBulkPaste();
-          break;
-        case "bulk-delete":
-          if (!this.busy) void this.handleBulkDelete();
-          break;
-        case "bulk-clear":
-          this.clearSelection();
-          break;
-      }
-    });
+    panel.addEventListener("click", (e) => this.onPanelClick(e.target));
 
     this.wireSplitter();
     this.updateConnDot();
@@ -609,6 +421,74 @@ export class SftpPanel {
         this.unlistenProgress = un;
       },
     );
+  }
+
+  /** Run the clicked control's action. `Element`, not `HTMLElement`: a click
+   * on a button's inline SVG targets an `SVGElement`. */
+  private onPanelClick(target: EventTarget | null): void {
+    if (!(target instanceof Element)) return;
+    const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
+    if (action) this.clickActions.get(action)?.(target);
+  }
+
+  /** Run `action` unless a connect/list/transfer is in flight. */
+  private whenIdle(action: () => unknown): void {
+    if (!this.busy) void action();
+  }
+
+  private readonly clickActions = new Map<string, (target: Element) => void>([
+    ["hide", () => void this.hide()],
+    ["collapse", () => this.setCollapsed(true)],
+    ["expand", () => this.setCollapsed(false)],
+    ["conn-toggle", () => this.handleConnToggle()],
+    ["copy-path", () => void this.handleCopyPath()],
+    ["back", () => this.whenIdle(() => this.goBack())],
+    ["forward", () => this.whenIdle(() => this.goForward())],
+    ["up", () => this.whenIdle(() => this.goUp())],
+    ["refresh", () => this.whenIdle(() => this.loadDir(this.cwd))],
+    ["upload", () => this.whenIdle(() => this.handleUpload())],
+    ["upload-dir", () => this.whenIdle(() => this.handleUploadFolder())],
+    ["mkdir", () => this.whenIdle(() => this.handleMkdir())],
+    ["sort", (target) => this.onSortClick(target)],
+    ["bookmark-toggle", () => this.whenIdle(() => this.handleBookmarkToggle())],
+    ["bookmark-go", (target) => this.withPath(target, (path) => this.whenIdle(() => this.goTo(path)))],
+    ["bookmark-del", (target) => this.withPath(target, (path) => void this.handleBookmarkRemove(path))],
+    ["tx-cancel", (target) => this.withTransferId(target, (id) => this.queue.cancel(id))],
+    ["tx-dismiss", (target) => this.withTransferId(target, (id) => this.dismissQueueItem(id))],
+    ["tx-clear", () => this.clearFinishedTransfers()],
+    ["select-all", () => this.toggleSelectAll()],
+    ["bulk-download", () => this.whenIdle(() => this.handleBulkDownload())],
+    ["bulk-cut", () => this.handleBulkCut()],
+    ["bulk-paste", () => this.whenIdle(() => this.handleBulkPaste())],
+    ["bulk-delete", () => this.whenIdle(() => this.handleBulkDelete())],
+    ["bulk-clear", () => this.clearSelection()],
+  ]);
+
+  private onSortClick(target: Element): void {
+    const key = target.closest<HTMLElement>("[data-sort]")?.dataset.sort;
+    if (key === "name" || key === "size" || key === "modified") this.setSort(key);
+  }
+
+  private withPath(target: Element, action: (path: string) => void): void {
+    const path = target.closest<HTMLElement>("[data-path]")?.dataset.path;
+    if (path) action(path);
+  }
+
+  private withTransferId(target: Element, action: (id: number) => void): void {
+    const id = Number(target.closest<HTMLElement>("[data-tx-id]")?.dataset.txId);
+    if (Number.isFinite(id)) action(id);
+  }
+
+  private dismissQueueItem(id: number): void {
+    const timer = this.queueHideTimers.get(id);
+    if (timer) clearTimeout(timer);
+    this.queueHideTimers.delete(id);
+    this.queue.remove(id);
+  }
+
+  private clearFinishedTransfers(): void {
+    this.clearQueueHideTimers();
+    this.queue.clearFinished();
   }
 
   /* ----- open / collapse / hide (panel visibility) ------------------------ */
@@ -707,8 +587,7 @@ export class SftpPanel {
     this.selectedDeviceId = deviceId;
     this.syncDeviceSelect();
     this.idleDisconnected = false;
-    this.history = [];
-    this.historyIndex = -1;
+    this.history.reset();
     this.setStatus(t("sftp.connecting"));
     const seq = ++this.connectSeq;
     this.connecting = true;
@@ -867,8 +746,7 @@ export class SftpPanel {
     // starts fresh.
     const sameDir = path === this.cwd;
     // A new listing invalidates the selection (names are directory-relative).
-    this.selected.clear();
-    this.lastClickedIndex = -1;
+    this.selection.clear();
     this.setBusy(true);
     try {
       const entries = await sftpList(deviceId, path);
@@ -892,47 +770,18 @@ export class SftpPanel {
     }
   }
 
-  /** Compute the filtered + sorted view of `allEntries` and render it (folders
-   * stay grouped on top regardless of the sort key/direction). Also refreshes
-   * the sort-header indicators and the visible-count status. */
+  /** Render the filtered + sorted view of `allEntries`, the sort-header
+   * indicators and the visible-count status. */
   private applyView(): void {
-    const needle = this.filterText.trim().toLowerCase();
-    const filtered = needle
-      ? this.allEntries.filter((e) => e.name.toLowerCase().includes(needle))
-      : this.allEntries.slice();
-    filtered.sort((a, b) => this.compareEntries(a, b));
-    this.renderEntries(filtered);
+    const shown = viewEntries(this.allEntries, this.filterText, this.sort);
+    this.renderEntries(shown);
     this.updateSortHeaders();
-    this.setStatus(tp("sftp.count", filtered.length));
+    this.setStatus(tp("sftp.count", shown.length));
   }
 
-  /** Ordering: folders before files always; then by the active key/direction,
-   * with a case-insensitive name tiebreak. */
-  private compareEntries(a: SftpEntry, b: SftpEntry): number {
-    const aDir = a.kind === "dir";
-    const bDir = b.kind === "dir";
-    if (aDir !== bDir) return aDir ? -1 : 1;
-    let cmp: number;
-    if (this.sortKey === "size") cmp = a.size - b.size;
-    else if (this.sortKey === "modified") cmp = (a.modified ?? 0) - (b.modified ?? 0);
-    else cmp = a.name.toLowerCase().localeCompare(b.name.toLowerCase());
-    if (cmp === 0 && this.sortKey !== "name") {
-      cmp = a.name.toLowerCase().localeCompare(b.name.toLowerCase());
-    }
-    return this.sortDir === "asc" ? cmp : -cmp;
-  }
-
-  /** Apply a sort column: clicking the active column flips direction, a new
-   * column selects it ascending. */
-  private setSort(key: "name" | "size" | "modified"): void {
-    if (this.sortKey === key) {
-      this.sortDir = this.sortDir === "asc" ? "desc" : "asc";
-    } else {
-      this.sortKey = key;
-      this.sortDir = "asc";
-    }
-    // Reordering invalidates the shift-click anchor (it's a positional index).
-    this.lastClickedIndex = -1;
+  private setSort(key: SortKey): void {
+    this.sort = nextSort(this.sort, key);
+    this.selection.forgetAnchor();
     this.applyView();
   }
 
@@ -940,12 +789,12 @@ export class SftpPanel {
    * the active one; `aria-sort` for assistive tech). */
   private updateSortHeaders(): void {
     this.panel?.querySelectorAll<HTMLButtonElement>('[data-action="sort"]').forEach((btn) => {
-      const active = btn.dataset.sort === this.sortKey;
-      const arrow = active ? (this.sortDir === "asc" ? " ▲" : " ▼") : "";
+      const active = btn.dataset.sort === this.sort.key;
+      const arrow = active ? (this.sort.dir === "asc" ? " ▲" : " ▼") : "";
       const label = t(`sftp.sort.${btn.dataset.sort as "name" | "size" | "modified"}`);
       btn.textContent = label + arrow;
       btn.classList.toggle("is-active", active);
-      btn.setAttribute("aria-sort", active ? (this.sortDir === "asc" ? "ascending" : "descending") : "none");
+      btn.setAttribute("aria-sort", active ? (this.sort.dir === "asc" ? "ascending" : "descending") : "none");
     });
   }
 
@@ -963,52 +812,18 @@ export class SftpPanel {
     this.updateBookmarkButton();
   }
 
-  /** Render the bookmark chips (hidden when none). Built with DOM APIs — the
-   * paths are remote-supplied, so they go in as text, never markup. */
+  /** Render the bookmark chips (hidden when none or not connected). */
   private renderBookmarks(): void {
-    const el = this.bookmarksEl;
-    if (!el) return;
-    el.replaceChildren();
-    if (this.activeDeviceId === null || this.bookmarks.length === 0) {
-      el.hidden = true;
-      return;
-    }
-    el.hidden = false;
-    for (const path of this.bookmarks) {
-      const chip = document.createElement("span");
-      chip.className = "sftp-bookmark";
-      chip.setAttribute("role", "listitem");
-      if (path === this.cwd) chip.classList.add("is-current");
-      const go = document.createElement("button");
-      go.type = "button";
-      go.className = "sftp-bookmark-go";
-      go.dataset.action = "bookmark-go";
-      go.dataset.path = path;
-      go.textContent = bookmarkLabel(path);
-      go.title = path;
-      const del = document.createElement("button");
-      del.type = "button";
-      del.className = "sftp-bookmark-del";
-      del.dataset.action = "bookmark-del";
-      del.dataset.path = path;
-      del.title = t("sftp.bookmark.remove");
-      del.setAttribute("aria-label", t("sftp.bookmark.remove"));
-      del.textContent = "×";
-      chip.append(go, del);
-      el.appendChild(chip);
-    }
+    if (!this.bookmarksEl) return;
+    const paths = this.activeDeviceId === null ? [] : this.bookmarks;
+    renderBookmarks(this.bookmarksEl, paths, this.cwd);
   }
 
   /** Swap the toolbar star between add/remove per whether cwd is bookmarked. */
   private updateBookmarkButton(): void {
     const btn = this.panel?.querySelector<HTMLElement>(".sftp-bookmark-toggle");
     if (!btn) return;
-    const marked = this.activeDeviceId !== null && this.bookmarks.includes(this.cwd);
-    btn.innerHTML = marked ? bookmarkFilledIcon : bookmarkIcon;
-    const label = marked ? t("sftp.bookmark.remove") : t("sftp.bookmark.add");
-    btn.title = label;
-    btn.setAttribute("aria-label", label);
-    btn.classList.toggle("is-marked", marked);
+    renderBookmarkToggle(btn, this.activeDeviceId !== null && this.bookmarks.includes(this.cwd));
     // Keep the chip-row's current-directory highlight in sync.
     this.renderBookmarks();
   }
@@ -1058,22 +873,14 @@ export class SftpPanel {
   }
 
   /**
-   * Navigate to a new directory and, once it shows, record it in history:
-   * truncate any forward entries and push. Navigating to the current
-   * directory only re-lists it.
+   * Navigate to a new directory and, once it shows, record it in history
+   * (dropping any forward entries). Navigating to the current directory only
+   * re-lists it.
    */
   private async goTo(path: string): Promise<void> {
-    const isCurrent = path === this.history[this.historyIndex];
+    const isCurrent = this.history.isCurrent(path);
     if (!(await this.loadDir(path)) || isCurrent) return;
-    this.history = this.history.slice(0, this.historyIndex + 1);
-    this.history.push(path);
-    this.moveHistoryTo(this.history.length - 1);
-  }
-
-  /** Point the history cursor at `index` — only once its directory shows, so
-   * a listing that failed leaves Back/Forward where they were. */
-  private moveHistoryTo(index: number): void {
-    this.historyIndex = index;
+    this.history.record(path);
     this.updateNavButtons();
   }
 
@@ -1129,18 +936,19 @@ export class SftpPanel {
 
   /** Step back to the previous directory in history (no-op at the start). */
   private async goBack(): Promise<void> {
-    if (this.historyIndex <= 0) return;
-    const target = this.history[this.historyIndex - 1];
-    if (target === undefined) return;
-    if (await this.loadDir(target)) this.moveHistoryTo(this.historyIndex - 1);
+    await this.revisit(this.history.backTarget(), () => this.history.stepBack());
   }
 
   /** Step forward to the next directory in history (no-op at the end). */
   private async goForward(): Promise<void> {
-    if (this.historyIndex >= this.history.length - 1) return;
-    const target = this.history[this.historyIndex + 1];
-    if (target === undefined) return;
-    if (await this.loadDir(target)) this.moveHistoryTo(this.historyIndex + 1);
+    await this.revisit(this.history.forwardTarget(), () => this.history.stepForward());
+  }
+
+  /** List a directory from history, moving the cursor only once it shows. */
+  private async revisit(target: string | undefined, step: () => void): Promise<void> {
+    if (target === undefined || !(await this.loadDir(target))) return;
+    step();
+    this.updateNavButtons();
   }
 
   private async goUp(): Promise<void> {
@@ -1362,28 +1170,20 @@ export class SftpPanel {
     return policy === "overwrite" ? remote : null;
   }
 
-  /** First `<path> (2)` / `<path> (3)` / … that doesn't exist on the server
-   * (`path` itself is known to exist). Same naming as {@link freshLocalName}.
-   * Gives up after {@link MAX_FREE_NAME_TRIES}: a server answering every stat
-   * with success would otherwise keep it looping. */
+  /** A free `<path> (N)` on the server (`path` itself is taken). */
   private async freshRemoteName(deviceId: string, path: string, name: string): Promise<string> {
-    for (let i = 2; i < 2 + MAX_FREE_NAME_TRIES; i++) {
-      const candidate = `${path} (${i})`;
-      if (!(await sftpExists(deviceId, candidate))) return candidate;
-    }
+    const free = await findFreeName(path, (candidate) => sftpExists(deviceId, candidate));
+    if (free !== null) return free;
     throw { code: "Sftp", message: t("sftp.upload.noFreeName", { name }) } satisfies AppError;
   }
 
-  /** First `<path>` / `<path> (2)` / … that doesn't exist locally (for the
-   * per-file rename policy in a bulk download). */
-  private async freshLocalName(path: string): Promise<string> {
+  /** `path`, or a free `<path> (N)` when it exists locally (the per-file
+   * rename policy in a bulk download). */
+  private async freshLocalName(path: string, name: string): Promise<string> {
     if (!(await sftpLocalExists(path))) return path;
-    let i = 2;
-    for (;;) {
-      const candidate = `${path} (${i})`;
-      if (!(await sftpLocalExists(candidate))) return candidate;
-      i += 1;
-    }
+    const free = await findFreeName(path, sftpLocalExists);
+    if (free !== null) return free;
+    throw { code: "Sftp", message: t("sftp.download.noFreeName", { name }) } satisfies AppError;
   }
 
   /**
@@ -1545,7 +1345,7 @@ export class SftpPanel {
    * when a device is selected, or a prompt to pick one otherwise. */
   private renderDisconnectedState(): void {
     if (!this.listEl) return;
-    this.selected.clear();
+    this.selection.clear();
     this.currentEntries = [];
     if (this.bulkBarEl) this.bulkBarEl.hidden = true;
     this.listEl.replaceChildren();
@@ -1570,40 +1370,18 @@ export class SftpPanel {
   /** Toggle one row's checkbox; with `shift`, select the range from the last
    * toggled row (inclusive) to this one. */
   private onCheckToggle(index: number, shift: boolean): void {
-    if (shift && this.lastClickedIndex >= 0) {
-      const lo = Math.min(this.lastClickedIndex, index);
-      const hi = Math.max(this.lastClickedIndex, index);
-      for (let i = lo; i <= hi; i++) {
-        const name = this.currentEntries[i]?.name;
-        if (name) this.selected.add(name);
-      }
-    } else {
-      const name = this.currentEntries[index]?.name;
-      if (name) {
-        if (this.selected.has(name)) this.selected.delete(name);
-        else this.selected.add(name);
-      }
-    }
-    this.lastClickedIndex = index;
+    this.selection.toggle(this.currentEntries, index, shift);
     this.syncSelectionDom();
   }
 
   /** Select every entry when not all are selected, else clear (the header box). */
   private toggleSelectAll(): void {
-    const allSelected = this.currentEntries.length > 0 && this.selected.size === this.currentEntries.length;
-    this.selected.clear();
-    if (!allSelected) {
-      for (const entry of this.currentEntries) this.selected.add(entry.name);
-    }
-    // Reset the shift-range anchor so a following shift-click doesn't extend from
-    // a stale row.
-    this.lastClickedIndex = -1;
+    this.selection.toggleAll(this.currentEntries);
     this.syncSelectionDom();
   }
 
   private clearSelection(): void {
-    this.selected.clear();
-    this.lastClickedIndex = -1;
+    this.selection.clear();
     this.syncSelectionDom();
   }
 
@@ -1613,7 +1391,7 @@ export class SftpPanel {
       ?.querySelectorAll<HTMLElement>(".sftp-entry")
       .forEach((row, i) => {
         const check = row.querySelector<HTMLInputElement>(".sftp-entry-check");
-        if (check) check.checked = this.selected.has(this.currentEntries[i]?.name ?? "");
+        if (check) check.checked = this.selection.has(this.currentEntries[i]?.name ?? "");
       });
     this.updateBulkBar();
   }
@@ -1621,14 +1399,13 @@ export class SftpPanel {
   /** Reflect selection count + clipboard onto the bulk bar (count, enabled
    * actions, Paste visibility). */
   private updateBulkBar(): void {
-    const n = this.selected.size;
+    const n = this.selection.size;
     if (this.selCountEl) {
       this.selCountEl.textContent = n > 0 ? tp("sftp.selected", n) : t("sftp.selectAll");
     }
     if (this.selectAllEl) {
-      const total = this.currentEntries.length;
-      this.selectAllEl.checked = total > 0 && n === total;
-      this.selectAllEl.indeterminate = n > 0 && n < total;
+      this.selectAllEl.checked = this.selection.allSelected(this.currentEntries);
+      this.selectAllEl.indeterminate = n > 0 && n < this.currentEntries.length;
     }
     this.bulkBarEl
       ?.querySelectorAll<HTMLButtonElement>('[data-action^="bulk-"]:not(.sftp-bulk-paste)')
@@ -1649,7 +1426,7 @@ export class SftpPanel {
 
   /** The selected entries, resolved against the current listing. */
   private selectedEntries(): SftpEntry[] {
-    return this.currentEntries.filter((e) => this.selected.has(e.name));
+    return this.selection.selectedIn(this.currentEntries);
   }
 
   /** Download every selected entry into one chosen local folder — files
@@ -1704,7 +1481,7 @@ export class SftpPanel {
           name: entry.name,
           run: async () => {
             if (policy === "skip" && (await sftpLocalExists(target))) return;
-            const local = policy === "rename" ? await this.freshLocalName(target) : target;
+            const local = policy === "rename" ? await this.freshLocalName(target, entry.name) : target;
             await sftpDownload(deviceId, remote, local);
           },
         });
@@ -1715,11 +1492,11 @@ export class SftpPanel {
 
   /** "Cut": record the selection for a later Paste, then clear it. */
   private handleBulkCut(): void {
-    if (this.activeDeviceId === null || this.selected.size === 0) return;
+    if (this.activeDeviceId === null || this.selection.size === 0) return;
     this.moveClipboard = {
       deviceId: this.activeDeviceId,
       dir: this.cwd,
-      names: [...this.selected],
+      names: this.selection.names(),
     };
     this.setStatus(tp("sftp.cutNotice", this.moveClipboard.names.length));
     this.clearSelection(); // also refreshes the bar (Paste now shown after navigating)
@@ -1774,7 +1551,7 @@ export class SftpPanel {
 
   /** Delete every selected entry (folders recursively) after one confirmation. */
   private async handleBulkDelete(): Promise<void> {
-    if (this.activeDeviceId === null || this.selected.size === 0) return;
+    if (this.activeDeviceId === null || this.selection.size === 0) return;
     const entries = this.selectedEntries();
     const confirmed = await confirm(tp("sftp.deleteConfirm", entries.length), {
       title: t("sftp.delete.title"),
@@ -1839,109 +1616,24 @@ export class SftpPanel {
     }
 
     entries.forEach((entry, index) => {
-      this.listEl?.appendChild(this.renderEntryRow(entry, index));
+      const checked = this.selection.has(entry.name);
+      this.listEl?.appendChild(renderEntryRow(entry, index, checked, this.rowActions));
     });
     this.updateBulkBar();
   }
 
-  private renderEntryRow(entry: SftpEntry, index: number): HTMLElement {
-    const isDir = entry.kind === "dir";
-    const row = document.createElement("div");
-    row.className = `sftp-entry is-${entry.kind}`;
-    row.setAttribute("role", "listitem");
-    // Hover is tracked in JS (not CSS `:hover`): a native OS dialog opens without
-    // firing `mouseleave`, which would leave the row's action buttons stuck on.
-    row.addEventListener("mouseenter", () => row.classList.add("hovering"));
-    row.addEventListener("mouseleave", () => row.classList.remove("hovering"));
-
-    const check = document.createElement("input");
-    check.type = "checkbox";
-    check.className = "sftp-entry-check";
-    check.checked = this.selected.has(entry.name);
-    check.setAttribute("aria-label", entry.name);
-    // Shift-click selects the range from the last-toggled row (file-manager
-    // convention); a plain click toggles just this entry.
-    check.addEventListener("click", (e) => {
-      this.onCheckToggle(index, (e as MouseEvent).shiftKey);
-    });
-
-    const icon = document.createElement("span");
-    icon.className = "sftp-entry-icon";
-    icon.textContent = isDir ? "📁" : entry.kind === "symlink" ? "🔗" : "📄";
-
-    const name = document.createElement("button");
-    name.type = "button";
-    name.className = "sftp-entry-name";
-    name.textContent = entry.name;
-    name.title = isDir ? t("sftp.entry.openFolder") : t("sftp.entry.downloadFile");
-    // A directory descends; a file/symlink downloads.
-    name.addEventListener("click", () => {
-      if (this.busy) return;
-      if (isDir) void this.goTo(joinRemote(this.cwd, entry.name));
-      else void this.handleDownload(entry);
-    });
-
-    const meta = document.createElement("span");
-    meta.className = "sftp-entry-meta";
-    const size = isDir ? "" : formatSize(entry.size);
-    const time = formatMtime(entry.modified);
-    const perms = formatMode(entry.mode);
-    meta.textContent = [perms, size, time].filter(Boolean).join("  ·  ");
-
-    const actions = document.createElement("span");
-    actions.className = "sftp-entry-actions";
-    // Both files and folders can be downloaded (a folder recurses).
-    actions.appendChild(
-      this.iconButton(downloadIcon, t("sftp.entry.download"), () => {
-        if (isDir) void this.handleDownloadFolder(entry);
-        else void this.handleDownload(entry);
-      }),
-    );
-    if (!isDir) {
-      actions.appendChild(
-        this.iconButton(fileEditIcon, t("sftp.entry.edit"), () => void this.handleEdit(entry)),
-      );
-    }
-    actions.appendChild(
-      this.iconButton(pencilIcon, t("sftp.entry.rename"), () => void this.handleRename(entry)),
-    );
-    // chmod only for real files/dirs that report a mode: SETSTAT follows a
-    // symlink to its target (there is no LSETSTAT in SFTP v3), so offering it on
-    // a symlink row would silently rewrite the target's permissions; and a
-    // server that omits mode can't be chmod'd meaningfully.
-    if (entry.kind !== "symlink" && entry.mode !== undefined) {
-      actions.appendChild(
-        this.iconButton(lockIcon, t("sftp.entry.permissions"), () =>
-          void this.handlePermissions(entry),
-        ),
-      );
-    }
-    actions.appendChild(
-      this.iconButton(trashIcon, t("sftp.entry.delete"), () => void this.handleDelete(entry), true),
-    );
-
-    row.append(check, icon, name, meta, actions);
-    return row;
-  }
-
-  private iconButton(
-    html: string,
-    label: string,
-    onClick: () => void,
-    danger = false,
-  ): HTMLButtonElement {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = `btn btn-icon btn-small${danger ? " btn-danger" : ""}`;
-    btn.title = label;
-    btn.setAttribute("aria-label", label);
-    btn.innerHTML = html;
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (!this.busy) onClick();
-    });
-    return btn;
-  }
+  private readonly rowActions: EntryRowActions = {
+    isBusy: () => this.busy,
+    onCheck: (index, shift) => this.onCheckToggle(index, shift),
+    onOpen: (entry) =>
+      void (entry.kind === "dir" ? this.goTo(joinRemote(this.cwd, entry.name)) : this.handleDownload(entry)),
+    onDownload: (entry) =>
+      void (entry.kind === "dir" ? this.handleDownloadFolder(entry) : this.handleDownload(entry)),
+    onEdit: (entry) => void this.handleEdit(entry),
+    onRename: (entry) => void this.handleRename(entry),
+    onPermissions: (entry) => void this.handlePermissions(entry),
+    onDelete: (entry) => void this.handleDelete(entry),
+  };
 
   /* ----- splitter (resize) ------------------------------------------------ */
 
@@ -2024,136 +1716,21 @@ export class SftpPanel {
   private updateNavButtons(): void {
     const back = this.panel?.querySelector<HTMLButtonElement>('[data-action="back"]');
     const forward = this.panel?.querySelector<HTMLButtonElement>('[data-action="forward"]');
-    if (back) back.disabled = this.historyIndex <= 0;
-    if (forward) forward.disabled = this.historyIndex >= this.history.length - 1;
+    if (back) back.disabled = !this.history.canGoBack();
+    if (forward) forward.disabled = !this.history.canGoForward();
   }
 
   /* ----- transfer queue rendering ---------------------------------------- */
 
-  /** Rebuild the background transfer-queue list from `queue` state (hidden when
-   * empty). Called on every queue change and after a panel rebuild. */
+  /** Rebuild the transfer list; called on every queue change and after a
+   * panel rebuild. */
   private renderQueue(): void {
-    const el = this.queueEl;
-    if (!el) return;
-    const items = this.queue.items();
-    el.replaceChildren();
-    if (items.length === 0) {
-      el.hidden = true;
-      return;
-    }
-    el.hidden = false;
-
-    const head = document.createElement("div");
-    head.className = "sftp-queue-head";
-    const title = document.createElement("span");
-    title.className = "sftp-queue-title";
-    title.textContent = t("sftp.queue.title");
-    head.appendChild(title);
-    if (items.some((i) => i.state === "done" || i.state === "failed" || i.state === "cancelled")) {
-      const clear = document.createElement("button");
-      clear.type = "button";
-      clear.className = "btn btn-small";
-      clear.dataset.action = "tx-clear";
-      clear.textContent = t("sftp.queue.clear");
-      head.appendChild(clear);
-    }
-    el.appendChild(head);
-
-    const list = document.createElement("div");
-    list.className = "sftp-queue-list";
-    for (const item of items) list.appendChild(this.renderQueueRow(item));
-    el.appendChild(list);
+    if (this.queueEl) queueView.renderQueue(this.queueEl, this.queue.items());
   }
 
-  /** Update just the active row's bar + percentage in place, from a progress
-   * tick. Avoids rebuilding the whole list (and re-announcing the aria-live
-   * region, and re-creating the cancel button mid-click) ~20×/s. Falls back to a
-   * full render if the row isn't present yet. */
+  /** A progress tick: update the row in place, or re-render if it isn't there. */
   private updateQueueRowProgress(item: TransferItem): void {
-    const row = this.queueEl?.querySelector<HTMLElement>(
-      `.sftp-queue-item[data-tx-id="${item.id}"]`,
-    );
-    const fill = row?.querySelector<HTMLElement>(".sftp-queue-fill");
-    const pctEl = row?.querySelector<HTMLElement>(".sftp-queue-pct");
-    if (!fill || !pctEl) {
-      this.renderQueue();
-      return;
-    }
-    const pct =
-      item.total > 0 ? Math.min(100, Math.round((item.transferred / item.total) * 100)) : 0;
-    fill.style.width = `${pct}%`;
-    pctEl.textContent = item.total > 0 ? `${pct}%` : formatSize(item.transferred);
-  }
-
-  /** One transfer row. Built with DOM APIs (not innerHTML) so the remote-supplied
-   * name is inserted as text, never markup. */
-  private renderQueueRow(item: TransferItem): HTMLElement {
-    const row = document.createElement("div");
-    row.className = `sftp-queue-item is-${item.state}`;
-    row.dataset.txId = String(item.id);
-
-    const icon = document.createElement("span");
-    icon.className = "sftp-queue-icon";
-    icon.setAttribute("aria-hidden", "true");
-    icon.innerHTML = item.direction === "upload" ? uploadIcon : downloadIcon;
-
-    const name = document.createElement("span");
-    name.className = "sftp-queue-name";
-    name.textContent = item.name;
-    name.title = item.name;
-
-    const detail = document.createElement("span");
-    detail.className = "sftp-queue-detail";
-    let cancelAction: "tx-cancel" | "tx-dismiss" | null = null;
-    switch (item.state) {
-      case "active": {
-        const pct =
-          item.total > 0 ? Math.min(100, Math.round((item.transferred / item.total) * 100)) : 0;
-        const track = document.createElement("span");
-        track.className = "sftp-queue-track";
-        const fill = document.createElement("span");
-        fill.className = "sftp-queue-fill";
-        fill.style.width = `${pct}%`;
-        track.appendChild(fill);
-        const pctEl = document.createElement("span");
-        pctEl.className = "sftp-queue-pct";
-        pctEl.textContent = item.total > 0 ? `${pct}%` : formatSize(item.transferred);
-        detail.append(track, pctEl);
-        cancelAction = "tx-cancel";
-        break;
-      }
-      case "queued":
-        detail.textContent = t("sftp.queue.queued");
-        cancelAction = "tx-cancel";
-        break;
-      case "done":
-        detail.textContent = `✓ ${t("sftp.progress.done")}`;
-        break;
-      case "failed":
-        detail.textContent = t("sftp.queue.failed");
-        cancelAction = "tx-dismiss";
-        break;
-      case "cancelled":
-        detail.textContent = t("sftp.transferCancelled");
-        cancelAction = "tx-dismiss";
-        break;
-    }
-
-    if (!item.cancellable && cancelAction === "tx-cancel") cancelAction = null;
-    row.append(icon, name, detail);
-    if (cancelAction) {
-      const label =
-        cancelAction === "tx-cancel" ? t("sftp.cancelTransfer") : t("common.close");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "btn btn-icon btn-small sftp-queue-cancel";
-      btn.dataset.action = cancelAction;
-      btn.title = label;
-      btn.setAttribute("aria-label", label);
-      btn.textContent = "×"; // ×
-      row.appendChild(btn);
-    }
-    return row;
+    if (this.queueEl && !queueView.updateQueueRowProgress(this.queueEl, item)) this.renderQueue();
   }
 }
 
@@ -2165,14 +1742,6 @@ function cancelledError(): AppError {
 
 function validationError(message: string): AppError {
   return { code: "Validation", message } as AppError;
-}
-
-/** The short label for a bookmark chip: the path's last segment (root ⇒ `/`). */
-function bookmarkLabel(path: string): string {
-  if (path === "/" || path === "") return "/";
-  const trimmed = path.endsWith("/") ? path.slice(0, -1) : path;
-  const idx = trimmed.lastIndexOf("/");
-  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
 }
 
 /** Constructs and initializes the Files (SFTP) panel. */

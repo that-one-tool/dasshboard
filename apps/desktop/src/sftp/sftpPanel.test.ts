@@ -131,6 +131,7 @@ import {
 import { chooseConflict, confirm } from "../ui/confirm";
 import type { AppError } from "../ipc";
 import { connectIcon, disconnectIcon } from "../ui/icons";
+import { t } from "../i18n";
 
 function sshDevice(id: string, name: string): Device {
   return {
@@ -894,6 +895,24 @@ describe("SftpPanel", () => {
 
     expect(sftpDownload).toHaveBeenCalledWith("a", "/home/j/readme.txt", "C:/dest/readme.txt");
     expect(sftpDownloadDir).toHaveBeenCalledWith("a", "/home/j/sub", "C:/dest/sub", "overwrite");
+  });
+
+  it("bulk download gives up looking for a free local name when every name exists", async () => {
+    h.dirResult = "C:/dest";
+    h.localExists = true;
+    h.conflictChoice = "rename";
+    const onError = vi.fn();
+    await setup({ onError });
+    await browse();
+    check(1).click(); // readme.txt (file)
+
+    q<HTMLButtonElement>('[data-action="bulk-download"]').click();
+    await vi.waitFor(() => expect(onError).toHaveBeenCalled());
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: t("sftp.download.noFreeName", { name: "readme.txt" }) }),
+    );
+    expect(sftpDownload).not.toHaveBeenCalled();
   });
 
   describe("a name that can't be a local file name (path traversal)", () => {

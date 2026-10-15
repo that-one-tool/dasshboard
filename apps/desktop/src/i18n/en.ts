@@ -426,6 +426,7 @@ export const en = {
 	"sftp.downloadedToast": "Downloaded {name}",
 	"sftp.download.unsafeName": "Can't download \"{name}\": the name contains a path separator or a drive letter.",
 	"sftp.upload.noFreeName": "Couldn't find a free name for \"{name}\" on the server.",
+	"sftp.download.noFreeName": "Couldn't find a free name for \"{name}\" in the download folder.",
 	"sftp.download.skipped.one": "Skipped {count} item in \"{name}\" (a link to a folder, a broken link, a special file, or a name this computer can't store): {items}",
 	"sftp.download.skipped.other": "Skipped {count} items in \"{name}\" (links to folders, broken links, special files, or names this computer can't store): {items}",
 	"sftp.upload.skipped.one": "Skipped {count} item in \"{name}\" (its name isn't valid Unicode, so it can't be sent): {items}",

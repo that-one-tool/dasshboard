@@ -419,6 +419,7 @@ export const zh: Messages = {
 	"sftp.downloadedToast": "已下载 {name}",
 	"sftp.download.unsafeName": "无法下载“{name}”：名称包含路径分隔符或驱动器号。",
 	"sftp.upload.noFreeName": "无法在服务器上为“{name}”找到可用的名称。",
+	"sftp.download.noFreeName": "无法在下载文件夹中为“{name}”找到可用的名称。",
 	"sftp.download.skipped.one": "已跳过“{name}”中的 {count} 项（指向文件夹的链接、失效链接、特殊文件或此计算机无法保存的名称）：{items}",
 	"sftp.download.skipped.other": "已跳过“{name}”中的 {count} 项（指向文件夹的链接、失效链接、特殊文件或此计算机无法保存的名称）：{items}",
 	"sftp.upload.skipped.one": "已跳过“{name}”中的 {count} 项（名称不是有效的 Unicode，无法发送）：{items}",

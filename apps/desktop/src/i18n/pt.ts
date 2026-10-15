@@ -420,6 +420,7 @@ export const pt: Messages = {
 	"sftp.downloadedToast": "{name} transferido",
 	"sftp.download.unsafeName": "Não é possível transferir «{name}»: o nome contém um separador de caminho ou uma letra de unidade.",
 	"sftp.upload.noFreeName": "Não foi possível encontrar um nome livre para «{name}» no servidor.",
+	"sftp.download.noFreeName": "Não foi possível encontrar um nome livre para «{name}» na pasta de transferência.",
 	"sftp.download.skipped.one": "{count} item ignorado em «{name}» (uma ligação para uma pasta, uma ligação quebrada, um ficheiro especial ou um nome que este computador não consegue guardar): {items}",
 	"sftp.download.skipped.other": "{count} itens ignorados em «{name}» (ligações para pastas, ligações quebradas, ficheiros especiais ou nomes que este computador não consegue guardar): {items}",
 	"sftp.upload.skipped.one": "{count} item ignorado em «{name}» (o nome não é Unicode válido, por isso não pode ser enviado): {items}",

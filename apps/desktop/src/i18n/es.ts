@@ -420,6 +420,7 @@ export const es: Messages = {
 	"sftp.downloadedToast": "{name} descargado",
 	"sftp.download.unsafeName": "No se puede descargar «{name}»: el nombre contiene un separador de ruta o una letra de unidad.",
 	"sftp.upload.noFreeName": "No se encontró un nombre libre para «{name}» en el servidor.",
+	"sftp.download.noFreeName": "No se encontró un nombre libre para «{name}» en la carpeta de descarga.",
 	"sftp.download.skipped.one": "Se omitió {count} elemento en «{name}» (un enlace a una carpeta, un enlace roto, un archivo especial o un nombre que este equipo no puede guardar): {items}",
 	"sftp.download.skipped.other": "Se omitieron {count} elementos en «{name}» (enlaces a carpetas, enlaces rotos, archivos especiales o nombres que este equipo no puede guardar): {items}",
 	"sftp.upload.skipped.one": "Se omitió {count} elemento en «{name}» (su nombre no es Unicode válido, así que no se puede enviar): {items}",

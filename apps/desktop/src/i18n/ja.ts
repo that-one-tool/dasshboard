@@ -420,6 +420,7 @@ export const ja: Messages = {
 	"sftp.downloadedToast": "{name} をダウンロードしました",
 	"sftp.download.unsafeName": "「{name}」をダウンロードできません：名前にパス区切り文字またはドライブ文字が含まれています。",
 	"sftp.upload.noFreeName": "サーバー上で「{name}」の空いている名前が見つかりませんでした。",
+	"sftp.download.noFreeName": "ダウンロード先のフォルダーで「{name}」の空いている名前が見つかりませんでした。",
 	"sftp.download.skipped.one": "「{name}」の {count} 項目をスキップしました（フォルダーへのリンク、壊れたリンク、特殊ファイル、またはこのコンピューターに保存できない名前）：{items}",
 	"sftp.download.skipped.other": "「{name}」の {count} 項目をスキップしました（フォルダーへのリンク、壊れたリンク、特殊ファイル、またはこのコンピューターに保存できない名前）：{items}",
 	"sftp.upload.skipped.one": "「{name}」の {count} 項目をスキップしました（名前が有効な Unicode ではないため送信できません）：{items}",

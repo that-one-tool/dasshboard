@@ -420,6 +420,7 @@ export const fr: Messages = {
 	"sftp.downloadedToast": "{name} téléchargé",
 	"sftp.download.unsafeName": "Impossible de télécharger « {name} » : le nom contient un séparateur de chemin ou une lettre de lecteur.",
 	"sftp.upload.noFreeName": "Impossible de trouver un nom libre pour « {name} » sur le serveur.",
+	"sftp.download.noFreeName": "Impossible de trouver un nom libre pour « {name} » dans le dossier de téléchargement.",
 	"sftp.download.skipped.one": "{count} élément ignoré dans « {name} » (lien vers un dossier, lien cassé, fichier spécial ou nom impossible à enregistrer sur cet ordinateur) : {items}",
 	"sftp.download.skipped.other": "{count} éléments ignorés dans « {name} » (liens vers des dossiers, liens cassés, fichiers spéciaux ou noms impossibles à enregistrer sur cet ordinateur) : {items}",
 	"sftp.upload.skipped.one": "{count} élément ignoré dans « {name} » (nom non valide en Unicode, impossible à envoyer) : {items}",
