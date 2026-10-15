@@ -19,6 +19,7 @@
 //! through its public API rather than reaching into private internals.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -2379,6 +2380,7 @@ const STUCK: Duration = Duration::from_secs(120);
 async fn a_client_that_pauses_reading_does_not_hold_up_the_tunnel() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     const FLOOD: usize = 24 << 20;
+    const CHUNK: usize = 64 * 1024;
 
     let dir = tempfile::tempdir().unwrap();
     // A stall timeout far past `STUCK`: a tunnel that froze must stay frozen
@@ -2390,21 +2392,105 @@ async fn a_client_that_pauses_reading_does_not_hold_up_the_tunnel() {
     // yet: a frozen tunnel would stop taking the upload before its end.
     let paused = connect_local(local_port).await;
     let (mut paused_rd, mut paused_wr) = paused.into_split();
-    tokio::time::timeout(STUCK, paused_wr.write_all(&vec![0u8; FLOOD]))
-        .await
-        .expect("the tunnel takes the paused client's whole upload")
-        .unwrap();
+    let uploaded = Progress::start();
+    let upload = async {
+        for chunk in vec![0u8; FLOOD].chunks(CHUNK) {
+            paused_wr.write_all(chunk).await.unwrap();
+            uploaded.add(chunk.len());
+        }
+    };
+    if tokio::time::timeout(STUCK, upload).await.is_err() {
+        // Counted as the local socket took it: includes the kernel buffers
+        // between the client and the tunnel.
+        let report = stall_report(&manager, local_port, "uploaded", &uploaded, FLOOD).await;
+        panic!("the tunnel stopped taking the paused client's upload: {report}");
+    }
 
     // The flood's echo may still be queued ahead of this one.
     let mut other = connect_local(local_port).await;
     assert_echoes_within(&mut other, STUCK).await;
 
-    let mut echoed = vec![0u8; FLOOD];
-    tokio::time::timeout(STUCK, paused_rd.read_exact(&mut echoed))
-        .await
-        .expect("the paused client gets its data back")
-        .unwrap();
+    let received = Progress::start();
+    let read_back = async {
+        let mut buf = vec![0u8; CHUNK];
+        while received.done() < FLOOD {
+            let read = paused_rd.read(&mut buf).await.unwrap();
+            assert_ne!(read, 0, "the paused client's connection ended early");
+            received.add(read);
+        }
+    };
+    if tokio::time::timeout(STUCK, read_back).await.is_err() {
+        let report = stall_report(&manager, local_port, "received", &received, FLOOD).await;
+        panic!("the paused client stopped getting its data back: {report}");
+    }
+    assert_eq!(received.done(), FLOOD, "more came back than was sent");
     manager.stop_tunnel("t1").await;
+}
+
+/// A transfer's byte count and when it last moved: progress up to the deadline
+/// means slow, an early last move means a freeze (and when it began).
+struct Progress {
+    started: std::time::Instant,
+    done: AtomicUsize,
+    last_move_ms: AtomicU64,
+}
+
+impl Progress {
+    fn start() -> Self {
+        Progress {
+            started: std::time::Instant::now(),
+            done: AtomicUsize::new(0),
+            last_move_ms: AtomicU64::new(0),
+        }
+    }
+
+    fn add(&self, bytes: usize) {
+        self.done.fetch_add(bytes, Ordering::Relaxed);
+        let elapsed = self.started.elapsed().as_millis() as u64;
+        self.last_move_ms.store(elapsed, Ordering::Relaxed);
+    }
+
+    fn done(&self) -> usize {
+        self.done.load(Ordering::Relaxed)
+    }
+
+    fn last_move(&self) -> Duration {
+        Duration::from_millis(self.last_move_ms.load(Ordering::Relaxed))
+    }
+}
+
+/// What a stalled backlog test saw, for a failure that only happens on CI:
+/// how far the stalled transfer got and when it last moved, whether the
+/// tunnel still carries a new connection (one frozen connection vs. the whole
+/// SSH connection), and the tunnel as the manager lists it.
+async fn stall_report(
+    manager: &TunnelManager,
+    local_port: u16,
+    what: &str,
+    progress: &Progress,
+    total: usize,
+) -> String {
+    let fresh_echoes = probe_echo(local_port, Duration::from_secs(10)).await;
+    format!(
+        "{what} {} of {total} bytes, last moving at {:?} of {STUCK:?}; \
+         a new connection echoes: {fresh_echoes}; tunnels: {:?}",
+        progress.done(),
+        progress.last_move(),
+        manager.list()
+    )
+}
+
+/// Whether a new connection to `port` echoes a line within `limit`.
+async fn probe_echo(port: u16, limit: Duration) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let probe = async {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
+        stream.write_all(b"PROBE\n").await.ok()?;
+        let mut reply = [0u8; 6];
+        stream.read_exact(&mut reply).await.ok()?;
+        Some(&reply == b"PROBE\n")
+    };
+    matches!(tokio::time::timeout(limit, probe).await, Ok(Some(true)))
 }
 
 /// A client that falls further behind than the backlog limit and then stops
