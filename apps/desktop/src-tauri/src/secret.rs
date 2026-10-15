@@ -19,7 +19,7 @@ const SERVICE: &str = "DaSSHboard";
 pub trait SecretStore: Send + Sync {
     fn set(&self, device_id: &str, secret: &str) -> Result<(), AppError>;
     /// Reads back the stored secret, if any. Never exposed to the frontend —
-    /// called only from `commands::resolve_credentials` on every `connect`
+    /// called only from `commands::device_access::resolve_credentials` on every `connect`
     /// and `test_connection`, to build the `AuthCredentials` used to
     /// authenticate (SPEC.md §6).
     fn get(&self, device_id: &str) -> Result<Option<String>, AppError>;
@@ -67,7 +67,7 @@ fn to_app_error(err: keyring::Error) -> AppError {
 /// In-memory fake for tests: implements the same trait, backed by a
 /// `HashMap` guarded by a `Mutex`, so store/command tests never touch the
 /// real OS keyring. Only compiled under `#[cfg(test)]` — it exists purely as
-/// a test fixture (used from this module's tests and from `commands.rs`'s),
+/// a test fixture (used from this module's tests and from the `commands` modules'),
 /// so gating it this way is both accurate and keeps plain `cargo
 /// build`/`cargo clippy` from flagging it as dead code.
 #[cfg(test)]

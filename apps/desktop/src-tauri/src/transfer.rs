@@ -2,7 +2,7 @@
 //! (PLAN-import-export.md). The frontend obtains a path from the native
 //! dialog plugin; the `pub(crate)` `*_impl(&AppState, &Path)` functions here do
 //! the actual file read/write and are what the `#[tauri::command]` wrappers in
-//! `commands.rs` call. The JSON shaping is factored into pure (no-disk) helpers
+//! `commands/transfer.rs` call. The JSON shaping is factored into pure (no-disk) helpers
 //! so the envelope and validation logic can be unit-tested without touching the
 //! filesystem.
 //!
@@ -413,7 +413,7 @@ mod tests {
     use tempfile::tempdir;
     use uuid::Uuid;
 
-    /// Same shape as the `commands.rs` test helper: a real (temp-dir-backed)
+    /// Same shape as the `commands` test helper: a real (temp-dir-backed)
     /// store stack plus an in-memory keyring, no Tauri runtime required.
     fn test_state(dir: &std::path::Path) -> AppState {
         let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));

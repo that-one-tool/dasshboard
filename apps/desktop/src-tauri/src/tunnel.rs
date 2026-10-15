@@ -14,7 +14,7 @@
 //!
 //! **Like `session.rs`, this module is deliberately Tauri-free.** All
 //! frontend-facing effects go through the [`TunnelSink`] trait, whose production
-//! implementor lives in `commands.rs` (emitting `tunnel_status` events) and whose
+//! implementor lives in `commands/tunnels.rs` (emitting `tunnel_status` events) and whose
 //! test implementor records into channels.
 //!
 //! ## Concurrency & cleanup (mirrors `session.rs`)
@@ -164,7 +164,7 @@ impl SessionSink for HandshakeSink {
 }
 
 /// The connection-shaped parameters for a tunnel, constructed by the
-/// `start_tunnel` command in `commands.rs`.
+/// `start_tunnel` command in `commands/tunnels.rs`.
 ///
 /// `pub` + `#[doc(hidden)]` only so the `tests/` integration tests (a separate
 /// crate) can build one — see the note on `session::ConnectParams`.

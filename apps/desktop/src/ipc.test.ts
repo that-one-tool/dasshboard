@@ -142,7 +142,7 @@ describe("saveTextFile", () => {
  * F5: `saveDevice`'s tri-state `secret` handling is the exact wire-shape
  * mistake AGENTS.md's "must mirror the Rust serde struct" rule exists to
  * catch. `save_device`'s Rust signature is `secret: Option<String>`
- * (`src-tauri/src/commands.rs:153-159`) — serde treats a missing key on an
+ * (`src-tauri/src/commands/devices.rs`) — serde treats a missing key on an
  * `Option<T>` field as `None`, so the payload must OMIT the key entirely for
  * "leave untouched", never send an explicit `null`/`undefined`.
  */
@@ -205,7 +205,7 @@ describe("saveDevice tri-state secret payload", () => {
 /**
  * F5: argument-shape coverage for the remaining command wrappers. Each must
  * forward the exact command name and the camelCase argument object the
- * matching `#[tauri::command]` in `src-tauri/src/commands.rs` expects.
+ * matching `#[tauri::command]` in `src-tauri/src/commands/` expects.
  */
 describe("IPC command wrapper argument shapes", () => {
 	it("ping forwards no arguments", async () => {

@@ -5,7 +5,7 @@
 //! **This module is deliberately Tauri-free.** All frontend-facing effects
 //! (streaming terminal bytes, `session_status` events, `host_key_prompt`
 //! events) go through the [`SessionSink`] trait, whose production implementor
-//! lives in `commands.rs` (wrapping a Tauri `AppHandle` + IPC `Channel`) and
+//! lives in `commands/sessions.rs` (wrapping a Tauri `AppHandle` + IPC `Channel`) and
 //! whose test implementor collects into channels. That split lets the whole
 //! SSH stack — connect, auth, PTY/shell, host-key TOFU, cleanup — run in
 //! `cargo test` against an in-process russh server with no Tauri app and no
@@ -187,7 +187,7 @@ pub struct HostKeyPromptPayload {
     pub trust_reset: bool,
 }
 
-/// The credential a device authenticates with. Constructed in `commands.rs`
+/// The credential a device authenticates with. Constructed in `commands/device_access.rs`
 /// from the device's auth method + the keyring secret; the secret never
 /// appears in any event, log, or error message.
 #[derive(Clone)]
@@ -270,7 +270,7 @@ pub trait SessionSink: Send + Sync {
 /// The connection-shaped parameters for a session (as opposed to bookkeeping
 /// like `session_id`/`sink`), bundled so `spawn_session`/`run_session` don't
 /// need six-plus positional parameters of their own (B8). Constructed by the
-/// `connect` command in `commands.rs`.
+/// `connect` command in `commands/sessions.rs`.
 ///
 /// `pub` (not `pub(crate)`) only so the in-process integration tests in
 /// `tests/` — a separate crate — can build one; `#[doc(hidden)]` keeps it out

@@ -94,7 +94,9 @@ files, releasing),
     - `ipc.ts` — typed `invoke` wrappers; every payload type here must mirror the
       matching Rust `serde` struct (camelCase on the wire)
 - `src-tauri/src/` — backend (Rust):
-    - `commands.rs` — `#[tauri::command]` handlers, registered in `lib.rs`
+    - `commands/` — `#[tauri::command]` handlers, one module per domain
+      (`devices`, `sessions`, `tunnels`, `sftp`, …; shared device→credentials
+      resolution in `device_access`), registered in `lib.rs`
     - `device.rs`, `profile.rs`, `settings.rs` — domain models
     - `store.rs`, `profile_store.rs` — JSON persistence in the Tauri app-config dir
     - `atomic_file.rs` — shared JSON-store plumbing (atomic write-then-rename,

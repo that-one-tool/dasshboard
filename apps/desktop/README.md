@@ -30,7 +30,7 @@ From the repo root, `npm run tauri dev` and `npm run check` delegate here.
 ## Architecture
 
 ```
-src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands.rs  ──▶  domain modules
+src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands/    ──▶  domain modules
                        ◀──events──  session_status, host_key_prompt,
                                     host_key_prompt_closed, tunnel_status,
                                     sftp_progress, sftp_edit_changed,
@@ -42,8 +42,8 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands.rs  ──�
   widgets. `grid.ts` holds the pane grid and `main.ts` wires everything together.
 - **IPC (`src/ipc.ts`)**: typed wrappers for every command and event. Payload
   types mirror the Rust `serde` structs and are camelCase on the wire.
-- **Backend (`src-tauri/src/`)**: `commands.rs` holds the handlers (registered in
-  `lib.rs`), and each concern has its own module:
+- **Backend (`src-tauri/src/`)**: `commands/` holds the handlers, one file per domain
+  (registered in `lib.rs`), and each concern has its own module:
     - `session`: SSH shells over `russh`. `tunnel`, `sftp` and `agent` reuse its
       connect, auth and host-key path; `tunnel`'s dynamic forwards speak SOCKS
       via `socks`, and its remote forwards route the server's connections
@@ -77,7 +77,7 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands.rs  ──�
 
 ## Adding things
 
-- **A backend command**: add the handler in `commands.rs`, register it in
+- **A backend command**: add the handler in its `commands/<domain>.rs`, register it in
   `lib.rs`, add a typed wrapper in `ipc.ts`, and keep the payload types in sync
   on both sides.
 - **UI text**: add the key to `i18n/en.ts` (the source of truth, which also types
