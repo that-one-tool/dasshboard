@@ -110,8 +110,17 @@ export function onLocaleChange(listener: () => void): () => void {
  * locale, then to the key itself.
  */
 export function t(key: MessageKey, params?: Record<string, string | number>): string {
-  const table = TABLES[currentLocale];
-  const raw = table[key] ?? en[key] ?? key;
+  return translateIn(currentLocale, key, params);
+}
+
+/** Translate `key` in `locale` rather than the current one (with {@link t}'s
+ * fallbacks). */
+export function translateIn(
+  locale: Locale,
+  key: MessageKey,
+  params?: Record<string, string | number>,
+): string {
+  const raw = TABLES[locale][key] ?? en[key] ?? key;
   return interpolate(raw, params);
 }
 

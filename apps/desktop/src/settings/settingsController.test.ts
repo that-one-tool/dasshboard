@@ -11,7 +11,7 @@
  * adopt-backend-clamped-value round trip.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Settings, TerminalSettings } from "../ipc";
 
 vi.mock("../ipc", () => ({
@@ -21,7 +21,7 @@ vi.mock("../ipc", () => ({
 
 import { SettingsController } from "./settingsController";
 import { getSettings, saveSettings } from "../ipc";
-import { setLocale } from "../i18n";
+import { applyDomTranslations, setLocale } from "../i18n";
 
 function makeController(
   applyTerminalSettings: (s: TerminalSettings) => void,
@@ -581,7 +581,8 @@ describe("SettingsController live language switch", () => {
       expect(text(".form-hint")).toBe("Lignes d'historique conservées par terminal (0–100000).");
       expect(text(".form-group-checkbox label")).toBe("Rechercher les mises à jour au démarrage");
       expect(text('[data-action="close"]')).toBe("Fermer");
-      expect(text('.settings-language option[value=""]')).toBe("Langue du système");
+      // Named in the OS language (English in the tests), not the picked one.
+      expect(text('.settings-language option[value=""]')).toBe("System default");
       // The controls themselves survive: same element, choice kept, checkbox intact.
       expect(select.isConnected).toBe(true);
       expect(select.value).toBe("fr");
@@ -618,5 +619,56 @@ describe("SettingsController listeners", () => {
 
     for (const listener of terminalListeners) expect(listener).toHaveBeenCalledOnce();
     expect(onSftp).toHaveBeenCalledWith({ idleDisconnectMins: 3, editorCommand: "" });
+  });
+});
+
+describe("the system language entry", () => {
+  function systemOption(): HTMLOptionElement | null {
+    return document.querySelector<HTMLOptionElement>('.settings-language option[value=""]');
+  }
+
+  async function openWithOsLanguages(languages: string[]): Promise<void> {
+    vi.spyOn(navigator, "languages", "get").mockReturnValue(languages);
+    vi.mocked(getSettings).mockResolvedValue(settings({ language: "fr" }));
+    await makeController(vi.fn(), vi.fn()).init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setLocale("en");
+  });
+
+  it("is named in the OS language, and stays so when the UI language changes", async () => {
+    await openWithOsLanguages(["de-DE"]);
+    expect(systemOption()?.textContent).toBe("Systemsprache");
+
+    setLocale("ja");
+    applyDomTranslations(document);
+
+    expect(systemOption()?.textContent).toBe("Systemsprache");
+  });
+
+  it("tells screen readers each entry's language", async () => {
+    await openWithOsLanguages(["de-DE"]);
+    const langs = [...document.querySelectorAll<HTMLOptionElement>(".settings-language option")].map((o) => [
+      o.value,
+      o.lang,
+    ]);
+    expect(langs).toEqual([
+      ["", "de"],
+      ["en", "en"],
+      ["fr", "fr"],
+      ["es", "es"],
+      ["de", "de"],
+      ["pt", "pt"],
+      ["zh", "zh"],
+      ["ja", "ja"],
+    ]);
+  });
+
+  it("is in English when the app doesn't ship the OS language", async () => {
+    await openWithOsLanguages(["it-IT"]);
+    expect(systemOption()?.textContent).toBe("System default");
   });
 });

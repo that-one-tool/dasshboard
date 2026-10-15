@@ -27,6 +27,7 @@ import {
   setLocale,
   t,
   tp,
+  translateIn,
 } from "./index";
 
 afterEach(() => {
@@ -187,5 +188,16 @@ describe("applyDomTranslations", () => {
     expect(btn?.getAttribute("aria-label")).toBe("Ajouter un appareil");
     // An unknown key is left untouched (non-fatal).
     expect(root.querySelectorAll("span")[1]?.textContent).toBe("keep");
+  });
+});
+
+describe("translateIn", () => {
+  afterEach(() => setLocale("en"));
+
+  it("translates in the given locale, whatever the current one", () => {
+    setLocale("fr");
+    expect(translateIn("de", "settings.language.system")).toBe(de["settings.language.system"]);
+    expect(translateIn("en", "settings.language.system")).toBe(en["settings.language.system"]);
+    expect(t("settings.language.system")).toBe(fr["settings.language.system"]);
   });
 });

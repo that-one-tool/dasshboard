@@ -35,6 +35,7 @@ import {
   resolveLocale,
   setLocale,
   t,
+  translateIn,
 } from "../i18n";
 
 export interface SettingsControllerOptions {
@@ -279,10 +280,14 @@ export class SettingsController {
     const term = this.settings.terminal;
     // The language <select>: a "System default" option (value "") that clears
     // the stored language back to OS-follow, then one option per shipped locale.
+    // Like the locale names, the system entry is named in its own language: the
+    // OS one (no `data-i18n`, so a language switch leaves it as is).
+    const osLocale = resolveLocale(null);
+    const systemLabel = translateIn(osLocale, "settings.language.system");
     const languageOptions = [
-      `<option value="" data-i18n="settings.language.system">${t("settings.language.system")}</option>`,
+      `<option value="" lang="${osLocale}">${systemLabel}</option>`,
       ...SUPPORTED_LOCALES.map(
-        (loc) => `<option value="${loc}">${localeName(loc)}</option>`,
+        (loc) => `<option value="${loc}" lang="${loc}">${localeName(loc)}</option>`,
       ),
     ].join("");
     const root = document.createElement("div");
