@@ -17,8 +17,9 @@ export interface SidebarRailOptions {
 	initialCollapsed?: boolean;
 	/** Distinct devices connected in some pane, read on every refresh. */
 	countDevices: () => number;
-	/** Port forwards listening, read on every refresh. */
-	countForwards: () => number;
+	/** Port forwards listening, read on every refresh (none until given;
+	 * see `countForwardsWith`). */
+	countForwards?: () => number;
 	/** The grid's width changed — refit the terminals. */
 	onLayoutChange: () => void;
 	/** The collapsed state changed — schedule a workspace save. */
@@ -31,6 +32,9 @@ export interface SidebarRail {
 	isCollapsed(): boolean;
 	/** Re-read both counts; a burst of calls updates the chips once. */
 	refresh(): void;
+	/** Count forwards with `count` from the next refresh on (the tunnels panel
+	 * is built after the rail). */
+	countForwardsWith(count: () => number): void;
 	/** `true` while collapsed, `undefined` otherwise (keeps the file clean). */
 	persistedCollapsed(): boolean | undefined;
 	dispose(): void;
@@ -58,11 +62,13 @@ class Rail implements SidebarRail {
 	};
 	private readonly topRow = buildTopRow(this.collapseButton);
 	private collapsed: boolean;
+	private countForwards: () => number;
 	private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly stopTranslating: () => void;
 
 	constructor(private readonly opts: SidebarRailOptions) {
 		this.collapsed = opts.initialCollapsed ?? false;
+		this.countForwards = opts.countForwards ?? (() => 0);
 		this.el.className = "sidebar-rail";
 		this.el.append(this.expandButton, this.chips.devices, this.chips.forwards);
 		opts.sidebar.before(this.el);
@@ -82,6 +88,10 @@ class Rail implements SidebarRail {
 
 	persistedCollapsed(): boolean | undefined {
 		return this.collapsed || undefined;
+	}
+
+	countForwardsWith(count: () => number): void {
+		this.countForwards = count;
 	}
 
 	refresh(): void {
@@ -152,7 +162,7 @@ class Rail implements SidebarRail {
 
 	private renderChips(): void {
 		this.renderChip("devices", this.opts.countDevices());
-		this.renderChip("forwards", this.opts.countForwards());
+		this.renderChip("forwards", this.countForwards());
 	}
 
 	private renderChip(kind: ChipKind, count: number): void {

@@ -22,15 +22,17 @@ import { confirm } from "../ui/confirm";
 
 const found: UpdateInfo = { version: "1.21.0", notes: "Fixes", pubDate: null, canInstall: true, viaFlatpak: false };
 
-function controller(overrides: Partial<UpdateControllerOptions> = {}): UpdateController {
-	return new UpdateController({
-		beforeInstall: vi.fn(async () => {}),
-		onInstallError: vi.fn(),
-		...overrides,
-	});
+interface Hooks extends Partial<UpdateControllerOptions> {
+	onInstallError?: (message: string) => void;
 }
 
-async function withFound(overrides: Partial<UpdateControllerOptions> = {}): Promise<UpdateController> {
+function controller({ onInstallError, ...overrides }: Hooks = {}): UpdateController {
+	const updates = new UpdateController({ beforeInstall: vi.fn(async () => {}), ...overrides });
+	if (onInstallError) updates.onInstallError(onInstallError);
+	return updates;
+}
+
+async function withFound(overrides: Hooks = {}): Promise<UpdateController> {
 	vi.mocked(checkUpdate).mockResolvedValue(found);
 	const updates = controller(overrides);
 	await updates.check();
@@ -192,6 +194,19 @@ describe("UpdateController.install", () => {
 		await expect(updates.install()).resolves.toBe(false);
 
 		expect(confirm).toHaveBeenCalledTimes(1);
+	});
+
+	it("reports a failure to every install-error listener", async () => {
+		vi.mocked(downloadUpdate).mockRejectedValueOnce({ code: "Update", message: "network down" });
+		const second = vi.fn();
+		const first = vi.fn();
+		const updates = await withFound({ onInstallError: first });
+		updates.onInstallError(second);
+
+		await updates.install();
+
+		expect(first).toHaveBeenCalledWith("network down");
+		expect(second).toHaveBeenCalledWith("network down");
 	});
 
 	it("reports a failure, clears installing, and allows a retry", async () => {

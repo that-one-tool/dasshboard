@@ -140,6 +140,18 @@ describe("count chips", () => {
 		expect(chip("forwards").getAttribute("aria-label")).toBe("0 running port forwards");
 	});
 
+	it("count no forwards until given a forward counter", async () => {
+		counts = { devices: 0, forwards: 4 };
+		const { rail } = init({ countForwards: undefined });
+		expect(chip("forwards").textContent?.trim()).toBe("0");
+
+		rail.countForwardsWith(() => counts.forwards);
+		rail.refresh();
+		await nextTask();
+
+		expect(chip("forwards").textContent?.trim()).toBe("4");
+	});
+
 	it("re-read both counts once per burst of refreshes", async () => {
 		const { rail, opts } = init();
 		vi.mocked(opts.countDevices).mockClear();

@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vite
 
 interface FakeGrid {
   root: HTMLElement;
+  options: { onChange?: () => void; onConnectionChange?: () => void };
   live: number;
   init: Mock;
   refit: Mock;
@@ -58,7 +59,10 @@ const { gridInstances, FakeGridClass, initGate } = vi.hoisted(() => {
     applySnapshot = vi.fn(async () => true);
     isSnapshotComplete = vi.fn(() => true);
     connectedDeviceIds = vi.fn((): string[] => []);
-    constructor(root: HTMLElement) {
+    constructor(
+      root: HTMLElement,
+      public options: { onChange?: () => void; onConnectionChange?: () => void },
+    ) {
       this.root = root;
       gridInstances.push(this as unknown as FakeGrid);
     }
@@ -81,7 +85,7 @@ function makeManager(extra: Partial<Omit<TabManagerOptions, "grid">> = {}): TabM
   const root = document.createElement("div");
   document.body.appendChild(root);
   return new TabManager(root, {
-    grid: { onError: vi.fn(), onChange: vi.fn(), getTerminalSettings: vi.fn() },
+    grid: { onError: vi.fn(), getTerminalSettings: vi.fn() },
     ...extra,
   });
 }
@@ -515,7 +519,8 @@ describe("TabManager profile strip (Phase 2)", () => {
   }
 
   it("hides badge + dot for an unlinked tab", async () => {
-    const tm = makeManager({ resolveTabState: () => ({ linked: false, dirty: false }) });
+    const tm = makeManager();
+    tm.setTabStateResolver(() => ({ linked: false, dirty: false }));
     await tm.init();
     const btn = tabButtons()[0]!;
     expect(badge(btn).hidden).toBe(true);
@@ -523,9 +528,8 @@ describe("TabManager profile strip (Phase 2)", () => {
   });
 
   it("openTabs creates named, linked tabs and shows badge + dot per resolveTabState", async () => {
-    const tm = makeManager({
-      resolveTabState: (id) => ({ linked: id !== null, dirty: id !== null }),
-    });
+    const tm = makeManager();
+    tm.setTabStateResolver((id) => ({ linked: id !== null, dirty: id !== null }));
     await tm.init();
     await tm.openTabs(["Web", "DB"], "p1");
 
@@ -561,7 +565,8 @@ describe("TabManager profile strip (Phase 2)", () => {
   });
 
   it("setLinkedProfileId on the active grid links the active tab and refreshes its badge", async () => {
-    const tm = makeManager({ resolveTabState: (id) => ({ linked: id !== null, dirty: false }) });
+    const tm = makeManager();
+    tm.setTabStateResolver((id) => ({ linked: id !== null, dirty: false }));
     await tm.init();
     expect(badge(tabButtons()[0]!).hidden).toBe(true);
 
@@ -573,7 +578,8 @@ describe("TabManager profile strip (Phase 2)", () => {
 
   it("fires onActiveTabChange when the active tab changes", async () => {
     const onActiveTabChange = vi.fn();
-    const tm = makeManager({ onActiveTabChange });
+    const tm = makeManager();
+    tm.onActiveTabChange(onActiveTabChange);
     await tm.init();
     onActiveTabChange.mockClear();
 
@@ -636,32 +642,30 @@ describe("TabManager persistence (Phase 3)", () => {
     expect(s.tabs[1]?.panes).toEqual([{ deviceId: null }]); // from the fake snapshot
   });
 
-  it("serialize() includes the left menu width once it has been resized", async () => {
-    const tm = makeManager({ getSidebarWidth: () => 360 });
+  it("serialize() merges in what each state contributor returns, read at save time", async () => {
+    const tm = makeManager();
+    let width: number | undefined = 360;
+    tm.addStateContributor(() => ({ sidebarWidth: width }));
+    tm.addStateContributor(() => ({ tunnels: { "dev-1": false }, collapsedDeviceGroups: ["", "web"] }));
     await tm.init();
-    expect(tm.serialize().sidebarWidth).toBe(360);
+    expect(tm.serialize()).toMatchObject({
+      sidebarWidth: 360,
+      tunnels: { "dev-1": false },
+      collapsedDeviceGroups: ["", "web"],
+    });
 
-    const untouched = makeManager({ getSidebarWidth: () => undefined });
-    await untouched.init();
-    expect(untouched.serialize().sidebarWidth).toBeUndefined();
+    width = undefined;
+    expect(tm.serialize().sidebarWidth).toBeUndefined();
   });
 
-  it("serialize() includes the collapsed side menu", async () => {
-    const tm = makeManager({ getSidebarCollapsed: () => true });
+  it("a contributor can't overwrite the tabs", async () => {
+    const tm = makeManager();
+    const sneaky = { sidebarCollapsed: true, tabs: [], activeIndex: 7 };
+    tm.addStateContributor(() => sneaky);
     await tm.init();
+    expect(tm.serialize().tabs).toHaveLength(1);
+    expect(tm.serialize().activeIndex).toBe(0);
     expect(tm.serialize().sidebarCollapsed).toBe(true);
-  });
-
-  it("serialize() includes the device list's collapsed tag sections", async () => {
-    const tm = makeManager({ getCollapsedDeviceGroups: () => ["", "web"] });
-    await tm.init();
-    expect(tm.serialize().collapsedDeviceGroups).toEqual(["", "web"]);
-  });
-
-  it("serialize() includes the tunnels' remembered run state", async () => {
-    const tm = makeManager({ getTunnelState: () => ({ "dev-1": false }) });
-    await tm.init();
-    expect(tm.serialize().tunnels).toEqual({ "dev-1": false });
   });
 
   it("does not persist during init/restore, then persists (debounced) on a change", async () => {
@@ -687,7 +691,8 @@ describe("TabManager persistence (Phase 3)", () => {
 
 describe("TabManager review fixes (1-5)", () => {
   it("clearProfileLink unlinks every matching tab, not just the active one", async () => {
-    const tm = makeManager({ resolveTabState: (id) => ({ linked: id !== null, dirty: false }) });
+    const tm = makeManager();
+    tm.setTabStateResolver((id) => ({ linked: id !== null, dirty: false }));
     await tm.init();
     tm.setLinkedProfileId(tm.activeGrid(), "p1"); // tab 0 → p1
     await tm.newTab();
@@ -922,11 +927,8 @@ describe("TabManager profile groups", () => {
 
   it("renaming a tab or closing a background one reports a workspace change", async () => {
     const onChange = vi.fn();
-    const root = document.createElement("div");
-    document.body.appendChild(root);
-    const tm = new TabManager(root, {
-      grid: { onError: vi.fn(), onChange, getTerminalSettings: vi.fn() },
-    });
+    const tm = makeManager();
+    tm.onWorkspaceChange(onChange);
     await tm.init();
     await tm.newTab();
     onChange.mockClear();
@@ -939,6 +941,41 @@ describe("TabManager profile groups", () => {
 
     await tm.closeTab(0);
     expect(onChange).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("TabManager listeners", () => {
+  it("passes every grid's edits and connection changes to the registered listeners", async () => {
+    const onChange = vi.fn();
+    const onConnection = vi.fn();
+    const tm = makeManager();
+    tm.onWorkspaceChange(onChange);
+    tm.onConnectionChange(onConnection);
+    await tm.init();
+    await tm.newTab();
+
+    gridInstances.at(-1)?.options.onChange?.();
+    gridInstances.at(-1)?.options.onConnectionChange?.();
+
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(onConnection).toHaveBeenCalledOnce();
+  });
+
+  it("notifies every listener registered for an event", async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const tm = makeManager();
+    tm.onActiveTabChange(first);
+    tm.onActiveTabChange(second);
+    await tm.init();
+    await tm.newTab();
+    first.mockClear();
+    second.mockClear();
+
+    tm.activate(0);
+
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledOnce();
   });
 });
 

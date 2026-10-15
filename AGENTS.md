@@ -95,6 +95,12 @@ files, releasing),
       shortcut modifiers (`keyboard.ts`: Ctrl, or Cmd on macOS), the open-dialog
       stack (`dialogStack.ts`: only the newest open dialog acts on a
       document-level Escape/Enter, then consumes it)
+    - `main.ts` — bootstrap: builds settings, then the tabs, then the views
+      around them; later parts register with earlier ones (`TabManager`'s
+      `addStateContributor` / `on…Change`, `SettingsController`'s and
+      `UpdateController`'s listeners) instead of late-bound callbacks
+    - `app/liveViews` — the one list of long-lived views that a device change,
+      a config reload and a language change are fanned out to
     - `ipc.ts` — typed `invoke` wrappers; every payload type here must mirror the
       matching Rust `serde` struct (camelCase on the wire)
 - `src-tauri/src/` — backend (Rust):

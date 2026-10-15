@@ -12,8 +12,7 @@
  * Each tab tracks the profile it is linked to (`linkedProfileId`); the tabs
  * linked to one profile, in strip order, are that profile's open tabs (its
  * "group"). The strip renders a per-tab profile-link badge and dirty dot,
- * computed by an injected `resolveTabState` (Phase 2 — `ProfileManager`
- * provides it). `main.ts` targets `activeGrid()` and fans refresh/retranslate
+ * computed by the resolver set with `setTabStateResolver` (`ProfileManager`). `main.ts` targets `activeGrid()` and fans refresh/retranslate
  * calls across `forEachGrid`.
  */
 
@@ -24,7 +23,7 @@ import { tabShortcut, type TabAction, type TabJump, type TabShortcut } from "./t
 import { closeIcon, plusIcon } from "../ui/icons";
 import { shrinkConfirmMessage } from "../gridModel";
 import { t } from "../i18n";
-import type { SftpPanelState, WorkspaceState } from "../ipc";
+import type { WorkspaceState } from "../ipc";
 import type { TabSnapshot } from "../profiles/workspace";
 
 /** One open tab: its live grid, the panel it lives in, and its strip button. */
@@ -47,30 +46,15 @@ export interface TabProfileState {
   dirty: boolean;
 }
 
+/** What other parts of the window store in `workspace_state.json`. */
+export type WorkspaceExtras = Omit<WorkspaceState, "tabs" | "activeIndex">;
+
 export interface TabManagerOptions {
-  /** Shared per-grid options, passed verbatim to every tab's `Grid`. */
-  grid: GridOptions;
-  /** Fired after the active tab changes (so the profile bar can re-render). */
-  onActiveTabChange?: () => void;
-  /** Resolves a tab's profile-link + dirty state for the strip (ProfileManager). */
-  resolveTabState?: (linkedProfileId: string | null) => TabProfileState;
+  /** Shared per-grid options, passed to every tab's `Grid`; its change and
+   * connection events reach the listeners registered on the manager. */
+  grid: Omit<GridOptions, "onChange" | "onConnectionChange">;
   /** Persists the serialized workspace (debounced by the manager). */
   persist?: (state: WorkspaceState) => void;
-  /**
-   * Contributes the Files (SFTP) panel's state into the persisted workspace
-   * (they share `workspace_state.json`). Returns `undefined` until the panel has
-   * been used, so the file stays clean. The panel triggers a save via
-   * {@link scheduleSave}.
-   */
-  getSftpState?: () => SftpPanelState | undefined;
-  /** The left menu's width to persist (undefined while it has its default). */
-  getSidebarWidth?: () => number | undefined;
-  /** Whether the left menu is collapsed (undefined while it is expanded). */
-  getSidebarCollapsed?: () => boolean | undefined;
-  /** The tunnels' remembered run state to persist (undefined when empty). */
-  getTunnelState?: () => Record<string, boolean | string[]> | undefined;
-  /** The device list's collapsed tag sections to persist (undefined when none). */
-  getCollapsedDeviceGroups?: () => string[] | undefined;
   /**
    * The app-action buttons (reload / trusted-hosts / settings / help), mounted
    * into the right side of the tab-strip row so the app has no separate header.
@@ -107,9 +91,44 @@ export class TabManager {
   private stripTabs: HTMLElement | null = null;
   private stack: HTMLElement | null = null;
 
+  private readonly workspaceListeners: (() => void)[] = [];
+  private readonly activeTabListeners: (() => void)[] = [];
+  private readonly connectionListeners: (() => void)[] = [];
+  private readonly stateContributors: (() => WorkspaceExtras)[] = [];
+  private resolveTabState = (_linkedProfileId: string | null): TabProfileState => ({
+    linked: false,
+    dirty: false,
+  });
+
   constructor(root: HTMLElement, options: TabManagerOptions) {
     this.root = root;
     this.options = options;
+  }
+
+  /** A workspace edit in any tab (dirty state may have changed). */
+  onWorkspaceChange(listener: () => void): void {
+    this.workspaceListeners.push(listener);
+  }
+
+  onActiveTabChange(listener: () => void): void {
+    this.activeTabListeners.push(listener);
+  }
+
+  /** A pane in any tab connected or disconnected. */
+  onConnectionChange(listener: () => void): void {
+    this.connectionListeners.push(listener);
+  }
+
+  /** Adds state saved alongside the tabs (they share `workspace_state.json`);
+   * read at each save, which the contributor triggers with {@link scheduleSave}.
+   * On a shared key the later contributor wins; it never replaces the tabs. */
+  addStateContributor(contribute: () => WorkspaceExtras): void {
+    this.stateContributors.push(contribute);
+  }
+
+  /** How a tab relates to its linked profile, for the strip badge + dirty dot. */
+  setTabStateResolver(resolve: (linkedProfileId: string | null) => TabProfileState): void {
+    this.resolveTabState = resolve;
   }
 
   /**
@@ -310,10 +329,8 @@ export class TabManager {
     // to the app (dirty dot) and schedules a persist of the whole tab set.
     const grid = new Grid(host, {
       ...this.options.grid,
-      onChange: () => {
-        this.options.grid.onChange?.();
-        this.schedulePersist();
-      },
+      onChange: () => this.notifyWorkspaceChange(),
+      onConnectionChange: () => notifyAll(this.connectionListeners),
     });
     const link = { profileId: linkedProfileId };
     this.pendingLinks.add(link);
@@ -414,7 +431,7 @@ export class TabManager {
     if (!tab) return;
     tab.grid.refit();
     tab.grid.focus();
-    this.options.onActiveTabChange?.();
+    notifyAll(this.activeTabListeners);
     this.schedulePersist();
   }
 
@@ -522,6 +539,7 @@ export class TabManager {
   /** Snapshots every tab into the persisted `WorkspaceState` shape. */
   serialize(): WorkspaceState {
     return {
+      ...this.collectExtras(),
       tabs: this.tabs.map((tab) => {
         const snap = tab.grid.snapshot();
         return {
@@ -532,18 +550,19 @@ export class TabManager {
         };
       }),
       activeIndex: Math.max(0, this.activeIndex),
-      sftp: this.options.getSftpState?.(),
-      sidebarWidth: this.options.getSidebarWidth?.(),
-      sidebarCollapsed: this.options.getSidebarCollapsed?.(),
-      tunnels: this.options.getTunnelState?.(),
-      collapsedDeviceGroups: this.options.getCollapsedDeviceGroups?.(),
     };
+  }
+
+  private collectExtras(): WorkspaceExtras {
+    const extras: WorkspaceExtras = {};
+    for (const contribute of this.stateContributors) Object.assign(extras, contribute());
+    return extras;
   }
 
   /** A tab-level edit (rename, close) that, like a grid edit, can change a
    * profile's dirty state: notify the app and schedule a save. */
   private notifyWorkspaceChange(): void {
-    this.options.grid.onChange?.();
+    notifyAll(this.workspaceListeners);
     this.schedulePersist();
   }
 
@@ -679,15 +698,11 @@ export class TabManager {
 
   /**
    * Reflects per-tab profile state onto the strip: the profile-link badge and
-   * the unsaved-changes dot, computed by the injected `resolveTabState` (or
-   * hidden when none is wired yet, e.g. during initial construction).
+   * the unsaved-changes dot (both hidden until a resolver is set).
    */
   refreshStrip(): void {
     for (const tab of this.tabs) {
-      const state = this.options.resolveTabState?.(tab.linkedProfileId) ?? {
-        linked: false,
-        dirty: false,
-      };
+      const state = this.resolveTabState(tab.linkedProfileId);
       const badge = tab.button.querySelector<HTMLElement>(".tab-badge");
       if (badge) badge.hidden = !state.linked;
       const dot = tab.button.querySelector<HTMLElement>(".tab-dirty-dot");
@@ -757,4 +772,8 @@ export class TabManager {
     }
     this.tabs = [];
   }
+}
+
+function notifyAll(listeners: readonly (() => void)[]): void {
+  for (const listener of listeners) listener();
 }

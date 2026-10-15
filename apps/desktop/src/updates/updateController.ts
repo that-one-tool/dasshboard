@@ -15,8 +15,6 @@ import { t } from "../i18n";
 export interface UpdateControllerOptions {
 	/** Persists anything pending before the app restarts (main.ts saves the tab layout). */
 	beforeInstall: () => Promise<void>;
-	/** Reports an install failure — shown even when the About dialog is closed. */
-	onInstallError: (message: string) => void;
 }
 
 export class UpdateController {
@@ -27,8 +25,14 @@ export class UpdateController {
 	/** The last successful check found nothing newer. */
 	private upToDate = false;
 	private readonly listeners = new Set<() => void>();
+	private readonly installErrorListeners: ((message: string) => void)[] = [];
 
 	constructor(private readonly options: UpdateControllerOptions) {}
+
+	/** An install failed — reported even when the About dialog is closed. */
+	onInstallError(listener: (message: string) => void): void {
+		this.installErrorListeners.push(listener);
+	}
 
 	/** The release found by the last successful check, if any. */
 	available(): UpdateInfo | null {
@@ -83,7 +87,7 @@ export class UpdateController {
 
 	/** Confirms, then installs the found release; on success the app restarts.
 	 * Resolves `false` when there is nothing to install, one is already running,
-	 * the user cancels, or it fails (reported via `onInstallError`). */
+	 * the user cancels, or it fails (reported to the `onInstallError` listeners). */
 	async install(): Promise<boolean> {
 		const info = this.installing ? null : this.found;
 		if (!info || !(await this.confirmInstall(info))) return false;
@@ -106,7 +110,8 @@ export class UpdateController {
 			return true;
 		} catch (err) {
 			this.failed = true;
-			this.options.onInstallError((err as AppError).message);
+			const { message } = err as AppError;
+			this.installErrorListeners.forEach((listener) => listener(message));
 			return false;
 		} finally {
 			this.setInstalling(false);

@@ -2,9 +2,9 @@
  * @vitest-environment happy-dom
  *
  * Unit tests for `SettingsController` (F6 — previously no colocated test).
- * `../ipc` is mocked; terminal appearance is applied through an injected
- * `applyTerminalSettings` callback (in the app, `main.ts` fans it across every
- * tab's grid), so the tests pass a plain spy.
+ * `../ipc` is mocked; terminal appearance reaches the listener registered
+ * with `onTerminalSettingsChange` (in the app, `main.ts` fans it across every
+ * tab's grid), so the tests register a plain spy.
  *
  * Covers: settings load + fallback on failure, the `persistLastProfileId`
  * skip-if-unchanged optimization, and the live-apply → save →
@@ -22,6 +22,15 @@ vi.mock("../ipc", () => ({
 import { SettingsController } from "./settingsController";
 import { getSettings, saveSettings } from "../ipc";
 import { setLocale } from "../i18n";
+
+function makeController(
+  applyTerminalSettings: (s: TerminalSettings) => void,
+  onError: (message: string) => void,
+): SettingsController {
+  const controller = new SettingsController({ onError });
+  controller.onTerminalSettingsChange(applyTerminalSettings);
+  return controller;
+}
 
 function fakeGrid(): {
   applyTerminalSettings: ReturnType<typeof vi.fn<(s: TerminalSettings) => void>>;
@@ -62,7 +71,7 @@ describe("SettingsController.init", () => {
       }),
     );
 
-    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
+    const controller = makeController(g.applyTerminalSettings, vi.fn());
     await controller.init();
 
     expect(controller.terminalSettings()).toEqual({
@@ -78,7 +87,7 @@ describe("SettingsController.init", () => {
     const onError = vi.fn();
     vi.mocked(getSettings).mockRejectedValue({ code: "Io", message: "disk error" });
 
-    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError });
+    const controller = makeController(g.applyTerminalSettings, onError);
     await controller.init();
 
     expect(onError).toHaveBeenCalledWith("disk error");
@@ -95,7 +104,7 @@ describe("SettingsController.init", () => {
     const g = fakeGrid();
     vi.mocked(getSettings).mockResolvedValue(settings());
 
-    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
+    const controller = makeController(g.applyTerminalSettings, vi.fn());
     await controller.init();
 
     expect(document.querySelector(".settings-dialog")).toBeNull();
@@ -105,7 +114,7 @@ describe("SettingsController.init", () => {
 
   it("names the dialog by its title and links the update checkbox to its hint", async () => {
     vi.mocked(getSettings).mockResolvedValue(settings());
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 
@@ -119,7 +128,7 @@ describe("SettingsController.init", () => {
 
   it("puts the fields in a scroll body between the fixed header and footer", async () => {
     vi.mocked(getSettings).mockResolvedValue(settings());
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 
@@ -137,7 +146,7 @@ describe("SettingsController.persistLastProfileId", () => {
     const g = fakeGrid();
     vi.mocked(getSettings).mockResolvedValue(settings({ lastProfileId: null }));
 
-    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
+    const controller = makeController(g.applyTerminalSettings, vi.fn());
     await controller.init();
 
     await controller.persistLastProfileId(null);
@@ -151,7 +160,7 @@ describe("SettingsController.persistLastProfileId", () => {
     vi.mocked(getSettings).mockResolvedValue(settings({ lastProfileId: null }));
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
 
-    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
+    const controller = makeController(g.applyTerminalSettings, vi.fn());
     await controller.init();
 
     await controller.persistLastProfileId("profile-1");
@@ -171,7 +180,7 @@ describe("SettingsController.persistLastProfileId", () => {
     vi.mocked(getSettings).mockResolvedValue(settings({ lastProfileId: null }));
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
 
-    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
+    const controller = makeController(g.applyTerminalSettings, vi.fn());
     await controller.init();
 
     await controller.persistLastProfileId("profile-1");
@@ -188,7 +197,7 @@ describe("SettingsController live-apply round trip", () => {
     vi.mocked(getSettings).mockResolvedValue(settings());
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
 
-    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
+    const controller = makeController(g.applyTerminalSettings, vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 
@@ -211,7 +220,7 @@ describe("SettingsController live-apply round trip", () => {
   it("keeps a value still being typed when Escape closes the dialog", async () => {
     vi.mocked(getSettings).mockResolvedValue(settings());
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
     const fontSizeInput = document.querySelector<HTMLInputElement>(".settings-font-size");
@@ -228,7 +237,7 @@ describe("SettingsController live-apply round trip", () => {
 
   it("doesn't save anything on Escape when nothing was typed", async () => {
     vi.mocked(getSettings).mockResolvedValue(settings());
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 
@@ -248,7 +257,7 @@ describe("SettingsController live-apply round trip", () => {
       terminal: { ...s.terminal, fontSize: 18 },
     }));
 
-    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
+    const controller = makeController(g.applyTerminalSettings, vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
     const fontSizeInput = document.querySelector<HTMLInputElement>(".settings-font-size");
@@ -265,7 +274,7 @@ describe("SettingsController live-apply round trip", () => {
   it("never sends a negative number to the backend", async () => {
     vi.mocked(getSettings).mockResolvedValue(settings());
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 
@@ -289,7 +298,7 @@ describe("SettingsController live-apply round trip", () => {
       ...s,
       sftp: { ...s.sftp, editorCommand: s.sftp.editorCommand.trim() },
     }));
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
     const input = document.querySelector<HTMLInputElement>(".settings-sftp-editor");
@@ -311,7 +320,7 @@ describe("SettingsController live-apply round trip", () => {
       settings({ sftp: { idleDisconnectMins: 10, editorCommand: "gedit" } }),
     );
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
     const idle = document.querySelector<HTMLInputElement>(".settings-sftp-idle");
@@ -334,7 +343,7 @@ describe("SettingsController live-apply round trip", () => {
     );
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
 
-    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
+    const controller = makeController(g.applyTerminalSettings, vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 
@@ -354,14 +363,14 @@ describe("SettingsController live-apply round trip", () => {
 describe("SettingsController update check on launch", () => {
   it("exposes the stored opt-in", async () => {
     vi.mocked(getSettings).mockResolvedValue(settings({ updates: { checkOnLaunch: true } }));
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     expect(controller.checkUpdatesOnLaunch()).toBe(true);
   });
 
   it("is off when settings fail to load", async () => {
     vi.mocked(getSettings).mockRejectedValue({ code: "Io", message: "disk error" });
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     expect(controller.checkUpdatesOnLaunch()).toBe(false);
   });
@@ -369,7 +378,7 @@ describe("SettingsController update check on launch", () => {
   it("reflects the setting in the dialog checkbox and persists a toggle", async () => {
     vi.mocked(getSettings).mockResolvedValue(settings());
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 
@@ -391,7 +400,7 @@ describe("SettingsController close to tray", () => {
   it("reflects the setting in the dialog checkbox and persists a toggle", async () => {
     vi.mocked(getSettings).mockResolvedValue(settings());
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 
@@ -415,7 +424,7 @@ describe("SettingsController close to tray", () => {
       tray: { closeToTray: false },
     }));
     const onError = vi.fn();
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError });
+    const controller = makeController(vi.fn(), onError);
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 
@@ -431,7 +440,7 @@ describe("SettingsController close to tray", () => {
 
   it("checks the box when the setting is stored on", async () => {
     vi.mocked(getSettings).mockResolvedValue(settings({ tray: { closeToTray: true } }));
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
 
@@ -446,7 +455,7 @@ describe("SettingsController theme toggle", () => {
       settings({ terminal: { fontSize: 14, fontFamily: "Consolas", theme, scrollback: 1000 } }),
     );
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
-    const controller = new SettingsController({ applyTerminalSettings: g.applyTerminalSettings, onError: vi.fn() });
+    const controller = makeController(g.applyTerminalSettings, vi.fn());
     await controller.init();
     const button = document.querySelector<HTMLButtonElement>("#theme-btn");
     if (!button) throw new Error("unreachable");
@@ -502,7 +511,7 @@ describe("SettingsController theme toggle", () => {
 describe("SettingsController dialog tabs", () => {
   async function openDialog() {
     vi.mocked(getSettings).mockResolvedValue(settings());
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
   }
@@ -550,7 +559,7 @@ describe("SettingsController live language switch", () => {
   async function openAndPick(language: string) {
     vi.mocked(getSettings).mockResolvedValue(settings({ language: "en" }));
     vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
-    const controller = new SettingsController({ applyTerminalSettings: vi.fn(), onError: vi.fn() });
+    const controller = makeController(vi.fn(), vi.fn());
     await controller.init();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
     const select = document.querySelector<HTMLSelectElement>(".settings-language");
@@ -591,5 +600,23 @@ describe("SettingsController live language switch", () => {
     } finally {
       setLocale("en");
     }
+  });
+});
+
+describe("SettingsController listeners", () => {
+  it("passes settings another instance saved to every registered listener", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    const controller = new SettingsController({ onError: vi.fn() });
+    const terminalListeners = [vi.fn(), vi.fn()];
+    const onSftp = vi.fn();
+    terminalListeners.forEach((listener) => controller.onTerminalSettingsChange(listener));
+    controller.onSftpSettingsChange(onSftp);
+    await controller.init();
+    vi.mocked(getSettings).mockResolvedValue(settings({ sftp: { idleDisconnectMins: 3, editorCommand: "" } }));
+
+    await controller.reloadFromDisk();
+
+    for (const listener of terminalListeners) expect(listener).toHaveBeenCalledOnce();
+    expect(onSftp).toHaveBeenCalledWith({ idleDisconnectMins: 3, editorCommand: "" });
   });
 });

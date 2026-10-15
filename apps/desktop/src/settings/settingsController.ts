@@ -3,10 +3,10 @@
  * in-memory settings, renders the settings dialog, applies terminal appearance
  * live to every pane, and persists the id of the last-used profile. Thin glue
  * over the settings IPC; the pure bits (theme mapping, defaults) live in
- * `../terminal/terminalSettings`. Terminal appearance is pushed out through an
- * injected `applyTerminalSettings` callback (wired in `main.ts` to fan across
- * every tab's grid) rather than a direct `Grid` reference, so it stays correct
- * as the active tab changes.
+ * `../terminal/terminalSettings`. Terminal appearance is pushed to the
+ * listeners registered with `onTerminalSettingsChange` (`main.ts` fans it
+ * across every tab's grid) rather than a direct `Grid` reference, so it stays
+ * correct as the active tab changes.
  */
 
 import {
@@ -38,11 +38,6 @@ import {
 } from "../i18n";
 
 export interface SettingsControllerOptions {
-  /** Applies terminal appearance live (main.ts fans it across every tab's grid). */
-  applyTerminalSettings: (settings: TerminalSettings) => void;
-  /** Notified when SFTP behavior changes, so the panel can re-arm its idle
-   * timer with the new timeout. Optional (unset during tests). */
-  onSftpSettingsChange?: (settings: SftpSettings) => void;
   onError: (message: string) => void;
 }
 
@@ -70,15 +65,31 @@ const FALLBACK_SETTINGS: Settings = {
 };
 
 export class SettingsController {
-  private applyTerminalSettings: (settings: TerminalSettings) => void;
-  private onSftpSettingsChange?: (settings: SftpSettings) => void;
+  private readonly terminalListeners: ((settings: TerminalSettings) => void)[] = [];
+  private readonly sftpListeners: ((settings: SftpSettings) => void)[] = [];
   private onError: (message: string) => void;
   private settings: Settings = FALLBACK_SETTINGS;
 
   constructor(options: SettingsControllerOptions) {
-    this.applyTerminalSettings = options.applyTerminalSettings;
-    this.onSftpSettingsChange = options.onSftpSettingsChange;
     this.onError = options.onError;
+  }
+
+  /** Terminal appearance changed: apply it to the live terminals. */
+  onTerminalSettingsChange(listener: (settings: TerminalSettings) => void): void {
+    this.terminalListeners.push(listener);
+  }
+
+  /** SFTP behavior changed (e.g. the idle timeout the Files panel re-arms with). */
+  onSftpSettingsChange(listener: (settings: SftpSettings) => void): void {
+    this.sftpListeners.push(listener);
+  }
+
+  private applyTerminalSettings(settings: TerminalSettings): void {
+    for (const listener of this.terminalListeners) listener(settings);
+  }
+
+  private notifySftpSettings(settings: SftpSettings): void {
+    for (const listener of this.sftpListeners) listener(settings);
   }
 
   /** Loads persisted settings and wires the toolbar/header settings button. */
@@ -119,7 +130,7 @@ export class SettingsController {
       this.settings = fresh;
       this.applyAppTheme(fresh.terminal.theme);
       this.applyTerminalSettings(fresh.terminal);
-      this.onSftpSettingsChange?.(fresh.sftp);
+      this.notifySftpSettings(fresh.sftp);
       // Another instance may have changed the language; adopt it. `setLocale`
       // is a no-op when unchanged, and otherwise notifies the locale listeners
       // (wired in `main.ts`) to re-render every view.
@@ -192,7 +203,7 @@ export class SettingsController {
 
   private async applySftp(sftp: SftpSettings): Promise<void> {
     this.settings = { ...this.settings, sftp };
-    this.onSftpSettingsChange?.(sftp); // re-arm the panel's idle timer
+    this.notifySftpSettings(sftp);
     await this.save();
   }
 

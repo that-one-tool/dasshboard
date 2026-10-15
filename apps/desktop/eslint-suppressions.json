@@ -88,9 +88,6 @@
     }
   },
   "src/main.ts": {
-    "complexity": {
-      "count": 2
-    },
     "max-lines-per-function": {
       "count": 1
     }
@@ -154,7 +151,7 @@
   },
   "src/tabs/tabManager.ts": {
     "complexity": {
-      "count": 14
+      "count": 13
     },
     "max-lines-per-function": {
       "count": 4

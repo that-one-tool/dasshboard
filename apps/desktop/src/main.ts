@@ -1,19 +1,17 @@
 import "@xterm/xterm/css/xterm.css";
 import {
-  reloadConfig,
-  onConfigChanged,
-  isLocalConfigWriteRecent,
-  getWorkspaceState,
-  saveWorkspaceState,
-  type AppError,
-  type SftpPanelState,
-  type WorkspaceState,
+	reloadConfig,
+	onConfigChanged,
+	isLocalConfigWriteRecent,
+	getWorkspaceState,
+	saveWorkspaceState,
+	type AppError,
+	type WorkspaceState,
 } from "./ipc";
 import { initDeviceManager } from "./devices/deviceManager";
-import { TabManager, type TabProfileState } from "./tabs/tabManager";
-import { ProfileManager } from "./profiles/profileManager";
+import { TabManager } from "./tabs/tabManager";
+import { ProfileManager, type ProfileWorkspace } from "./profiles/profileManager";
 import { SettingsController } from "./settings/settingsController";
-import { DEFAULT_TERMINAL_SETTINGS } from "./terminal/terminalSettings";
 import { initHostKeyDialog } from "./terminal/hostKeyDialog";
 import { initTunnelsPanel } from "./tunnels/tunnelsPanel";
 import { initSftpPanel } from "./sftp/sftpPanel";
@@ -21,12 +19,13 @@ import { openAboutDialog } from "./ui/aboutDialog";
 import { UpdateController } from "./updates/updateController";
 import { applyUpdateBadge } from "./updates/updateBadge";
 import { initSidebarResize } from "./layout/sidebarResize";
-import { initSidebarRail } from "./layout/sidebarRail";
+import { initSidebarRail, type SidebarRail } from "./layout/sidebarRail";
 import { initTrayLabels } from "./tray/trayLabels";
 import { openKnownHostsDialog } from "./settings/knownHostsDialog";
 import { showToast } from "./ui/toast";
 import { helpIcon, reloadIcon, lockIcon, gearIcon, filesIcon } from "./ui/icons";
 import { applyDomTranslations, onLocaleChange, t } from "./i18n";
+import { refreshDevicesAll, reloadConfigAll, retranslateAll, type LiveView } from "./app/liveViews";
 
 /** Injects the SVG glyph into each header action button (kept in one place so
  * the icons stay consistent with the app's Lucide icon set). A missing
@@ -45,311 +44,283 @@ function initHeaderIcons(): void {
 	}
 }
 
+const showError = (message: string): void => showToast(t("error.prefix", { message }), "error");
+const showAppError = (error: AppError): void => showError(error.message);
+const showSuccess = (message: string): void => showToast(message, "success");
+
+function wireClick(selector: string, handler: () => void): void {
+	document.querySelector<HTMLButtonElement>(selector)?.addEventListener("click", handler);
+}
+
 window.addEventListener("DOMContentLoaded", () => {
 	void initApp();
 });
 
 async function initApp(): Promise<void> {
+	initChrome();
+	const paneRoot = document.querySelector<HTMLElement>("#pane-root");
+	if (!paneRoot) return;
+
+	// First: it applies the UI language, so every view built afterwards renders in it.
+	const settings = new SettingsController({ onError: showError });
+	await settings.init();
+	const tabs = createTabs(paneRoot, settings);
+	const updates = initUpdates(tabs);
+	const workspace = await loadWorkspace();
+	const rail = initSidebar(paneRoot, tabs, workspace);
+	await tabs.init(workspace.tabs.length > 0 ? workspace : undefined);
+	const views = await initViews({ tabs, settings, updates, rail, workspace });
+	wireConfigReload(views);
+	wireLocaleChange(views);
+	void initTrayLabels();
+	checkUpdatesOnLaunch(updates, settings);
+}
+
+/** What needs nothing else: header icons and the dialogs any part may raise. */
+function initChrome(): void {
 	// Warm the bundled icon font before any terminal renders, so Nerd Font /
 	// Powerline glyphs in remote prompts aren't briefly blank on first paint.
-	// Best-effort: unsupported/failed loads just fall through (the font also
-	// loads lazily the first time a glyph needs it).
 	void document.fonts?.load('16px "Symbols Nerd Font Mono"').catch(() => {});
-
-	// Header action buttons: paint their icons, then wire the two that open a
-	// dialog directly (help/about and trusted-hosts). Reload and settings are
-	// wired further down, next to the state they act on.
 	initHeaderIcons();
-	// App updates: About hosts the manual check; a found release badges its button.
-	// Before installing (which restarts the app), save the tab layout now rather
-	// than trusting the debounced save to land first. `tabs` is built below.
-	const updates = new UpdateController({
-		beforeInstall: () => saveWorkspaceState(tabs.serialize()),
-		onInstallError: (message) => {
-			showToast(t("updates.failed", { message }), "error");
-			// On Windows sessions close before the install; if it then failed,
-			// the Files panel must stop showing a connection that is gone.
-			void sftpPanel.resyncConnection();
-		},
+	wireClick("#trusted-hosts-btn", () => openKnownHostsDialog({ onError: showError }));
+	// Reacts to `host_key_prompt` from any source (a live connect or Test connection).
+	initHostKeyDialog();
+}
+
+/** Each tab owns an independent grid of terminals; hidden tabs keep their
+ * sessions running. Profile/settings actions target the active tab's grid. */
+function createTabs(paneRoot: HTMLElement, settings: SettingsController): TabManager {
+	const tabs = new TabManager(paneRoot, {
+		grid: { onError: showError, getTerminalSettings: () => settings.terminalSettings() },
+		// Per-instance UI state — plain save, not routed through the config watcher.
+		persist: (state) => void saveWorkspaceState(state).catch(showAppError),
+		// The app-action buttons move into the tab-strip row (no separate header).
+		headerActions: document.querySelector<HTMLElement>(".header-actions"),
 	});
+	settings.onTerminalSettingsChange((s) => tabs.forEachGrid((g) => g.applyTerminalSettings(s)));
+	return tabs;
+}
+
+/** About hosts the manual check; a found release badges its button. */
+function initUpdates(tabs: TabManager): UpdateController {
+	// Installing restarts the app: save the tab layout now rather than trusting
+	// the debounced save to land first.
+	const updates = new UpdateController({ beforeInstall: () => saveWorkspaceState(tabs.serialize()) });
+	updates.onInstallError((message) => showToast(t("updates.failed", { message }), "error"));
 	const helpBtn = document.querySelector<HTMLButtonElement>("#help-btn");
 	updates.subscribe(() => {
 		if (helpBtn) applyUpdateBadge(helpBtn, updates.available() !== null);
 	});
-	document
-		.querySelector<HTMLButtonElement>("#help-btn")
-		?.addEventListener("click", () => openAboutDialog(updates));
-	document
-		.querySelector<HTMLButtonElement>("#trusted-hosts-btn")
-		?.addEventListener("click", () =>
-			openKnownHostsDialog({
-				onError: (message) => showToast(t("error.prefix", { message }), "error"),
-			}),
-		);
+	wireClick("#help-btn", () => openAboutDialog(updates));
+	return updates;
+}
 
-	// Host-key trust dialog reacts to `host_key_prompt` events from any source
-	// (a live connect or the device editor's Test connection button).
-	initHostKeyDialog();
-
-	// The tabbed workspace (Tabs milestone, Phase 1). Each tab owns an independent
-	// multi-pane `Grid` of SSH terminals; only the active tab is visible while the
-	// rest keep their sessions alive in the background. Profile/settings actions
-	// target the active tab's grid; refresh/retranslate fan across every tab.
-	const paneRoot = document.querySelector<HTMLElement>("#pane-root");
-	if (!paneRoot) return;
-
-	// `onChange` is wired to the collaborators once they exist (below); the tabs
-	// are constructed first, so route through a late-bound callback. Terminal
-	// settings are read live via `settings` (also constructed after the tabs).
-	let onWorkspaceChange = (): void => {};
-	let onActiveTabChange = (): void => {};
-	let resolveTabState = (_id: string | null): TabProfileState => ({
-		linked: false,
-		dirty: false,
-	});
-	let currentTerminalSettings = () => DEFAULT_TERMINAL_SETTINGS;
-	// Late-bound bridges to collaborators built after the tabs/settings (below).
-	let notifySftpIdleChange = (): void => {};
-	let sftpLayoutState = (): SftpPanelState | undefined => undefined;
-	let sidebarWidth = (): number | undefined => undefined;
-	let sidebarCollapsed = (): boolean | undefined => undefined;
-	let refreshRail = (): void => {};
-	let countForwards = (): number => 0;
-	let tunnelState = (): Record<string, boolean | string[]> | undefined => undefined;
-	let collapsedDeviceGroups = (): string[] | undefined => undefined;
-	const tabs = new TabManager(paneRoot, {
-		grid: {
-			onError: (message) => showToast(t("error.prefix", { message }), "error"),
-			onChange: () => onWorkspaceChange(),
-			getTerminalSettings: () => currentTerminalSettings(),
-			onConnectionChange: () => refreshRail(),
-		},
-		onActiveTabChange: () => onActiveTabChange(),
-		resolveTabState: (id) => resolveTabState(id),
-		// Per-instance UI state — plain save, not routed through the config watcher.
-		// Surface a failed save like every other IPC call rather than dropping it.
-		persist: (state) =>
-			void saveWorkspaceState(state).catch((error: AppError) =>
-				showToast(t("error.prefix", { message: error.message }), "error"),
-			),
-		// The SFTP panel shares this file; contribute its state into each save.
-		getSftpState: () => sftpLayoutState(),
-		// …and the resized left menu's width.
-		getSidebarWidth: () => sidebarWidth(),
-		getSidebarCollapsed: () => sidebarCollapsed(),
-		// …and which tunnels the user left running or stopped.
-		getTunnelState: () => tunnelState(),
-		// …and the device list's collapsed tag sections.
-		getCollapsedDeviceGroups: () => collapsedDeviceGroups(),
-		// The app-action buttons move into the tab-strip row (no separate header).
-		headerActions: document.querySelector<HTMLElement>(".header-actions"),
-	});
-
-	// Settings (Phase 5): terminal appearance + UI language. Initialized BEFORE
-	// the tabs and the other views render, because `settings.init()` resolves and
-	// applies the UI locale (stored language → OS → English) and translates the
-	// static header; everything built afterwards renders in the right language.
-	// Terminal appearance is fanned across every tab's grid.
-	const settings = new SettingsController({
-		applyTerminalSettings: (s) => tabs.forEachGrid((g) => g.applyTerminalSettings(s)),
-		// A live idle-timeout change re-arms the SFTP panel's idle timer.
-		onSftpSettingsChange: () => notifySftpIdleChange(),
-		onError: (message) => showToast(t("error.prefix", { message }), "error"),
-	});
-	await settings.init();
-	currentTerminalSettings = () => settings.terminalSettings();
-
-	// Restore the saved tab set (Tabs, Phase 3). An empty/absent state → one
-	// blank tab, into which ProfileManager then loads the default/last profile
-	// (the `lastProfileId` migration). A non-empty state → tabs are rebuilt from
-	// their own snapshots, so the profile start-load is skipped.
-	let restoredWorkspace: WorkspaceState = { tabs: [], activeIndex: 0 };
+/** The saved tab set; empty → one blank tab, into which ProfileManager loads
+ * the start profile. */
+async function loadWorkspace(): Promise<WorkspaceState> {
 	try {
-		restoredWorkspace = await getWorkspaceState();
+		return await getWorkspaceState();
 	} catch (error) {
-		showToast(t("error.prefix", { message: (error as AppError).message }), "error");
+		showAppError(error as AppError);
+		return { tabs: [], activeIndex: 0 };
 	}
-	const workspaceRestored = restoredWorkspace.tabs.length > 0;
+}
 
-	// Resizable, collapsible left menu: its width and collapsed state are
-	// per-window state, applied before the tabs restore (which can take seconds
-	// while hosts connect) so the menu doesn't snap shut afterwards. Collapsed,
-	// it is a thin bar with the connected-device and running-forward counts.
+/**
+ * The resizable, collapsible left menu. Applied before the tabs restore (which
+ * can take seconds while hosts connect) so the menu doesn't snap shut
+ * afterwards. Collapsed, it is a thin bar with the connected-device and
+ * running-forward counts.
+ */
+function initSidebar(paneRoot: HTMLElement, tabs: TabManager, workspace: WorkspaceState): SidebarRail | null {
 	const sidebarEl = document.querySelector<HTMLElement>(".sidebar");
-	const sidebarHandle = document.querySelector<HTMLElement>(".sidebar-splitter");
-	if (sidebarEl && sidebarHandle) {
-		const sidebar = initSidebarResize({
-			sidebar: sidebarEl,
-			handle: sidebarHandle,
-			paneRoot,
-			initialWidth: restoredWorkspace.sidebarWidth,
-			onLayoutChange: () => tabs.refitActive(),
-			onPersist: () => tabs.scheduleSave(),
-		});
-		sidebarWidth = () => sidebar.persistedWidth();
-		const sidebarRail = initSidebarRail({
-			sidebar: sidebarEl,
-			splitter: sidebarHandle,
-			initialCollapsed: restoredWorkspace.sidebarCollapsed,
-			countDevices: () => tabs.connectedDeviceCount(),
-			countForwards: () => countForwards(),
-			// An expanded menu may come back wider than the window now allows.
-			onLayoutChange: () => {
-				sidebar.reclamp();
-				tabs.refitActive();
-			},
-			onPersist: () => tabs.scheduleSave(),
-		});
-		sidebarCollapsed = () => sidebarRail.persistedCollapsed();
-		refreshRail = () => sidebarRail.refresh();
-	}
+	const handle = document.querySelector<HTMLElement>(".sidebar-splitter");
+	if (!sidebarEl || !handle) return null;
+	const sidebar = initSidebarResize({
+		sidebar: sidebarEl,
+		handle,
+		paneRoot,
+		initialWidth: workspace.sidebarWidth,
+		onLayoutChange: () => tabs.refitActive(),
+		onPersist: () => tabs.scheduleSave(),
+	});
+	tabs.addStateContributor(() => ({ sidebarWidth: sidebar.persistedWidth() }));
+	return initRail(sidebarEl, handle, tabs, workspace, () => sidebar.reclamp());
+}
 
-	await tabs.init(workspaceRestored ? restoredWorkspace : undefined);
-
-	// Profiles (Phase 4): the sidebar list + toolbar Save/Save As with a
-	// dirty-state dot. `init()` loads the start profile — default if set, else
-	// the last-used profile, else nothing (1x1) — per SPEC §7. Acts on the
-	// active tab's grid.
-	const profileManager = new ProfileManager({
-		workspace: {
-			activeLinkedProfileId: () => tabs.activeLinkedProfileId(),
-			activeGroupGrids: () => tabs.activeGroupGrids(),
-			groupGrids: (id) => tabs.groupGrids(id),
-			linkedProfileIds: () => tabs.linkedProfileIds(),
-			activateGrid: (grid) => tabs.activateGrid(grid),
-			tabSnapshots: (grids) => tabs.tabSnapshots(grids),
-			linkProfile: (grid, id) => tabs.setLinkedProfileId(grid, id),
-			refreshTabStrip: () => tabs.refreshStrip(),
-			clearProfileLink: (id) => tabs.clearProfileLink(id),
-			openTabs: (names, id, replacing) => tabs.openTabs(names, id, replacing),
+function initRail(
+	sidebar: HTMLElement,
+	splitter: HTMLElement,
+	tabs: TabManager,
+	workspace: WorkspaceState,
+	reclampSidebar: () => void,
+): SidebarRail {
+	const rail = initSidebarRail({
+		sidebar,
+		splitter,
+		initialCollapsed: workspace.sidebarCollapsed,
+		countDevices: () => tabs.connectedDeviceCount(),
+		// An expanded menu may come back wider than the window now allows.
+		onLayoutChange: () => {
+			reclampSidebar();
+			tabs.refitActive();
 		},
-		onError: (message) => showToast(t("error.prefix", { message }), "error"),
-		onSuccess: (message) => showToast(message, "success"),
+		onPersist: () => tabs.scheduleSave(),
+	});
+	tabs.addStateContributor(() => ({ sidebarCollapsed: rail.persistedCollapsed() }));
+	tabs.onConnectionChange(() => rail.refresh());
+	return rail;
+}
+
+interface AppParts {
+	tabs: TabManager;
+	settings: SettingsController;
+	updates: UpdateController;
+	rail: SidebarRail | null;
+	workspace: WorkspaceState;
+}
+
+/** Builds the views around the tabs; each one a device change, a config
+ * reload or a language change has to reach. */
+async function initViews(parts: AppParts): Promise<LiveView[]> {
+	const { tabs, settings } = parts;
+	const views: LiveView[] = [
+		{
+			refreshDevices: () => Promise.allSettled(tabs.mapGrids((g) => g.refreshDevices())),
+			retranslate: () => {
+				tabs.forEachGrid((g) => g.retranslate());
+				tabs.retranslate();
+			},
+		},
+		{ reloadConfig: () => settings.reloadFromDisk() },
+	];
+	views.push(await initProfiles(parts));
+	views.push(initTunnels(parts));
+	views.push(initSftp(parts));
+	const devices = initDevices(parts, views);
+	if (devices) views.push(devices);
+	return views;
+}
+
+/** The sidebar profile list + Save/Save As, acting on the active tab's grid. */
+async function initProfiles({ tabs, settings, workspace }: AppParts): Promise<LiveView> {
+	const profileManager = new ProfileManager({
+		workspace: makeProfileWorkspace(tabs),
+		onError: showError,
+		onSuccess: showSuccess,
 		// Remember the active tab's profile so a restart without a default reloads it.
 		onProfileChange: (id) => void settings.persistLastProfileId(id),
 	});
-	// A workspace change just updates the dirty dot (bar + strip). A tab switch
-	// re-renders the bar/list for the newly active tab. The tab strip's per-tab
-	// badge + dot are computed by the profile manager via `resolveTabState`.
-	onWorkspaceChange = () => profileManager.refreshDirty();
-	onActiveTabChange = () => profileManager.onActiveTabChanged();
-	resolveTabState = (id) => profileManager.resolveTabState(id);
-	await profileManager.init(settings.lastProfileId(), { loadStart: !workspaceRestored });
+	tabs.onWorkspaceChange(() => profileManager.refreshDirty());
+	tabs.onActiveTabChange(() => profileManager.onActiveTabChanged());
+	tabs.setTabStateResolver((id) => profileManager.resolveTabState(id));
+	await profileManager.init(settings.lastProfileId(), { loadStart: workspace.tabs.length === 0 });
+	return { refreshDevices: () => profileManager.reload(), retranslate: () => profileManager.retranslate() };
+}
 
-	// Tunnels drawer (local port-forwarding): a header-toggled panel listing
-	// SSH devices with forwards, with Start/Stop + live status. Independent of
-	// the terminal grid (a tunnel has no terminal).
+function makeProfileWorkspace(tabs: TabManager): ProfileWorkspace {
+	return {
+		activeLinkedProfileId: () => tabs.activeLinkedProfileId(),
+		activeGroupGrids: () => tabs.activeGroupGrids(),
+		groupGrids: (id) => tabs.groupGrids(id),
+		linkedProfileIds: () => tabs.linkedProfileIds(),
+		activateGrid: (grid) => tabs.activateGrid(grid),
+		tabSnapshots: (grids) => tabs.tabSnapshots(grids),
+		linkProfile: (grid, id) => tabs.setLinkedProfileId(grid, id),
+		refreshTabStrip: () => tabs.refreshStrip(),
+		clearProfileLink: (id) => tabs.clearProfileLink(id),
+		openTabs: (names, id, replacing) => tabs.openTabs(names, id, replacing),
+	};
+}
+
+/** Port forwards: Start/Stop per device with live status. */
+function initTunnels({ tabs, rail, workspace }: AppParts): LiveView {
 	const tunnelsPanel = initTunnelsPanel({
-		onError: (error: AppError) => showToast(t("error.prefix", { message: error.message }), "error"),
-		onSuccess: (message: string) => showToast(message, "success"),
-		initialState: restoredWorkspace.tunnels,
+		onError: showAppError,
+		onSuccess: showSuccess,
+		initialState: workspace.tunnels,
 		onPersist: () => tabs.scheduleSave(),
-		onForwardsChange: () => refreshRail(),
+		onForwardsChange: () => rail?.refresh(),
 	});
-	tunnelState = () => tunnelsPanel.layoutState();
-	countForwards = () => tunnelsPanel.listeningForwardCount();
+	tabs.addStateContributor(() => ({ tunnels: tunnelsPanel.layoutState() }));
+	rail?.countForwardsWith(() => tunnelsPanel.listeningForwardCount());
+	return { refreshDevices: () => tunnelsPanel.refresh(), retranslate: () => tunnelsPanel.retranslate() };
+}
 
-	// Files (SFTP) panel: a sidebar card listing SSH devices plus a persistent,
-	// resizable browser panel docked to the right of the grid. Independent of the
-	// grid, but resizing/opening it changes the grid's width, so re-fit on layout
-	// change. The idle-disconnect timeout is read live from settings.
+/** The Files panel docked right of the grid; opening/resizing it re-fits the grid. */
+function initSftp({ tabs, settings, updates, workspace }: AppParts): LiveView {
 	const sftpPanel = initSftpPanel({
-		onError: (error: AppError) => showToast(t("error.prefix", { message: error.message }), "error"),
-		onSuccess: (message: string) => showToast(message, "success"),
+		onError: showAppError,
+		onSuccess: showSuccess,
 		getIdleDisconnectMins: () => settings.sftpSettings().idleDisconnectMins,
 		onLayoutChange: () => tabs.activeGrid().refit(),
 		onPersist: () => tabs.scheduleSave(),
-		initialState: restoredWorkspace.sftp,
+		initialState: workspace.sftp,
 	});
-	notifySftpIdleChange = () => sftpPanel.onIdleSettingChange();
-	sftpLayoutState = () => sftpPanel.layoutState();
-	// Header toggle: show/hide the Files panel (hiding disconnects).
-	document
-		.querySelector<HTMLButtonElement>("#sftp-btn")
-		?.addEventListener("click", () => sftpPanel.toggle());
+	settings.onSftpSettingsChange(() => sftpPanel.onIdleSettingChange());
+	// On Windows sessions close before the install; if it then failed, the panel
+	// must stop showing a connection that is gone.
+	updates.onInstallError(() => void sftpPanel.resyncConnection());
+	tabs.addStateContributor(() => ({ sftp: sftpPanel.layoutState() }));
+	wireClick("#sftp-btn", () => sftpPanel.toggle());
+	return { refreshDevices: () => sftpPanel.refresh(), retranslate: () => sftpPanel.retranslate() };
+}
 
-	// Device manager: on any successful change, refresh every pane's device
-	// dropdown so a newly added/edited/deleted device shows up immediately; also
-	// re-sync profiles (a deleted device is nulled out of them backend-side) and
-	// the tunnels drawer (a device's forwards may have changed).
+/** The device list and editor: a change reaches every view showing devices
+ * (a deleted device is also nulled out of profiles backend-side). */
+function initDevices({ tabs, workspace }: AppParts, views: readonly LiveView[]): LiveView | null {
 	const deviceManager = initDeviceManager({
 		onError: (error: AppError) => {
 			console.error("Device error:", error);
-			showToast(t("error.prefix", { message: error.message }), "error");
+			showAppError(error);
 		},
 		onSuccess: (message: string) => {
-			showToast(message, "success");
-			tabs.forEachGrid((g) => void g.refreshDevices());
-			void profileManager.reload();
-			void tunnelsPanel.refresh();
-			void sftpPanel.refresh();
+			showSuccess(message);
+			void refreshDevicesAll(views);
 		},
-		initialCollapsedGroups: restoredWorkspace.collapsedDeviceGroups,
+		initialCollapsedGroups: workspace.collapsedDeviceGroups,
 		onPersist: () => tabs.scheduleSave(),
 	});
-	collapsedDeviceGroups = () => deviceManager?.collapsedGroups();
+	if (!deviceManager) return null;
+	tabs.addStateContributor(() => ({ collapsedDeviceGroups: deviceManager.collapsedGroups() }));
+	return { reloadConfig: () => deviceManager.reload(), retranslate: () => deviceManager.retranslate() };
+}
 
-	// Multi-instance config sync (the multi-window follow-up): each app instance
-	// caches the config files in memory at startup, so a change made by another
-	// instance (a new device, an edited profile, a font change) is invisible here
-	// until reloaded. `reloadAll` re-reads every store on the backend, then
-	// re-renders each config-derived surface. Live SSH sessions and the current
-	// grid layout are untouched — only the *available* devices / profiles /
-	// settings / trusted hosts are refreshed. Wired to a manual header button and
-	// to the backend file-watcher's `config_changed` event.
-	const reloadAll = async (announce: boolean): Promise<void> => {
+/**
+ * Multi-instance config sync: each instance caches the config files at
+ * startup, so another instance's change is invisible here until reloaded.
+ * Live sessions and the grid layout are untouched. Wired to the header button
+ * and to the backend watcher's `config_changed` event.
+ */
+function wireConfigReload(views: readonly LiveView[]): void {
+	const reloadAll = async (): Promise<void> => {
 		try {
 			await reloadConfig();
 		} catch (error) {
 			showToast(t("error.reloadFailed", { message: (error as AppError).message }), "error");
 			return;
 		}
-		// Independent surfaces: one failing (e.g. a transient IPC error) must not
-		// skip the others, so settle all rather than short-circuiting.
-		await Promise.allSettled([
-			deviceManager?.reload() ?? Promise.resolve(),
-			...tabs.mapGrids((g) => g.refreshDevices()),
-			profileManager.reload(),
-			settings.reloadFromDisk(),
-			tunnelsPanel.refresh(),
-			sftpPanel.refresh(),
-		]);
-		if (announce) showToast(t("error.reloaded"), "success");
+		await reloadConfigAll(views);
+		showToast(t("error.reloaded"), "success");
 	};
-
-	// Manual Reload button in the header: always reloads, and confirms with a
-	// toast so the click has visible feedback even when nothing changed.
-	document
-		.querySelector<HTMLButtonElement>("#reload-btn")
-		?.addEventListener("click", () => void reloadAll(true));
-
-	// Automatic reload when another instance writes a config file. Skip the echo
-	// of our *own* just-written change (the watcher can't tell which instance
-	// wrote it): `isLocalConfigWriteRecent()` is armed by every local config write.
+	wireClick("#reload-btn", () => void reloadAll());
+	// Skip the echo of our own write: the watcher can't tell which instance wrote it.
 	void onConfigChanged(() => {
-		if (isLocalConfigWriteRecent()) return;
-		void reloadAll(true);
+		if (!isLocalConfigWriteRecent()) void reloadAll();
 	});
+}
 
-	// Live UI language change (from the Settings dialog, or adopted from another
-	// instance via `reloadFromDisk`): re-translate the static chrome and re-render
-	// every long-lived view in place. Live SSH sessions and the grid layout are
-	// untouched — only their labels change.
+/** Re-translates the static chrome and every view in place (live sessions
+ * and the grid layout are untouched). */
+function wireLocaleChange(views: readonly LiveView[]): void {
 	onLocaleChange(() => {
 		applyDomTranslations(document);
-		tabs.forEachGrid((g) => g.retranslate());
-		tabs.retranslate();
-		profileManager.retranslate();
-		deviceManager?.retranslate();
-		tunnelsPanel.retranslate();
-		sftpPanel.retranslate();
+		retranslateAll(views);
 	});
+}
 
-	// Tray menu labels follow the UI language and the live-session count.
-	void initTrayLabels();
-
-	// Opt-in update check, last so it never delays startup. Off by default: the
-	// app contacts no server unless the user asked for it.
+/** Opt-in, last so it never delays startup: the app contacts no server unless asked. */
+function checkUpdatesOnLaunch(updates: UpdateController, settings: SettingsController): void {
 	void updates.maybeCheckOnLaunch(settings.checkUpdatesOnLaunch()).then((info) => {
 		if (info) showToast(t("updates.toast", { version: info.version }), "success");
 	});
