@@ -64,8 +64,9 @@ files, releasing),
       the panes' policy — `tunnelReconnect`)
     - `sftp/` — the docked Files panel (browser + transfer queue); the
       panel's parts live in `sftp/panel/` (markup, entry rows, queue view,
-      bookmarks bar, and the DOM-free history / sort+filter / selection /
-      free-name models); edit in
+      bookmarks bar, and DOM-free models: history, sort+filter, selection,
+      free name, move clipboard, bulk runs, visibility/width, idle timer,
+      latest connect attempt); edit in
       place: `editSessions` (DOM-free: open/sync/conflict/stop per edit,
       transfers through the queue; uploads are not cancellable) and
       `editList` (the "Synced with the server" list; it says an edit lasts

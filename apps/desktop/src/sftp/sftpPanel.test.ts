@@ -129,6 +129,7 @@ import {
   sftpEditClose,
 } from "../ipc";
 import { chooseConflict, confirm } from "../ui/confirm";
+import { pickDownloadDirPath } from "../ui/fileDialog";
 import type { AppError } from "../ipc";
 import { connectIcon, disconnectIcon } from "../ui/icons";
 import { t } from "../i18n";
@@ -895,6 +896,105 @@ describe("SftpPanel", () => {
 
     expect(sftpDownload).toHaveBeenCalledWith("a", "/home/j/readme.txt", "C:/dest/readme.txt");
     expect(sftpDownloadDir).toHaveBeenCalledWith("a", "/home/j/sub", "C:/dest/sub", "overwrite");
+  });
+
+  it("bulk download queues nothing when the connection closed while the folder dialog was open", async () => {
+    await setup();
+    await browse();
+    check(1).click(); // readme.txt (file)
+    vi.mocked(pickDownloadDirPath).mockImplementationOnce(async () => {
+      q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]').click();
+      await flush();
+      return "C:/dest";
+    });
+
+    q<HTMLButtonElement>('[data-action="bulk-download"]').click();
+    // A "never happens" check: let every pending step of the flow run first.
+    for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sftpDownload).not.toHaveBeenCalled();
+    expect(document.querySelector(".sftp-queue-item")).toBeNull();
+  });
+
+  describe("a connection that changed while a bulk action's dialog was open", () => {
+    async function selectDevice(id: string): Promise<void> {
+      const select = q<HTMLSelectElement>(".sftp-device-select");
+      select.value = id;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await flush();
+    }
+
+    // A "never happens" check: let every pending step of the flow run first.
+    async function settle(): Promise<void> {
+      for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    beforeEach(() => {
+      h.devices = [sshDevice("a", "Alpha"), sshDevice("b", "Beta")];
+    });
+
+    it("bulk delete removes nothing when the connection closed during the confirmation", async () => {
+      await setup();
+      await browse();
+      check(1).click();
+      vi.mocked(confirm).mockImplementationOnce(async () => {
+        q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]').click();
+        await flush();
+        return true;
+      });
+
+      q<HTMLButtonElement>('[data-action="bulk-delete"]').click();
+      await settle();
+
+      expect(sftpRemove).not.toHaveBeenCalled();
+    });
+
+    it("bulk delete removes nothing on another device connected meanwhile", async () => {
+      await setup();
+      await browse();
+      check(1).click();
+      vi.mocked(confirm).mockImplementationOnce(async () => {
+        await selectDevice("b");
+        return true;
+      });
+
+      q<HTMLButtonElement>('[data-action="bulk-delete"]').click();
+      await settle();
+
+      expect(sftpRemove).not.toHaveBeenCalled();
+    });
+
+    it("bulk download queues nothing when the device changed during the conflict choice", async () => {
+      h.dirResult = "C:/dest";
+      h.localExists = true;
+      await setup();
+      await browse();
+      check(1).click();
+      vi.mocked(chooseConflict).mockImplementationOnce(async () => {
+        await selectDevice("b");
+        return "overwrite";
+      });
+
+      q<HTMLButtonElement>('[data-action="bulk-download"]').click();
+      await settle();
+
+      expect(sftpDownload).not.toHaveBeenCalled();
+    });
+
+    it("bulk download queues nothing for another device connected meanwhile", async () => {
+      await setup();
+      await browse();
+      check(1).click();
+      vi.mocked(pickDownloadDirPath).mockImplementationOnce(async () => {
+        await selectDevice("b");
+        return "C:/dest";
+      });
+
+      q<HTMLButtonElement>('[data-action="bulk-download"]').click();
+      await settle();
+
+      expect(sftpDownload).not.toHaveBeenCalled();
+    });
   });
 
   it("bulk download gives up looking for a free local name when every name exists", async () => {

@@ -141,10 +141,10 @@
   },
   "src/sftp/sftpPanel.ts": {
     "complexity": {
-      "count": 47
+      "count": 46
     },
     "max-lines-per-function": {
-      "count": 10
+      "count": 6
     }
   },
   "src/sftp/transferQueue.ts": {

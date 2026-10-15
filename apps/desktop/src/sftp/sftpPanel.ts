@@ -81,6 +81,11 @@ import { findFreeName } from "./panel/freeName";
 import { renderEntryRow, type EntryRowActions } from "./panel/entryRow";
 import * as queueView from "./panel/queueView";
 import { renderBookmarks, renderBookmarkToggle } from "./panel/bookmarksBar";
+import { MoveClipboard, planMoves, type MoveStep } from "./panel/moveClipboard";
+import { getBulkOutcome, runEach, type BulkResult } from "./panel/bulkRun";
+import { LatestAttempt } from "./panel/latestAttempt";
+import { IdleTimer } from "./panel/idleTimer";
+import { PanelLayout } from "./panel/panelLayout";
 
 export interface SftpPanelOptions {
   onError?: (error: AppError) => void;
@@ -161,7 +166,7 @@ export class SftpPanel {
    * own `run`. Keyed by queue item id. */
   private editTransfers = new Map<number, { deviceId: string; reject: (error: AppError) => void }>();
   /** Idle-disconnect timer, armed while collapsed + connected. */
-  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private idleTimer = new IdleTimer(() => void this.onIdleTimeout());
 
   /** The device whose connection the panel is currently showing (null when not
    * connected). */
@@ -171,14 +176,7 @@ export class SftpPanel {
   private selectedDeviceId: string | null = null;
   /** True after an idle-timeout disconnect, so the disconnected state can say so. */
   private idleDisconnected = false;
-  /** Panel visibility + collapse state. */
-  private panelOpen = false;
-  private collapsed = false;
-  /** True once the panel has been opened at least once (this session or a
-   * restored state), gating whether its state is persisted at all. */
-  private everOpened = false;
-  /** Current panel width in px (persisted by the caller via `layoutState`). */
-  private width = remToPx(DEFAULT_PANEL_REM);
+  private layout = new PanelLayout(remToPx(DEFAULT_PANEL_REM));
 
   /** The directory currently listed. */
   private cwd = "/";
@@ -195,20 +193,14 @@ export class SftpPanel {
   private bookmarks: string[] = [];
   /** The checked entries; cleared on navigation. */
   private selection = new EntrySelection();
-  /**
-   * The pending Move ("cut") set: the source device + directory and the entry
-   * names to move on the next Paste. Survives navigation (cut here → open a
-   * folder → paste), but is tied to one connection.
-   */
-  private moveClipboard: { deviceId: string; dir: string; names: string[] } | null = null;
+  private moveClipboard = new MoveClipboard();
   private history = new DirHistory();
   /** True while a connect/list/transfer is in flight (disables the toolbar). */
   private busy = false;
   /** True while `sftpConnect` is in flight (the connect toggle is inert). */
   private connecting = false;
-  /** Bumped by every connect attempt and every disconnect, so a connect that
-   * resolves after the user closed/disconnected is recognised as stale. */
-  private connectSeq = 0;
+  /** A connect that resolves after the user closed/disconnected is stale. */
+  private connectAttempts = new LatestAttempt();
 
   /** The splitter lives outside the panel's replaced innerHTML, so its listener
    * survives a `buildPanel()` rebuild — wire it exactly once. */
@@ -254,13 +246,9 @@ export class SftpPanel {
   private applyInitialState(): void {
     const s = this.options.initialState;
     if (!s) return;
-    this.width = Math.min(remToPx(MAX_PANEL_REM), Math.max(remToPx(MIN_PANEL_REM), s.width));
     const known = s.deviceId && browsableDevices(this.devices).some((d) => d.id === s.deviceId);
     this.selectedDeviceId = known ? s.deviceId : null;
-    if (!s.open) return;
-    this.everOpened = true;
-    this.panelOpen = true;
-    this.collapsed = s.collapsed;
+    if (!this.layout.restore(s, { min: remToPx(MIN_PANEL_REM), max: remToPx(MAX_PANEL_REM) })) return;
     this.applyOpenState();
     this.syncDeviceSelect();
     this.renderDisconnectedState();
@@ -270,13 +258,7 @@ export class SftpPanel {
   /** The persisted panel state, or `undefined` until the panel has been opened
    * (so the workspace file stays clean until the feature is used). */
   layoutState(): SftpPanelState | undefined {
-    if (!this.everOpened) return undefined;
-    return {
-      open: this.panelOpen,
-      collapsed: this.collapsed,
-      width: this.width,
-      deviceId: this.activeDeviceId ?? this.selectedDeviceId ?? null,
-    };
+    return this.layout.persisted(this.activeDeviceId ?? this.selectedDeviceId ?? null);
   }
 
   /** Notify the caller that persisted state changed (debounced save). */
@@ -329,7 +311,7 @@ export class SftpPanel {
       this.unlistenProgress = null;
       this.buildPanel();
       this.refreshDeviceSelect();
-      if (this.panelOpen) this.applyOpenState();
+      if (this.layout.isOpen()) this.applyOpenState();
     }
   }
 
@@ -341,7 +323,7 @@ export class SftpPanel {
     this.unlistenEditChanged?.();
     this.unlistenEditChanged = null;
     this.clearQueueHideTimers();
-    this.clearIdleTimer();
+    this.idleTimer.clear();
   }
 
   /** Surface an operation's error, then check whether it failed because the
@@ -495,15 +477,13 @@ export class SftpPanel {
 
   /** Whether the panel is currently shown (open, expanded or collapsed). */
   isOpen(): boolean {
-    return this.panelOpen;
+    return this.layout.isOpen();
   }
 
   /** Show the panel (expanded). Does not connect — the picker's disconnected
    * state offers a Connect button. */
   open(): void {
-    this.panelOpen = true;
-    this.everOpened = true;
-    this.collapsed = false;
+    this.layout.show();
     this.idleDisconnected = false;
     this.applyOpenState();
     if (!this.activeDeviceId) this.renderDisconnectedState();
@@ -520,7 +500,7 @@ export class SftpPanel {
   /** Toggle the panel from the header button: open when hidden, fully close
    * (disconnecting) when shown. */
   toggle(): void {
-    if (this.panelOpen) void this.hide();
+    if (this.layout.isOpen()) void this.hide();
     else this.open();
   }
 
@@ -528,8 +508,8 @@ export class SftpPanel {
    * "closed" state's rule) and hide the panel + splitter. */
   private async hide(): Promise<void> {
     if (!(await this.confirmEndEdits())) return;
-    this.panelOpen = false;
-    this.clearIdleTimer();
+    this.layout.hide();
+    this.idleTimer.clear();
     this.applyOpenState();
     this.options.onLayoutChange?.();
     this.persist();
@@ -540,32 +520,36 @@ export class SftpPanel {
   /** Collapse to the rail (keeps the connection, arms the idle timer) or expand
    * back (clears it). A no-op when the panel is hidden. */
   private setCollapsed(collapsed: boolean): void {
-    if (!this.panelOpen) return;
-    this.collapsed = collapsed;
+    if (!this.layout.setCollapsed(collapsed)) return;
     if (collapsed) this.armIdleTimer();
-    else {
-      this.clearIdleTimer();
-      if (this.idleDisconnected && !this.activeDeviceId) this.renderDisconnectedState();
-    }
+    else this.handleExpand();
     this.applyOpenState();
     this.options.onLayoutChange?.();
     this.persist();
+  }
+
+  /** Expanding stops the idle countdown and shows why an idle panel is
+   * disconnected. */
+  private handleExpand(): void {
+    this.idleTimer.clear();
+    if (this.idleDisconnected && !this.activeDeviceId) this.renderDisconnectedState();
   }
 
   /** Reflect open/collapsed/width onto the panel + splitter + toggle button. */
   private applyOpenState(): void {
     const panel = this.panel;
     if (!panel) return;
-    panel.hidden = !this.panelOpen;
-    panel.classList.toggle("sftp-collapsed", this.collapsed);
+    const { layout } = this;
+    panel.hidden = !layout.isOpen();
+    panel.classList.toggle("sftp-collapsed", layout.isCollapsed());
     // Clear the inline width while collapsed so the `.sftp-collapsed` rail width
     // (2.5rem) applies; an inline width would otherwise override it.
-    panel.style.width = this.collapsed ? "" : `${this.width}px`;
-    if (this.splitter) this.splitter.hidden = !this.panelOpen || this.collapsed;
+    panel.style.width = layout.isCollapsed() ? "" : `${layout.width()}px`;
+    if (this.splitter) this.splitter.hidden = !layout.isOpen() || layout.isCollapsed();
     this.syncSplitterAria();
     this.updateConnDot();
     const btn = document.querySelector<HTMLButtonElement>("#sftp-btn");
-    btn?.setAttribute("aria-pressed", String(this.panelOpen));
+    btn?.setAttribute("aria-pressed", String(layout.isOpen()));
   }
 
   /* ----- connection lifecycle -------------------------------------------- */
@@ -589,14 +573,14 @@ export class SftpPanel {
     this.idleDisconnected = false;
     this.history.reset();
     this.setStatus(t("sftp.connecting"));
-    const seq = ++this.connectSeq;
+    const attempt = this.connectAttempts.begin();
     this.connecting = true;
     this.setBusy(true);
     try {
       // A first-contact host key raises the global host-key dialog; on accept the
       // connect proceeds and resolves here.
       const startDir = await sftpConnect(deviceId);
-      if (seq !== this.connectSeq) {
+      if (!this.connectAttempts.isCurrent(attempt)) {
         this.dropStaleConnection(deviceId);
         return;
       }
@@ -606,14 +590,14 @@ export class SftpPanel {
       await this.goTo(startDir);
     } catch (err) {
       // A superseded attempt (the user moved on) must not touch the newer one.
-      if (seq !== this.connectSeq) return;
+      if (!this.connectAttempts.isCurrent(attempt)) return;
       this.activeDeviceId = null;
       this.setStatus("");
       this.options.onError?.(err as AppError);
       this.renderDisconnectedState();
       this.updateConnDot();
     } finally {
-      if (seq === this.connectSeq) this.finishConnect();
+      if (this.connectAttempts.isCurrent(attempt)) this.finishConnect();
     }
   }
 
@@ -637,10 +621,10 @@ export class SftpPanel {
   private async disconnectActive(): Promise<void> {
     const deviceId = this.activeDeviceId;
     this.activeDeviceId = null;
-    this.connectSeq += 1; // a connect still in flight is now stale
+    this.connectAttempts.invalidate(); // a connect still in flight is now stale
     this.connecting = false;
     this.setBusy(false); // …and will never clear `busy` itself
-    this.moveClipboard = null; // a pending move is tied to this connection
+    this.moveClipboard.clear(); // a pending move is tied to this connection
     this.bookmarks = []; // bookmarks are loaded per active device
     this.renderBookmarks();
     this.updateBookmarkButton();
@@ -686,7 +670,7 @@ export class SftpPanel {
   /** Drop the connection but keep the panel open, showing the disconnected
    * state (the green toggle then offers connect/reconnect). */
   private async handleDisconnect(): Promise<void> {
-    this.clearIdleTimer();
+    this.idleTimer.clear();
     this.idleDisconnected = false;
     await this.disconnectActive();
     this.setStatus("");
@@ -700,28 +684,18 @@ export class SftpPanel {
   /** Arm the idle-disconnect timer for a collapsed, connected panel (using the
    * live setting; `0` disables it). */
   private armIdleTimer(): void {
-    this.clearIdleTimer();
+    this.idleTimer.clear();
     // An open edit keeps the connection: its saves still need uploading.
     if (!this.activeDeviceId || this.edits.hasEdits(this.activeDeviceId)) return;
-    const mins = this.options.getIdleDisconnectMins?.() ?? 0;
-    if (mins <= 0) return;
-    this.idleTimer = setTimeout(() => void this.onIdleTimeout(), mins * 60_000);
-  }
-
-  private clearIdleTimer(): void {
-    if (this.idleTimer !== null) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-    }
+    this.idleTimer.arm(this.options.getIdleDisconnectMins?.() ?? 0);
   }
 
   /** Re-arm the idle timer if the setting changed while collapsed + connected. */
   onIdleSettingChange(): void {
-    if (this.collapsed && this.activeDeviceId) this.armIdleTimer();
+    if (this.layout.isCollapsed() && this.activeDeviceId) this.armIdleTimer();
   }
 
   private async onIdleTimeout(): Promise<void> {
-    this.idleTimer = null;
     if (!this.activeDeviceId) return;
     await this.disconnectActive();
     this.idleDisconnected = true;
@@ -1059,7 +1033,7 @@ export class SftpPanel {
     this.renderEdits();
     // The last edit ending lets a collapsed panel idle out again (and a new
     // one stops the countdown).
-    if (this.collapsed) this.armIdleTimer();
+    if (this.layout.isCollapsed()) this.armIdleTimer();
   }
 
   private renderEdits(): void {
@@ -1302,7 +1276,7 @@ export class SftpPanel {
     );
     if (!confirmed) return;
     try {
-      await sftpRemove(this.activeDeviceId, joinRemote(this.cwd, entry.name), isDir, isDir);
+      await this.removeEntry(this.activeDeviceId, this.cwd, entry);
       await this.loadDir(this.cwd);
     } catch (err) {
       this.reportError(err);
@@ -1412,12 +1386,7 @@ export class SftpPanel {
       .forEach((b) => {
         b.disabled = n === 0;
       });
-    // Paste shows only when a move is pending on THIS connection and we've moved
-    // to a different directory than the source (pasting into the source is a no-op).
-    const canPaste =
-      this.moveClipboard !== null &&
-      this.moveClipboard.deviceId === this.activeDeviceId &&
-      this.moveClipboard.dir !== this.cwd;
+    const canPaste = this.moveClipboard.canPasteInto(this.activeDeviceId, this.cwd);
     if (this.pasteBtnEl) {
       this.pasteBtnEl.hidden = !canPaste;
       this.pasteBtnEl.disabled = !canPaste;
@@ -1430,169 +1399,167 @@ export class SftpPanel {
   }
 
   /** Download every selected entry into one chosen local folder — files
-   * directly, folders recursively — under a single conflict policy. Sequential,
-   * with the shared progress bar per file. */
+   * directly, folders recursively — under a single conflict policy. */
   private async handleBulkDownload(): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    const entries = this.selectedEntries();
-    if (entries.length === 0) return;
-    this.clearHover();
-    if (this.refuseUnsafeNames(entries)) return;
+    const selection = this.getDownloadableSelection();
+    if (!selection) return;
     const dest = await pickDownloadDirPath();
-    if (dest === null) return; // cancelled
-    const deviceId = this.activeDeviceId;
-    const srcDir = this.cwd;
+    if (dest !== null && this.isConnectedTo(selection.deviceId)) await this.downloadInto(selection, dest);
+  }
 
-    // Resolve each target and detect a conflict up front, so the policy is asked
-    // once for the whole batch.
-    const targets: { entry: SftpEntry; target: string }[] = [];
-    let conflict = false;
-    for (const entry of entries) {
-      const target = await join(dest, entry.name);
-      targets.push({ entry, target });
-      if (!conflict && (await sftpLocalExists(target))) conflict = true;
-    }
-    const message =
-      entries.length === 1
-        ? t("sftp.conflict.message", { name: entries[0]?.name ?? "" })
-        : t("sftp.conflict.messageMany");
-    const policy = await this.resolvePolicy(conflict, message);
+  /** The selection, or `null` when there is none, not connected, or a name
+   * can't be stored locally (reported). */
+  private getDownloadableSelection(): BulkSelection | null {
+    const selection = this.captureBulkSelection();
+    if (!selection) return null;
+    this.clearHover();
+    return this.refuseUnsafeNames(selection.entries) ? null : selection;
+  }
+
+  /** The selected entries with the device and directory they belong to,
+   * captured before a dialog: the connection may change while it is open. */
+  private captureBulkSelection(): BulkSelection | null {
+    const entries = this.selectedEntries();
+    if (this.activeDeviceId === null || entries.length === 0) return null;
+    return { deviceId: this.activeDeviceId, dir: this.cwd, entries };
+  }
+
+  private isConnectedTo(deviceId: string): boolean {
+    return this.activeDeviceId === deviceId;
+  }
+
+  /**
+   * Queue each entry as its own background item; they drain one at a time
+   * while browsing stays live. The conflict policy is asked once for the
+   * batch; skip/rename are resolved per file when it runs. Bulk items are
+   * quiet (no per-item toast): the queue list is the feedback.
+   */
+  private async downloadInto({ deviceId, dir, entries }: BulkSelection, dest: string): Promise<void> {
+    const { targets, conflict } = await resolveLocalTargets(entries, dest);
+    const policy = await this.resolveBulkPolicy(deviceId, conflict, entries);
     if (policy === null) return;
-
-    // Enqueue each selection as its own background item; they drain one at a
-    // time while browsing stays live. Skip/rename are resolved at run time per
-    // file. Bulk items are quiet (no per-item toast) — the queue list is the
-    // feedback; a single explicit download still toasts.
     for (const { entry, target } of targets) {
-      const remote = joinRemote(srcDir, entry.name);
-      if (entry.kind === "dir") {
-        this.queue.enqueue({
-          deviceId,
-          direction: "download",
-          isDir: true,
-          name: entry.name,
-          run: () => this.downloadFolder(deviceId, remote, target, policy),
-        });
-      } else {
-        this.queue.enqueue({
-          deviceId,
-          direction: "download",
-          isDir: false,
-          name: entry.name,
-          run: async () => {
-            if (policy === "skip" && (await sftpLocalExists(target))) return;
-            const local = policy === "rename" ? await this.freshLocalName(target, entry.name) : target;
-            await sftpDownload(deviceId, remote, local);
-          },
-        });
-      }
+      this.enqueueBulkDownload(deviceId, joinRemote(dir, entry.name), entry, target, policy);
     }
     this.clearSelection();
+  }
+
+  /** The batch's conflict policy, or `null` when cancelled or when another
+   * connection took over while the conflict dialog was open. */
+  private async resolveBulkPolicy(
+    deviceId: string,
+    conflict: boolean,
+    entries: SftpEntry[],
+  ): Promise<ConflictPolicy | null> {
+    const policy = await this.resolvePolicy(conflict, getBulkConflictMessage(entries));
+    return this.isConnectedTo(deviceId) ? policy : null;
+  }
+
+  private enqueueBulkDownload(
+    deviceId: string,
+    remote: string,
+    entry: SftpEntry,
+    target: string,
+    policy: ConflictPolicy,
+  ): void {
+    const isDir = entry.kind === "dir";
+    this.queue.enqueue({
+      deviceId,
+      direction: "download",
+      isDir,
+      name: entry.name,
+      run: isDir
+        ? () => this.downloadFolder(deviceId, remote, target, policy)
+        : () => this.downloadFileTo(deviceId, remote, target, entry.name, policy),
+    });
+  }
+
+  private async downloadFileTo(
+    deviceId: string,
+    remote: string,
+    target: string,
+    name: string,
+    policy: ConflictPolicy,
+  ): Promise<void> {
+    const local = await this.bulkFileDestination(target, name, policy);
+    if (local !== null) await sftpDownload(deviceId, remote, local);
+  }
+
+  /** Where one file of a bulk download goes, or `null` to skip it. */
+  private async bulkFileDestination(target: string, name: string, policy: ConflictPolicy): Promise<string | null> {
+    if (policy === "rename") return this.freshLocalName(target, name);
+    return (await shouldSkipExisting(target, policy)) ? null : target;
   }
 
   /** "Cut": record the selection for a later Paste, then clear it. */
   private handleBulkCut(): void {
     if (this.activeDeviceId === null || this.selection.size === 0) return;
-    this.moveClipboard = {
-      deviceId: this.activeDeviceId,
-      dir: this.cwd,
-      names: this.selection.names(),
-    };
-    this.setStatus(tp("sftp.cutNotice", this.moveClipboard.names.length));
+    const names = this.selection.names();
+    this.moveClipboard.cut({ deviceId: this.activeDeviceId, dir: this.cwd, names });
+    this.setStatus(tp("sftp.cutNotice", names.length));
     this.clearSelection(); // also refreshes the bar (Paste now shown after navigating)
   }
 
   /** "Paste": move each cut entry into the current directory (server-side
    * rename). Same-connection only; conflicts surface per item. */
   private async handleBulkPaste(): Promise<void> {
-    const clip = this.moveClipboard;
-    if (this.activeDeviceId === null || clip === null || clip.deviceId !== this.activeDeviceId) {
-      return;
-    }
+    const clip = this.moveClipboard.pending();
+    if (clip === null || clip.deviceId !== this.activeDeviceId) return;
     if (clip.dir === this.cwd) {
-      this.moveClipboard = null;
+      this.moveClipboard.clear();
       this.updateBulkBar();
       return;
     }
-    const deviceId = this.activeDeviceId;
     const dir = this.cwd;
-    // The destination listing is the current directory, so name collisions can be
-    // checked without an extra round trip (avoids relying on undefined server
-    // overwrite-on-rename behavior — proper conflict resolution comes with #3).
-    const existing = new Set(this.currentEntries.map((e) => e.name));
+    const steps = planMoves(clip, dir, new Set(this.currentEntries.map((e) => e.name)));
     this.setBusy(true);
-    let done = 0;
-    let firstError: AppError | null = null;
+    let result: BulkResult = { done: 0, firstError: null };
     try {
-      for (const name of clip.names) {
-        const src = joinRemote(clip.dir, name);
-        // Reject moving a folder into itself or a descendant of itself.
-        if (dir === src || dir.startsWith(`${src}/`)) {
-          firstError ??= validationError(t("sftp.move.intoSelf"));
-          continue;
-        }
-        if (existing.has(name)) {
-          firstError ??= validationError(t("sftp.move.exists"));
-          continue;
-        }
-        try {
-          await sftpRename(deviceId, src, joinRemote(dir, name));
-          done += 1;
-        } catch (err) {
-          firstError ??= err as AppError;
-        }
-      }
+      result = await runEach(steps, (step) => runMoveStep(clip.deviceId, step));
     } finally {
-      this.moveClipboard = null;
+      this.moveClipboard.clear();
       await this.loadDir(dir); // reflect the moved entries; also setBusy(false)
-      this.finishBulk(tp("sftp.moved", done), done, clip.names.length, firstError);
+      this.finishBulk(tp("sftp.moved", result.done), result);
     }
   }
 
   /** Delete every selected entry (folders recursively) after one confirmation. */
   private async handleBulkDelete(): Promise<void> {
-    if (this.activeDeviceId === null || this.selection.size === 0) return;
-    const entries = this.selectedEntries();
-    const confirmed = await confirm(tp("sftp.deleteConfirm", entries.length), {
+    const selection = this.captureBulkSelection();
+    if (!selection) return;
+    const confirmed = await confirm(tp("sftp.deleteConfirm", selection.entries.length), {
       title: t("sftp.delete.title"),
       confirmLabel: t("common.delete"),
       danger: true,
     });
-    if (!confirmed) return;
+    if (confirmed && this.isConnectedTo(selection.deviceId)) await this.deleteEntries(selection);
+  }
+
+  /** Hold `busy` for the whole loop, so the listing can't change under it. */
+  private async deleteEntries({ deviceId, dir, entries }: BulkSelection): Promise<void> {
     this.clearHover();
-    // Snapshot the device + directory and hold `busy` for the whole loop: the
-    // path is rebuilt each iteration, so without this a mid-loop navigation
-    // would delete same-named entries in a different directory.
-    const deviceId = this.activeDeviceId;
-    const dir = this.cwd;
     this.setBusy(true);
-    let done = 0;
-    let firstError: AppError | null = null;
-    for (const entry of entries) {
-      const isDir = entry.kind === "dir";
-      try {
-        await sftpRemove(deviceId, joinRemote(dir, entry.name), isDir, isDir);
-        done += 1;
-      } catch (err) {
-        firstError ??= err as AppError;
-      }
-    }
+    const result = await runEach(entries, (entry) => this.removeEntry(deviceId, dir, entry));
     await this.loadDir(dir); // re-lists + clears `busy`
-    this.finishBulk(tp("sftp.deleted", done), done, entries.length, firstError);
+    this.finishBulk(tp("sftp.deleted", result.done), result);
+  }
+
+  /** Remove one entry; a folder goes recursively. */
+  private removeEntry(deviceId: string, dir: string, entry: SftpEntry): Promise<void> {
+    const isDir = entry.kind === "dir";
+    return sftpRemove(deviceId, joinRemote(dir, entry.name), isDir, isDir);
   }
 
   /** Shared bulk-op epilogue: a success status/toast, or a partial-failure
    * status plus the first error surfaced through `onError`. */
-  private finishBulk(
-    successMsg: string,
-    done: number,
-    total: number,
-    firstError: AppError | null,
-  ): void {
-    if (firstError && done < total) {
+  private finishBulk(successMsg: string, result: BulkResult): void {
+    const outcome = getBulkOutcome(result);
+    if (outcome === "partial") {
       this.setStatus(t("sftp.bulk.partial"));
-      this.reportError(firstError);
-    } else if (done > 0) {
+      this.reportError(result.firstError);
+      return;
+    }
+    if (outcome === "success") {
       this.setStatus(successMsg);
       this.options.onSuccess?.(successMsg);
     }
@@ -1645,11 +1612,11 @@ export class SftpPanel {
       side: "end",
       // The rendered width: CSS `max-width` can show the panel narrower than
       // the stored width, and a drag must start from what the user sees.
-      currentWidth: () => this.panel?.getBoundingClientRect().width || this.width,
+      currentWidth: () => this.panel?.getBoundingClientRect().width || this.layout.width(),
       bounds: () => this.widthBounds(),
       defaultWidth: () => remToPx(DEFAULT_PANEL_REM),
       onResize: (width) => {
-        this.width = width;
+        this.layout.resize(width);
         if (this.panel) this.panel.style.width = `${width}px`;
         this.options.onLayoutChange?.();
       },
@@ -1734,14 +1701,45 @@ export class SftpPanel {
   }
 }
 
-/** A client-side validation error shaped like the backend `AppError`, for the
- * quiet-skip paths in bulk operations (move-into-self, name collision, …). */
+/** Selected entries and where they were listed. */
+interface BulkSelection {
+  deviceId: string;
+  dir: string;
+  entries: SftpEntry[];
+}
+
+/** The error an edit's transfer settles with when it ends without running. */
 function cancelledError(): AppError {
   return { code: "Cancelled", message: t("sftp.transferCancelled") };
 }
 
-function validationError(message: string): AppError {
-  return { code: "Validation", message } as AppError;
+/** Each entry's local download path, and whether any of them exists. */
+async function resolveLocalTargets(
+  entries: SftpEntry[],
+  dest: string,
+): Promise<{ targets: { entry: SftpEntry; target: string }[]; conflict: boolean }> {
+  const targets: { entry: SftpEntry; target: string }[] = [];
+  let conflict = false;
+  for (const entry of entries) {
+    const target = await join(dest, entry.name);
+    targets.push({ entry, target });
+    conflict ||= await sftpLocalExists(target);
+  }
+  return { targets, conflict };
+}
+
+function getBulkConflictMessage(entries: SftpEntry[]): string {
+  if (entries.length !== 1) return t("sftp.conflict.messageMany");
+  return t("sftp.conflict.message", { name: entries[0]?.name ?? "" });
+}
+
+async function shouldSkipExisting(target: string, policy: ConflictPolicy): Promise<boolean> {
+  return policy === "skip" && (await sftpLocalExists(target));
+}
+
+async function runMoveStep(deviceId: string, step: MoveStep): Promise<void> {
+  if ("error" in step) throw step.error;
+  await sftpRename(deviceId, step.from, step.to);
 }
 
 /** Constructs and initializes the Files (SFTP) panel. */
