@@ -278,7 +278,6 @@ npm test             # vitest only
 npm run coverage     # vitest with coverage (floor in vite.config.ts)
 npm run site:dev     # website dev server (http://localhost:4321/dasshboard/)
 npm run site:check   # website gate: astro check && vitest run && astro build
-npm run check:all    # both gates
 ```
 
 ## Working rules

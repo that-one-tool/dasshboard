@@ -21,6 +21,7 @@ import { confirm } from "../ui/confirm";
 import { requireEl } from "../ui/dom";
 import { consumeKey, isTopDialog, pushDialog, removeDialog } from "../ui/dialogStack";
 import { t } from "../i18n";
+import { getErrorMessage } from "../ui/errorMessage";
 
 export interface KnownHostsDialogOptions {
   /** Surface a load/forget failure to the user (wired to the toast in main.ts). */
@@ -63,7 +64,7 @@ export function openKnownHostsDialog(options: KnownHostsDialogOptions): void {
     try {
       hosts = await listKnownHosts();
     } catch (err) {
-      options.onError(errorMessage(err));
+      options.onError(getErrorMessage(err));
       return;
     }
     renderList(list, hosts, async (entry) => {
@@ -75,7 +76,7 @@ export function openKnownHostsDialog(options: KnownHostsDialogOptions): void {
       try {
         await forgetHost(entry.id);
       } catch (err) {
-        options.onError(errorMessage(err));
+        options.onError(getErrorMessage(err));
         return;
       }
       await refresh();
@@ -126,7 +127,7 @@ async function showResetNotice(
   try {
     resetAt = await knownHostsReset();
   } catch (err) {
-    options.onError(errorMessage(err));
+    options.onError(getErrorMessage(err));
     return;
   }
   if (resetAt === null) return;
@@ -145,7 +146,7 @@ async function dismissReset(
   try {
     await dismissKnownHostsReset();
   } catch (err) {
-    options.onError(errorMessage(err));
+    options.onError(getErrorMessage(err));
     return;
   }
   notice.hidden = true;
@@ -190,12 +191,4 @@ function renderList(
     row.append(info, forget);
     list.appendChild(row);
   }
-}
-
-function errorMessage(err: unknown): string {
-  if (err && typeof err === "object" && "message" in err) {
-    const m = (err as { message: unknown }).message;
-    if (typeof m === "string") return m;
-  }
-  return String(err);
 }

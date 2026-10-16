@@ -89,7 +89,7 @@
   },
   "src/profiles/profileManager.ts": {
     "complexity": {
-      "count": 9
+      "count": 8
     },
     "max-lines-per-function": {
       "count": 1
@@ -102,7 +102,7 @@
   },
   "src/settings/knownHostsDialog.ts": {
     "complexity": {
-      "count": 2
+      "count": 1
     },
     "max-lines-per-function": {
       "count": 3
@@ -110,7 +110,7 @@
   },
   "src/settings/settingsController.ts": {
     "complexity": {
-      "count": 8
+      "count": 7
     },
     "max-lines-per-function": {
       "count": 1

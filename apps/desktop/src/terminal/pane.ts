@@ -52,6 +52,7 @@ import { requireEl } from "../ui/dom";
 import { t } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { deviceEndpoint } from "../devices/deviceEndpoint";
+import { getErrorMessage } from "../ui/errorMessage";
 
 // Re-exported so callers already importing them from this module keep working.
 export { deviceEndpoint };
@@ -413,7 +414,7 @@ export class TerminalPane {
       await saveTextFile(path, text);
       showToast(t("pane.saveOutput.saved", { path }), "success");
     } catch (err) {
-      this.options.onError?.(errorMessage(err));
+      this.options.onError?.(getErrorMessage(err));
     }
   }
 
@@ -437,7 +438,7 @@ export class TerminalPane {
   private onConnectFailed(sessionId: string, err: unknown): void {
     // Released (cancelled / replaced) while opening: nothing left to report.
     if (!this.session.failOpen(sessionId)) return;
-    const message = errorMessage(err);
+    const message = getErrorMessage(err);
     this.applyStatus("error", message, errorCodeOf(err));
     this.options.onError?.(message);
   }
@@ -752,9 +753,4 @@ export class TerminalPane {
     this.paneStatus = "idle";
     this.options.onStatusChange?.();
   }
-}
-
-function errorMessage(err: unknown): string {
-  const message = (err as { message?: unknown } | null | undefined)?.message;
-  return typeof message === "string" ? message : String(err);
 }

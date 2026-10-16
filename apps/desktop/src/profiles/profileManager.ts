@@ -42,6 +42,7 @@ import {
   importIcon,
 } from "../ui/icons";
 import { t, tp } from "../i18n";
+import { getErrorMessage } from "../ui/errorMessage";
 
 /**
  * Bridge to the tabbed workspace (Tabs, Phase 2). The "loaded profile" is not
@@ -190,7 +191,7 @@ export class ProfileManager {
     try {
       for (const profile of profiles) await saveProfile(profile);
     } catch (err) {
-      this.options.onError(errorMessage(err));
+      this.options.onError(getErrorMessage(err));
     }
   }
 
@@ -211,7 +212,7 @@ export class ProfileManager {
     try {
       this.applyList(await listProfiles());
     } catch (err) {
-      this.options.onError(errorMessage(err));
+      this.options.onError(getErrorMessage(err));
     }
     this.render();
     this.refreshDirty();
@@ -513,7 +514,7 @@ export class ProfileManager {
       this.notifyProfileChange();
       this.options.onSuccess(t(successKey, { name: saved.name }));
     } catch (err) {
-      this.options.onError(errorMessage(err));
+      this.options.onError(getErrorMessage(err));
     }
   }
 
@@ -535,7 +536,7 @@ export class ProfileManager {
       if (wasActive) this.notifyProfileChange();
       this.options.onSuccess(t("profiles.deletedProfile", { name: profile.name }));
     } catch (err) {
-      this.options.onError(errorMessage(err));
+      this.options.onError(getErrorMessage(err));
     }
   }
 
@@ -544,7 +545,7 @@ export class ProfileManager {
       await setDefaultProfile(isDefault ? null : profile.id);
       await this.reload();
     } catch (err) {
-      this.options.onError(errorMessage(err));
+      this.options.onError(getErrorMessage(err));
     }
   }
 
@@ -559,7 +560,7 @@ export class ProfileManager {
       const count = await exportProfiles(path);
       this.options.onSuccess(tp("profiles.exported", count));
     } catch (err) {
-      this.options.onError(errorMessage(err));
+      this.options.onError(getErrorMessage(err));
     }
   }
 
@@ -575,15 +576,7 @@ export class ProfileManager {
       this.options.onSuccess(tp("profiles.imported", count));
       await this.reload();
     } catch (err) {
-      this.options.onError(errorMessage(err));
+      this.options.onError(getErrorMessage(err));
     }
   }
-}
-
-function errorMessage(err: unknown): string {
-  if (err && typeof err === "object" && "message" in err) {
-    const m = (err as { message: unknown }).message;
-    if (typeof m === "string") return m;
-  }
-  return String(err);
 }

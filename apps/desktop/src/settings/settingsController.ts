@@ -37,6 +37,7 @@ import {
   t,
   translateIn,
 } from "../i18n";
+import { getErrorMessage } from "../ui/errorMessage";
 
 export interface SettingsControllerOptions {
   onError: (message: string) => void;
@@ -99,7 +100,7 @@ export class SettingsController {
       this.settings = await getSettings();
     } catch (err) {
       this.settings = FALLBACK_SETTINGS;
-      this.onError(errorMessage(err));
+      this.onError(getErrorMessage(err));
     }
     // Apply the app-wide appearance (light/dark) before anything paints, so the
     // chrome never flashes the wrong theme. Shares the terminal's theme setting.
@@ -137,7 +138,7 @@ export class SettingsController {
       // (wired in `main.ts`) to re-render every view.
       setLocale(resolveLocale(fresh.language));
     } catch (err) {
-      this.onError(errorMessage(err));
+      this.onError(getErrorMessage(err));
     }
   }
 
@@ -228,7 +229,7 @@ export class SettingsController {
       // returns the stored value — adopt it so the UI reflects reality.
       this.settings = await saveSettings(this.settings);
     } catch (err) {
-      this.onError(errorMessage(err));
+      this.onError(getErrorMessage(err));
     }
   }
 
@@ -501,12 +502,4 @@ function sameTerminalSettings(a: TerminalSettings, b: TerminalSettings): boolean
     a.scrollback === b.scrollback &&
     a.theme === b.theme
   );
-}
-
-function errorMessage(err: unknown): string {
-  if (err && typeof err === "object" && "message" in err) {
-    const m = (err as { message: unknown }).message;
-    if (typeof m === "string") return m;
-  }
-  return String(err);
 }

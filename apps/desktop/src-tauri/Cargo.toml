@@ -1,9 +1,11 @@
 [package]
 name = "dasshboard"
-version = "1.35.1"
+version = "1.35.2"
 description = "Multi-pane SSH & serial terminal dashboard with SFTP file transfer"
 authors = ["That one tool"]
 edition = "2021"
+# Our own floor is `File::try_lock` (sftp_edit.rs); dependencies need 1.88.
+rust-version = "1.89"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

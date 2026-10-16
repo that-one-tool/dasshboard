@@ -9,7 +9,7 @@ vanilla TypeScript + Vite frontend (no framework) that renders terminals with
 Prerequisites:
 
 - [Node.js](https://nodejs.org/) 24+
-- Stable [Rust](https://rustup.rs/) (MSVC toolchain on Windows)
+- [Rust](https://rustup.rs/) 1.89 or newer, stable (MSVC toolchain on Windows); `rust-version` in `src-tauri/Cargo.toml`
 - The [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS
   (WebView2 and MSVC build tools on Windows; webkit2gtk and related packages on
   Linux)
