@@ -13,8 +13,8 @@ use super::device_access::{find_device, keepalive_config, resolve_credentials, r
 use super::host_keys::{emit_host_key_prompt_closed, HOST_KEY_PROMPT_EVENT};
 use crate::device::{Connection, Device};
 use crate::error::AppError;
-use crate::sftp::{SftpEntry, SftpParams, SftpSink};
-use crate::ssh::prompts::HostKeyPromptPayload;
+use crate::sftp::{SftpEntry, SftpParams};
+use crate::ssh::prompts::{HostKeyPromptPayload, HostKeyPrompter};
 use crate::state::AppState;
 
 /// Event name for streamed SFTP transfer progress (see `sftp_progress_emitter`).
@@ -63,14 +63,14 @@ pub(super) fn sftp_progress_emitter(
     }
 }
 
-/// Production [`SftpSink`]: forwards an SFTP handshake's host-key trust prompt
-/// onto the shared `host_key_prompt` event, so the same dialog a shell/tunnel
-/// raises handles it. Carries no secret material.
-struct TauriSftpSink {
+/// Production [`HostKeyPrompter`] for SFTP: forwards an SFTP handshake's
+/// host-key trust prompt onto the shared `host_key_prompt` event, so the same
+/// dialog a shell/tunnel raises handles it. Carries no secret material.
+struct TauriSftpPrompter {
     app: AppHandle,
 }
 
-impl SftpSink for TauriSftpSink {
+impl HostKeyPrompter for TauriSftpPrompter {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
     }
@@ -112,7 +112,7 @@ pub async fn sftp_connect(
 
     let creds = resolve_credentials(&state, &device).await?;
     let jump = resolve_jump_hop(&state, &device).await?;
-    let sink: Arc<dyn SftpSink> = Arc::new(TauriSftpSink { app });
+    let prompter: Arc<dyn HostKeyPrompter> = Arc::new(TauriSftpPrompter { app });
     state
         .sftp_manager
         .connect(
@@ -125,7 +125,7 @@ pub async fn sftp_connect(
                 keepalive: keepalive_config(&state),
                 jump,
             },
-            sink,
+            prompter,
         )
         .await
 }

@@ -139,7 +139,9 @@ files, releasing),
     - `secret.rs` — OS keychain access; secrets never touch the JSON stores
     - `ssh/` — the SSH connection layer shells, tunnels and SFTP share:
       `params` (credentials, jump hop, keepalive), `prompts` (host-key prompt
-      registry), `handler` (russh client handler: host-key TOFU, agent
+      registry, and `HostKeyPrompter`: the prompt-only seam the handler
+      needs; `SessionSink` and `TunnelSink` extend it, SFTP implements it alone),
+      `handler` (russh client handler: host-key TOFU, agent
       forwarding, remote-forward routing; server-opened channels we never
       asked for are rejected), `establish` (TCP with TCP_NODELAY as in
       OpenSSH, auth, jump host, overall deadline)

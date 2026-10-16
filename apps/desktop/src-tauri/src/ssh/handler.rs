@@ -11,10 +11,9 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use super::params::{JumpHop, KeepaliveConfig};
-use super::prompts::{HostKeyPromptPayload, PromptClosedNotice, PromptRegistry};
+use super::prompts::{HostKeyPromptPayload, HostKeyPrompter, PromptClosedNotice, PromptRegistry};
 use crate::known_hosts::{KnownHost, KnownHostsStore, Verdict};
 use crate::remote_forward::{serve_forwarded, RemoteRoutes};
-use crate::session_sink::SessionSink;
 
 /// Max forwarded SSH-agent channels served concurrently per session. Agent
 /// channels are short-lived (one signing exchange), so a handful is plenty; the
@@ -33,7 +32,7 @@ const MAX_AGENT_CHANNELS: usize = 8;
 /// rather than duplicating it — the shared-connect-path reuse called out in
 /// SPEC §2.
 pub(crate) struct SshHandler {
-    sink: Arc<dyn SessionSink>,
+    prompter: Arc<dyn HostKeyPrompter>,
     known_hosts: Arc<KnownHostsStore>,
     prompts: Arc<PromptRegistry>,
     host: String,
@@ -76,7 +75,7 @@ impl SshHandler {
     // simply mirrors the struct's fields, so the arg-count lint doesn't apply.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        sink: Arc<dyn SessionSink>,
+        prompter: Arc<dyn HostKeyPrompter>,
         known_hosts: Arc<KnownHostsStore>,
         prompts: Arc<PromptRegistry>,
         host: String,
@@ -87,7 +86,7 @@ impl SshHandler {
     ) -> Self {
         let (owner_tx, owner_gone) = watch::channel(());
         SshHandler {
-            sink,
+            prompter,
             known_hosts,
             prompts,
             host,
@@ -114,12 +113,12 @@ impl SshHandler {
         self.owner_token.take()
     }
 
-    /// A handler for the jump host this connection goes through: same sink,
+    /// A handler for the jump host this connection goes through: same prompter,
     /// trust store, prompt registry and keepalive, but the jump host's own
     /// address (its host-key prompt is keyed by it) and never agent forwarding.
     pub(super) fn for_jump_host(&self, jump: &JumpHop) -> SshHandler {
         SshHandler::new(
-            Arc::clone(&self.sink),
+            Arc::clone(&self.prompter),
             Arc::clone(&self.known_hosts),
             Arc::clone(&self.prompts),
             jump.host.clone(),
@@ -145,11 +144,11 @@ impl SshHandler {
         let prompt_id = Uuid::new_v4().to_string();
         let (rx, _guard) = self.prompts.register(prompt_id.clone());
         let _closed_notice = PromptClosedNotice {
-            sink: Arc::clone(&self.sink),
+            prompter: Arc::clone(&self.prompter),
             prompt_id: prompt_id.clone(),
         };
 
-        self.sink.on_host_key_prompt(HostKeyPromptPayload {
+        self.prompter.on_host_key_prompt(HostKeyPromptPayload {
             prompt_id,
             host: self.host.clone(),
             port: self.port,

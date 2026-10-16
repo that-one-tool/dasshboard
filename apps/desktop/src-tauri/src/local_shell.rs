@@ -748,6 +748,9 @@ mod tests {
         fn on_status(&self, status: SessionStatus, _message: Option<String>) {
             self.statuses.lock().unwrap().push(status);
         }
+    }
+
+    impl crate::ssh::prompts::HostKeyPrompter for RecordingSink {
         fn on_host_key_prompt(&self, _payload: crate::ssh::prompts::HostKeyPromptPayload) {
             unreachable!("local shell sessions never prompt for a host key");
         }

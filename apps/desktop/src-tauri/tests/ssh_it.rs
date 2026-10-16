@@ -35,7 +35,7 @@ use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
 use dasshboard_lib::session::{ConnectParams, SessionManager};
 use dasshboard_lib::session_sink::{SessionSink, SessionStatus};
 use dasshboard_lib::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig};
-use dasshboard_lib::ssh::prompts::HostKeyPromptPayload;
+use dasshboard_lib::ssh::prompts::{HostKeyPromptPayload, HostKeyPrompter};
 use dasshboard_lib::tunnel::{
     ForwardStatus, TunnelManager, TunnelParams, TunnelSink, TunnelStatus,
 };
@@ -598,15 +598,18 @@ impl SessionSink for TestSink {
     fn on_status(&self, status: SessionStatus, message: Option<String>) {
         let _ = self.status_tx.send((status, message));
     }
+    fn on_error(&self, err: &AppError) {
+        let _ = self.error_code_tx.send(err.code());
+        self.on_status(SessionStatus::Error, Some(err.to_string()));
+    }
+}
+
+impl HostKeyPrompter for TestSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.prompt_tx.send(payload);
     }
     fn on_host_key_prompt_closed(&self, prompt_id: &str) {
         let _ = self.prompt_closed_tx.send(prompt_id.to_string());
-    }
-    fn on_error(&self, err: &AppError) {
-        let _ = self.error_code_tx.send(err.code());
-        self.on_status(SessionStatus::Error, Some(err.to_string()));
     }
 }
 
@@ -1942,6 +1945,9 @@ impl TunnelSink for TestTunnelSink {
         let _ = self.code_tx.send(err.code());
         self.on_status(TunnelStatus::Error, Some(err.to_string()), Vec::new());
     }
+}
+
+impl HostKeyPrompter for TestTunnelSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.prompt_tx.send(payload);
     }

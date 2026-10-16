@@ -59,7 +59,6 @@ use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
 use crate::relay::{bridge, Pace};
 use crate::remote_forward::RemoteRoutes;
-use crate::session_sink::{SessionSink, SessionStatus};
 use crate::socks;
 use crate::ssh::establish::{
     close_jump, establish_target, DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT,
@@ -67,7 +66,7 @@ use crate::ssh::establish::{
 };
 use crate::ssh::handler::SshHandler;
 use crate::ssh::params::{AuthCredentials, Endpoint, JumpHop, KeepaliveConfig};
-use crate::ssh::prompts::{HostKeyPromptPayload, PromptRegistry};
+use crate::ssh::prompts::{HostKeyPrompter, PromptRegistry};
 
 /// Control-channel bound. A tunnel's control channel carries the occasional
 /// user-driven forward add/remove and a final `Stop`; the bound just keeps it
@@ -75,8 +74,9 @@ use crate::ssh::prompts::{HostKeyPromptPayload, PromptRegistry};
 const CONTROL_CHANNEL_CAPACITY: usize = 8;
 
 /// Lifecycle status mirrored to the frontend `tunnel_status` event. Distinct
-/// from [`SessionStatus`] because a tunnel is `Listening` (bound, awaiting
-/// connections) rather than `Connected`, and has no terminal-data phase.
+/// from [`SessionStatus`](crate::session_sink::SessionStatus) because a
+/// tunnel is `Listening` (bound, awaiting connections) rather than
+/// `Connected`, and has no terminal-data phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunnelStatus {
     Connecting,
@@ -124,10 +124,11 @@ pub struct TunnelInfo {
     pub forwards: Vec<ForwardStatus>,
 }
 
-/// Sink for everything the tunnel core surfaces to the frontend. The production
-/// impl emits `tunnel_status` events; the test impl records into channels. Kept
-/// object-safe (`Arc<dyn TunnelSink>`).
-pub trait TunnelSink: Send + Sync {
+/// Sink for everything the tunnel core surfaces to the frontend (its host-key
+/// prompts — the same event a shell raises — through [`HostKeyPrompter`]).
+/// The production impl emits `tunnel_status` events; the test impl records
+/// into channels. Kept object-safe (`Arc<dyn TunnelSink>`).
+pub trait TunnelSink: HostKeyPrompter {
     /// A lifecycle change → `tunnel_status` event. `forwards` carries per-forward
     /// bind state on a `Listening` status and is empty otherwise.
     fn on_status(
@@ -141,28 +142,6 @@ pub trait TunnelSink: Send + Sync {
     /// worth reconnecting from a failure a retry would only repeat.
     fn on_error(&self, err: &AppError) {
         self.on_status(TunnelStatus::Error, Some(err.to_string()), Vec::new());
-    }
-    /// An unknown/changed host key needs the user's decision → `host_key_prompt`
-    /// event (the same event a shell session raises; the dialog is shared).
-    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload);
-    /// The prompt can no longer be answered → `host_key_prompt_closed` event.
-    fn on_host_key_prompt_closed(&self, _prompt_id: &str) {}
-}
-
-/// Adapts a [`TunnelSink`] to the [`SessionSink`] that [`SshHandler`] requires
-/// for the handshake. Only `on_host_key_prompt` is ever called by the handler
-/// (terminal I/O and lifecycle for a tunnel are handled outside the handler), so
-/// the other two methods are inert.
-struct HandshakeSink(Arc<dyn TunnelSink>);
-
-impl SessionSink for HandshakeSink {
-    fn on_data(&self, _bytes: &[u8]) {}
-    fn on_status(&self, _status: SessionStatus, _message: Option<String>) {}
-    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
-        self.0.on_host_key_prompt(payload);
-    }
-    fn on_host_key_prompt_closed(&self, prompt_id: &str) {
-        self.0.on_host_key_prompt_closed(prompt_id);
     }
 }
 
@@ -376,7 +355,7 @@ impl TunnelManager {
 
         let routes = Arc::new(RemoteRoutes::new(self.pace));
         let handler = SshHandler::new(
-            Arc::new(HandshakeSink(Arc::clone(&sink))),
+            Arc::clone(&sink) as Arc<dyn HostKeyPrompter>,
             Arc::clone(&self.known_hosts),
             Arc::clone(&self.prompts),
             params.host.clone(),

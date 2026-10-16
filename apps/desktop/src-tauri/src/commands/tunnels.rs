@@ -10,7 +10,7 @@ use super::device_access::{find_device, keepalive_config, resolve_credentials, r
 use super::host_keys::{emit_host_key_prompt_closed, HOST_KEY_PROMPT_EVENT};
 use crate::device::{Connection, Device, Forward};
 use crate::error::AppError;
-use crate::ssh::prompts::HostKeyPromptPayload;
+use crate::ssh::prompts::{HostKeyPromptPayload, HostKeyPrompter};
 use crate::state::AppState;
 use crate::tunnel::{ForwardStatus, TunnelInfo, TunnelParams, TunnelSink, TunnelStatus};
 
@@ -80,7 +80,9 @@ impl TunnelSink for TauriTunnelSink {
             Vec::new(),
         );
     }
+}
 
+impl HostKeyPrompter for TauriTunnelSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
     }

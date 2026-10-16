@@ -2,7 +2,7 @@
 //! its lifecycle [`SessionStatus`] and the [`SessionSink`] it streams into.
 
 use crate::error::AppError;
-use crate::ssh::prompts::HostKeyPromptPayload;
+use crate::ssh::prompts::HostKeyPrompter;
 
 /// Lifecycle status mirrored to the frontend `session_status` event
 /// (SPEC.md §5). Serializes to the exact lowercase strings in the spec.
@@ -47,10 +47,11 @@ impl SessionStatus {
     }
 }
 
-/// Sink for everything the SSH core needs to surface to the frontend. The
-/// production impl emits Tauri events / streams over the IPC channel; the test
-/// impl records into channels. Kept object-safe (`Arc<dyn SessionSink>`).
-pub trait SessionSink: Send + Sync {
+/// Sink for everything a terminal session surfaces to the frontend (its
+/// host-key prompts through [`HostKeyPrompter`]). The production impl emits
+/// Tauri events / streams over the IPC channel; the test impl records into
+/// channels. Kept object-safe (`Arc<dyn SessionSink>`).
+pub trait SessionSink: HostKeyPrompter {
     /// Verbatim server output bytes → per-session IPC channel (SPEC.md §3).
     fn on_data(&self, bytes: &[u8]);
     /// A lifecycle change → `session_status` event.
@@ -62,13 +63,6 @@ pub trait SessionSink: Send + Sync {
     fn on_error(&self, err: &AppError) {
         self.on_status(SessionStatus::Error, Some(err.to_string()));
     }
-    /// An unknown/changed host key needs the user's decision →
-    /// `host_key_prompt` event.
-    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload);
-    /// The backend stopped waiting on a prompt (answered, timed out, or its
-    /// connection was torn down) → `host_key_prompt_closed` event, so the
-    /// dialog can drop a prompt that can no longer be answered.
-    fn on_host_key_prompt_closed(&self, _prompt_id: &str) {}
 }
 
 #[cfg(test)]

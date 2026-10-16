@@ -17,7 +17,7 @@ use crate::output_stream::{Chunk, OutputStream, OutputStreams, MAX_READ, READ_WA
 use crate::serial::SerialParams;
 use crate::session::ConnectParams;
 use crate::session_sink::{SessionSink, SessionStatus};
-use crate::ssh::prompts::HostKeyPromptPayload;
+use crate::ssh::prompts::{HostKeyPromptPayload, HostKeyPrompter};
 use crate::state::AppState;
 
 const SESSION_STATUS_EVENT: &str = "session_status";
@@ -110,7 +110,9 @@ impl SessionSink for TauriSessionSink {
             Some(err.code()),
         );
     }
+}
 
+impl HostKeyPrompter for TauriSessionSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
     }

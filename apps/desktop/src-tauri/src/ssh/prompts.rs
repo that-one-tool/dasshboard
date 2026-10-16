@@ -7,8 +7,6 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tokio::sync::oneshot;
 
-use crate::session_sink::SessionSink;
-
 /// Payload of the `host_key_prompt` event (SPEC.md §5). `camelCase` on the
 /// wire. Carries no secret material.
 #[derive(Debug, Clone, Serialize)]
@@ -23,6 +21,19 @@ pub struct HostKeyPromptPayload {
     /// No record to compare with because the trusted hosts were reset after
     /// a damaged file: the key may have changed (see `Verdict::Unverifiable`).
     pub trust_reset: bool,
+}
+
+/// Where a handshake's host-key prompts go — the only thing `SshHandler`
+/// surfaces to the frontend. Object-safe (`Arc<dyn HostKeyPrompter>`); the
+/// shell and tunnel sinks extend it, and an SFTP connection needs nothing more.
+pub trait HostKeyPrompter: Send + Sync {
+    /// An unknown/changed host key needs the user's decision →
+    /// `host_key_prompt` event.
+    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload);
+    /// The backend stopped waiting on a prompt (answered, timed out, or its
+    /// connection was torn down) → `host_key_prompt_closed` event, so the
+    /// dialog can drop a prompt that can no longer be answered.
+    fn on_host_key_prompt_closed(&self, _prompt_id: &str) {}
 }
 
 /// Registry of in-flight host-key prompts: `promptId -> oneshot::Sender`.
@@ -51,13 +62,13 @@ impl Drop for PromptGuard {
 /// Announces a prompt as closed when dropped — on every exit path of the wait,
 /// including the handshake future being dropped mid-prompt.
 pub(super) struct PromptClosedNotice {
-    pub(super) sink: Arc<dyn SessionSink>,
+    pub(super) prompter: Arc<dyn HostKeyPrompter>,
     pub(super) prompt_id: String,
 }
 
 impl Drop for PromptClosedNotice {
     fn drop(&mut self) {
-        self.sink.on_host_key_prompt_closed(&self.prompt_id);
+        self.prompter.on_host_key_prompt_closed(&self.prompt_id);
     }
 }
 
@@ -123,6 +134,27 @@ mod tests {
         assert_eq!(value["fingerprint"], "SHA256:abc");
         assert_eq!(value["changed"], true);
         assert_eq!(value["trustReset"], false);
+    }
+
+    /// A prompter that only knows about host-key prompts — all a handshake needs.
+    #[derive(Default)]
+    struct ClosedPrompts(Mutex<Vec<String>>);
+
+    impl HostKeyPrompter for ClosedPrompts {
+        fn on_host_key_prompt(&self, _payload: HostKeyPromptPayload) {}
+        fn on_host_key_prompt_closed(&self, prompt_id: &str) {
+            self.0.lock().unwrap().push(prompt_id.to_string());
+        }
+    }
+
+    #[test]
+    fn a_dropped_prompt_notice_tells_a_prompt_only_prompter() {
+        let prompter = Arc::new(ClosedPrompts::default());
+        drop(PromptClosedNotice {
+            prompter: Arc::clone(&prompter) as Arc<dyn HostKeyPrompter>,
+            prompt_id: "p1".into(),
+        });
+        assert_eq!(*prompter.0.lock().unwrap(), vec!["p1".to_string()]);
     }
 
     #[test]

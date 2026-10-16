@@ -24,8 +24,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as TokioMutex;
 
 use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
-use dasshboard_lib::sftp::{SftpManager, SftpParams, SftpSink};
+use dasshboard_lib::sftp::{SftpManager, SftpParams};
 use dasshboard_lib::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig};
+use dasshboard_lib::ssh::prompts::{HostKeyPromptPayload, HostKeyPrompter};
 
 const TEST_USER: &str = "tester";
 const TEST_PASSWORD: &str = "correct-horse";
@@ -654,13 +655,10 @@ async fn spawn_jump_server() -> u16 {
  * Test scaffolding: a no-op sink + a pre-trusted manager
  * ------------------------------------------------------------------------- */
 
-struct NoopSftpSink;
-impl SftpSink for NoopSftpSink {
+struct NoopPrompter;
+impl HostKeyPrompter for NoopPrompter {
     fn on_host_key_prompt(&self, _payload: HostKeyPromptPayload) {}
 }
-
-// Bring the payload type into scope for the sink impl above.
-use dasshboard_lib::ssh::prompts::HostKeyPromptPayload;
 
 fn manager_with_trust(dir: &std::path::Path, port: u16, fingerprint: &str) -> SftpManager {
     manager_trusting(dir, &[port], fingerprint)
@@ -700,7 +698,7 @@ async fn connect(manager: &SftpManager, device_id: &str, port: u16) -> String {
                 keepalive: KeepaliveConfig::disabled(),
                 jump: None,
             },
-            Arc::new(NoopSftpSink),
+            Arc::new(NoopPrompter),
         )
         .await
         .expect("SFTP connect")
@@ -730,7 +728,7 @@ async fn connect_via_jump(
                     creds: AuthCredentials::Password(jump_password.to_string()),
                 }),
             },
-            Arc::new(NoopSftpSink),
+            Arc::new(NoopPrompter),
         )
         .await
 }

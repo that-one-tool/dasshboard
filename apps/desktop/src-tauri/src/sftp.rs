@@ -18,7 +18,7 @@
 //! safe — `russh_sftp` serializes requests by id internally.
 //!
 //! **Like `session.rs`, this module is deliberately Tauri-free.** The command
-//! layer supplies an [`SftpSink`] that emits the shared `host_key_prompt` event;
+//! layer supplies a [`HostKeyPrompter`] that emits the shared `host_key_prompt` event;
 //! everything here speaks only in [`AppError`] and plain data.
 //!
 //! File transfers **stream chunk-by-chunk between the remote SFTP file and a
@@ -51,14 +51,13 @@ const TRANSFER_CHUNK: usize = 32 * 1024;
 
 use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
-use crate::session_sink::{SessionSink, SessionStatus};
 use crate::ssh::establish::{
     close_jump, establish_target, DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT,
     DEFAULT_PROMPT_TIMEOUT,
 };
 use crate::ssh::handler::SshHandler;
 use crate::ssh::params::{AuthCredentials, Endpoint, JumpHop, KeepaliveConfig};
-use crate::ssh::prompts::{HostKeyPromptPayload, PromptRegistry};
+use crate::ssh::prompts::{HostKeyPrompter, PromptRegistry};
 
 /// One directory entry returned to the frontend for the file browser. Non-secret
 /// (a remote path/name and public stat fields only).
@@ -122,31 +121,6 @@ pub struct SftpParams {
     /// Optional jump host (`ProxyJump`): the SFTP connection to `host:port`
     /// rides a direct-tcpip channel over it. `None` ⇒ direct.
     pub jump: Option<JumpHop>,
-}
-
-/// Sink for the one thing the SFTP handshake surfaces to the frontend: a
-/// host-key trust prompt (the same event a shell/tunnel raises, so the shared
-/// dialog handles it). Object-safe for `Arc<dyn SftpSink>`.
-pub trait SftpSink: Send + Sync {
-    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload);
-    fn on_host_key_prompt_closed(&self, _prompt_id: &str) {}
-}
-
-/// Adapts an [`SftpSink`] to the [`SessionSink`] that [`SshHandler`] requires.
-/// Only `on_host_key_prompt` is ever called during an SFTP handshake (there is
-/// no terminal data and no session-status stream here), so the other two
-/// methods are deliberate no-ops — mirrors `tunnel.rs`'s `HandshakeSink`.
-struct HandshakeSink(Arc<dyn SftpSink>);
-
-impl SessionSink for HandshakeSink {
-    fn on_data(&self, _bytes: &[u8]) {}
-    fn on_status(&self, _status: SessionStatus, _message: Option<String>) {}
-    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
-        self.0.on_host_key_prompt(payload);
-    }
-    fn on_host_key_prompt_closed(&self, prompt_id: &str) {
-        self.0.on_host_key_prompt_closed(prompt_id);
-    }
 }
 
 /// A live SFTP connection: the authenticated SSH `Handle` (kept alive only to
@@ -302,10 +276,10 @@ impl SftpManager {
     pub async fn connect(
         &self,
         params: SftpParams,
-        sink: Arc<dyn SftpSink>,
+        prompter: Arc<dyn HostKeyPrompter>,
     ) -> Result<String, AppError> {
         let handler = SshHandler::new(
-            Arc::new(HandshakeSink(sink)),
+            prompter,
             Arc::clone(&self.known_hosts),
             Arc::clone(&self.prompts),
             params.host.clone(),
