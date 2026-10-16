@@ -65,7 +65,11 @@ files, releasing),
       device status icon + per-forward status dots; backend calls serialized per
       device; a connection-settings edit restarts the running tunnel; a tunnel
       that drops is reopened when its device opted into auto-reconnect, with
-      the panes' policy — `tunnelReconnect`)
+      the panes' policy — `tunnelReconnect`). `tunnelsPanel` orchestrates;
+      DOM-free parts: `tunnelForwards` (forward state, launch choice, which
+      edits restart or re-bind), `tunnelRegistry` (device ↔ tunnel routing,
+      starting/restarting/waiting sets), `tunnelRunMemory` (remembered
+      Start/Stop), `deviceCallQueue`; the DOM is `tunnelCardView`
     - `sftp/` — the docked Files panel (browser + transfer queue); the
       panel's parts live in `sftp/panel/` (markup, entry rows, queue view,
       bookmarks bar, and DOM-free models: history, sort+filter, selection,

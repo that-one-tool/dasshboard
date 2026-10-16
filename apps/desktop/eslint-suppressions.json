@@ -198,14 +198,6 @@
       "count": 2
     }
   },
-  "src/tunnels/tunnelsPanel.ts": {
-    "complexity": {
-      "count": 20
-    },
-    "max-lines-per-function": {
-      "count": 1
-    }
-  },
   "src/ui/aboutDialog.ts": {
     "complexity": {
       "count": 3

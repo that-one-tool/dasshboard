@@ -24,17 +24,7 @@ vi.mock("../ipc", () => ({
   }),
 }));
 
-import {
-  TunnelsPanel,
-  tunnelableDevices,
-  statusLabel,
-  forwardEndpoint,
-  copyTarget,
-  forwardState,
-  listeningForwardCount,
-  forwardIdsToRun,
-  runChoiceOf,
-} from "./tunnelsPanel";
+import { TunnelsPanel } from "./tunnelsPanel";
 import {
   listDevices,
   listTunnels,
@@ -43,7 +33,6 @@ import {
   startTunnelForward,
   stopTunnelForward,
   type ForwardStatus,
-  type SshDevice,
 } from "../ipc";
 
 function sshDevice(id: string, name: string, forwards: Forward[] = []): Device {
@@ -77,69 +66,6 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
-describe("pure helpers", () => {
-  it("tunnelableDevices keeps only SSH devices with forwards", () => {
-    const devices = [
-      sshDevice("a", "A", [forward("f1", 5432)]),
-      sshDevice("b", "B", []),
-      { id: "s", name: "serial", kind: "serial" } as unknown as Device,
-    ];
-    const result = tunnelableDevices(devices);
-    expect(result.map((d) => d.id)).toEqual(["a"]);
-  });
-
-  it("statusLabel maps every status", () => {
-    expect(statusLabel("connecting")).toBe("Connecting…");
-    expect(statusLabel("listening")).toBe("Listening");
-    expect(statusLabel("error")).toBe("Error");
-    expect(statusLabel("stopped")).toBe("Stopped");
-    expect(statusLabel("disconnected")).toBe("Stopped");
-  });
-
-  it("forwardEndpoint formats local → remote", () => {
-    expect(
-      forwardEndpoint({
-        kind: "local",
-        localAddr: "127.0.0.1",
-        localPort: 5432,
-        remoteHost: "db",
-        remotePort: 6543,
-      }),
-    ).toBe("127.0.0.1:5432 → db:6543");
-  });
-
-  it("forwardEndpoint shows a remote forward as local ← server", () => {
-    expect(
-      forwardEndpoint({
-        kind: "remote",
-        localAddr: "127.0.0.1",
-        localPort: 3000,
-        remoteHost: "localhost",
-        remotePort: 8080,
-      }),
-    ).toBe("127.0.0.1:3000 ← localhost:8080");
-  });
-
-  it("copyTarget is the local end, or the server's for a remote forward", () => {
-    expect(copyTarget(forward("f1", 5432))).toBe("127.0.0.1:5432");
-    expect(copyTarget({ ...forward("f1", 3000), kind: "remote", remoteHost: "localhost", remotePort: 8080 })).toBe(
-      "localhost:8080",
-    );
-  });
-
-  it("forwardEndpoint shows a dynamic forward as a SOCKS proxy", () => {
-    expect(
-      forwardEndpoint({
-        kind: "dynamic",
-        localAddr: "127.0.0.1",
-        localPort: 1080,
-        remoteHost: "",
-        remotePort: 0,
-      }),
-    ).toBe("127.0.0.1:1080 → SOCKS proxy");
-  });
-});
-
 function bound(forwardId: string, isBound = true): ForwardStatus {
   return {
     forwardId,
@@ -150,44 +76,6 @@ function bound(forwardId: string, isBound = true): ForwardStatus {
     bound: isBound,
   };
 }
-
-describe("per-forward state helpers", () => {
-  const live = {
-    tunnelId: "t1",
-    status: "listening" as const,
-    requested: new Set(["f1", "f2", "f3"]),
-    forwards: [bound("f1"), bound("f2", false)],
-  };
-
-  it("forwardState maps a forward to its dot color state", () => {
-    expect(forwardState(undefined, "f1")).toBe("stopped");
-    expect(forwardState(live, "f1")).toBe("listening");
-    expect(forwardState(live, "f2")).toBe("unbound");
-    expect(forwardState(live, "f3")).toBe("connecting"); // asked for, not reported yet
-    expect(forwardState(live, "f4")).toBe("stopped"); // not asked for
-  });
-
-  it("listeningForwardCount counts only the bound forwards, across devices", () => {
-    expect(listeningForwardCount([])).toBe(0);
-    expect(listeningForwardCount([live, { ...live, requested: new Set(["f1"]) }])).toBe(2);
-  });
-
-  const device = sshDevice("dev-1", "NAS", [forward("f1", 1), forward("f2", 2)]) as SshDevice;
-
-  it("forwardIdsToRun reads a remembered choice, else the auto-start flag", () => {
-    expect(forwardIdsToRun(device, true)).toEqual(["f1", "f2"]);
-    expect(forwardIdsToRun(device, false)).toEqual([]);
-    expect(forwardIdsToRun(device, ["f2", "gone"])).toEqual(["f2"]);
-    expect(forwardIdsToRun(device, undefined)).toEqual([]);
-    expect(forwardIdsToRun({ ...device, tunnelAutoStart: true }, undefined)).toEqual(["f1", "f2"]);
-  });
-
-  it("runChoiceOf records all, none, or the listed forwards", () => {
-    expect(runChoiceOf(device, new Set(["f2", "f1"]))).toEqual(["f1", "f2"]);
-    expect(runChoiceOf(device, new Set())).toBe(false);
-    expect(runChoiceOf(device, new Set(["f2"]))).toEqual(["f2"]);
-  });
-});
 
 describe("TunnelsPanel", () => {
   beforeEach(() => {
@@ -474,6 +362,19 @@ describe("TunnelsPanel", () => {
   it("keeps the restored state until the device list has loaded", () => {
     const panel = new TunnelsPanel({ initialState: { "dev-1": false } });
     expect(panel.layoutState()).toEqual({ "dev-1": false });
+  });
+
+  it("a failed launch load does not discard devices a refresh loaded meanwhile", async () => {
+    let failLaunchLoad: (err: unknown) => void = () => {};
+    vi.mocked(listDevices).mockImplementationOnce(() => new Promise((_, reject) => (failLaunchLoad = reject)));
+    const panel = new TunnelsPanel({ initialState: { "dev-1": false } });
+    const launched = panel.init();
+    panel.setDevices(h.devices);
+    failLaunchLoad({ code: "Io", message: "boom" });
+    await launched;
+    await flush();
+    expect(panel.layoutState()).toEqual({ "dev-1": false });
+    expect(document.querySelector('[data-device-id="dev-1"]')).not.toBeNull();
   });
 
   /* ----- orphaned tunnels ------------------------------------------------ */
