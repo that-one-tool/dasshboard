@@ -40,7 +40,7 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands/    ──�
 - **Frontend (`src/`)**: one folder per feature: `terminal/`, `devices/`, `tabs/`,
   `tunnels/`, `sftp/`, `profiles/`, `settings/`, `i18n/`, plus `ui/` for shared
   widgets. `grid.ts` holds the pane grid and `main.ts` wires everything together.
-- **IPC (`src/ipc.ts`)**: typed wrappers for every command and event. Payload
+- **IPC (`src/ipc/`)**: typed wrappers for every command and event, one module per domain behind the `ipc/index.ts` barrel. Payload
   types mirror the Rust `serde` structs and are camelCase on the wire.
 - **Backend (`src-tauri/src/`)**: `commands/` holds the handlers, one file per domain
   (registered in `lib.rs`), and each concern has its own module:
@@ -78,7 +78,7 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands/    ──�
 ## Adding things
 
 - **A backend command**: add the handler in its `commands/<domain>.rs`, register it in
-  `lib.rs`, add a typed wrapper in `ipc.ts`, and keep the payload types in sync
+  `lib.rs`, add a typed wrapper in its `ipc/<domain>.ts`, and keep the payload types in sync
   on both sides.
 - **UI text**: add the key to `i18n/en.ts` (the source of truth, which also types
   the keys), then translate it in the other six locale files.

@@ -109,8 +109,12 @@ files, releasing),
       `UpdateController`'s listeners) instead of late-bound callbacks
     - `app/liveViews` — the one list of long-lived views that a device change,
       a config reload and a language change are fanned out to
-    - `ipc.ts` — typed `invoke` wrappers; every payload type here must mirror the
-      matching Rust `serde` struct (camelCase on the wire)
+    - `ipc/` — typed `invoke` wrappers, one module per domain, behind the
+      `ipc/index.ts` barrel callers import (and tests `vi.mock`); `invoke.ts`
+      holds the shared helpers (error normalizing, config-write echo
+      suppression), whose invoke helpers stay out of the barrel. Every
+      payload type must mirror the matching Rust `serde` struct (camelCase on
+      the wire)
 - `src-tauri/src/` — backend (Rust):
     - `commands/` — `#[tauri::command]` handlers, one module per domain
       (`devices`, `sessions`, `tunnels`, `sftp`, …; shared device→credentials

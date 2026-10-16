@@ -77,11 +77,6 @@
       "count": 4
     }
   },
-  "src/ipc.ts": {
-    "complexity": {
-      "count": 1
-    }
-  },
   "src/layout/sidebarResize.ts": {
     "max-lines-per-function": {
       "count": 1
