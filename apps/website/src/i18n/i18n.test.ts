@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { en } from "./en";
 import { messagesFor } from "./index";
@@ -17,14 +18,25 @@ function leaves(value: unknown, path = ""): [string, string][] {
 	return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) => leaves(child, `${path}.${key}`));
 }
 
+function readDesktopLocales(): string[] {
+	const source = readFileSync("../desktop/src/i18n/index.ts", "utf8");
+	const list = /SUPPORTED_LOCALES = \[([^\]]*)\]/.exec(source)?.[1];
+	if (list === undefined) throw new Error("SUPPORTED_LOCALES not found in the desktop i18n");
+	return [...list.matchAll(/"([\w-]+)"/g)].map((match) => match[1] ?? "");
+}
+
 function placeholders(text: string): string[] {
 	return [...text.matchAll(/\{(\w+)\}/g)].map((match) => match[1] ?? "").sort();
 }
 
 describe("locales", () => {
-	it("ships the same eight languages as the desktop app, English first", () => {
+	it("ships the desktop app's languages, English first", () => {
 		expect(SUPPORTED_LOCALES).toEqual(["en", "fr", "es", "de", "it", "pt", "zh", "ja"]);
 		expect(DEFAULT_LOCALE).toBe("en");
+	});
+
+	it("matches the desktop app's locale list exactly", () => {
+		expect([...SUPPORTED_LOCALES]).toEqual(readDesktopLocales());
 	});
 
 	it("lists every non-default locale as translated", () => {
@@ -72,6 +84,12 @@ describe("format", () => {
 });
 
 describe("message tables", () => {
+	it("fills the language count from the shipped locales instead of hardcoding it", () => {
+		const bodies = en.features.items.map((item) => item.body);
+		expect(bodies.some((body) => body.includes("{languageCount}"))).toBe(true);
+		expect(bodies.join(" ")).not.toMatch(/\d+ languages/);
+	});
+
 	it.each(TRANSLATED_LOCALES)("%s has exactly the English structure", (locale) => {
 		expect(shapeOf(messagesFor(locale))).toEqual(shapeOf(en));
 	});

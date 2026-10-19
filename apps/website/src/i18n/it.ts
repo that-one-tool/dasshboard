@@ -59,7 +59,7 @@ export const it: SiteMessages = {
 			},
 			{
 				title: "Fatta per viverci dentro",
-				body: "Riconnessione automatica con backoff, keepalive, comandi alla connessione, trasmissione dell'input, ricerca e salvataggio della cronologia del terminale, link cliccabili, tema scuro/chiaro in un clic e un'interfaccia in 8 lingue.",
+				body: "Riconnessione automatica con backoff, keepalive, comandi alla connessione, trasmissione dell'input, ricerca e salvataggio della cronologia del terminale, link cliccabili, tema scuro/chiaro in un clic e un'interfaccia in {languageCount} lingue.",
 			},
 		],
 	},

@@ -1,11 +1,13 @@
 ---
 import type { SiteMessages } from "../i18n/en";
+import { SUPPORTED_LOCALES, format } from "../i18n/locales";
 
 interface Props {
 	t: SiteMessages;
 }
 
 const { t } = Astro.props;
+const vars = { languageCount: String(SUPPORTED_LOCALES.length) };
 ---
 
 <section id="features" class="section container">
@@ -15,7 +17,7 @@ const { t } = Astro.props;
 			t.features.items.map((feature) => (
 				<article class="card">
 					<h3>{feature.title}</h3>
-					<p>{feature.body}</p>
+					<p>{format(feature.body, vars)}</p>
 				</article>
 			))
 		}

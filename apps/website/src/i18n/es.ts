@@ -59,7 +59,7 @@ export const es: SiteMessages = {
 			},
 			{
 				title: "Hecho para el día a día",
-				body: "Reconexión automática con espera progresiva, keepalives, comandos al conectar, difusión de la escritura, búsqueda y guardado del historial del terminal, enlaces clicables, cambio de tema oscuro/claro en un clic y una interfaz en 8 idiomas.",
+				body: "Reconexión automática con espera progresiva, keepalives, comandos al conectar, difusión de la escritura, búsqueda y guardado del historial del terminal, enlaces clicables, cambio de tema oscuro/claro en un clic y una interfaz en {languageCount} idiomas.",
 			},
 		],
 	},

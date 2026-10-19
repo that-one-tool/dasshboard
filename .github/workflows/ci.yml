@@ -38,6 +38,7 @@ jobs:
                       site:
                         - "apps/website/**"
                         - "apps/desktop/src-tauri/tauri.conf.json"
+                        - "apps/desktop/src/i18n/index.ts"
                         - ".github/workflows/ci.yml"
                         - ".github/workflows/site-*.yml"
 

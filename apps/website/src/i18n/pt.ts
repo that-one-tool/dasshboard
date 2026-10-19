@@ -60,7 +60,7 @@ export const pt: SiteMessages = {
 			},
 			{
 				title: "Feito para o dia a dia",
-				body: "Religação automática com espera progressiva, keepalives, comandos ao ligar, difusão da escrita, pesquisa e gravação do histórico do terminal, ligações clicáveis, alternância de tema escuro/claro num clique e uma interface em 8 idiomas.",
+				body: "Religação automática com espera progressiva, keepalives, comandos ao ligar, difusão da escrita, pesquisa e gravação do histórico do terminal, ligações clicáveis, alternância de tema escuro/claro num clique e uma interface em {languageCount} idiomas.",
 			},
 		],
 	},

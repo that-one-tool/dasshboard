@@ -59,7 +59,7 @@ export const en = {
 			},
 			{
 				title: "Made to live in",
-				body: "Auto-reconnect with backoff, keepalives, commands on connect, broadcast input, search and save the scrollback, clickable links, a one-click dark/light theme toggle, and a UI in 8 languages.",
+				body: "Auto-reconnect with backoff, keepalives, commands on connect, broadcast input, search and save the scrollback, clickable links, a one-click dark/light theme toggle, and a UI in {languageCount} languages.",
 			},
 		],
 	},
