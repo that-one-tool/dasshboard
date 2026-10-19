@@ -14,6 +14,7 @@ import { en } from "./en";
 import { fr } from "./fr";
 import { es } from "./es";
 import { de } from "./de";
+import { it as italian } from "./it";
 import { pt } from "./pt";
 import { zh } from "./zh";
 import { ja } from "./ja";
@@ -36,7 +37,7 @@ afterEach(() => {
 });
 
 describe("translation tables", () => {
-  const tables = { fr, es, de, pt, zh, ja } as const;
+  const tables = { fr, es, de, it: italian, pt, zh, ja } as const;
 
   for (const [name, table] of Object.entries(tables)) {
     it(`${name} defines every English key (no missing translations)`, () => {
@@ -90,12 +91,18 @@ describe("tp (plural)", () => {
   it("shows the real count in every singular form", () => {
     setLocale("fr");
     expect(tp("sftp.count", 0)).toBe("0 élément");
-    const tables = { en, fr, es, de, pt, zh, ja };
+    const tables = { en, fr, es, de, it: italian, pt, zh, ja };
     for (const [name, table] of Object.entries(tables)) {
       for (const [key, value] of Object.entries(table)) {
         if (key.endsWith(".one")) expect(value, `${name} ${key}`).not.toMatch(/(^|[^\d{])1([^\d}]|$)/);
       }
     }
+  });
+
+  it("uses the one form for exactly 1 in Italian", () => {
+    setLocale("it");
+    expect(tp("sftp.count", 1)).toBe("1 elemento");
+    expect(tp("sftp.count", 0)).toBe("0 elementi");
   });
 
   it("always uses the other form for Chinese and Japanese (no plural)", () => {
@@ -126,6 +133,7 @@ describe("resolveLocale", () => {
   it("resolves each shipped OS locale from its primary subtag", () => {
     expect(resolveLocale(null, ["de-DE"])).toBe("de");
     expect(resolveLocale(null, ["es-ES"])).toBe("es");
+    expect(resolveLocale(null, ["it-IT"])).toBe("it");
     expect(resolveLocale(null, ["pt-BR"])).toBe("pt");
     expect(resolveLocale(null, ["zh-Hans-CN"])).toBe("zh");
     expect(resolveLocale(null, ["ja-JP"])).toBe("ja");

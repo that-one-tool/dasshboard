@@ -38,7 +38,7 @@
   with connections still live.
 - **Dark & light themes** with a one-click toggle in the top bar, configurable
   terminal font and scrollback.
-- **7 languages** — English, French, Spanish, German, Portuguese, Chinese, Japanese.
+- **8 languages** — English, French, Spanish, German, Italian, Portuguese, Chinese, Japanese.
 - **Signed updates** — check from About (or opt in to a check at startup), then
   Install & restart on Windows, macOS and the Linux AppImage.
 

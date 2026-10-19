@@ -1,6 +1,6 @@
 // Mirrors the desktop app's SUPPORTED_LOCALES (apps/desktop/src/i18n/index.ts).
 // English lives at the site root; every other locale under /<locale>/.
-export const SUPPORTED_LOCALES = ["en", "fr", "es", "de", "pt", "zh", "ja"] as const;
+export const SUPPORTED_LOCALES = ["en", "fr", "es", "de", "it", "pt", "zh", "ja"] as const;
 
 export type Locale = (typeof SUPPORTED_LOCALES)[number];
 
@@ -13,6 +13,7 @@ export const LOCALE_NAMES: Record<Locale, string> = {
 	fr: "Français",
 	es: "Español",
 	de: "Deutsch",
+	it: "Italiano",
 	pt: "Português",
 	zh: "简体中文",
 	ja: "日本語",
@@ -23,6 +24,7 @@ export const HTML_LANG: Record<Locale, string> = {
 	fr: "fr",
 	es: "es",
 	de: "de",
+	it: "it",
 	pt: "pt",
 	zh: "zh-Hans",
 	ja: "ja",

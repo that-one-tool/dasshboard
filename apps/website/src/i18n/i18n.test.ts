@@ -22,13 +22,13 @@ function placeholders(text: string): string[] {
 }
 
 describe("locales", () => {
-	it("ships the same seven languages as the desktop app, English first", () => {
-		expect(SUPPORTED_LOCALES).toEqual(["en", "fr", "es", "de", "pt", "zh", "ja"]);
+	it("ships the same eight languages as the desktop app, English first", () => {
+		expect(SUPPORTED_LOCALES).toEqual(["en", "fr", "es", "de", "it", "pt", "zh", "ja"]);
 		expect(DEFAULT_LOCALE).toBe("en");
 	});
 
 	it("lists every non-default locale as translated", () => {
-		expect(TRANSLATED_LOCALES).toEqual(["fr", "es", "de", "pt", "zh", "ja"]);
+		expect(TRANSLATED_LOCALES).toEqual(["fr", "es", "de", "it", "pt", "zh", "ja"]);
 	});
 
 	it("names every locale and gives it an html lang", () => {
@@ -40,7 +40,8 @@ describe("locales", () => {
 
 	it("recognises only shipped locales", () => {
 		expect(isSupportedLocale("ja")).toBe(true);
-		expect(isSupportedLocale("it")).toBe(false);
+		expect(isSupportedLocale("it")).toBe(true);
+		expect(isSupportedLocale("ko")).toBe(false);
 		expect(isSupportedLocale(undefined)).toBe(false);
 	});
 });

@@ -81,7 +81,7 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands/    ──�
   `lib.rs`, add a typed wrapper in its `ipc/<domain>.ts`, and keep the payload types in sync
   on both sides.
 - **UI text**: add the key to `i18n/en.ts` (the source of truth, which also types
-  the keys), then translate it in the other six locale files.
+  the keys), then translate it in the other seven locale files.
 
 ## Data
 

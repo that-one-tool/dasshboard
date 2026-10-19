@@ -661,6 +661,7 @@ describe("the system language entry", () => {
       ["fr", "fr"],
       ["es", "es"],
       ["de", "de"],
+      ["it", "it"],
       ["pt", "pt"],
       ["zh", "zh"],
       ["ja", "ja"],
@@ -668,7 +669,7 @@ describe("the system language entry", () => {
   });
 
   it("is in English when the app doesn't ship the OS language", async () => {
-    await openWithOsLanguages(["it-IT"]);
+    await openWithOsLanguages(["ko-KR"]);
     expect(systemOption()?.textContent).toBe("System default");
   });
 });

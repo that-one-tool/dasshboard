@@ -59,7 +59,7 @@ export const fr: SiteMessages = {
 			},
 			{
 				title: "Pensé pour le quotidien",
-				body: "Reconnexion automatique progressive, keepalives, commandes à la connexion, diffusion de la saisie, recherche et enregistrement de l'historique du terminal, liens cliquables, bascule sombre/clair en un clic et une interface en 7 langues.",
+				body: "Reconnexion automatique progressive, keepalives, commandes à la connexion, diffusion de la saisie, recherche et enregistrement de l'historique du terminal, liens cliquables, bascule sombre/clair en un clic et une interface en 8 langues.",
 			},
 		],
 	},
