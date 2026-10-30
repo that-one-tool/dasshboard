@@ -596,6 +596,77 @@ describe("device save re-entrancy", () => {
   });
 });
 
+describe("device editor Test connection", () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "list_devices" ? [deviceA, deviceB] : undefined,
+    );
+  });
+
+  function testPayloads(): unknown[] {
+    return invokeMock.mock.calls.filter(([cmd]) => cmd === "test_connection").map((call) => call[1]);
+  }
+
+  it("tests the edited form values, not the saved device", async () => {
+    const container = await setup();
+    q<HTMLButtonElement>(container, `.btn-edit[data-device-id="${deviceA.id}"]`).click();
+    q<HTMLInputElement>(container, "#device-username").value = "fixed-user";
+    q<HTMLInputElement>(container, "#device-secret").value = "fixed-pw";
+
+    q<HTMLButtonElement>(container, ".btn-test-connection").click();
+    await flush();
+
+    expect(testPayloads()).toHaveLength(1);
+    const payload = testPayloads()[0] as { device: Device; secret?: string };
+    expect(payload.device).toMatchObject({ id: deviceA.id, username: "fixed-user" });
+    expect(payload.secret).toBe("fixed-pw");
+  });
+
+  it("leaves the secret out when the field is empty, so the stored one applies", async () => {
+    const container = await setup();
+    q<HTMLButtonElement>(container, `.btn-edit[data-device-id="${deviceA.id}"]`).click();
+
+    q<HTMLButtonElement>(container, ".btn-test-connection").click();
+    await flush();
+
+    expect(testPayloads()[0]).not.toHaveProperty("secret");
+  });
+
+  it("tests a new, unsaved device", async () => {
+    const container = await setup();
+    q<HTMLButtonElement>(container, ".device-add-btn").click();
+    q<HTMLInputElement>(container, "#device-name").value = "New";
+    q<HTMLInputElement>(container, "#device-host").value = "10.0.0.9";
+    q<HTMLInputElement>(container, "#device-port").value = "22";
+    q<HTMLInputElement>(container, "#device-username").value = "root";
+    q<HTMLInputElement>(container, "#device-secret").value = "pw";
+    const button = q<HTMLButtonElement>(container, ".btn-test-connection");
+
+    expect(button.disabled).toBe(false);
+    button.click();
+    await flush();
+
+    expect(testPayloads()).toHaveLength(1);
+    expect(testPayloads()[0]).toMatchObject({ device: { id: "", host: "10.0.0.9" }, secret: "pw" });
+  });
+
+  it("shows the field errors and tests nothing when the form is invalid", async () => {
+    const container = await setup();
+    q<HTMLButtonElement>(container, `.btn-edit[data-device-id="${deviceA.id}"]`).click();
+    q<HTMLInputElement>(container, "#device-host").value = "";
+
+    q<HTMLButtonElement>(container, ".btn-test-connection").click();
+    await flush();
+
+    expect(testPayloads()).toHaveLength(0);
+    const hostError = q<HTMLElement>(container, "#device-host").parentElement?.querySelector(".error-text");
+    expect(hostError?.textContent).not.toBe("");
+  });
+});
+
 /**
  * F10 regression: a save failure used to route through `displayFieldErrors`
  * with `field: "general"`, which maps to a `#device-general` selector that

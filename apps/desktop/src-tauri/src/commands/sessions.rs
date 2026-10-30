@@ -8,7 +8,9 @@ use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::client_ids::{client_chosen_id, id_in_use};
-use super::device_access::{find_device, keepalive_config, resolve_credentials, resolve_jump_hop};
+use super::device_access::{
+    find_device, keepalive_config, resolve_credentials, resolve_jump_hop, resolve_test_credentials,
+};
 use super::host_keys::{emit_host_key_prompt_closed, HOST_KEY_PROMPT_EVENT};
 use crate::device::{Connection, Device};
 use crate::error::AppError;
@@ -355,16 +357,18 @@ pub async fn disconnect(state: State<'_, AppState>, session_id: String) -> Resul
     Ok(())
 }
 
-/// Connect + authenticate + close, no shell (SPEC §5). Surfaces the auth
+/// Connect + authenticate + close, no shell (SPEC §5), with the device as
+/// edited in the form (saved or not; nothing is persisted). Surfaces the auth
 /// outcome as `Ok(())` / `Err(AppError)`. Shares the host-key path, so a
 /// first-contact test can raise a `host_key_prompt` like a live connect.
 #[tauri::command]
 pub async fn test_connection(
     app: AppHandle,
     state: State<'_, AppState>,
-    device_id: String,
+    device: Device,
+    secret: Option<String>,
 ) -> Result<(), AppError> {
-    let device = find_device(&state, &device_id)?;
+    device.validate()?;
     match &device.connection {
         Connection::Ssh {
             host,
@@ -372,12 +376,12 @@ pub async fn test_connection(
             username,
             ..
         } => {
-            let creds = resolve_credentials(&state, &device).await?;
+            let creds = resolve_test_credentials(&state, &device, secret).await?;
             let jump = resolve_jump_hop(&state, &device).await?;
             let manager = Arc::clone(&state.session_manager);
             let sink: Arc<dyn SessionSink> = Arc::new(TauriSessionSink {
                 app,
-                session_id: format!("test-{device_id}"),
+                session_id: format!("test-{}", device.id),
                 output: None,
             });
             manager

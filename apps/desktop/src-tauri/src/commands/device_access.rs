@@ -1,6 +1,6 @@
-//! Resolving a saved device into what a connection needs: the device itself,
-//! its credentials (keyring read off the async runtime), its jump host, and
-//! the keepalive settings.
+//! Resolving a device (saved, or as edited for a test) into what a connection
+//! needs: the device itself, its credentials (keyring read off the async
+//! runtime), its jump host, and the keepalive settings.
 
 use std::sync::Arc;
 
@@ -73,12 +73,55 @@ pub(super) async fn resolve_credentials(
     device: &Device,
 ) -> Result<AuthCredentials, AppError> {
     let auth = ssh_auth_of(device)?;
+    credentials_from(auth, read_stored_secret(state, &device.id).await?)
+}
+
+async fn read_stored_secret(state: &AppState, device_id: &str) -> Result<Option<String>, AppError> {
     let secret_store = Arc::clone(&state.secret_store);
-    let device_id = device.id.clone();
-    let stored = tokio::task::spawn_blocking(move || secret_store.get(&device_id))
+    let device_id = device_id.to_string();
+    tokio::task::spawn_blocking(move || secret_store.get(&device_id))
         .await
-        .map_err(|e| AppError::Keyring(format!("secret lookup task failed: {e}")))??;
-    credentials_from(auth, stored)
+        .map_err(|e| AppError::Keyring(format!("secret lookup task failed: {e}")))?
+}
+
+/// Credentials to test a device as edited, saved or not: the typed secret, else
+/// the stored one — unless the auth method changed, as a password is no key
+/// passphrase (the rule `save_device` follows).
+pub(super) async fn resolve_test_credentials(
+    state: &AppState,
+    device: &Device,
+    typed: Option<String>,
+) -> Result<AuthCredentials, AppError> {
+    let auth = ssh_auth_of(device)?;
+    let secret = match typed {
+        Some(secret) => Some(secret),
+        None => stored_secret_of_same_method(state, device).await?,
+    };
+    ensure_test_password(auth, secret.as_deref())?;
+    credentials_from(auth, secret)
+}
+
+/// The test runs from the device editor, so `credentials_from`'s "open the
+/// device editor" hint would mislead.
+fn ensure_test_password(auth: &Auth, secret: Option<&str>) -> Result<(), AppError> {
+    if secret.is_none() && matches!(auth, Auth::Password) {
+        return Err(AppError::SshAuth(
+            "enter the password to test this device".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+async fn stored_secret_of_same_method(
+    state: &AppState,
+    device: &Device,
+) -> Result<Option<String>, AppError> {
+    let same_method = find_device(state, &device.id)
+        .is_ok_and(|saved| saved.secret_method() == device.secret_method());
+    if !same_method {
+        return Ok(None);
+    }
+    read_stored_secret(state, &device.id).await
 }
 
 /// Resolve a device's optional jump host (`ProxyJump`) into the connection
@@ -303,6 +346,83 @@ mod tests {
             AuthCredentials::Agent { fingerprint } => assert_eq!(fingerprint, "SHA256:abc"),
             other => panic!("expected agent credentials, got {other:?}"),
         }
+    }
+
+    fn password_of(creds: &AuthCredentials) -> Option<&str> {
+        match creds {
+            AuthCredentials::Password(pw) => Some(pw),
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_credentials_prefer_the_typed_secret() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        let saved = save_device_impl(&state, sample_device(), Some("old".to_string())).unwrap();
+
+        let creds = resolve_test_credentials(&state, &saved, Some("new".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(password_of(&creds), Some("new"));
+    }
+
+    #[tokio::test]
+    async fn test_credentials_fall_back_to_the_stored_secret() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        let saved = save_device_impl(&state, sample_device(), Some("old".to_string())).unwrap();
+        let mut edited = saved.clone();
+        if let Connection::Ssh { username, .. } = &mut edited.connection {
+            *username = "root".to_string();
+        }
+
+        let creds = resolve_test_credentials(&state, &edited, None)
+            .await
+            .unwrap();
+        assert_eq!(password_of(&creds), Some("old"));
+    }
+
+    #[tokio::test]
+    async fn test_credentials_skip_a_stored_secret_of_another_auth_method() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        let saved = save_device_impl(&state, sample_device(), Some("old".to_string())).unwrap();
+        let mut edited = saved.clone();
+        set_ssh_auth(
+            &mut edited,
+            Auth::Key {
+                key_path: "/keys/id_ed25519".to_string(),
+            },
+        );
+
+        match &resolve_test_credentials(&state, &edited, None)
+            .await
+            .unwrap()
+        {
+            AuthCredentials::Key { passphrase, .. } => assert_eq!(passphrase.as_deref(), None),
+            other => panic!("expected key credentials, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_credentials_of_an_unsaved_device_use_only_the_typed_secret() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+
+        let typed = resolve_test_credentials(&state, &sample_device(), Some("pw".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(password_of(&typed), Some("pw"));
+        let Err(AppError::SshAuth(message)) =
+            resolve_test_credentials(&state, &sample_device(), None).await
+        else {
+            panic!("a password test with no password must fail with SshAuth");
+        };
+        assert!(
+            !message.contains("device editor"),
+            "the user is already in the editor, got: {message}"
+        );
     }
 
     #[test]

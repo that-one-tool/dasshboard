@@ -53,6 +53,8 @@ import {
 import { chevronUpIcon, pencilIcon, trashIcon } from "../ui/icons";
 import { t, tp } from "../i18n";
 
+type FormValues = ReturnType<typeof readFormValues>;
+
 export interface DeviceManagerOptions {
   onError?: (error: AppError) => void;
   onSuccess?: (message: string) => void;
@@ -229,7 +231,7 @@ export class DeviceManagerImpl {
     const form = this.container.querySelector<HTMLFormElement>("#device-form");
     form?.addEventListener("submit", (e) => this.handleFormSubmit(e));
 
-    // Test connection (uses the device's *saved* credentials).
+    // Test connection (uses the form's values, saved or not).
     this.container
       .querySelector(".btn-test-connection")
       ?.addEventListener("click", () => void this.handleTestConnection());
@@ -294,20 +296,6 @@ export class DeviceManagerImpl {
       title.textContent = t("devices.dialog.editTitle");
       populateForm(this.container, device);
       setSecretPlaceholder(this.container, true);
-    }
-
-    // Test connection needs a *persisted* device (the backend looks it up by
-    // id and reads its keyring secret), so it is only enabled when editing a
-    // saved device. For a brand-new device the user must Save first.
-    const testBtn = this.container.querySelector<HTMLButtonElement>(
-      ".btn-test-connection",
-    );
-    if (testBtn) {
-      const editingExisting = deviceId !== null;
-      testBtn.disabled = !editingExisting;
-      testBtn.title = editingExisting
-        ? t("devices.test.enabledTitle")
-        : t("devices.test.disabledTitle");
     }
 
     dialog.classList.remove("dialog-hidden");
@@ -376,23 +364,8 @@ export class DeviceManagerImpl {
   private async handleFormSubmit(e: Event): Promise<void> {
     e.preventDefault();
     if (this.saving) return;
-
-    const values = readFormValues(
-      this.container,
-      this.editingDeviceId,
-      this.forwardsEditor?.getForwards() ?? [],
-    );
-
-    // Client-side validation. SSH forwards are validated by their sub-editor,
-    // which renders errors inline on each offending row; a forward error blocks
-    // the save just like a device-field error.
-    const errors = validateDevice(values);
-    const forwardsOk =
-      values.kind === "ssh" ? (this.forwardsEditor?.validate() ?? true) : true;
-    if (errors.length > 0 || !forwardsOk) {
-      displayFieldErrors(this.container, errors);
-      return;
-    }
+    const values = this.readValidFormValues();
+    if (!values) return;
 
     this.saving = true;
     try {
@@ -402,18 +375,31 @@ export class DeviceManagerImpl {
     }
   }
 
+  /** The form's values, or null once their errors are shown. SSH forwards are
+   * validated by their sub-editor, which marks each offending row inline. */
+  private readValidFormValues(): FormValues | null {
+    const values = this.readCurrentFormValues();
+    const errors = validateDevice(values);
+    displayFieldErrors(this.container, errors);
+    const forwardsOk = this.validateForwards(values.kind);
+    return errors.length === 0 && forwardsOk ? values : null;
+  }
+
+  private readCurrentFormValues(): FormValues {
+    const forwards = this.forwardsEditor?.getForwards() ?? [];
+    return readFormValues(this.container, this.editingDeviceId, forwards);
+  }
+
+  private validateForwards(kind: FormValues["kind"]): boolean {
+    if (kind !== "ssh" || !this.forwardsEditor) return true;
+    return this.forwardsEditor.validate();
+  }
+
   /** Saves validated form values, then closes the dialog and reloads the list;
    * a failure reaches the user as a toast and leaves the dialog open. */
-  private async saveFormValues(values: ReturnType<typeof readFormValues>): Promise<void> {
+  private async saveFormValues(values: FormValues): Promise<void> {
     try {
-      const kind = values.kind ?? "ssh";
-      // Serial/local-shell saves and agent-auth SSH devices never carry a secret
-      // (SPEC §4); `decideSecretToSend` enforces that regardless of the (hidden)
-      // secret field's contents.
-      const secretToSend = decideSecretToSend(values.secret ?? "", kind, values.auth?.method);
-
-      const device = buildDeviceFromForm(values);
-      await saveDevice(device, secretToSend);
+      await saveDevice(buildDeviceFromForm(values), getSecretToSend(values));
 
       this.options.onSuccess?.(t("devices.saved"));
       this.closeDialog();
@@ -429,7 +415,8 @@ export class DeviceManagerImpl {
   }
 
   private async handleTestConnection(): Promise<void> {
-    if (this.editingDeviceId === null) return;
+    const values = this.readValidFormValues();
+    if (!values) return;
     const btn = this.container.querySelector<HTMLButtonElement>(
       ".btn-test-connection",
     );
@@ -441,7 +428,7 @@ export class DeviceManagerImpl {
     try {
       // A first-contact host key raises a `host_key_prompt`, handled by the
       // global host-key dialog; on accept the test proceeds.
-      await testConnection(this.editingDeviceId);
+      await testConnection(buildDeviceFromForm(values), getSecretToSend(values));
       this.options.onSuccess?.(t("devices.test.success"));
     } catch (err) {
       const error = err as AppError;
@@ -761,6 +748,12 @@ const HTML_ENTITIES: Record<string, string> = {
 /** Escapes text for element content and quoted attribute values alike. */
 function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (char) => HTML_ENTITIES[char] ?? char);
+}
+
+/** Serial/local-shell and agent-auth devices never carry a secret (SPEC §4),
+ * whatever the hidden secret field holds. */
+function getSecretToSend(values: FormValues): string | undefined {
+  return decideSecretToSend(values.secret, values.kind, values.auth?.method);
 }
 
 /** A tag section's header label: the tag, or "Untagged". */

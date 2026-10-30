@@ -24,10 +24,10 @@
   },
   "src/devices/deviceManager.ts": {
     "complexity": {
-      "count": 15
+      "count": 14
     },
     "max-lines-per-function": {
-      "count": 8
+      "count": 7
     }
   },
   "src/devices/forwardValidation.ts": {

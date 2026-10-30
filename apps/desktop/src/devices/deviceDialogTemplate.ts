@@ -349,6 +349,7 @@ export function deviceManagerMarkup(): string {
               <button
                 type="button"
                 class="btn btn-secondary btn-test-connection"
+                title="${t("devices.test.title")}"
               >
                 ${t("devices.test")}
               </button>

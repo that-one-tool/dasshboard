@@ -1,4 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { Device } from "./devices";
 import type { ErrorCode } from "./errors";
 import { invokeChecked, markLocalConfigWrite } from "./invoke";
 
@@ -126,9 +127,10 @@ export async function respondHostKey(
   if (accept) markLocalConfigWrite();
 }
 
-/** Connect + authenticate + close, no shell (SPEC §5). */
-export async function testConnection(deviceId: string): Promise<void> {
-  await invokeChecked<void>("test_connection", { deviceId });
+/** Connect + authenticate + close, no shell (SPEC §5), with the device as
+ * edited (saved or not). No `secret` falls back to the stored one. */
+export async function testConnection(device: Device, secret?: string): Promise<void> {
+  await invokeChecked<void>("test_connection", secret === undefined ? { device } : { device, secret });
 }
 
 /** Subscribes to `session_status` events. Returns an unlisten function. */

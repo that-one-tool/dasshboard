@@ -32,6 +32,24 @@ import {
 } from "./sessions";
 
 import { isLocalConfigWriteRecent } from "./invoke";
+import type { Device } from "./devices";
+
+const testedDevice: Device = {
+	id: "",
+	name: "NAS",
+	kind: "ssh",
+	host: "10.0.0.1",
+	port: 22,
+	username: "root",
+	auth: { method: "password" },
+	forwards: [],
+	tunnelAutoStart: false,
+	proxyJump: null,
+	forwardAgent: false,
+	autoReconnect: false,
+	tags: [],
+	connectSnippet: null,
+};
 
 beforeEach(() => {
 	invokeMock.mockReset();
@@ -122,10 +140,17 @@ describe("session wrapper argument shapes", () => {
 		});
 	});
 
-	it("testConnection sends { deviceId }", async () => {
+	it("testConnection sends the device and a typed secret", async () => {
 		invokeMock.mockResolvedValue(undefined);
-		await testConnection("dev-1");
-		expect(invokeMock).toHaveBeenCalledWith("test_connection", { deviceId: "dev-1" });
+		await testConnection(testedDevice, "pw");
+		expect(invokeMock).toHaveBeenCalledWith("test_connection", { device: testedDevice, secret: "pw" });
+	});
+
+	// `secret: Option<String>` on the Rust side: omitted, never `null`.
+	it("testConnection omits the secret key when none was typed", async () => {
+		invokeMock.mockResolvedValue(undefined);
+		await testConnection(testedDevice);
+		expect(invokeMock).toHaveBeenCalledWith("test_connection", { device: testedDevice });
 	});
 });
 
