@@ -41,8 +41,8 @@ use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
 use crate::session_sink::{SessionSink, SessionStatus};
 use crate::ssh::establish::{
-    close_jump, establish_target, DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT,
-    DEFAULT_PROMPT_TIMEOUT,
+    close_jump, establish_target, JumpConnection, DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
 };
 use crate::ssh::handler::SshHandler;
 use crate::ssh::params::{AuthCredentials, Endpoint, JumpHop, KeepaliveConfig};
@@ -229,10 +229,7 @@ async fn close_channel(writer: &ChannelWriteHalf<client::Msg>, reader: &mut Chan
 
 /// Send the target, then the jump host, an SSH disconnect, so neither sees a
 /// dropped socket; each within `CLOSE_GRACE`.
-async fn close_connection(
-    handle: &client::Handle<SshHandler>,
-    jump: Option<&client::Handle<SshHandler>>,
-) {
+async fn close_connection(handle: &client::Handle<SshHandler>, jump: Option<&JumpConnection>) {
     let goodbye = handle.disconnect(russh::Disconnect::ByApplication, "", "");
     let _ = timeout(CLOSE_GRACE, goodbye).await;
     let _ = timeout(CLOSE_GRACE, close_jump(jump)).await;
@@ -361,9 +358,8 @@ async fn run_session(
     };
 
     sink.on_status(SessionStatus::Connected, None);
-    // `jump` (the jump host's handle, for a jumped connection) must outlive
-    // the shell: dropping it would tear down the direct-tcpip channel this
-    // session rides on.
+    // `jump` (for a jumped connection) is closed only after the shell:
+    // closing it ends the direct-tcpip channel this session rides on.
     let status = run_shell(
         &handle,
         sink,

@@ -295,6 +295,7 @@ impl server::Handler for TestServerHandler {
             let port = port_to_connect as u16;
             tokio::spawn(async move {
                 if let Ok(mut tcp) = TcpStream::connect((host.as_str(), port)).await {
+                    let _ = tcp.set_nodelay(true);
                     let mut stream = channel.into_stream();
                     let _ = tokio::io::copy_bidirectional(&mut stream, &mut tcp).await;
                 }
@@ -501,6 +502,23 @@ async fn spawn_flooding_echo_server(password: &str) -> u16 {
     };
     let config = server::Config {
         window_size: 16 * 1024,
+        ..server_config(Duration::from_secs(30))
+    };
+    spawn_server(server, config).await
+}
+
+/// A server granting the client a send window small enough to sit in
+/// the loopback socket buffers. russh's client and server loops both stop
+/// reading while a socket write is blocked, so with megabytes in flight both
+/// ways (an echo flood) and small buffers (macOS) each waits on the other for
+/// good; a per-channel window that always fits keeps the client's writes from
+/// blocking. OpenSSH reads while it writes: this needs russh on both ends.
+/// `nodelay`: under Nagle, the many small window adjusts each wait out a
+/// delayed ACK, which turns a one-second flood into a minute.
+async fn spawn_narrow_window_server(server: TestServer) -> u16 {
+    let config = server::Config {
+        window_size: 16 * 1024,
+        nodelay: true,
         ..server_config(Duration::from_secs(30))
     };
     spawn_server(server, config).await
@@ -1610,11 +1628,12 @@ async fn a_disconnect_closes_the_connection_cleanly() {
     assert_eq!(error, None, "the server saw the connection drop");
 }
 
-/// The jump host's connection is closed cleanly too, once the target's is.
+/// Through a jump host, both the target's connection and the jump host's are
+/// closed cleanly: the target's disconnect gets through before the jump's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_disconnect_closes_the_jump_host_cleanly() {
+async fn a_disconnect_closes_the_target_and_jump_host_cleanly() {
     let dir = tempfile::tempdir().unwrap();
-    let target_port = spawn_test_server(TEST_PASSWORD).await;
+    let (target_port, mut target_errors) = spawn_error_reporting_server(TEST_PASSWORD, false).await;
     let (jump_port, mut jump_errors) = spawn_error_reporting_server(TEST_PASSWORD, true).await;
     seed_trusted(dir.path(), target_port);
     seed_trusted(dir.path(), jump_port);
@@ -1644,6 +1663,8 @@ async fn a_disconnect_closes_the_jump_host_cleanly() {
 
     let error = recv_timeout(&mut jump_errors, Duration::from_millis(500)).await;
     assert_eq!(error, None, "the jump host saw the connection drop");
+    let error = recv_timeout(&mut target_errors, Duration::from_millis(500)).await;
+    assert_eq!(error, None, "the target saw the connection drop");
 }
 
 /// Finding 4 (regression): disconnect while a host-key prompt is still pending —
@@ -2169,14 +2190,14 @@ fn echo_forward(id: &str, local_port: u16) -> Forward {
     }
 }
 
-/// Start a one-forward echo tunnel to `target_port` through the jump host on
+/// Start a one-forward tunnel to `target_port` through the jump host on
 /// `jump_port`, authenticating to the jump host with `jump_password`.
 fn spawn_jumped_tunnel(
     manager: &Arc<TunnelManager>,
     target_port: u16,
     jump_port: u16,
     jump_password: &str,
-    local_port: u16,
+    forward: Forward,
 ) -> TunnelSinkChannels {
     let (sink, chans) = new_tunnel_sink();
     manager.spawn_tunnel(
@@ -2187,7 +2208,7 @@ fn spawn_jumped_tunnel(
             port: target_port,
             username: TEST_USER.to_string(),
             creds: password_creds(),
-            forwards: vec![echo_forward("f1", local_port)],
+            forwards: vec![forward],
             keepalive: KeepaliveConfig::disabled(),
             jump: Some(JumpHop {
                 host: "127.0.0.1".to_string(),
@@ -2214,8 +2235,13 @@ async fn tunnel_forwards_bytes_through_a_jump_host() {
     let manager = tunnel_manager_with(dir.path());
     let local_port = free_local_port().await;
 
-    let mut chans =
-        spawn_jumped_tunnel(&manager, target_port, jump_port, TEST_PASSWORD, local_port);
+    let mut chans = spawn_jumped_tunnel(
+        &manager,
+        target_port,
+        jump_port,
+        TEST_PASSWORD,
+        echo_forward("f1", local_port),
+    );
     let forwards = await_listening(&mut chans.status_rx).await;
     assert!(forwards[0].bound, "the forward's local port must bind");
 
@@ -2225,6 +2251,132 @@ async fn tunnel_forwards_bytes_through_a_jump_host() {
 
     manager.stop_tunnel("t1").await;
     await_no_tunnels(&manager).await;
+}
+
+/// Through a jump host the target's SSH connection rides a channel of the jump
+/// connection: an upload waiting on that channel's window must not stop the
+/// target's download, or it fills the jump connection's queue in front of the
+/// window adjust the upload waits for. Both servers' windows are narrow, so a
+/// freeze can't come from the test servers themselves (see
+/// [`spawn_narrow_window_server`]). One connection only: the bridging test
+/// server itself freezes under a dozen parallel floods (a real sshd doesn't).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_upload_and_a_download_through_a_jump_host_do_not_freeze_the_tunnel() {
+    const CONNECTIONS: usize = 1;
+    const FLOOD: usize = 32 << 20;
+
+    let dir = tempfile::tempdir().unwrap();
+    let service_port = spawn_flood_service(FLOOD).await;
+    let target_port = spawn_narrow_window_server(TestServer {
+        bridge_direct_tcpip: true,
+        ..TestServer::new(TEST_PASSWORD)
+    })
+    .await;
+    let jump_port = spawn_narrow_window_server(TestServer {
+        bridge_direct_tcpip: true,
+        ..TestServer::new(TEST_PASSWORD)
+    })
+    .await;
+    seed_trusted(dir.path(), target_port);
+    seed_trusted(dir.path(), jump_port);
+    let manager = tunnel_manager_with(dir.path());
+    let local_port = free_local_port().await;
+    let forward = Forward {
+        remote_port: service_port,
+        ..echo_forward("f1", local_port)
+    };
+    let mut chans = spawn_jumped_tunnel(&manager, target_port, jump_port, TEST_PASSWORD, forward);
+    await_listening(&mut chans.status_rx).await;
+
+    let received = Arc::new(Progress::start());
+    let mut transfers = tokio::task::JoinSet::new();
+    for _ in 0..CONNECTIONS {
+        let stream = connect_local(local_port).await;
+        transfers.spawn(upload_and_download(stream, FLOOD, Arc::clone(&received)));
+    }
+    if tokio::time::timeout(STUCK, transfers.join_all())
+        .await
+        .is_err()
+    {
+        panic!(
+            "the jumped tunnel froze: downloaded {} of {} bytes, last moving at {:?}",
+            received.done(),
+            CONNECTIONS * FLOOD,
+            received.last_move()
+        );
+    }
+    manager.stop_tunnel("t1").await;
+}
+
+/// Send `size` bytes on `stream` while reading `size` back, counting them.
+async fn upload_and_download(stream: TcpStream, size: usize, received: Arc<Progress>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const CHUNK: usize = 64 * 1024;
+    let (mut reader, mut writer) = stream.into_split();
+    let upload = async {
+        for chunk in vec![0u8; size].chunks(CHUNK) {
+            writer.write_all(chunk).await.unwrap();
+        }
+    };
+    let download = async {
+        let mut buf = vec![0u8; CHUNK];
+        let mut done = 0;
+        while done < size {
+            let read = reader.read(&mut buf).await.unwrap();
+            assert_ne!(read, 0, "the connection ended early");
+            done += read;
+            received.add(read);
+        }
+    };
+    tokio::join!(upload, download);
+}
+
+/// Stopping a jumped tunnel mid-download closes the target's connection and
+/// the jump host's cleanly: the target's disconnect isn't lost behind the
+/// download still arriving for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_a_jumped_tunnel_mid_download_closes_both_cleanly() {
+    use tokio::io::AsyncReadExt;
+    let dir = tempfile::tempdir().unwrap();
+    let service_port = spawn_flood_service(64 << 20).await;
+    let (target_port, mut target_errors) = spawn_error_reporting_server(TEST_PASSWORD, true).await;
+    let (jump_port, mut jump_errors) = spawn_error_reporting_server(TEST_PASSWORD, true).await;
+    seed_trusted(dir.path(), target_port);
+    seed_trusted(dir.path(), jump_port);
+    let manager = tunnel_manager_with(dir.path());
+    let local_port = free_local_port().await;
+    let forward = Forward {
+        remote_port: service_port,
+        ..echo_forward("f1", local_port)
+    };
+    let mut chans = spawn_jumped_tunnel(&manager, target_port, jump_port, TEST_PASSWORD, forward);
+    await_listening(&mut chans.status_rx).await;
+    let mut stream = connect_local(local_port).await;
+    stream.read_exact(&mut [0u8; 64 * 1024]).await.unwrap();
+
+    manager.stop_tunnel("t1").await;
+    await_no_tunnels(&manager).await;
+
+    let error = recv_timeout(&mut target_errors, Duration::from_millis(500)).await;
+    assert_eq!(error, None, "the target saw the connection drop");
+    let error = recv_timeout(&mut jump_errors, Duration::from_millis(500)).await;
+    assert_eq!(error, None, "the jump host saw the connection drop");
+}
+
+/// A local TCP service that sends each connection `size` bytes while
+/// discarding whatever it receives; returns its port.
+async fn spawn_flood_service(size: usize) -> u16 {
+    use tokio::io::AsyncWriteExt;
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let (mut reader, mut writer) = tcp.into_split();
+            tokio::spawn(async move { tokio::io::copy(&mut reader, &mut tokio::io::sink()).await });
+            tokio::spawn(async move { writer.write_all(&vec![7u8; size]).await });
+        }
+    });
+    port
 }
 
 /// A jump-host auth failure ends the tunnel with an error naming the jump host,
@@ -2240,7 +2392,13 @@ async fn tunnel_jump_host_auth_failure_is_attributed_to_the_jump_host() {
     let manager = tunnel_manager_with(dir.path());
     let local_port = free_local_port().await;
 
-    let mut chans = spawn_jumped_tunnel(&manager, target_port, jump_port, "wrong", local_port);
+    let mut chans = spawn_jumped_tunnel(
+        &manager,
+        target_port,
+        jump_port,
+        "wrong",
+        echo_forward("f1", local_port),
+    );
     loop {
         let (status, _) = recv_timeout(&mut chans.status_rx, Duration::from_secs(10))
             .await
@@ -2345,7 +2503,7 @@ async fn start_echo_tunnel_with_backlog(
     backlog_limit: usize,
     stall: Duration,
 ) -> (Arc<TunnelManager>, u16) {
-    let port = spawn_test_server(TEST_PASSWORD).await;
+    let port = spawn_narrow_window_server(TestServer::new(TEST_PASSWORD)).await;
     seed_trusted(dir, port);
     let manager = Arc::new(
         new_tunnel_manager(dir)

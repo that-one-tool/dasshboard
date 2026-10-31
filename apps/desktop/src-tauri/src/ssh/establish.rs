@@ -6,19 +6,25 @@ use std::time::Duration;
 
 use russh::client;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
 use tokio::net::TcpStream;
+use tokio::sync::watch;
 use tokio::time::timeout;
 use zeroize::Zeroizing;
 
 use super::handler::SshHandler;
 use super::params::{AuthCredentials, Endpoint, JumpHop};
 use crate::error::AppError;
+use crate::relay::{bridge_until_either_ends, Pace};
 
 /// Default connect (TCP + handshake reachability) timeout — SPEC.md §6.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default host-key trust-prompt timeout — SPEC.md §6 (reject on elapse).
 pub const DEFAULT_PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long closing a jump host waits for the target riding it to get its
+/// own disconnect through first.
+const TARGET_CLOSE_GRACE: Duration = Duration::from_millis(250);
+
 /// Default slack budgeted for the SSH version exchange/KEX and the
 /// authentication exchange, on top of whatever `DEFAULT_CONNECT_TIMEOUT` and
 /// `DEFAULT_PROMPT_TIMEOUT` already cover (B3). Together they form the
@@ -234,8 +240,8 @@ fn annotate_jump_error(err: AppError, host: &str, port: u16) -> AppError {
 /// Connect to the target through a single jump host (`ProxyJump`): authenticate
 /// to the jump host, ask it to open a direct-tcpip channel to the target, then
 /// run the target's SSH handshake over that channel as a byte stream. Returns
-/// both handles; the jump handle must be kept alive for the connection's
-/// lifetime (dropping it tears down the channel the target rides on). Only the
+/// the target handle and the jump connection, to [`close_jump`] once the
+/// target is done (closing it ends the channel the target rides on). Only the
 /// TCP connect to the jump host is bounded here (by `connect_timeout`); the
 /// caller wraps this whole function in the single overall deadline (see
 /// `establish_target`), which is what bounds the channel-open and the target
@@ -245,7 +251,7 @@ async fn connect_through_jump(
     target_handler: SshHandler,
     jump: &JumpHop,
     connect_timeout: Duration,
-) -> Result<(client::Handle<SshHandler>, client::Handle<SshHandler>), AppError> {
+) -> Result<(client::Handle<SshHandler>, JumpConnection), AppError> {
     // Hop 1: connect + authenticate to the jump host (its own host-key TOFU
     // prompt, since its handler carries the jump host's addr). Errors are
     // attributed to the jump host. The owner token lives in this future, so
@@ -275,36 +281,57 @@ async fn connect_through_jump(
             ))
         })?;
 
-    let target_handle = establish_over_stream(
-        channel.into_stream(),
-        target.username,
-        target.creds,
-        target_handler,
-    )
-    .await?;
+    let (stream, target_done) = read_ahead(channel.into_stream());
+    let target_handle =
+        establish_over_stream(stream, target.username, target.creds, target_handler).await?;
 
-    Ok((target_handle, jump_handle))
+    let jump = JumpConnection {
+        handle: jump_handle,
+        target_done,
+    };
+    Ok((target_handle, jump))
+}
+
+/// A jump host's connection, which must outlive the target riding it.
+pub(crate) struct JumpConnection {
+    handle: client::Handle<SshHandler>,
+    /// Closed once the target's last bytes went out on the jump channel.
+    target_done: watch::Receiver<()>,
+}
+
+/// The jump channel as the target connection's stream, read ahead into an
+/// unbounded backlog. The target connection's loop stops reading while a
+/// write waits on the jump channel's window; the jump connection would then
+/// block handing it more data, in front of the window adjust that write is
+/// waiting for. Any cap brings that back: the target's channels each leave up
+/// to a window unread.
+/// The returned receiver is closed once the bridge ended.
+fn read_ahead<S>(channel: S) -> (DuplexStream, watch::Receiver<()>)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (target_side, channel_side) = tokio::io::duplex(64 * 1024);
+    let (done, target_done) = watch::channel(());
+    tokio::spawn(async move {
+        let _ = bridge_until_either_ends(channel_side, channel, Pace::UNLIMITED).await;
+        drop(done);
+    });
+    (target_side, target_done)
 }
 
 /// Establish a connection to `target`, either directly or through a single
 /// jump host (`ProxyJump`) — the one connect path shells, tunnels and SFTP
 /// share. Returns the authenticated target handle plus, for a jumped
-/// connection, the jump host's handle — which the caller **must keep alive**
-/// for as long as it uses the target, since dropping it tears down the
-/// direct-tcpip channel the target rides on (then [`close_jump`] it).
+/// connection, the jump connection — which the caller [`close_jump`]s only
+/// once done with the target, since closing it ends the direct-tcpip channel
+/// the target rides on.
 pub(crate) async fn establish_target(
     target: Endpoint<'_>,
     jump: Option<&JumpHop>,
     target_handler: SshHandler,
     connect_timeout: Duration,
     overall_timeout: Duration,
-) -> Result<
-    (
-        client::Handle<SshHandler>,
-        Option<client::Handle<SshHandler>>,
-    ),
-    AppError,
-> {
+) -> Result<(client::Handle<SshHandler>, Option<JumpConnection>), AppError> {
     let Some(jump) = jump else {
         let handle = establish_with_deadline(
             target.host,
@@ -339,18 +366,48 @@ pub(crate) async fn establish_target(
 }
 
 /// Close the jump host's connection (if any) once the target riding on it has
-/// been disconnected. Best-effort, like every other teardown.
-pub(crate) async fn close_jump(jump: Option<&client::Handle<SshHandler>>) {
-    if let Some(jump) = jump {
-        let _ = jump
-            .disconnect(russh::Disconnect::ByApplication, "", "")
-            .await;
-    }
+/// been disconnected, after letting the target's disconnect through (within
+/// `TARGET_CLOSE_GRACE`). Best-effort, like every other teardown.
+pub(crate) async fn close_jump(jump: Option<&JumpConnection>) {
+    let Some(jump) = jump else {
+        return;
+    };
+    let mut target_done = jump.target_done.clone();
+    let _ = timeout(TARGET_CLOSE_GRACE, target_done.changed()).await;
+    let _ = jump
+        .handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn read_ahead_takes_any_amount_while_the_target_is_not_reading() {
+        use tokio::io::AsyncWriteExt;
+        let (channel, mut jump_side) = tokio::io::duplex(64 * 1024);
+        let (_target_side, _target_done) = read_ahead(channel);
+
+        // Each of the target's channels may leave a window unread: any cap
+        // would be reached by enough of them.
+        let flood = vec![7u8; 4 * Pace::DEFAULT.backlog];
+        let taken =
+            tokio::time::timeout(Duration::from_secs(10), jump_side.write_all(&flood)).await;
+        assert!(taken.is_ok(), "the jump channel must never stop being read");
+    }
+
+    #[tokio::test]
+    async fn read_ahead_reports_done_once_the_target_side_ended() {
+        let (channel, _jump_side) = tokio::io::duplex(64);
+        let (target_side, mut target_done) = read_ahead(channel);
+
+        drop(target_side);
+
+        let ended = tokio::time::timeout(Duration::from_secs(5), target_done.changed()).await;
+        assert!(ended.is_ok(), "the bridge must end with the target");
+    }
 
     #[tokio::test]
     async fn the_ssh_socket_sends_small_writes_without_delay() {

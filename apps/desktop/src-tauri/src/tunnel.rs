@@ -515,8 +515,8 @@ async fn run_tunnel(
         username: &username,
         creds: &creds,
     };
-    // `jump_handle` (for a jumped tunnel) must outlive the forwards: the
-    // tunnel's connection rides a channel over it.
+    // `jump_handle` (for a jumped tunnel) is closed only after the forwards:
+    // the tunnel's connection rides a channel over it.
     let (handle, jump_handle) = tokio::select! {
         biased;
         // A stop (or every forward released) during the handshake aborts:

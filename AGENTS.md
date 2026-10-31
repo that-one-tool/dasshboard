@@ -144,7 +144,11 @@ files, releasing),
       `handler` (russh client handler: host-key TOFU, agent
       forwarding, remote-forward routing; server-opened channels we never
       asked for are rejected), `establish` (TCP with TCP_NODELAY as in
-      OpenSSH, auth, jump host, overall deadline)
+      OpenSSH, auth, jump host, overall deadline); a jump host's channel is
+      read ahead without limit through `relay` (a target write waiting on its
+      window would otherwise freeze both connections), and `close_jump` lets
+      the target's disconnect through it, and the target close its end,
+      first (`JumpConnection`)
     - `session_sink.rs` — `SessionSink`/`SessionStatus`, how any terminal
       session (SSH, serial, local shell) reports to the frontend
     - `session.rs` — SSH shell sessions via `russh`; a disconnect is an
@@ -166,13 +170,14 @@ files, releasing),
       its connections. A tunnel's listen/cancel requests go through one
       sequential worker (`ServerRequests`), so the serve loop never waits on
       the server; a forward still waiting is left out of `Listening`
-    - `relay.rs` — bridges a forwarded connection's local socket and its
-      channel, draining the channel into a per-connection backlog: russh
-      blocks the whole SSH connection while one channel's reader is full, so
-      a client that pauses would otherwise freeze every forward of the
-      tunnel. Past 8 MiB of backlog the channel is no longer read (a client
-      that far behind sets the connection's pace again), and one that then
-      makes no progress for 20 s is closed
+    - `relay.rs` — bridges a forwarded connection's local socket (or a
+      jumped target connection) and its channel, draining the channel into
+      a per-connection backlog: russh blocks the whole SSH connection while
+      one channel's reader is full, so a client that pauses would otherwise
+      freeze every forward of the tunnel. For a forward, past 8 MiB of
+      backlog the channel is no longer read (a client that far behind sets
+      the connection's pace again), and one that then makes no progress for
+      20 s is closed
     - `output_stream.rs` — a terminal session's output, kept until the
       frontend fetched it (`read_output(from)`: reading from offset `from`
       acknowledges what came before, so a lost or retried read loses

@@ -1,5 +1,6 @@
-//! Bridges a forwarded connection's local socket and its SSH channel, draining
-//! the channel ahead of a local client that reads slower than it delivers.
+//! Bridges a local stream (a forwarded connection's socket, or the target
+//! connection riding a jump host) and its SSH channel, draining the channel
+//! ahead of a local side that reads slower than it delivers.
 //!
 //! russh hands a channel's data to its reader with a blocking send from the
 //! connection's single loop, and re-opens the window as soon as data arrives,
@@ -20,8 +21,8 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Notify;
 
-/// How far a forwarded connection's local client may fall behind, and how long
-/// it may then stop reading before its connection is closed.
+/// How far the local side may fall behind, and how long it may then stop
+/// reading before its connection is closed.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Pace {
     pub(crate) backlog: usize,
@@ -33,9 +34,18 @@ impl Pace {
         backlog: 8 << 20,
         stall: Duration::from_secs(20),
     };
+
+    /// Never stops reading the channel, so never cuts the client either.
+    pub(crate) const UNLIMITED: Pace = Pace {
+        backlog: usize::MAX,
+        stall: Duration::MAX,
+    };
 }
 
 const CHUNK: usize = 32 * 1024;
+
+/// How long a bridge whose local side ended waits for the remote to close.
+const REMOTE_CLOSE_GRACE: Duration = Duration::from_millis(200);
 
 /// Copy both ways between `local` and `remote` until both sides are done,
 /// buffering `remote`'s data for `local` as `pace` allows.
@@ -51,6 +61,39 @@ where
         upload(local_rd, remote_wr)
     )?;
     Ok(())
+}
+
+/// Like [`bridge`], but done as soon as either side ends, dropping both: for
+/// a stream neither side half-closes (SSH over a channel), where waiting on
+/// the other side could hold it open for good.
+pub(crate) async fn bridge_until_either_ends<L, R>(
+    local: L,
+    remote: R,
+    pace: Pace,
+) -> io::Result<()>
+where
+    L: AsyncRead + AsyncWrite + Unpin,
+    R: AsyncRead + AsyncWrite + Unpin,
+{
+    let (local_rd, local_wr) = tokio::io::split(local);
+    let (mut remote_rd, remote_wr) = tokio::io::split(remote);
+    let uploading = upload(local_rd, remote_wr);
+    tokio::pin!(uploading);
+    let uploaded = tokio::select! {
+        delivered = relay(&mut remote_rd, local_wr, pace) => match delivered {
+            // The local side closed under the delivery: what it sent last is
+            // still on its way out.
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => uploading.await,
+            other => return other,
+        },
+        uploaded = &mut uploading => uploaded,
+    };
+    // Dropping the remote with its data unread resets its far end, which can
+    // then lose what the local side sent last: let the far end close first.
+    let mut discard = tokio::io::sink();
+    let draining = tokio::io::copy(&mut remote_rd, &mut discard);
+    let _ = tokio::time::timeout(REMOTE_CLOSE_GRACE, draining).await;
+    uploaded
 }
 
 async fn upload<R, W>(mut from: R, mut to: W) -> io::Result<()>
@@ -140,10 +183,12 @@ impl Backlog {
 
     fn copy_front(&self, out: &mut [u8]) -> Option<usize> {
         let queue = self.lock();
-        let ready = out.len().min(queue.bytes.len());
-        for (slot, byte) in out.iter_mut().zip(queue.bytes.iter()) {
-            *slot = *byte;
-        }
+        let (front, back) = queue.bytes.as_slices();
+        let from_front = out.len().min(front.len());
+        let from_back = (out.len() - from_front).min(back.len());
+        out[..from_front].copy_from_slice(&front[..from_front]);
+        out[from_front..from_front + from_back].copy_from_slice(&back[..from_back]);
+        let ready = from_front + from_back;
         (ready > 0 || queue.finished).then_some(ready)
     }
 
@@ -271,6 +316,97 @@ mod tests {
 
         let ended = tokio::time::timeout(WAIT, relaying).await.unwrap().unwrap();
         assert!(ended.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_unlimited_pace_keeps_draining_a_paused_destination() {
+        let (mut source, src) = tokio::io::duplex(64);
+        let (dst, _sink) = tokio::io::duplex(64);
+        tokio::spawn(relay(src, dst, Pace::UNLIMITED));
+
+        tokio::time::timeout(WAIT, source.write_all(&vec![7; 2 * Pace::DEFAULT.backlog]))
+            .await
+            .expect("an unlimited relay must never stop reading")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn bridge_until_either_ends_ends_with_the_remote() {
+        let (_client, local) = tokio::io::duplex(64);
+        let (remote, server) = tokio::io::duplex(64);
+        let bridging = tokio::spawn(bridge_until_either_ends(local, remote, ROOMY));
+
+        drop(server);
+
+        let ended = tokio::time::timeout(WAIT, bridging).await;
+        assert!(ended.is_ok(), "a silent local side must not keep it alive");
+    }
+
+    #[tokio::test]
+    async fn bridge_until_either_ends_ends_with_the_local() {
+        let (client, local) = tokio::io::duplex(64);
+        let (remote, _server) = tokio::io::duplex(64);
+        let bridging = tokio::spawn(bridge_until_either_ends(local, remote, ROOMY));
+
+        drop(client);
+
+        let ended = tokio::time::timeout(WAIT, bridging).await;
+        assert!(ended.is_ok(), "a silent remote must not keep it alive");
+    }
+
+    #[tokio::test]
+    async fn bridge_until_either_ends_delivers_what_the_remote_sent_last() {
+        let (mut client, local) = tokio::io::duplex(64);
+        let (remote, mut server) = tokio::io::duplex(64);
+        tokio::spawn(bridge_until_either_ends(local, remote, ROOMY));
+
+        server.write_all(b"bye").await.unwrap();
+        drop(server);
+
+        let mut got = Vec::new();
+        tokio::time::timeout(WAIT, client.read_to_end(&mut got))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, b"bye");
+    }
+
+    #[tokio::test]
+    async fn bridge_until_either_ends_forwards_the_last_words_of_a_local_closing_mid_delivery() {
+        for _ in 0..50 {
+            let (mut client, local) = tokio::io::duplex(64);
+            let (remote, mut server) = tokio::io::duplex(64);
+            tokio::spawn(bridge_until_either_ends(local, remote, ROOMY));
+            server.write_all(&[7; 4096]).await.unwrap();
+
+            client.write_all(b"bye").await.unwrap();
+            drop(client);
+
+            let mut got = Vec::new();
+            tokio::time::timeout(WAIT, server.read_to_end(&mut got))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                got, b"bye",
+                "what the local side sent last must get through"
+            );
+        }
+    }
+
+    #[test]
+    fn the_backlog_hands_out_its_front_in_order_across_pushes() {
+        let backlog = Backlog::default();
+        let mut out = [0u8; 4];
+        backlog.push(b"abcdef");
+        backlog.consume(5);
+        backlog.push(b"ghijkl");
+
+        assert_eq!(backlog.copy_front(&mut out), Some(4));
+        assert_eq!(&out, b"fghi");
+        backlog.consume(4);
+        assert_eq!(backlog.copy_front(&mut out), Some(3));
+        assert_eq!(&out[..3], b"jkl");
     }
 
     #[tokio::test]

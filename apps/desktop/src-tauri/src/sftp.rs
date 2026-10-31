@@ -52,8 +52,8 @@ const TRANSFER_CHUNK: usize = 32 * 1024;
 use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
 use crate::ssh::establish::{
-    close_jump, establish_target, DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT,
-    DEFAULT_PROMPT_TIMEOUT,
+    close_jump, establish_target, JumpConnection, DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
 };
 use crate::ssh::handler::SshHandler;
 use crate::ssh::params::{AuthCredentials, Endpoint, JumpHop, KeepaliveConfig};
@@ -129,7 +129,7 @@ pub struct SftpParams {
 /// `SftpSession` speaking the subsystem over one channel.
 struct SftpConn {
     handle: client::Handle<SshHandler>,
-    jump: Option<client::Handle<SshHandler>>,
+    jump: Option<JumpConnection>,
     session: SftpSession,
 }
 
