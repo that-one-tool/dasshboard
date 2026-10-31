@@ -320,7 +320,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_unlimited_pace_keeps_draining_a_paused_destination() {
-        let (mut source, src) = tokio::io::duplex(64);
+        // A pipe of 64 KiB, not 64 bytes: megabytes in tiny writes outlast
+        // the deadline in a debug build on a slow CI runner.
+        let (mut source, src) = tokio::io::duplex(64 * 1024);
         let (dst, _sink) = tokio::io::duplex(64);
         tokio::spawn(relay(src, dst, Pace::UNLIMITED));
 
