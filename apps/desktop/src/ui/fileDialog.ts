@@ -75,6 +75,12 @@ export async function pickTextSavePath(defaultName: string): Promise<string | nu
   return save({ defaultPath: defaultName, filters: [{ name: "Text", extensions: ["txt"] }] });
 }
 
+/** Opens a native "save file" dialog for a session recording, filtered to
+ * `.log`. Returns the chosen path, or `null` if the user cancels. */
+export async function pickLogSavePath(defaultName: string): Promise<string | null> {
+  return save({ defaultPath: defaultName, filters: [{ name: "Log", extensions: ["log"] }] });
+}
+
 /**
  * Opens a native "save file" dialog for an SFTP download, seeded with the remote
  * file's base name (no extension filter — a downloaded file may have any type).

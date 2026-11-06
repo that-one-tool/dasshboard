@@ -1015,7 +1015,7 @@ body.grid-dragging-row * {
 	--chip-dot: var(--danger);
 }
 
-/* Find / save-output: quiet ghost icons just left of the status chip, which
+/* Find / save-output / record: quiet ghost icons just left of the status chip, which
  * gives up its auto margin to them. */
 .pane-tools {
 	display: inline-flex;
@@ -1039,6 +1039,12 @@ body.grid-dragging-row * {
 .pane-search .btn-icon:hover:not(:disabled) {
 	background-color: var(--surface-3);
 	color: var(--text-primary);
+}
+
+/* Recording: the record button stays red until stopped. */
+.pane-tools .pane-record.is-recording,
+.pane-tools .pane-record.is-recording:hover:not(:disabled) {
+	color: var(--danger);
 }
 
 /* Find bar, floating over the terminal's top-right corner (clear of the

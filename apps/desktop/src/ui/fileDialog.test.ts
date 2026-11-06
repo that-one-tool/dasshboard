@@ -19,7 +19,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openMock(...args),
 }));
 
-import { pickJsonSavePath, pickJsonOpenPath, pickTextSavePath } from "./fileDialog";
+import { pickJsonSavePath, pickJsonOpenPath, pickLogSavePath, pickTextSavePath } from "./fileDialog";
 
 const JSON_FILTER = { name: "JSON", extensions: ["json"] };
 
@@ -59,6 +59,17 @@ describe("pickJsonOpenPath", () => {
   it("returns null when the open dialog is cancelled", async () => {
     openMock.mockResolvedValue(null);
     expect(await pickJsonOpenPath()).toBeNull();
+  });
+});
+
+describe("pickLogSavePath", () => {
+  it("seeds the name and filters to .log", async () => {
+    saveMock.mockResolvedValue("/home/me/NAS.log");
+    await expect(pickLogSavePath("NAS.log")).resolves.toBe("/home/me/NAS.log");
+    expect(saveMock).toHaveBeenCalledWith({
+      defaultPath: "NAS.log",
+      filters: [{ name: "Log", extensions: ["log"] }],
+    });
   });
 });
 

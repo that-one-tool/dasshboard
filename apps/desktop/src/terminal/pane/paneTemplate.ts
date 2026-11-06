@@ -2,7 +2,7 @@
 
 import { t } from "../../i18n";
 import type { MessageKey } from "../../i18n/en";
-import { disconnectIcon, fileDownIcon, searchIcon } from "../../ui/icons";
+import { disconnectIcon, fileDownIcon, recordIcon, searchIcon } from "../../ui/icons";
 import { findKeyHintKey } from "../searchBar";
 
 export function paneMarkup(): string {
@@ -23,6 +23,7 @@ function headerMarkup(): string {
       <span class="pane-tools">
         ${iconButton("pane-find", t(findKeyHintKey()), searchIcon, "disabled")}
         ${iconButton("pane-save-output", t("pane.saveOutput"), fileDownIcon, "disabled")}
+        ${iconButton("pane-record", t("pane.record.start"), recordIcon, 'disabled aria-pressed="false"')}
       </span>
       <span class="pane-status">
         <span class="pane-status-dot" aria-hidden="true"></span>

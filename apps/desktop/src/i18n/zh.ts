@@ -100,6 +100,11 @@ export const zh: Messages = {
 	"pane.search.none": "无结果",
 	"pane.saveOutput": "将输出保存到文件",
 	"pane.saveOutput.saved": "输出已保存到 {path}",
+	"pane.record.start": "将输出持续记录到文件",
+	"pane.record.stop": "停止记录",
+	"pane.record.started": "正在记录到 {path}",
+	"pane.record.stopped": "记录已保存到 {path}",
+	"pane.record.failed": "记录已停止：{message}",
 	"pane.link.hint": "Ctrl+单击打开链接",
 	"pane.link.hintMac": "Cmd+单击打开链接",
 

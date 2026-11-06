@@ -16,6 +16,7 @@ mod device_access;
 pub mod devices;
 pub mod host_keys;
 pub mod profiles;
+pub mod recording;
 pub mod sessions;
 pub mod sftp;
 pub mod sftp_edit;

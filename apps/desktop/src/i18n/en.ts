@@ -106,6 +106,11 @@ export const en = {
 	"pane.search.none": "No results",
 	"pane.saveOutput": "Save the output to a file",
 	"pane.saveOutput.saved": "Output saved to {path}",
+	"pane.record.start": "Record the output to a file",
+	"pane.record.stop": "Stop recording",
+	"pane.record.started": "Recording to {path}",
+	"pane.record.stopped": "Recording saved to {path}",
+	"pane.record.failed": "Recording stopped: {message}",
 	"pane.link.hint": "Ctrl+click to open the link",
 	"pane.link.hintMac": "Cmd+click to open the link",
 

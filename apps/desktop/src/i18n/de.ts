@@ -100,6 +100,11 @@ export const de: Messages = {
 	"pane.search.none": "Keine Treffer",
 	"pane.saveOutput": "Ausgabe in einer Datei speichern",
 	"pane.saveOutput.saved": "Ausgabe gespeichert unter {path}",
+	"pane.record.start": "Ausgabe fortlaufend in eine Datei aufzeichnen",
+	"pane.record.stop": "Aufzeichnung beenden",
+	"pane.record.started": "Aufzeichnung nach {path}",
+	"pane.record.stopped": "Aufzeichnung gespeichert unter {path}",
+	"pane.record.failed": "Aufzeichnung beendet: {message}",
 	"pane.link.hint": "Strg+Klick öffnet den Link",
 	"pane.link.hintMac": "Cmd+Klick öffnet den Link",
 

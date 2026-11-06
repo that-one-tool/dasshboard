@@ -42,6 +42,7 @@ vi.mock("./ipc", () => ({
   onSessionStatus: vi.fn(
     async (_handler: (e: SessionStatusEvent) => void) => () => {},
   ),
+  onRecordingFailed: vi.fn(async () => () => {}),
 }));
 
 // Imported after the mock is registered so the module graph uses it.

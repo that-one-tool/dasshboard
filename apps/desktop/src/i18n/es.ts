@@ -99,6 +99,11 @@ export const es: Messages = {
 	"pane.search.none": "Sin resultados",
 	"pane.saveOutput": "Guardar la salida en un archivo",
 	"pane.saveOutput.saved": "Salida guardada en {path}",
+	"pane.record.start": "Grabar la salida en un archivo",
+	"pane.record.stop": "Detener la grabación",
+	"pane.record.started": "Grabando en {path}",
+	"pane.record.stopped": "Grabación guardada en {path}",
+	"pane.record.failed": "Grabación detenida: {message}",
 	"pane.link.hint": "Ctrl+clic para abrir el enlace",
 	"pane.link.hintMac": "Cmd+clic para abrir el enlace",
 

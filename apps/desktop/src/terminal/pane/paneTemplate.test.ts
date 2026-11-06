@@ -29,6 +29,7 @@ describe("paneMarkup", () => {
       ".pane-disconnect",
       ".pane-find",
       ".pane-save-output",
+      ".pane-record",
       ".pane-status-label",
       ".pane-terminal",
       ".pane-overlay",
@@ -43,6 +44,7 @@ describe("paneMarkup", () => {
     const root = mounted();
     expect(el<HTMLButtonElement>(root, ".pane-find").disabled).toBe(true);
     expect(el<HTMLButtonElement>(root, ".pane-save-output").disabled).toBe(true);
+    expect(el<HTMLButtonElement>(root, ".pane-record").disabled).toBe(true);
     expect(el<HTMLElement>(root, ".pane-disconnect").hidden).toBe(true);
     expect(el<HTMLElement>(root, ".pane-overlay").classList.contains("dialog-hidden")).toBe(true);
   });

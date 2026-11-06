@@ -67,8 +67,9 @@ export async function connect(
   deviceId: string,
   cols: number,
   rows: number,
+  recordTo?: string,
 ): Promise<string> {
-  return invokeChecked<string>("connect", { sessionId, deviceId, cols, rows });
+  return invokeChecked<string>("connect", { sessionId, deviceId, cols, rows, recordTo });
 }
 
 /** A piece of a session's output: `bytes` from offset `start` on, or `end`

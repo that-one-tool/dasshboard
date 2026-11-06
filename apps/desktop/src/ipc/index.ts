@@ -12,6 +12,7 @@ export * from "./config";
 export * from "./devices";
 export * from "./agent";
 export * from "./sessions";
+export * from "./recording";
 export * from "./knownHosts";
 export * from "./tunnels";
 export * from "./profiles";

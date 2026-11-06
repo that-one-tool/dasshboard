@@ -20,6 +20,7 @@ mod relay;
 mod remote_forward;
 mod secret;
 mod serial;
+mod session_recording;
 mod settings;
 mod socks;
 mod ssh_config;
@@ -119,6 +120,7 @@ pub fn run() {
         .manage(updater::PendingUpdate::default())
         // Live sessions' unread terminal output (`read_output`).
         .manage(output_stream::OutputStreams::default())
+        .manage(session_recording::Recorders::default())
         .setup(|app| {
             // Built here, not by Tauri, to grant it clipboard access (paste).
             main_window::create(app)?;
@@ -211,6 +213,8 @@ pub fn run() {
             commands::sessions::write_stdin,
             commands::sessions::resize_pty,
             commands::sessions::disconnect,
+            commands::recording::start_recording,
+            commands::recording::stop_recording,
             commands::host_keys::respond_host_key,
             commands::auth_prompts::respond_auth_prompt,
             commands::host_keys::list_known_hosts,

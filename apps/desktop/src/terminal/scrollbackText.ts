@@ -56,10 +56,10 @@ function pushRow(lines: string[], text: string, continuesPrevious: boolean): voi
 // Characters Windows (the strictest) refuses in a file name, plus controls.
 const UNSAFE_FILE_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
 
-/** `<device>-YYYY-MM-DD-HHmm.txt`, in local time. */
-export function outputFileName(deviceName: string, at: Date): string {
+/** `<device>-YYYY-MM-DD-HHmm.<extension>`, in local time. */
+export function outputFileName(deviceName: string, at: Date, extension = "txt"): string {
   const base = deviceName.replace(UNSAFE_FILE_CHARS, "-") || "terminal";
-  return `${base}-${localStamp(at)}.txt`;
+  return `${base}-${localStamp(at)}.${extension}`;
 }
 
 function localStamp(at: Date): string {

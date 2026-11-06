@@ -100,6 +100,11 @@ export const fr: Messages = {
 	"pane.search.none": "Aucun résultat",
 	"pane.saveOutput": "Enregistrer la sortie dans un fichier",
 	"pane.saveOutput.saved": "Sortie enregistrée dans {path}",
+	"pane.record.start": "Enregistrer la sortie en continu dans un fichier",
+	"pane.record.stop": "Arrêter l'enregistrement",
+	"pane.record.started": "Enregistrement dans {path}",
+	"pane.record.stopped": "Enregistrement sauvegardé dans {path}",
+	"pane.record.failed": "Enregistrement arrêté : {message}",
 	"pane.link.hint": "Ctrl+clic pour ouvrir le lien",
 	"pane.link.hintMac": "Cmd+clic pour ouvrir le lien",
 

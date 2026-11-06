@@ -7,8 +7,8 @@
  * spinner; error/disconnected + Retry) react to `session_status` events.
  *
  * This class is the controller; its parts live in `pane/` (markup, overlay,
- * device dropdown, clipboard, terminal factory, session ownership) and the
- * reconnect policy in `reconnectBudget.ts`.
+ * device dropdown, clipboard, terminal factory, session ownership, output
+ * recording) and the reconnect policy in `reconnectBudget.ts`.
  */
 
 import type { Terminal } from "@xterm/xterm";
@@ -45,6 +45,7 @@ import { PaneOverlay } from "./pane/paneOverlay";
 import { DeviceSelect } from "./pane/deviceSelect";
 import { PaneClipboard } from "./pane/paneClipboard";
 import { SessionSlot } from "./pane/sessionSlot";
+import { PaneRecording } from "./pane/paneRecording";
 import { applyTerminalOptions, makeTerminal } from "./pane/terminalFactory";
 import { pickTextSavePath } from "../ui/fileDialog";
 import { showToast } from "../ui/toast";
@@ -110,6 +111,7 @@ export class TerminalPane {
   private readonly deviceSelect: DeviceSelect;
   private readonly searchBar: TerminalSearchBar;
   private readonly clipboard: PaneClipboard;
+  private readonly recording: PaneRecording;
   private readonly input = new SerialQueue();
   /** Pulls the current session's output into the terminal. */
   private output: OutputReader | null = null;
@@ -151,6 +153,7 @@ export class TerminalPane {
     this.deviceSelect = new DeviceSelect(root, (deviceId) => this.pickDevice(deviceId));
     this.searchBar = this.makeSearchBar();
     this.clipboard = this.makeClipboard();
+    this.recording = this.makeRecording();
     this.renderStatus();
     this.wireButtons();
   }
@@ -161,6 +164,7 @@ export class TerminalPane {
         this.applyStatus(event.status, event.message, event.code);
       }
     });
+    await this.recording.listen();
     await this.refreshDevices();
   }
 
@@ -228,6 +232,15 @@ export class TerminalPane {
     });
   }
 
+  private makeRecording(): PaneRecording {
+    return new PaneRecording(this.root, {
+      sessionId: () => this.session.current,
+      ownsSession: (sessionId) => this.session.isOwnerOf(sessionId),
+      deviceName: () => this.assignedDeviceName(),
+      onError: (message) => this.options.onError?.(message),
+    });
+  }
+
   private wireButtons(): void {
     const actions: Array<[string, () => void]> = [
       [".pane-connect", () => void this.startSession()],
@@ -258,6 +271,7 @@ export class TerminalPane {
     // An ended session's terminal stays readable, so these outlive it.
     requireEl<HTMLButtonElement>(this.root, ".pane-find").disabled = !this.terminal;
     requireEl<HTMLButtonElement>(this.root, ".pane-save-output").disabled = !this.terminal;
+    this.recording.updateControls();
     this.showEndpoint();
   }
 
@@ -427,7 +441,7 @@ export class TerminalPane {
     const sessionId = crypto.randomUUID();
     this.session.open(sessionId);
     try {
-      await connect(sessionId, deviceId, terminal.cols, terminal.rows);
+      await connect(sessionId, deviceId, terminal.cols, terminal.rows, this.recording.recordTo());
       this.readOutputInto(sessionId, terminal);
       this.adoptSession(sessionId);
     } catch (err) {
@@ -606,6 +620,7 @@ export class TerminalPane {
     this.searchBar.retranslate();
     this.deviceSelect.render(this.devices, this.deviceId);
     this.renderStatus();
+    this.recording.render();
     this.overlay.retranslate();
   }
 
@@ -762,6 +777,7 @@ export class TerminalPane {
     this.unlistenStatus?.();
     this.unlistenStatus = null;
     this.clipboard.dispose();
+    this.recording.dispose();
     this.closeCurrentSession();
     this.teardownTerminal();
     this.paneStatus = "idle";

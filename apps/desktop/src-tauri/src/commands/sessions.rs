@@ -1,6 +1,7 @@
 //! Terminal sessions (SSH, serial, local shell): connect, output, input,
 //! resize, disconnect, and the no-shell connection test.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -13,12 +14,14 @@ use super::device_access::{
     find_device, keepalive_config, resolve_credentials, resolve_jump_hop, resolve_test_credentials,
 };
 use super::host_keys::{emit_host_key_prompt_closed, HOST_KEY_PROMPT_EVENT};
+use super::recording::emit_recording_failed;
 use crate::device::{Connection, Device};
 use crate::error::AppError;
 use crate::local_shell::LocalShellParams;
 use crate::output_stream::{Chunk, OutputStream, OutputStreams, MAX_READ, READ_WAIT};
 use crate::serial::SerialParams;
 use crate::session::ConnectParams;
+use crate::session_recording::{Recorder, Recorders};
 use crate::session_sink::{SessionSink, SessionStatus};
 use crate::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPromptPayload};
 use crate::state::AppState;
@@ -51,6 +54,8 @@ struct TauriSessionSink {
     /// `Some` for a live session; `None` for `test_connection`, which has no
     /// shell and streams no data.
     output: Option<Arc<OutputStream>>,
+    /// `Some` for a live session: where its output is recorded, if anywhere.
+    recorder: Option<Arc<Recorder>>,
 }
 
 impl TauriSessionSink {
@@ -68,6 +73,30 @@ impl TauriSessionSink {
             tokio::time::sleep(ENDED_OUTPUT_GRACE).await;
             app.state::<OutputStreams>().remove(&id, &output);
         });
+    }
+
+    /// The session is over: close its recording file.
+    fn end_recording(&self) {
+        let Some(recorder) = &self.recorder else {
+            return;
+        };
+        self.app
+            .state::<Recorders>()
+            .remove(&self.session_id, recorder);
+    }
+
+    fn end(&self) {
+        self.end_output();
+        self.end_recording();
+    }
+
+    fn record(&self, bytes: &[u8]) {
+        let Some(recorder) = &self.recorder else {
+            return;
+        };
+        if let Err(err) = recorder.record(bytes) {
+            emit_recording_failed(&self.app, &self.session_id, &err.into());
+        }
     }
 }
 
@@ -96,17 +125,18 @@ impl SessionSink for TauriSessionSink {
         if let Some(output) = &self.output {
             output.push(bytes);
         }
+        self.record(bytes);
     }
 
     fn on_status(&self, status: SessionStatus, message: Option<String>) {
         if status.is_final() {
-            self.end_output();
+            self.end();
         }
         self.emit_status(status, message, None);
     }
 
     fn on_error(&self, err: &AppError) {
-        self.end_output();
+        self.end();
         self.emit_status(
             SessionStatus::Error,
             Some(err.to_string()),
@@ -168,28 +198,47 @@ pub async fn read_output(
 pub async fn connect(
     app: AppHandle,
     state: State<'_, AppState>,
-    streams: State<'_, OutputStreams>,
     session_id: String,
     device_id: String,
     cols: u32,
     rows: u32,
+    record_to: Option<String>,
 ) -> Result<String, AppError> {
+    let (streams, recorders) = (app.state::<OutputStreams>(), app.state::<Recorders>());
     let session_id = client_chosen_id(session_id, |id| {
         id_in_use(&state, id) || streams.contains(id)
     })?;
     let device = find_device(&state, &device_id)?;
     // Open before the session starts, so its first bytes have somewhere to go.
     let output = streams.open(&session_id);
+    let recorder = recorders.open(&session_id);
+    continue_recording(&app, &session_id, &recorder, record_to);
     let sink: Arc<dyn SessionSink> = Arc::new(TauriSessionSink {
-        app,
+        app: app.clone(),
         session_id: session_id.clone(),
         output: Some(Arc::clone(&output)),
+        recorder: Some(Arc::clone(&recorder)),
     });
     let spawned = spawn_device_session(&state, &session_id, &device, (cols, rows), sink).await;
     if spawned.is_err() {
         streams.remove(&session_id, &output);
+        recorders.remove(&session_id, &recorder);
     }
     spawned.map(|()| session_id)
+}
+
+/// A pane recording across a reconnect appends to its file. A file that can't
+/// be opened stops the recording, not the connect.
+fn continue_recording(
+    app: &AppHandle,
+    session_id: &str,
+    recorder: &Recorder,
+    record_to: Option<String>,
+) {
+    let Some(path) = record_to else { return };
+    if let Err(err) = recorder.start(Path::new(&path), true) {
+        emit_recording_failed(app, session_id, &err);
+    }
 }
 
 /// Start `device`'s session under `session_id`, reporting to `sink`.
@@ -390,6 +439,7 @@ pub async fn test_connection(
                 app,
                 session_id: format!("test-{}", device.id),
                 output: None,
+                recorder: None,
             });
             manager
                 .test_connection(host.clone(), *port, username.clone(), creds, jump, sink)

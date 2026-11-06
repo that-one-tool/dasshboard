@@ -37,8 +37,8 @@
   to every broadcasting pane; import/export as JSON.
 - **Broadcast input** — type into several panes at once.
 - **In the terminal** — find text in the scrollback (Ctrl+Shift+F, Cmd+F on
-  macOS), Ctrl+click (Cmd+click) a URL to open it, and save a pane's output to
-  a text file.
+  macOS), Ctrl+click (Cmd+click) a URL to open it, save a pane's output to
+  a text file, or record everything a session prints to a log file.
 - **System tray** — opt in to keep running in the tray when the window is closed,
   with connections still live.
 - **Dark & light themes** with a one-click toggle in the top bar, configurable

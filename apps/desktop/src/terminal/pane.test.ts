@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { SessionStatusEvent, TerminalSettings } from "../ipc";
+import type { RecordingFailedEvent, SessionStatusEvent, TerminalSettings } from "../ipc";
 
 const h = vi.hoisted(() => {
   const device = {
@@ -39,6 +39,7 @@ const h = vi.hoisted(() => {
     device,
     sessionId: "sess-1",
     statusHandler: null as ((event: SessionStatusEvent) => void) | null,
+    recordingFailedHandler: null as ((event: RecordingFailedEvent) => void) | null,
   };
 });
 
@@ -56,13 +57,23 @@ vi.mock("../ipc", () => ({
     h.statusHandler = handler;
     return () => {};
   }),
+  startRecording: vi.fn(async () => {}),
+  stopRecording: vi.fn(async () => {}),
+  onRecordingFailed: vi.fn(async (handler: (e: RecordingFailedEvent) => void) => {
+    h.recordingFailedHandler = handler;
+    return () => {};
+  }),
 }));
 
 const confirmMock = vi.hoisted(() => vi.fn(async () => false));
 vi.mock("../ui/confirm", () => ({ confirm: confirmMock }));
 
 const pickTextSavePathMock = vi.hoisted(() => vi.fn(async (): Promise<string | null> => "/home/me/out.txt"));
-vi.mock("../ui/fileDialog", () => ({ pickTextSavePath: pickTextSavePathMock }));
+const pickLogSavePathMock = vi.hoisted(() => vi.fn(async (): Promise<string | null> => "/home/me/rec.log"));
+vi.mock("../ui/fileDialog", () => ({
+  pickTextSavePath: pickTextSavePathMock,
+  pickLogSavePath: pickLogSavePathMock,
+}));
 
 const showToastMock = vi.hoisted(() => vi.fn());
 vi.mock("../ui/toast", () => ({ showToast: showToastMock }));
@@ -86,6 +97,7 @@ import {
   readOutput,
   resizePty,
   saveTextFile,
+  startRecording,
   writeStdin,
 } from "../ipc";
 import type { Device, ErrorCode, OutputChunk } from "../ipc";
@@ -1574,6 +1586,76 @@ describe("TerminalPane find and save output", () => {
     q<HTMLButtonElement>(root, ".pane-save-output").click();
     await flush();
     expect(onError).toHaveBeenCalledWith("disk full");
+  });
+});
+
+describe("TerminalPane output recording", () => {
+  beforeEach(() => {
+    h.statusHandler = null;
+    h.recordingFailedHandler = null;
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    vi.mocked(connect).mockClear();
+    vi.mocked(startRecording).mockClear();
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  const start = (pane: TerminalPane) =>
+    (pane as unknown as { startSession(): Promise<void> }).startSession();
+  const recordButton = (root: HTMLElement) => q<HTMLButtonElement>(root, ".pane-record");
+
+  async function connectedPane(onError?: (message: string) => void): Promise<{ root: HTMLElement; pane: TerminalPane }> {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { onError });
+    await pane.init();
+    pane.assignDevice(h.device.id);
+    await start(pane);
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    return { root, pane };
+  }
+
+  async function record(root: HTMLElement): Promise<void> {
+    recordButton(root).click();
+    await flush();
+  }
+
+  it("can record once a session is open", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    expect(recordButton(root).disabled).toBe(true);
+    pane.assignDevice(h.device.id);
+    await start(pane);
+    expect(recordButton(root).disabled).toBe(false);
+  });
+
+  it("records the open session into the picked file", async () => {
+    const { root } = await connectedPane();
+    await record(root);
+    expect(startRecording).toHaveBeenCalledWith(h.sessionId, "/home/me/rec.log");
+  });
+
+  it("a new session of the pane keeps recording into the same file", async () => {
+    const { root, pane } = await connectedPane();
+    await record(root);
+    h.statusHandler?.({ sessionId: h.sessionId, status: "disconnected" });
+    vi.mocked(connect).mockClear();
+    await start(pane);
+    expect(connect).toHaveBeenCalledWith(h.sessionId, h.device.id, expect.any(Number), expect.any(Number), "/home/me/rec.log");
+  });
+
+  it("a session opened without a recording records nothing", async () => {
+    await connectedPane();
+    expect(connect).toHaveBeenCalledWith(h.sessionId, h.device.id, expect.any(Number), expect.any(Number), undefined);
+  });
+
+  it("reports a recording that failed in its session", async () => {
+    const onError = vi.fn();
+    const { root } = await connectedPane(onError);
+    await record(root);
+    h.recordingFailedHandler?.({ sessionId: h.sessionId, message: "disk full" });
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("disk full"));
+    expect(recordButton(root).getAttribute("aria-pressed")).toBe("false");
   });
 });
 

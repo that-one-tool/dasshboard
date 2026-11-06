@@ -71,6 +71,18 @@ describe("session wrapper argument shapes", () => {
 		});
 	});
 
+	it("connect sends recordTo when the pane records", async () => {
+		invokeMock.mockResolvedValue("sess-1");
+		await connect("sess-1", "dev-1", 80, 24, "/home/me/rec.log");
+		expect(invokeMock).toHaveBeenCalledWith("connect", {
+			sessionId: "sess-1",
+			deviceId: "dev-1",
+			cols: 80,
+			rows: 24,
+			recordTo: "/home/me/rec.log",
+		});
+	});
+
 	it("readOutput sends { sessionId, from } and decodes the reply", async () => {
 		// start = 258 (big-endian u64), end flag 0, then the bytes "hi".
 		const wire = new Uint8Array([0, 0, 0, 0, 0, 0, 1, 2, 0, 104, 105]);

@@ -1,351 +1,174 @@
 # AGENTS.md
 
-DaSSHboard is a desktop SSH dashboard: save devices once, arrange live terminals
-in a grid, reload the whole workspace with a click. Tauri 2 (Rust backend) +
-Vite/vanilla-TypeScript frontend, terminals rendered with xterm.js.
+DaSSHboard is a desktop SSH dashboard. The user saves devices, puts live
+terminals in a grid, and reloads the workspace with one click.
+Stack: Tauri 2 (Rust backend), Vite + vanilla TypeScript frontend, xterm.js.
 
-READMEs: root `README.md` (user-facing: features, security, download),
-`apps/desktop/README.md` (developer guide: setup, architecture, testing, data
-files, releasing),
-`apps/website/README.md` (site dev + deploy).
+READMEs:
+
+- `README.md` — for users (features, security, download).
+- `apps/desktop/README.md` — for developers (setup, architecture, tests, data
+  files, release).
+- `apps/website/README.md` — website development and deploy.
 
 ## Monorepo
 
-- `apps/desktop/` — the Tauri desktop app (everything under "Stack & layout"
-  below is relative to it). Own `package.json` + lockfile.
-- `apps/website/` — the product website: Astro, fully static, deployed to GitHub
-  Pages at `https://that-one-tool.github.io/dasshboard/` (`base: "/dasshboard"`).
-  Own `package.json` + lockfile. `src/lib/appVersion.ts` reads the desktop
-  version from `../desktop/src-tauri/tauri.conf.json` at build time; the site
-  otherwise imports nothing from the desktop app (tokens/font/icon are copies).
-  One page per desktop locale (`pages/index.astro` = en, `pages/[locale]/` =
-  the rest) rendered by `components/HomePage.astro` from one component per
-  section; copy lives in `src/i18n/` (`en.ts` is the source of truth,
-  `i18n.test.ts` enforces identical structure). `components/Screenshot.astro`
-  shows `src/assets/screenshots/<slot>.*` when present, else the slot's CSS
-  mockup from `components/mocks/`.
-- Root `package.json` holds convenience scripts only (no dependencies).
+- `apps/desktop/` — the Tauri app. It has its own `package.json` and lockfile.
+- `apps/website/` — static Astro site on GitHub Pages
+  (`https://that-one-tool.github.io/dasshboard/`, `base: "/dasshboard"`). It has
+  its own `package.json` and lockfile.
+    - It imports nothing from the desktop app, except the version
+      (`src/lib/appVersion.ts` reads `tauri.conf.json`). Tokens, font and icon
+      are copies.
+    - One page per desktop locale, built by `components/HomePage.astro`.
+    - Text is in `src/i18n/`. `en.ts` is the source of truth. `i18n.test.ts`
+      makes sure all locales have the same structure.
+    - `components/Screenshot.astro` shows `src/assets/screenshots/<slot>.*`.
+      If there is no file, it shows the CSS mockup in `components/mocks/`.
+- Root `package.json` — scripts only, no dependencies.
 - CI (`.github/workflows/`):
-    - `ci.yml` — pull requests; path-filters to `desktop-check.yml` and/or
-      `site-check.yml`; `ci-ok` always runs and is the single required check.
-    - `desktop-release.yml` — push to `main` under `apps/desktop/**`; release
-      decision in `.github/scripts/release-gate.sh` (tested by
-      `release-gate.test.sh`); its `flatpak` job turns the Linux `.deb` into a
-      signed Flatpak repo, attached to the GitHub release by `flatpak-upload`.
-    - `site-deploy.yml` — push to `main` under `apps/website/**`, or after a
-      successful desktop `release` run; deploys to GitHub Pages, with the
-      newest release's Flatpak repo unpacked under `flatpak/` (`site-check.yml`).
-- Commit scopes: `(site)` for website changes — it never cuts a desktop
-  release; `(desktop)`, unscoped, or any other scope for the desktop app.
+    - `ci.yml` — pull requests. Runs `desktop-check.yml` and/or
+      `site-check.yml` by path. `ci-ok` is the only required check.
+    - `desktop-release.yml` — push to `main` in `apps/desktop/**`.
+      `.github/scripts/release-gate.sh` decides the release (tests:
+      `release-gate.test.sh`). Also builds the signed Flatpak repo.
+    - `site-deploy.yml` — push to `main` in `apps/website/**`, or after a
+      desktop release. Deploys the site with the latest Flatpak repo in
+      `flatpak/`.
+- Commit scopes: `(site)` for the website (no desktop release). All other
+  scopes, or no scope, are for the desktop app.
 
-## Stack & layout (`apps/desktop/`)
+## Desktop layout (`apps/desktop/`)
 
-- `src/` — frontend (TypeScript, no framework):
-    - `grid.ts` / `gridModel.ts` — multi-pane grid layout
-    - `terminal/` — pane (controller; its parts in `terminal/pane/`: markup,
-      overlay view, device dropdown, clipboard, xterm factory, DOM-free
-      `sessionSlot` owning the open/opening session), overlay, reconnect
-      (`reconnectBudget`: one backoff sequence, shared with the Tunnels
-      panel's per-device retries), paste, host-key dialog, auth prompt
-      dialog (`authPromptDialog`: keyboard-interactive questions, one at a
-      time via the DOM-free `promptQueue`; a round asking nothing is a
-      toast), terminal
-      settings, `terminalReplies` (keeps xterm's own query replies / mouse
-      reports out of broadcast input), `inputQueue` (a pane's `write_stdin`
-      calls one at a time, so keys arrive in order), `outputReader` (pulls a
-      session's output with `read_output`: a failed read is retried from the
-      same offset, and the next read waits until xterm took the last chunk),
-      `searchBar` (find bar over the
-      scrollback, Ctrl+Shift+F / Cmd+F), `links` (Ctrl/Cmd+click opens an
-      http(s) URL or OSC 8 link via the opener plugin), `scrollbackText`
-      ("save output": buffer → plain text + suggested file name)
-    - `devices/` — device CRUD, validation, save payloads, the port-forward
-      editor; the dialog is split into `deviceManager` (controller: events +
-      backend calls + list), `deviceDialogTemplate` (markup), and `deviceForm`
-      (form DOM read/populate/toggle helpers); `importRisks` builds the
-      confirmation listing an import file's risky settings
-    - `tunnels/` — the Tunnels sidebar card (start/stop all or one forward,
-      device status icon + per-forward status dots; backend calls serialized per
-      device; a connection-settings edit restarts the running tunnel; a tunnel
-      that drops is reopened when its device opted into auto-reconnect, with
-      the panes' policy — `tunnelReconnect`). `tunnelsPanel` orchestrates;
-      DOM-free parts: `tunnelForwards` (forward state, launch choice, which
-      edits restart or re-bind), `tunnelRegistry` (device ↔ tunnel routing,
-      starting/restarting/waiting sets), `tunnelRunMemory` (remembered
-      Start/Stop), `deviceCallQueue`; the DOM is `tunnelCardView`
-    - `sftp/` — the docked Files panel (browser + transfer queue); the
-      panel's parts live in `sftp/panel/` (markup, entry rows, queue view,
-      bookmarks bar, and DOM-free models: history, sort+filter, selection,
-      free name, move clipboard, bulk runs, visibility/width, idle timer,
-      latest connect attempt); edit in
-      place: `editSessions` (DOM-free: open/sync/conflict/stop per edit,
-      transfers through the queue; uploads are not cancellable) and
-      `editList` (the "Synced with the server" list; it says an edit lasts
-      until ×, since closing the editor can't be detected)
-    - `tabs/` — tab strip + per-tab workspaces (every tab's `Grid` stays alive;
-      hidden tabs keep their sessions running and refit on activation);
-      `tabShortcuts` maps the tab keys (incl. Cmd+W on macOS)
-    - `profiles/` — workspace/profile persistence
-    - `commandLibrary/` — the Commands sidebar card (`commandsPanel`: send,
-      add/edit/delete, import/export), its editor (`commandDialog`) and the
-      DOM-free rules (`commandText`: what a command types — Enter after each
-      line, or a single line typed in as is — and validation, mirroring
-      `SavedCommand::validate`). A command goes to `Grid.commandTargets()`:
-      the focused pane, or every connected pane while broadcasting (confirmed
-      first when more than one)
-    - `settings/` — app settings controller (dialog with General / Connections
-      tabs via `settingsTabs`; numeric fields clamped by `settingsBounds`,
-      mirroring the backend clamps), the header dark/light toggle (`themeToggle`),
-      known-hosts dialog
-    - `tray/` — pushes the translated tray menu labels (incl. the pluralized
-      live-connection count) to the backend on count/locale change
-    - `updates/` — update controller (check/confirm/install), the update
-      block in the About dialog, and the About-button badge
-    - `i18n/` — dependency-free `t`/`tp` runtime + one message table per locale;
-      `en.ts` is the source of truth and types the keys
-    - `layout/` — the resizable left menu (`sidebarResize`; width persisted per
-      window in `workspace_state.json`) and its collapsed thin bar
-      (`sidebarRail`: », connected-device and running-forward count chips,
-      Ctrl+Shift+B / Cmd+B; collapsed state persisted alongside the width)
-    - `ui/` — confirm dialogs, file dialog, icons, toast notifications (`toast.ts`),
-      shared DOM helpers (`dom.ts`), the resize handle shared by the left menu and
-      the Files panel (`splitter.ts`: drag, arrow keys, double-click reset),
-      shortcut modifiers (`keyboard.ts`: Ctrl, or Cmd on macOS), the open-dialog
-      stack (`dialogStack.ts`: only the newest open dialog acts on a
-      document-level Escape/Enter, then consumes it)
-    - `main.ts` — bootstrap: builds settings, then the tabs, then the views
-      around them; later parts register with earlier ones (`TabManager`'s
-      `addStateContributor` / `on…Change`, `SettingsController`'s and
-      `UpdateController`'s listeners) instead of late-bound callbacks
-    - `app/liveViews` — the one list of long-lived views that a device change,
-      a config reload and a language change are fanned out to
-    - `ipc/` — typed `invoke` wrappers, one module per domain, behind the
-      `ipc/index.ts` barrel callers import (and tests `vi.mock`); `invoke.ts`
-      holds the shared helpers (error normalizing, config-write echo
-      suppression), whose invoke helpers stay out of the barrel. Every
-      payload type must mirror the matching Rust `serde` struct (camelCase on
-      the wire)
-- `src-tauri/src/` — backend (Rust):
-    - `commands/` — `#[tauri::command]` handlers, one module per domain
-      (`devices`, `sessions`, `tunnels`, `sftp`, …; shared device→credentials
-      resolution in `device_access`), registered in `lib.rs`
-    - `device.rs`, `profile.rs`, `settings.rs` — domain models
-    - `store.rs`, `profile_store.rs` — JSON persistence in the Tauri app-config dir
-    - `atomic_file.rs` — shared JSON-store plumbing (atomic write-then-rename,
-      corrupt-file backup, missing/corrupt read-recovery, poison-recovering lock)
-      that every store (`store`, `profile_store`, `settings`, `known_hosts`,
-      `bookmark_store`, `command_library`, `workspace_store`) delegates to; each store keeps only
-      its own wrapper type + domain logic
-    - `known_hosts.rs` — host-key TOFU store; a damaged file is replaced by
-      an empty one marked `resetAt`, and until the user dismisses that (Trusted
-      hosts dialog) an unknown host is `Unverifiable`: a loud prompt, not a
-      first contact. A file unreadable at launch is never overwritten (retried
-      before each write) and leaves unknown hosts `Unverifiable` too
-    - `bookmark_store.rs` — per-device SFTP bookmarks (`sftp_bookmarks.json`)
-    - `command_library.rs` — the command library (`commands.json`):
-      `SavedCommand` + its validation, `CommandStore`
-    - `workspace.rs`, `workspace_store.rs` — open tabs restored on launch
-      (`workspace_state.json`); per-instance, not reloaded by the config watcher
-    - `config_watch.rs` — watches the app-config dir and emits `config_changed`
-      so a second running instance picks up on-disk changes
-    - `secret.rs` — OS keychain access; secrets never touch the JSON stores
-    - `ssh/` — the SSH connection layer shells, tunnels and SFTP share:
-      `params` (credentials, jump hop, keepalive), `prompts` (the host-key and
-      auth prompt registries, and `ConnectPrompter`: the prompt-only seam a
-      connection needs; `SessionSink` and `TunnelSink` extend it, SFTP
-      implements it alone), `interactive_auth` (keyboard-interactive after
-      the configured method, only when the server needs it: a partial
-      success, a rejected saved password — which may answer the first lone
-      hidden question — or the method tried not offered; the user answers
-      the rest through `auth_prompt`, and a round asking nothing is shown
-      as an info toast), `deadline` (the overall connect deadline, held
-      still while the user answers a prompt),
-      `handler` (russh client handler: host-key TOFU, agent
-      forwarding, remote-forward routing; server-opened channels we never
-      asked for are rejected), `establish` (TCP with TCP_NODELAY as in
-      OpenSSH, auth, jump host, overall deadline); a jump host's channel is
-      read ahead without limit through `relay` (a target write waiting on its
-      window would otherwise freeze both connections), and `close_jump` lets
-      the target's disconnect through it, and the target close its end,
-      first (`JumpConnection`)
-    - `session_sink.rs` — `SessionSink`/`SessionStatus`, how any terminal
-      session (SSH, serial, local shell) reports to the frontend
-    - `session.rs` — SSH shell sessions via `russh`; a disconnect is an
-      out-of-band `watch` stop flag (never queued behind writes a stalled
-      server isn't taking, like serial and tunnels), and a shell ends with a
-      bounded channel close + SSH disconnect of the target and jump host
-    - `tunnel.rs` — SSH local (`ssh -L`), dynamic (`ssh -D`) and remote
-      (`ssh -R`) port forwarding; reuses `ssh/`'s connect + auth +
-      host-key-TOFU path, then binds a local `TcpListener` per forward (added/removed one at a time
-      on the live connection; the last one removed ends it) and pumps each connection
-      over a `direct-tcpip` channel (to the fixed target, or the one a dynamic
-      forward's SOCKS client names); a remote forward instead asks the server
-      to listen (`tcpip-forward`)
-    - `remote_forward.rs` — the remote forwards' routes (server port → local
-      target, shared with the tunnel's `SshHandler`): each `forwarded-tcpip`
-      channel is accepted only once its local target answers, and a port no
-      forward asked for is rejected; each route belongs to one forward and is
-      released with it (also on a refused or timed-out listen), which closes
-      its connections. A tunnel's listen/cancel requests go through one
-      sequential worker (`ServerRequests`), so the serve loop never waits on
-      the server; a forward still waiting is left out of `Listening`
-    - `relay.rs` — bridges a forwarded connection's local socket (or a
-      jumped target connection) and its channel, draining the channel into
-      a per-connection backlog: russh blocks the whole SSH connection while
-      one channel's reader is full, so a client that pauses would otherwise
-      freeze every forward of the tunnel. For a forward, past 8 MiB of
-      backlog the channel is no longer read (a client that far behind sets
-      the connection's pace again), and one that then makes no progress for
-      20 s is closed
-    - `output_stream.rs` — a terminal session's output, kept until the
-      frontend fetched it (`read_output(from)`: reading from offset `from`
-      acknowledges what came before, so a lost or retried read loses
-      nothing; unread output past 50 MB, xterm's own discard point, drops
-      the oldest). Replaces the push `Channel`, where one lost message froze
-      the terminal for good
-    - `socks.rs` — server side of the SOCKS4/4a/5 handshake (no-auth,
-      `CONNECT` only) for dynamic forwards; stream-generic, unit-tested
-      against an in-memory pipe
-    - `sftp.rs` — SFTP browse/transfer over `russh-sftp`, reusing the same
-      connect path
-    - `sftp_edit.rs` — edit in place: per-edit `0700` dir in the app cache dir
-      (`<id>/copy/<remote name, made portable>` plus scratch files every
-      transfer goes through, so digests match the bytes moved), a debounced
-      `notify` watch on `copy/` (editors save by rename), and the sync
-      baseline (remote size+mtime, local content digest) behind check / upload
-      / discard. Uploads truncate in place, never delete the remote, and after
-      a failure stop comparing the remote (our own partial write is no
-      conflict); an edit registers only while its connection exists; the
-      copy's name has shell metacharacters replaced (it may land in a user's
-      `sh -c` editor command); each edit dir holds a `lock` file locked for
-      the edit's life, and a startup sweep deletes copies untouched for 24 h
-      whose lock is free (crash leftovers, not another instance's live edit)
-    - `editor.rs` — opens an edit's copy: the settings editor command (split
-      without a shell, `{file}` placeholder; `flatpak-spawn --host` in
-      Flatpak), else a text editor — never the file's default action, which
-      on Windows would run a `.bat`/`.exe` (Notepad; `open -t` on macOS; on
-      Linux the text/plain handler via GIO, or a host `xdg-mime` + `gio
-      launch` script in Flatpak — `xdg-open` picks by type, and Wine's runs a
-      `.exe`)
-    - `agent.rs` — SSH agent forwarding (relays the remote's agent channels to
-      the local agent); `agent_ident.rs` — agent identity listing + agent-backed auth
-    - `ssh_config.rs` — import/export devices ↔ `~/.ssh/config`
-    - `serial.rs` — serial/COM sessions via `tokio-serial`, reusing
-      `session_sink.rs`'s `SessionSink`/`SessionStatus`; the byte pump is
-      stream-generic so it unit-tests against an in-memory pipe (no COM port)
-    - `local_shell.rs` — local PTY shells (PowerShell/bash/zsh) via `portable-pty`,
-      reusing the same `SessionSink`/`SessionStatus` seam; bridges the crate's
-      blocking reader/writer to the async sink with reader/writer threads + a
-      control task (on Unix the reader polls its own copy of the master
-      descriptor and lets go when the session ends, so a child still holding
-      the terminal can't keep the PTY open); a reaper thread owns the child (polls its exit, and on
-      disconnect calls portable-pty's `Child::kill`: SIGHUP, then SIGKILL after
-      a short grace); on macOS the default shell runs as a login shell with a
-      UTF-8 `LANG` fallback; inside Flatpak the shell runs on the host via
-      `flatpak-spawn --host`, the PTY left free to be its controlling tty.
-      Also owns the updater's TLS env vars: `preset_tls_env` (first thing in
-      `run()`, single-threaded) sets missing `SSL_CERT_FILE`/`DIR` to the
-      system's trust store so the updater never `set_var`s at runtime, and
-      shells/editors don't inherit what the app didn't start with
-    - `flatpak.rs` — Flatpak sandbox detection and the host-visible runtime dir
-      (where the tray icon image goes)
-    - `wayland.rs` — Linux Wayland workarounds: the window-state flags (no
-      size/position on Wayland, where the plugin's restore made the window
-      grow every launch until GDK crashed) and `__NV_DISABLE_EXPLICIT_SYNC`
-      (NVIDIA + WebKitGTK "Error 71"), set first thing in `run()`
-    - `transfer.rs` — devices/profiles/command library import-export; a devices import is
-      previewed first (`ImportRisk`s per device: agent forwarding, auto-start
-      forwards, custom local shell / snippet, a Windows network path as key
-      file, serial port or shell folder, forwards replacing a saved device's)
-      and refused if the file's risks no longer match what the user confirmed
-    - `updater.rs` — in-app updates via `tauri-plugin-updater` (CrabNebula
-      endpoints): check → download → install, each naming the confirmed
-      version; runs only on user request or opt-in launch check; self-install
-      for NSIS/MSI + AppImage + a real macOS `.app` (keyed on the bundle type;
-      an unbundled macOS dev binary is notify-only), notify-only for
-      `.deb`/`.rpm` (and Flatpak, which says `flatpak update`); the install
-      closes live sessions first
-      (`AppState::shutdown_live_sessions`, shared with app close and quit)
-    - `tray.rs` — opt-in close-to-tray: a lazily built tray icon (disabled
-      live-connection count, Show, Quit; a monochrome template image on macOS,
-      `icons/tray-template.png`), the window-close decision (hide vs.
-      disconnect-then-close; never hides without a built tray), and a poller
-      emitting `live_session_count`; labels come translated from the frontend.
-      Tauri alone holds the icon so its exit cleanup removes it; on Linux the
-      AppIndicator library is probed first (tray-icon panics without it)
-    - `app_menu.rs` — the macOS menu bar (Tauri's default minus Close Window,
-      so Cmd+W closes a tab)
-    - `main_window.rs` — builds the main window (`"create": false` in
-      `tauri.conf.json`) with clipboard access, without which WebKitGTK and
-      WebView2 refuse `navigator.clipboard.readText()` and paste does nothing
-    - `state.rs` — `AppState` (managed Tauri state), `error.rs` — `AppError`
-- `src-tauri/tests/` — `ssh_it.rs`, `sftp_it.rs`: integration tests against an
-  in-process throwaway `russh` server, no Docker/external daemon needed
-- `flatpak/` — Flatpak manifest (repackages the release `.deb` on the GNOME
-  runtime, plus libayatana-appindicator from Flathub's shared-modules), the
-  `.desktop` file, metainfo, and `build-repo.sh` (signed OSTree repo +
-  `.flatpakref`/`.flatpakrepo`); app id `io.github.that_one_tool.DaSSHboard`
+### Frontend (`src/`, TypeScript, no framework)
+
+- `main.ts` — bootstrap. Later parts register with earlier parts (listeners),
+  not with late-bound callbacks.
+- `app/liveViews` — the list of long-lived views. Device changes, config
+  reloads and language changes go to these views.
+- `grid.ts`, `gridModel.ts` — the pane grid.
+- `terminal/` — terminal pane and its parts (`pane/`): overlay, reconnect,
+  paste, host-key and auth-prompt dialogs, search bar, links, save output,
+  output recording.
+  `inputQueue` and `outputReader` keep input and output in order.
+- `devices/` — device editor, validation, port-forward editor, import risks.
+- `tunnels/` — Tunnels sidebar card (start/stop forwards, status, reconnect).
+- `sftp/` — Files panel (browser, transfer queue, bookmarks, edit in place).
+- `tabs/` — tabs. Each tab keeps its `Grid` and sessions alive.
+- `profiles/` — saved workspaces.
+- `commandLibrary/` — Commands sidebar card and editor. A command goes to the
+  focused pane, or to all connected panes during broadcast.
+- `settings/` — settings dialog, theme toggle, known-hosts dialog.
+- `tray/` — sends translated tray labels to the backend.
+- `updates/` — update check and install, About dialog badge.
+- `i18n/` — `t`/`tp` and one table per locale. `en.ts` is the source of truth.
+- `layout/` — resizable sidebar and its collapsed bar.
+- `ui/` — shared dialogs, toasts, DOM helpers, splitter, shortcut keys,
+  dialog stack (only the newest dialog gets Escape/Enter).
+- `ipc/` — typed `invoke` wrappers, one module per domain. Import them from
+  the `ipc/index.ts` barrel. Each payload type must be the same as its Rust
+  `serde` struct (camelCase).
+
+Some frontend rules mirror backend rules (validation, settings clamps). When
+you change one side, change the other side too.
+
+### Backend (`src-tauri/src/`, Rust)
+
+- `commands/` — `#[tauri::command]` handlers, one module per domain.
+  Register them in `lib.rs`.
+- `device.rs`, `profile.rs`, `settings.rs` — domain models.
+- Stores (`store`, `profile_store`, `known_hosts`, `bookmark_store`,
+  `command_library`, `workspace_store`) — JSON files in the app-config dir.
+  All use `atomic_file.rs` for safe write, backup and recovery.
+- `known_hosts.rs` — host-key TOFU store. If the file is damaged or
+  unreadable, unknown hosts are `Unverifiable` (loud prompt).
+- `workspace*.rs` — open tabs, restored at launch. Per instance.
+- `config_watch.rs` — tells the frontend when config files change on disk.
+- `secret.rs` — OS keychain.
+- `ssh/` — shared SSH connect: parameters, auth (incl. keyboard-interactive),
+  prompts, connect deadline, host-key handler, jump host.
+- `session_sink.rs` — how a terminal session (SSH, serial, local) reports to
+  the frontend.
+- `session.rs` — SSH shells. `serial.rs` — serial ports. `local_shell.rs` —
+  local PTY shells.
+- `output_stream.rs` — terminal output, kept until the frontend reads it.
+- `session_recording.rs` — records a session's raw output to a file.
+- `tunnel.rs` — local, dynamic and remote port forwards.
+  `remote_forward.rs` — remote forward routes. `socks.rs` — SOCKS server.
+  `relay.rs` — moves data between a socket and a channel.
+- `sftp.rs` — SFTP. `sftp_edit.rs` — edit in place. `editor.rs` — opens the
+  file in a text editor (never with the default action).
+- `agent.rs`, `agent_ident.rs` — SSH agent forwarding and agent auth.
+- `ssh_config.rs` — import/export `~/.ssh/config`.
+- `transfer.rs` — import/export. A devices import shows its risks first.
+- `updater.rs` — in-app updates. Runs only when the user asks or opts in.
+- `tray.rs` — opt-in close to tray. `app_menu.rs` — macOS menu bar.
+- `main_window.rs` — main window (clipboard access). `flatpak.rs`,
+  `wayland.rs` — platform workarounds.
+- `state.rs` — `AppState`. `error.rs` — `AppError`.
+
+### Other
+
+- `src-tauri/tests/` — SSH and SFTP integration tests with an in-process
+  `russh` server. No Docker.
+- `flatpak/` — Flatpak manifest (repackages the `.deb`), desktop file,
+  metainfo, `build-repo.sh`. App id `io.github.that_one_tool.DaSSHboard`.
 
 ## Commands
 
-From the repo root (each delegates to the app's own `package.json`; inside
-`apps/desktop/` or `apps/website/` the same script names work directly):
+Run from the repo root, or with the same names in `apps/desktop/` or
+`apps/website/`:
 
 ```sh
-npm run dev          # vite dev server only
-npm run tauri dev    # full app, hot-reload
-npm run check        # the full gate — run before considering any task done:
-                      # tsc --noEmit && eslint . && vitest run --coverage &&
-                      # cargo fmt --check && cargo test &&
-                      # cargo clippy --all-targets -- -D warnings
-npm test             # vitest only
-npm run coverage     # vitest with coverage (floor in vite.config.ts)
-npm run site:dev     # website dev server (http://localhost:4321/dasshboard/)
-npm run site:check   # website gate: astro check && vitest run && astro build
+npm run dev          # vite dev server
+npm run tauri dev    # full app, hot reload
+npm run check        # desktop gate: tsc, eslint, vitest + coverage,
+                     # cargo fmt --check, cargo test, cargo clippy -D warnings
+npm test             # vitest
+npm run coverage     # vitest + coverage (floor in vite.config.ts)
+npm run site:dev     # website (http://localhost:4321/dasshboard/)
+npm run site:check   # website gate: astro check, vitest, astro build
+npm run check:all    # both gates
 ```
 
-## Working rules
+## Rules
 
-- **TDD**: write/adjust the failing test first, then make it pass.
-- Run `npm run check` after every desktop change (`npm run site:check` after
-  every website change, `npm run check:all` when both are touched); fix failures before moving on or
-  calling a task complete.
-- Never commit or push — the user reviews and commits all code themselves.
-- Make minimal, scoped changes. Don't refactor or touch files outside the
-  task's scope without asking first.
-- Never assume: when a requirement, edge case, or design choice is unclear,
-  ask rather than guess. If two approaches are both reasonable, present both
-  and let the user pick.
-- Keep functions small, single-purpose, cyclomatic complexity < 4.
-- Quality ratchets only tighten: never add to `eslint-suppressions.json`
-  (prune it with `npx eslint . --prune-suppressions` after fixing code), never
-  raise `src-tauri/clippy.toml` limits, never lower the coverage floor in
-  `vite.config.ts` (raise it when coverage grows). Suppressions are counts
-  per file and rule, so a new violation in a file with frozen ones can slip
-  in by fixing an old one: hold new code to the limits regardless.
-- Keep the UI responsive (desktop app and website): never hardcode a px
-  width/height (CSS `width`, `height`, `min-*`/`max-*`, `flex-basis`, grid
-  tracks, `<img>`/SVG size attributes). Use rem for component sizes, em in media
-  queries, and %/vw/vh with `min()`/`clamp()` for layout; in the desktop app size
-  icons with the `.icon` / `.icon-lg` classes, and when script must work in px,
-  derive it with `remToPx` (`ui/dom.ts`).
-- Let names carry meaning; add comments only when the _why_ isn't obvious from
-  the code (a constraint, a workaround, a non-obvious invariant).
-- Give each new `.ts` module a colocated `*.test.ts`. Existing exceptions:
-  `main.ts` (bootstrap wiring, no test) and `i18n/`, where the locale tables
-  and `index.ts` share one `i18n.test.ts`.
-- Update the relevant README (and this file, if structure/workflow changes)
-  whenever a change affects what they document. Keep READMEs short: the root one
-  is for users (one line per feature, no implementation detail), the app ones
-  are for developers; code structure belongs here, not in a README.
+- Use TDD. Write the failing test first. Then make it pass.
+- After each change, run the gate: `npm run check` (desktop),
+  `npm run site:check` (website), or `npm run check:all` (both). Fix all
+  failures before you continue.
+- Do not commit or push. The user does this.
+- Make minimal changes. Ask before you change files outside the task.
+- Do not guess. If a requirement or design choice is not clear, ask. If two
+  approaches are good, show both and let the user choose.
+- Keep functions small, with one purpose. Cyclomatic complexity must be < 4.
+- Quality limits only get stricter:
+    - Do not add to `eslint-suppressions.json`. After a fix, prune it with
+      `npx eslint . --prune-suppressions`.
+    - Do not increase the limits in `src-tauri/clippy.toml`.
+    - Do not decrease the coverage floor in `vite.config.ts`. Increase it
+      when coverage increases.
+    - Suppressions are counts per file and rule. Keep new code inside the
+      limits, also in files with suppressions.
+- Do not use px for sizes (width, height, min/max, flex-basis, grid tracks,
+  `<img>`/SVG size). Use rem for components, em in media queries, and
+  %/vw/vh with `min()`/`clamp()` for layout. In the desktop app, use the
+  `.icon` / `.icon-lg` classes for icons. If script needs px, use `remToPx`
+  (`ui/dom.ts`).
+- Use clear names. Write a comment only to explain a non-obvious why.
+- Give each new `.ts` module a `*.test.ts` in the same folder. Exceptions:
+  `main.ts`, and `i18n/` (one `i18n.test.ts`).
+- When a change affects a README or this file, update it. Keep READMEs short.
+  The root README is for users (one line per feature). Code structure goes
+  in this file, not in a README.
 
-## Security invariants
+## Security
 
-- Secrets (passwords, key passphrases) live only in the OS keychain (service
-  `DaSSHboard`), never in `devices.json` or any other config file.
-- A secret crosses the frontend↔backend boundary only when saving a device;
-  the backend never sends secret material back to the frontend.
-- Host keys are trust-on-first-use; a changed key must raise a loud warning
-  and require explicit accept before connecting.
-- Keep the Tauri CSP strict; load no remote content.
-- The website also loads no remote content (fonts and images are bundled).
+- Keep secrets (passwords, key passphrases) only in the OS keychain (service
+  `DaSSHboard`). Never write them to a config file.
+- A secret goes from frontend to backend only when the user saves a device.
+  The backend never sends a secret to the frontend.
+- Host keys are trust-on-first-use. A changed key must show a loud warning.
+  The user must accept it before the connection continues.
+- Keep the Tauri CSP strict. Load no remote content.
+- The website also loads no remote content. Bundle all fonts and images.

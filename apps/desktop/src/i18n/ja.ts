@@ -100,6 +100,11 @@ export const ja: Messages = {
 	"pane.search.none": "一致なし",
 	"pane.saveOutput": "出力をファイルに保存",
 	"pane.saveOutput.saved": "出力を {path} に保存しました",
+	"pane.record.start": "出力をファイルに記録",
+	"pane.record.stop": "記録を停止",
+	"pane.record.started": "{path} に記録しています",
+	"pane.record.stopped": "記録を {path} に保存しました",
+	"pane.record.failed": "記録が停止しました: {message}",
 	"pane.link.hint": "Ctrl+クリックでリンクを開く",
 	"pane.link.hintMac": "Cmd+クリックでリンクを開く",
 

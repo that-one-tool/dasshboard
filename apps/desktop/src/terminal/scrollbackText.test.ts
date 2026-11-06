@@ -69,4 +69,8 @@ describe("outputFileName", () => {
   it("falls back to a generic name without a device", () => {
     expect(outputFileName("", at)).toBe("terminal-2026-10-05-0907.txt");
   });
+
+  it("takes another extension", () => {
+    expect(outputFileName("NAS", at, "log")).toBe("NAS-2026-10-05-0907.log");
+  });
 });
