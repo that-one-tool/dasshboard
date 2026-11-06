@@ -125,6 +125,7 @@ export const pt: SiteMessages = {
 				points: [
 					"Difusão da escrita para todos os painéis ligados",
 					"Comandos ao ligar, por dispositivo",
+					"Uma biblioteca de comandos guardados, enviados para um painel ou para todos",
 					"Religação automática com espera progressiva e keepalives",
 					"Confirmação antes de colar várias linhas",
 				],

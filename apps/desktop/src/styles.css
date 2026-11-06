@@ -255,7 +255,8 @@ body {
 
 .device-list,
 .profile-list,
-.tunnel-list {
+.tunnel-list,
+.command-list {
 	flex: 0 0 auto;
 }
 
@@ -3347,4 +3348,103 @@ body.splitter-resizing {
 .profile-item:hover {
 	border-color: var(--border-strong);
 	background-color: var(--surface-2);
+}
+
+/* --- Commands sidebar card: rows laid out like `.profile-item` --- */
+
+.command-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+	padding: 0.4rem 0.5rem;
+	border-radius: var(--radius);
+	margin-bottom: 0.125rem;
+	transition: background-color 120ms ease;
+}
+
+.command-item:hover {
+	background-color: var(--surface-2);
+}
+
+.command-item-send {
+	display: flex;
+	flex-direction: column;
+	gap: 0.125rem;
+	flex: 1 1 auto;
+	min-width: 0;
+	padding: 0;
+	background: none;
+	border: none;
+	color: var(--text-bright);
+	text-align: left;
+	cursor: pointer;
+}
+
+.command-item-send:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+.command-item-line {
+	display: flex;
+	align-items: baseline;
+	gap: 0.4rem;
+	min-width: 0;
+}
+
+.command-item-name,
+.command-item-text {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.command-item-name {
+	font-size: 0.9rem;
+	font-weight: 500;
+}
+
+.command-item-no-enter {
+	flex: 0 0 auto;
+	font-size: 0.7rem;
+	color: var(--text-muted);
+}
+
+.command-item-text {
+	font-size: 0.78rem;
+	color: var(--text-muted);
+}
+
+/* --- Command editor dialog --- */
+
+.command-dialog-content {
+	max-width: min(32rem, 90vw);
+}
+
+.command-dialog-body {
+	display: grid;
+	gap: 0.75rem;
+	padding: 1rem;
+}
+
+.command-dialog-body input[type="text"],
+.command-text-input {
+	padding: 0.5rem 0.75rem;
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
+	background-color: var(--surface-1);
+	color: var(--text-primary);
+	font-size: 0.9rem;
+}
+
+.command-text-input {
+	font-family: var(--mono-font);
+	resize: vertical;
+}
+
+.command-text-input:focus {
+	outline: none;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 3px var(--accent-soft);
 }

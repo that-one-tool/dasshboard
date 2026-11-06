@@ -124,6 +124,7 @@ export const de: SiteMessages = {
 				points: [
 					"Eingabe an alle verbundenen Fenster senden",
 					"Befehle beim Verbinden, pro Gerät",
+					"Eine Bibliothek gespeicherter Befehle, an einen oder alle Bereiche gesendet",
 					"Automatische Wiederverbindung mit Backoff und Keepalives",
 					"Bestätigung vor dem Einfügen mehrerer Zeilen",
 				],

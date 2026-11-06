@@ -212,6 +212,13 @@ export class Grid {
     }
   }
 
+  /** Where a library command goes: every connected pane while broadcasting,
+   * else the focused pane when it is connected. */
+  commandTargets(): TerminalPane[] {
+    const cells = this.broadcast ? this.cells : this.cells.slice(this.focusedIndex, this.focusedIndex + 1);
+    return cells.map((cell) => cell.pane).filter((pane) => pane.isConnected());
+  }
+
   /**
    * Switches to a preset. On a shrink, panes beyond the new count are dropped in
    * row-major order; if any carries a live session the user must confirm first

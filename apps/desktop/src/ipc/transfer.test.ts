@@ -25,6 +25,8 @@ import {
 	saveTextFile,
 	exportProfiles,
 	importProfiles,
+	exportCommands,
+	importCommands,
 } from "./transfer";
 
 beforeEach(() => {
@@ -41,6 +43,8 @@ describe("import/export IPC wrappers", () => {
 		{ name: "exportDevices", fn: exportDevices, command: "export_devices" },
 		{ name: "exportProfiles", fn: exportProfiles, command: "export_profiles" },
 		{ name: "importProfiles", fn: importProfiles, command: "import_profiles" },
+		{ name: "exportCommands", fn: exportCommands, command: "export_commands" },
+		{ name: "importCommands", fn: importCommands, command: "import_commands" },
 	];
 
 	for (const { name, fn, command } of cases) {

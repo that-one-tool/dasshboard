@@ -124,6 +124,7 @@ export const fr: SiteMessages = {
 				points: [
 					"Diffusion de la saisie à tous les panneaux connectés",
 					"Commandes à la connexion, par appareil",
+					"Une bibliothèque de commandes, envoyées à un panneau ou à tous",
 					"Reconnexion automatique progressive et keepalives",
 					"Confirmation avant de coller plusieurs lignes",
 				],

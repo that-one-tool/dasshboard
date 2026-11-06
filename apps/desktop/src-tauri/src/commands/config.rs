@@ -39,6 +39,7 @@ fn reload_config_impl(state: &AppState) {
     state.settings_store.reload();
     state.session_manager.known_hosts().reload();
     state.bookmark_store.reload();
+    state.command_store.reload();
 }
 
 /// Current app settings — terminal appearance + last-used grid (SPEC.md §5).
@@ -144,6 +145,15 @@ mod tests {
             )
             .unwrap();
         other.bookmark_store.add("dev-1", "/etc").unwrap();
+        other
+            .command_store
+            .upsert(crate::command_library::SavedCommand {
+                id: String::new(),
+                name: "Uptime".to_string(),
+                text: "uptime".to_string(),
+                run: true,
+            })
+            .unwrap();
 
         // Our in-memory view is stale until reloaded.
         assert!(list_devices_impl(&state).is_empty(), "stale until reload");
@@ -154,5 +164,6 @@ mod tests {
         assert_eq!(list_profiles_impl(&state).profiles.len(), 1);
         assert_eq!(state.session_manager.known_hosts().list().len(), 1);
         assert_eq!(state.bookmark_store.list("dev-1"), ["/etc"]);
+        assert_eq!(state.command_store.list().len(), 1);
     }
 }

@@ -16,6 +16,7 @@ import { initHostKeyDialog } from "./terminal/hostKeyDialog";
 import { initAuthPromptDialog } from "./terminal/authPromptDialog";
 import { initTunnelsPanel } from "./tunnels/tunnelsPanel";
 import { initSftpPanel } from "./sftp/sftpPanel";
+import { initCommandsPanel } from "./commandLibrary/commandsPanel";
 import { openAboutDialog } from "./ui/aboutDialog";
 import { UpdateController } from "./updates/updateController";
 import { applyUpdateBadge } from "./updates/updateBadge";
@@ -199,6 +200,7 @@ async function initViews(parts: AppParts): Promise<LiveView[]> {
 	];
 	views.push(await initProfiles(parts));
 	views.push(initTunnels(parts));
+	views.push(await initCommands(parts));
 	views.push(initSftp(parts));
 	const devices = initDevices(parts, views);
 	if (devices) views.push(devices);
@@ -248,6 +250,24 @@ function initTunnels({ tabs, rail, workspace }: AppParts): LiveView {
 	tabs.addStateContributor(() => ({ tunnels: tunnelsPanel.layoutState() }));
 	rail?.countForwardsWith(() => tunnelsPanel.listeningForwardCount());
 	return { refreshDevices: () => tunnelsPanel.refresh(), retranslate: () => tunnelsPanel.retranslate() };
+}
+
+/** The command library, sent to the active tab's focused pane or broadcast set. */
+async function initCommands({ tabs }: AppParts): Promise<LiveView> {
+	const panel = initCommandsPanel({
+		getTargets: () =>
+			tabs.activeGrid().commandTargets().map((pane) => ({
+				name: pane.getDeviceName(),
+				send: pane.makeSessionSender(),
+			})),
+		afterSend: () => tabs.activeGrid().focus(),
+		onError: showError,
+		onInfo: (message) => showToast(message, "info"),
+		onSuccess: showSuccess,
+	});
+	if (!panel) return {};
+	await panel.reload();
+	return { reloadConfig: () => panel.reload(), retranslate: () => panel.retranslate() };
 }
 
 /** The Files panel docked right of the grid; opening/resizing it re-fits the grid. */

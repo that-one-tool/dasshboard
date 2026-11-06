@@ -1453,6 +1453,49 @@ describe("TerminalPane device picker and device reloads", () => {
   });
 });
 
+describe("TerminalPane device name", () => {
+  beforeEach(() => {
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  it("sends through a session sender only while that same session is live", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+    await (pane as unknown as { startSession(): Promise<void> }).startSession();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    const send = pane.makeSessionSender();
+    vi.mocked(writeStdin).mockClear();
+
+    send("ls\r");
+    await flush();
+    expect(writeStdin).toHaveBeenCalledWith(h.sessionId, "ls\r");
+
+    h.statusHandler?.({ sessionId: h.sessionId, status: "disconnected" });
+    vi.mocked(writeStdin).mockClear();
+    send("ls\r");
+    await flush();
+    expect(writeStdin).not.toHaveBeenCalled();
+
+    vi.mocked(crypto.randomUUID).mockReturnValueOnce("sess-2" as ReturnType<typeof crypto.randomUUID>);
+    await (pane as unknown as { startSession(): Promise<void> }).startSession();
+    h.statusHandler?.({ sessionId: "sess-2", status: "connected" });
+    send("ls\r");
+    await flush();
+    expect(writeStdin).not.toHaveBeenCalled();
+  });
+
+  it("names its assigned device, and is blank when it has none", async () => {
+    const pane = new TerminalPane(q<HTMLElement>(document, "#pane-root"));
+    await pane.init();
+    expect(pane.getDeviceName()).toBe("");
+    pane.assignDevice(h.device.id);
+    expect(pane.getDeviceName()).toBe(h.device.name);
+  });
+});
+
 describe("TerminalPane find and save output", () => {
   beforeEach(() => {
     h.statusHandler = null;

@@ -124,6 +124,7 @@ export const en = {
 				points: [
 					"Broadcast input to all connected panes",
 					"Commands on connect, per device",
+					"A library of saved commands, sent to one pane or all",
 					"Auto-reconnect with backoff, and keepalives",
 					"Confirmation before pasting multiple lines",
 				],

@@ -660,6 +660,20 @@ export class TerminalPane {
     return this.deviceId === "" ? null : this.deviceId;
   }
 
+  /** Sends to the session live now; a no-op once it ends, even if the pane
+   * reconnects meanwhile (a confirmed command must not reach another host). */
+  makeSessionSender(): (data: string) => void {
+    const sessionId = this.session.writableId();
+    return (data) => {
+      if (sessionId !== null && this.session.writableId() === sessionId) this.write(sessionId, data);
+    };
+  }
+
+  /** The assigned device's name, blank for an empty pane. */
+  getDeviceName(): string {
+    return this.assignedDevice()?.name ?? "";
+  }
+
   /**
    * Programmatically assign (or clear, with `null`) this pane's device, e.g.
    * when applying a loaded profile. Reflects the choice in the dropdown but does

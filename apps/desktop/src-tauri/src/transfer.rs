@@ -16,6 +16,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::command_library::SavedCommand;
 use crate::device::{Auth, Connection, Device, Forward, ForwardKind};
 use crate::error::AppError;
 use crate::profile::Profile;
@@ -28,6 +29,8 @@ const PROFILES_KIND: &str = "dasshboard.profiles";
 /// Envelope schema version written on export (reserved for future migrations;
 /// import currently accepts any version).
 const EXPORT_VERSION: u32 = 1;
+/// `kind` discriminant of a command library export file.
+const COMMANDS_KIND: &str = "dasshboard.commands";
 /// Profiles envelope version: 2 = multi-tab profiles. Version-1 files (and
 /// version-1 readers, via the legacy fields each profile also carries) still
 /// work; see `Profile`'s wire format.
@@ -54,6 +57,15 @@ struct ProfilesEnvelope {
     #[serde(default)]
     version: u32,
     profiles: Vec<Profile>,
+}
+
+/// Self-describing command library file: `{ kind, version, commands: [...] }`.
+#[derive(Debug, Serialize, Deserialize)]
+struct CommandsEnvelope {
+    kind: String,
+    #[serde(default)]
+    version: u32,
+    commands: Vec<SavedCommand>,
 }
 
 /* ============================================================================
@@ -266,6 +278,38 @@ fn parse_profiles_import(contents: &str) -> Result<Vec<Profile>, AppError> {
     Ok(envelope.profiles)
 }
 
+fn commands_to_export_json(commands: &[SavedCommand]) -> String {
+    let envelope = CommandsEnvelope {
+        kind: COMMANDS_KIND.to_string(),
+        version: EXPORT_VERSION,
+        commands: commands.to_vec(),
+    };
+    serde_json::to_string_pretty(&envelope).unwrap_or_default()
+}
+
+/// Parse + validate a command library file (see [`parse_devices_import`]).
+fn parse_commands_import(contents: &str) -> Result<Vec<SavedCommand>, AppError> {
+    let envelope: CommandsEnvelope = serde_json::from_str(contents)
+        .map_err(|e| AppError::Validation(format!("invalid commands file: {e}")))?;
+    if envelope.kind != COMMANDS_KIND {
+        return Err(AppError::Validation(format!(
+            "unexpected file kind {:?}; expected {COMMANDS_KIND:?}",
+            envelope.kind
+        )));
+    }
+    let mut ids = std::collections::HashSet::new();
+    if envelope
+        .commands
+        .iter()
+        .any(|c| !c.id.trim().is_empty() && !ids.insert(c.id.as_str()))
+    {
+        return Err(AppError::Validation(
+            "the file names the same command id twice".to_string(),
+        ));
+    }
+    Ok(envelope.commands)
+}
+
 /* ============================================================================
  * Impl functions (disk I/O) — testable with a hand-built AppState.
  * ============================================================================ */
@@ -395,6 +439,22 @@ pub(crate) fn import_profiles_impl(state: &AppState, path: &Path) -> Result<u32,
     Ok(count)
 }
 
+/// Write the command library to `path`. Returns the count written.
+pub(crate) fn export_commands_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
+    let commands = state.command_store.list();
+    fs::write(path, commands_to_export_json(&commands))?;
+    Ok(commands.len() as u32)
+}
+
+/// Read/validate/upsert commands from `path` in one write (all-or-nothing,
+/// upsert by id).
+/// Nothing in it runs on import: a command is only ever sent when clicked.
+pub(crate) fn import_commands_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
+    let contents = fs::read_to_string(path)?;
+    let commands = parse_commands_import(&contents)?;
+    Ok(state.command_store.upsert_all(commands)? as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,6 +495,7 @@ mod tests {
             serial_manager: Arc::new(SerialSessionManager::new()),
             local_shell_manager: Arc::new(crate::local_shell::LocalShellManager::new()),
             bookmark_store: crate::bookmark_store::BookmarkStore::load(dir.to_path_buf()),
+            command_store: crate::command_library::CommandStore::load(dir.to_path_buf()),
         }
     }
 
@@ -1176,5 +1237,118 @@ mod tests {
         let err = import_profiles_impl(&state, &file).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
         assert!(state.profile_store.list().profiles.is_empty());
+    }
+
+    /* -- command library ------------------------------------------------ */
+
+    fn sample_command(name: &str) -> SavedCommand {
+        SavedCommand {
+            id: String::new(),
+            name: name.to_string(),
+            text: format!("echo {name}"),
+            run: true,
+        }
+    }
+
+    #[test]
+    fn export_commands_writes_expected_envelope() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        state
+            .command_store
+            .upsert(sample_command("Uptime"))
+            .unwrap();
+
+        let out = dir.path().join("out.json");
+        assert_eq!(export_commands_impl(&state, &out).unwrap(), 1);
+
+        let raw = fs::read_to_string(&out).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["kind"], "dasshboard.commands");
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["commands"][0]["name"], "Uptime");
+    }
+
+    #[test]
+    fn commands_round_trip_export_then_import_is_idempotent() {
+        let src_dir = tempdir().unwrap();
+        let src = test_state(src_dir.path());
+        src.command_store.upsert(sample_command("A")).unwrap();
+        src.command_store.upsert(sample_command("B")).unwrap();
+        let file = src_dir.path().join("commands-export.json");
+        export_commands_impl(&src, &file).unwrap();
+
+        let dst_dir = tempdir().unwrap();
+        let dst = test_state(dst_dir.path());
+        assert_eq!(import_commands_impl(&dst, &file).unwrap(), 2);
+        import_commands_impl(&dst, &file).unwrap();
+
+        assert_eq!(dst.command_store.list(), src.command_store.list());
+    }
+
+    #[test]
+    fn commands_import_is_all_or_nothing() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        let file = dir.path().join("bad.json");
+        fs::write(
+            &file,
+            serde_json::json!({
+                "kind": "dasshboard.commands",
+                "version": 1,
+                "commands": [
+                    { "id": "c1", "name": "Ok", "text": "ls", "run": true },
+                    { "id": "c2", "name": "Bad", "text": "a\nb", "run": false }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let err = import_commands_impl(&state, &file).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+        assert!(state.command_store.list().is_empty());
+    }
+
+    #[test]
+    fn commands_import_refuses_a_file_naming_one_id_twice() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        let file = dir.path().join("dup.json");
+        fs::write(
+            &file,
+            serde_json::json!({
+                "kind": "dasshboard.commands",
+                "commands": [
+                    { "id": "c1", "name": "A", "text": "a", "run": true },
+                    { "id": "c1", "name": "B", "text": "b", "run": true }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let err = import_commands_impl(&state, &file).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+        assert!(state.command_store.list().is_empty());
+    }
+
+    #[test]
+    fn commands_import_rejects_wrong_kind_and_malformed_json() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        let wrong = dir.path().join("wrong.json");
+        fs::write(
+            &wrong,
+            serde_json::json!({ "kind": "dasshboard.profiles", "commands": [] }).to_string(),
+        )
+        .unwrap();
+        let broken = dir.path().join("broken.json");
+        fs::write(&broken, "not json").unwrap();
+
+        for file in [wrong, broken] {
+            let err = import_commands_impl(&state, &file).unwrap_err();
+            assert!(matches!(err, AppError::Validation(_)));
+        }
     }
 }

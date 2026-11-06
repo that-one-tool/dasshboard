@@ -15,6 +15,7 @@ export * from "./sessions";
 export * from "./knownHosts";
 export * from "./tunnels";
 export * from "./profiles";
+export * from "./commands";
 export * from "./workspace";
 export * from "./settings";
 export * from "./updates";

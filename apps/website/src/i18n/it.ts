@@ -124,6 +124,7 @@ export const it: SiteMessages = {
 				points: [
 					"Trasmissione dell'input a tutti i riquadri connessi",
 					"Comandi alla connessione, per dispositivo",
+					"Una libreria di comandi salvati, inviati a un riquadro o a tutti",
 					"Riconnessione automatica con backoff e keepalive",
 					"Conferma prima di incollare più righe",
 				],

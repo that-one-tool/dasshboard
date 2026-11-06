@@ -33,6 +33,8 @@
 - **Edit remote files** — open a remote file in your editor; every save is
   uploaded back, with a warning if the file changed on the server meanwhile.
 - **Commands on connect** — a per-device snippet typed in as soon as the shell opens.
+- **Command library** — saved commands sent with a click to the focused pane, or
+  to every broadcasting pane; import/export as JSON.
 - **Broadcast input** — type into several panes at once.
 - **In the terminal** — find text in the scrollback (Ctrl+Shift+F, Cmd+F on
   macOS), Ctrl+click (Cmd+click) a URL to open it, and save a pane's output to

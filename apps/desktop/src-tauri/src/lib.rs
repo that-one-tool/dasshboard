@@ -6,6 +6,7 @@ mod agent_ident;
 mod app_menu;
 mod atomic_file;
 mod bookmark_store;
+mod command_library;
 mod commands;
 mod config_watch;
 mod editor;
@@ -64,6 +65,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, RunEvent, Runtime};
 
 use bookmark_store::BookmarkStore;
+use command_library::CommandStore;
 use known_hosts::KnownHostsStore;
 use local_shell::LocalShellManager;
 use profile_store::ProfileStore;
@@ -136,6 +138,7 @@ pub fn run() {
             let workspace_store = WorkspaceStore::load(config_dir.clone());
             // Per-device SFTP bookmarks (saved remote paths). Same app-config dir.
             let bookmark_store = BookmarkStore::load(config_dir.clone());
+            let command_store = CommandStore::load(config_dir.clone());
             // Host-key TOFU store + SSH session manager (SPEC.md §3/§6). The
             // manager owns the known-hosts store (behind an `Arc`) so its
             // session tasks can consult/persist trust decisions.
@@ -181,6 +184,7 @@ pub fn run() {
                 serial_manager,
                 local_shell_manager,
                 bookmark_store,
+                command_store,
             });
             // Watch the config dir so a change made by another running instance
             // (multi-instance sync) is picked up automatically: it emits a
@@ -233,6 +237,11 @@ pub fn run() {
             commands::transfer::import_devices,
             commands::transfer::export_profiles,
             commands::transfer::import_profiles,
+            commands::transfer::export_commands,
+            commands::transfer::import_commands,
+            commands::command_library::list_commands,
+            commands::command_library::save_command,
+            commands::command_library::delete_command,
             commands::transfer::import_ssh_config,
             commands::transfer::export_ssh_config,
             commands::app::save_text_file,

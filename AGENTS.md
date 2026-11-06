@@ -86,6 +86,13 @@ files, releasing),
       hidden tabs keep their sessions running and refit on activation);
       `tabShortcuts` maps the tab keys (incl. Cmd+W on macOS)
     - `profiles/` — workspace/profile persistence
+    - `commandLibrary/` — the Commands sidebar card (`commandsPanel`: send,
+      add/edit/delete, import/export), its editor (`commandDialog`) and the
+      DOM-free rules (`commandText`: what a command types — Enter after each
+      line, or a single line typed in as is — and validation, mirroring
+      `SavedCommand::validate`). A command goes to `Grid.commandTargets()`:
+      the focused pane, or every connected pane while broadcasting (confirmed
+      first when more than one)
     - `settings/` — app settings controller (dialog with General / Connections
       tabs via `settingsTabs`; numeric fields clamped by `settingsBounds`,
       mirroring the backend clamps), the header dark/light toggle (`themeToggle`),
@@ -127,7 +134,7 @@ files, releasing),
     - `atomic_file.rs` — shared JSON-store plumbing (atomic write-then-rename,
       corrupt-file backup, missing/corrupt read-recovery, poison-recovering lock)
       that every store (`store`, `profile_store`, `settings`, `known_hosts`,
-      `bookmark_store`, `workspace_store`) delegates to; each store keeps only
+      `bookmark_store`, `command_library`, `workspace_store`) delegates to; each store keeps only
       its own wrapper type + domain logic
     - `known_hosts.rs` — host-key TOFU store; a damaged file is replaced by
       an empty one marked `resetAt`, and until the user dismisses that (Trusted
@@ -135,6 +142,8 @@ files, releasing),
       first contact. A file unreadable at launch is never overwritten (retried
       before each write) and leaves unknown hosts `Unverifiable` too
     - `bookmark_store.rs` — per-device SFTP bookmarks (`sftp_bookmarks.json`)
+    - `command_library.rs` — the command library (`commands.json`):
+      `SavedCommand` + its validation, `CommandStore`
     - `workspace.rs`, `workspace_store.rs` — open tabs restored on launch
       (`workspace_state.json`); per-instance, not reloaded by the config watcher
     - `config_watch.rs` — watches the app-config dir and emits `config_changed`
@@ -244,7 +253,7 @@ files, releasing),
       size/position on Wayland, where the plugin's restore made the window
       grow every launch until GDK crashed) and `__NV_DISABLE_EXPLICIT_SYNC`
       (NVIDIA + WebKitGTK "Error 71"), set first thing in `run()`
-    - `transfer.rs` — devices/profiles import-export; a devices import is
+    - `transfer.rs` — devices/profiles/command library import-export; a devices import is
       previewed first (`ImportRisk`s per device: agent forwarding, auto-start
       forwards, custom local shell / snippet, a Windows network path as key
       file, serial port or shell folder, forwards replacing a saved device's)

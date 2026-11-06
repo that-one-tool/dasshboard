@@ -58,6 +58,7 @@ interface GridInternals {
   broadcast: boolean;
   toggleBroadcast(): void;
   onPaneInput(source: TerminalPane, data: string): void;
+  setFocus(index: number, focusTerminal: boolean): void;
 }
 
 function internals(grid: Grid): GridInternals {
@@ -201,6 +202,43 @@ describe("Grid broadcast mode", () => {
     const btn = document.querySelector<HTMLButtonElement>(".grid-broadcast-btn");
     expect(btn?.classList.contains("grid-broadcast-active")).toBe(true);
     expect(btn?.getAttribute("aria-pressed")).toBe("true");
+  });
+});
+
+describe("Grid command targets", () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  async function twoPaneGrid(): Promise<{ gi: GridInternals; grid: Grid; panes: TerminalPane[] }> {
+    const grid = makeGrid();
+    await grid.init();
+    await internals(grid).setPreset("1x2");
+    await flush();
+    const gi = internals(grid);
+    return { gi, grid, panes: gi.cells.map((c) => c.pane) };
+  }
+
+  it("targets the focused pane while not broadcasting, if it is connected", async () => {
+    const { gi, grid, panes } = await twoPaneGrid();
+    const [paneA, paneB] = panes as [TerminalPane, TerminalPane];
+    paneA.isConnected = () => true;
+    paneB.isConnected = () => true;
+    gi.setFocus(1, false);
+    expect(grid.commandTargets()).toEqual([paneB]);
+    paneB.isConnected = () => false;
+    expect(grid.commandTargets()).toEqual([]);
+  });
+
+  it("targets every connected pane while broadcasting", async () => {
+    const { gi, grid, panes } = await twoPaneGrid();
+    const [paneA, paneB] = panes as [TerminalPane, TerminalPane];
+    paneA.isConnected = () => true;
+    paneB.isConnected = () => false;
+    gi.toggleBroadcast();
+    expect(grid.commandTargets()).toEqual([paneA]);
+    paneB.isConnected = () => true;
+    expect(grid.commandTargets()).toEqual([paneA, paneB]);
   });
 });
 

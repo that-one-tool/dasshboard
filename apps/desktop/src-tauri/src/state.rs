@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use crate::bookmark_store::BookmarkStore;
+use crate::command_library::CommandStore;
 use crate::local_shell::LocalShellManager;
 use crate::profile_store::ProfileStore;
 use crate::secret::SecretStore;
@@ -60,6 +61,8 @@ pub struct AppState {
     /// Per-device SFTP bookmarks (saved remote paths). Persisted to
     /// `sftp_bookmarks.json`; a plain data store, not tied to a live connection.
     pub bookmark_store: BookmarkStore,
+    /// The command library (`commands.json`): reusable commands sent to panes.
+    pub command_store: CommandStore,
 }
 
 impl AppState {

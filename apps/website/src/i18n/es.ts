@@ -124,6 +124,7 @@ export const es: SiteMessages = {
 				points: [
 					"Difusión de la escritura a todos los paneles conectados",
 					"Comandos al conectar, por dispositivo",
+					"Una biblioteca de comandos guardados, enviados a un panel o a todos",
 					"Reconexión automática con espera progresiva y keepalives",
 					"Confirmación antes de pegar varias líneas",
 				],

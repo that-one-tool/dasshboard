@@ -72,6 +72,17 @@ export async function importProfiles(path: string): Promise<number> {
   return invokeMutation<number>("import_profiles", { path });
 }
 
+/** Exports the command library to `path`. Returns the number written. */
+export async function exportCommands(path: string): Promise<number> {
+  return invokeChecked<number>("export_commands", { path });
+}
+
+/** Imports commands from `path` (upsert by id, all-or-nothing on validation).
+ * Returns the number imported. */
+export async function importCommands(path: string): Promise<number> {
+  return invokeMutation<number>("import_commands", { path });
+}
+
 /**
  * Writes `contents` to the text file at `path` (a terminal's saved output;
  * `path` comes from the native save dialog, `pickTextSavePath`).

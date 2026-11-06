@@ -33,6 +33,7 @@ pub(super) fn test_state(dir: &std::path::Path) -> AppState {
         serial_manager: Arc::new(SerialSessionManager::new()),
         local_shell_manager: Arc::new(crate::local_shell::LocalShellManager::new()),
         bookmark_store: crate::bookmark_store::BookmarkStore::load(dir.to_path_buf()),
+        command_store: crate::command_library::CommandStore::load(dir.to_path_buf()),
     }
 }
 
@@ -59,6 +60,7 @@ pub(super) fn test_state_with_secret_store(
         serial_manager: Arc::new(SerialSessionManager::new()),
         local_shell_manager: Arc::new(crate::local_shell::LocalShellManager::new()),
         bookmark_store: crate::bookmark_store::BookmarkStore::load(dir.to_path_buf()),
+        command_store: crate::command_library::CommandStore::load(dir.to_path_buf()),
     }
 }
 

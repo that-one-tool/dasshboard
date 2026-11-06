@@ -10,6 +10,7 @@
 pub mod app;
 pub mod auth_prompts;
 mod client_ids;
+pub mod command_library;
 pub mod config;
 mod device_access;
 pub mod devices;

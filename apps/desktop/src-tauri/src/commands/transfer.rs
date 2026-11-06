@@ -1,4 +1,4 @@
-//! Import/export of devices and profiles, and `~/.ssh/config` import/export.
+//! Import/export of devices, profiles and the command library, and `~/.ssh/config` import/export.
 //! The logic lives in `crate::transfer` and `crate::ssh_config`.
 
 use std::path::Path;
@@ -73,4 +73,16 @@ pub fn export_ssh_config(
     path: String,
 ) -> Result<crate::ssh_config::SshExportSummary, AppError> {
     crate::ssh_config::export_ssh_config_impl(&state, Path::new(&path))
+}
+
+/// Export the command library to `path`. Returns the count written.
+#[tauri::command]
+pub fn export_commands(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
+    crate::transfer::export_commands_impl(&state, Path::new(&path))
+}
+
+/// Import commands from `path`: validate every item, then upsert by id.
+#[tauri::command]
+pub fn import_commands(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
+    crate::transfer::import_commands_impl(&state, Path::new(&path))
 }

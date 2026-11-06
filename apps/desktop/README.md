@@ -99,10 +99,11 @@ the Flatpak):
 | `settings.json`        | Terminal appearance, language, keepalive, SFTP idle timeout and editor command, last profile, update check on launch, close to tray |
 | `known_hosts.json`     | Trusted host keys (TOFU), and `resetAt` when it replaced a damaged file (unknown hosts warn until dismissed in Trusted hosts); never overwritten while unreadable |
 | `sftp_bookmarks.json`  | SFTP bookmarks for each device                                            |
+| `commands.json`        | The command library (name, command, whether it runs with Enter)           |
 | `workspace_state.json` | Open tabs, Files panel and side-menu widths, side menu collapsed, tunnels left running/stopped, collapsed device sections, per instance (not synced) |
 
 When another running instance changes `devices.json`, `profiles.json`,
-`settings.json`, `known_hosts.json` or `sftp_bookmarks.json`, a file watcher
+`settings.json`, `known_hosts.json`, `sftp_bookmarks.json` or `commands.json`, a file watcher
 reloads them. Passwords and passphrases are stored only in the OS keychain, under the
 service `DaSSHboard` and keyed by device id. The backend never sends them back
 to the frontend.
