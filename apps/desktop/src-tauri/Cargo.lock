@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "dasshboard"
-version = "1.39.0"
+version = "1.40.0"
 dependencies = [
  "aws-lc-rs",
  "filedescriptor",
@@ -1156,6 +1156,7 @@ dependencies = [
  "russh",
  "russh-keys",
  "russh-sftp",
+ "rustix",
  "serde",
  "serde_json",
  "tauri",
@@ -1169,6 +1170,7 @@ dependencies = [
  "tokio",
  "tokio-serial",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

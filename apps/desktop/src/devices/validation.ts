@@ -5,7 +5,7 @@
  * tested independently and reused across UI components.
  */
 
-import type { Auth, DeviceKind, FlowControl, Forward, Parity } from "../ipc";
+import type { Auth, DeviceKind, FlowControl, Forward, Parity, X11Forwarding } from "../ipc";
 import { t } from "../i18n";
 
 export interface ValidationError {
@@ -50,6 +50,8 @@ export interface DeviceFormValues {
   proxyJump?: string | null;
   // Forward the local SSH agent (`ssh -A`, SSH only).
   forwardAgent?: boolean;
+  // X11 forwarding (`ssh -X`/`-Y`, SSH only).
+  x11Forwarding?: X11Forwarding;
 }
 
 /**

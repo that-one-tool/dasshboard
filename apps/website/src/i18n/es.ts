@@ -113,7 +113,7 @@ export const es: SiteMessages = {
 				points: [
 					"Reenvíos locales (ssh -L), remotos (ssh -R) y dinámicos SOCKS (ssh -D) con inicio automático",
 					"ProxyJump (ssh -J) a través de un dispositivo guardado",
-					"Reenvío del agente opcional (ssh -A)",
+					"Reenvío opcional del agente (ssh -A) y de X11 (ssh -X / -Y)",
 					"Estado en vivo de cada reenvío",
 				],
 				alt: "La tarjeta Túneles con los reenvíos de puertos locales y su estado",

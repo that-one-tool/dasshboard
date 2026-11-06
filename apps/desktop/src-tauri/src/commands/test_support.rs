@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::device::{Auth, Connection, Device, Forward};
+use crate::device::{Auth, Connection, Device, Forward, X11Mode};
 use crate::known_hosts::KnownHostsStore;
 use crate::profile::{Grid, Pane, Profile, ProfileTab};
 use crate::profile_store::ProfileStore;
@@ -76,6 +76,7 @@ pub(super) fn sample_device() -> Device {
             forwards: Vec::new(),
             tunnel_auto_start: false,
             forward_agent: false,
+            x11_forwarding: X11Mode::Off,
             proxy_jump: None,
         },
         auto_reconnect: false,

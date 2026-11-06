@@ -1,6 +1,6 @@
 [package]
 name = "dasshboard"
-version = "1.39.0"
+version = "1.40.0"
 description = "Multi-pane SSH & serial terminal dashboard with SFTP file transfer"
 authors = ["That one tool"]
 edition = "2021"
@@ -94,6 +94,14 @@ gio = "=0.18.4"
 # Already in the tree through portable-pty; same version.
 [target.'cfg(unix)'.dependencies]
 filedescriptor = "0.8.3"
+# This machine's hostname, which names it in Xauthority (`x11/hostname.rs`).
+# Already in the tree; same version.
+rustix = { version = "=1.1.4", features = ["system"] }
+
+# The DNS hostname that names this machine in Xauthority (`x11/hostname.rs`);
+# COMPUTERNAME is the short NetBIOS name. Already in the tree; same version.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_System_SystemInformation"] }
 
 [dev-dependencies]
 # Temp-dir fixtures for DeviceStore tests (missing/corrupt-file recovery,

@@ -261,6 +261,8 @@ export const de: Messages = {
 	"devices.importRisk.networkSerialPort": "serieller Port auf einer Netzwerkfreigabe",
 	"devices.importRisk.networkShellDir": "startet in einem Netzwerkordner",
 	"devices.importRisk.replacesForwards": "ersetzt ein gespeichertes Gerät, daher können seine Weiterleitungen wie zuvor starten",
+	"devices.importRisk.trustedX11Forwarding": "vertrauenswürdige X11-Weiterleitung (der Server kann Ihre Tastatureingaben und Ihren Bildschirm lesen)",
+	"devices.importRisk.untrustedX11Forwarding": "nicht vertrauenswürdige X11-Weiterleitung (der Server kann Fenster auf Ihrem Bildschirm öffnen)",
 	"devices.importedSsh.one": "{count} Gerät aus SSH-Konfiguration importiert",
 	"devices.importedSsh.other": "{count} Geräte aus SSH-Konfiguration importiert",
 	"devices.importedSshSkipped.one": "{count} Gerät aus SSH-Konfiguration importiert ({skipped} übersprungen)",
@@ -275,6 +277,12 @@ export const de: Messages = {
 	"devices.forwardAgent.hint":
 		"Erlaubt Programmen auf dem entfernten Host, Ihre lokalen SSH-Schlüssel zu nutzen (git, weitere ssh-Sprünge); kein Schlüssel wird auf den Server kopiert.",
 	"devices.forwardAgent.unavailable": "Kein lokaler SSH-Agent erkannt – starten Sie Ihren SSH-Agent, um die Weiterleitung zu nutzen.",
+	"devices.x11Forwarding": "X11-Weiterleitung",
+	"devices.x11Forwarding.off": "Aus",
+	"devices.x11Forwarding.untrusted": "Nicht vertrauenswürdig (-X)",
+	"devices.x11Forwarding.trusted": "Vertrauenswürdig (-Y)",
+	"devices.x11Forwarding.hint":
+		"Zeigt Fenster entfernter Programme auf dem X-Server dieses Rechners. Nicht vertrauenswürdig schränkt ein, was entfernte Programme tun können (manche Anwendungen funktionieren evtl. nicht). Vertrauenswürdig gibt ihnen vollen Zugriff auf Ihre Anzeige, Tastatureingaben und Ihren Bildschirm: nur für vertrauenswürdige Hosts.",
 
 	/* -- device validation -------------------------------------------------- */
 	"validation.name": "Name ist erforderlich",

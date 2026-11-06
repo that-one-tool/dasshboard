@@ -99,6 +99,9 @@ you change one side, change the other side too.
 - `sftp.rs` — SFTP. `sftp_edit.rs` — edit in place. `editor.rs` — opens the
   file in a text editor (never with the default action).
 - `agent.rs`, `agent_ident.rs` — SSH agent forwarding and agent auth.
+- `x11/` — X11 forwarding: `$DISPLAY` parsing, Xauthority cookie (matched by
+  hostname or IP, like Xlib), fake-cookie check and swap on each X11 channel.
+  `security.rs` — untrusted cookie from the X SECURITY extension.
 - `ssh_config.rs` — import/export `~/.ssh/config`.
 - `transfer.rs` — import/export. A devices import shows its risks first.
 - `updater.rs` — in-app updates. Runs only when the user asks or opts in.
@@ -130,6 +133,25 @@ npm run site:dev     # website (http://localhost:4321/dasshboard/)
 npm run site:check   # website gate: astro check, vitest, astro build
 npm run check:all    # both gates
 ```
+
+## Release (desktop)
+
+Only when the user asks. CI details: `apps/desktop/README.md` (Releasing).
+
+1. `git fetch` and pull; work on `main`.
+2. Pick the version (semver): a new feature is minor, fixes only are patch.
+3. Bump it in `apps/desktop/package.json`, `src-tauri/tauri.conf.json` and
+   `src-tauri/Cargo.toml` (CI fails if they differ). Refresh the locks:
+   `npm install --package-lock-only` and `cargo update -p dasshboard --offline`
+   (in `apps/desktop/`, `src-tauri/`).
+4. Update user docs: root `README.md` feature lines, and the website feature
+   text in `apps/website/src/i18n/*.ts` (all 8 locales, same structure).
+5. Run `npm run check:all`. Everything must pass.
+6. Commit all of it in one commit. Header `Release vX.Y.Z: <short summary>`
+   (this header is what `release-gate.sh` releases on), then a body with a
+   short bullet list of the user-visible changes.
+7. Push to `main`. `desktop-release.yml` builds, signs and publishes;
+   `site-deploy.yml` then redeploys the website.
 
 ## Rules
 

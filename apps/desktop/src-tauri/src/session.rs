@@ -47,6 +47,7 @@ use crate::ssh::establish::{
 use crate::ssh::handler::SshHandler;
 use crate::ssh::params::{AuthCredentials, Endpoint, JumpHop, KeepaliveConfig};
 use crate::ssh::prompts::{AuthAnswers, ConnectPrompts};
+use crate::x11::{warning_line, X11Forward, X11Local, X11Request};
 
 /// PTY terminal type requested from the server — SPEC.md §6.
 const TERM: &str = "xterm-256color";
@@ -106,6 +107,16 @@ pub struct ConnectParams {
     /// snippet). Already the device's stored snippet text; the session normalizes
     /// its line endings and sends it as keystrokes. `None` ⇒ nothing is sent.
     pub connect_snippet: Option<String>,
+    /// Forward X11 to this local display (`ssh -X`/`-Y`). `None` ⇒ no X11;
+    /// an error says why the display can't be used.
+    pub x11: Option<Result<X11Local, String>>,
+}
+
+/// What `run_shell` asks of the session channel besides the PTY and shell.
+struct ShellSetup {
+    forward_agent: bool,
+    x11: Option<X11Request>,
+    connect_snippet: Option<String>,
 }
 
 impl ConnectParams {
@@ -143,8 +154,7 @@ async fn run_shell(
     control_rx: mpsc::Receiver<SessionControl>,
     mut stop: watch::Receiver<bool>,
     (cols, rows): (u32, u32),
-    forward_agent: bool,
-    connect_snippet: Option<String>,
+    setup: ShellSetup,
 ) -> Result<SessionStatus, AppError> {
     let channel = handle
         .channel_open_session()
@@ -156,13 +166,7 @@ async fn run_shell(
         .await
         .map_err(|e| AppError::SshChannel(format!("PTY request failed: {e}")))?;
 
-    // Best-effort agent-forwarding request (`auth-agent-req@openssh.com`). Sent
-    // with `want_reply = false` so a server that refuses forwarding silently
-    // ignores it rather than failing the session; the handler then relays any
-    // agent channels the server opens back to the local agent.
-    if forward_agent {
-        let _ = channel.agent_forward(false).await;
-    }
+    request_forwarding(&channel, &setup).await;
 
     // Best-effort locale hint (see `LOCALE_ENV`). `want_reply = false` so a
     // server that rejects the vars via `AcceptEnv` doesn't fail the session.
@@ -178,7 +182,7 @@ async fn run_shell(
     // Connect snippet: type the device's saved commands into the fresh shell, as
     // if the user had. Best-effort — a write failure just means the first
     // keystrokes didn't land, not a reason to fail the whole session.
-    if let Some(bytes) = crate::device::connect_snippet_bytes(connect_snippet.as_deref()) {
+    if let Some(bytes) = crate::device::connect_snippet_bytes(setup.connect_snippet.as_deref()) {
         let _ = channel.data(&bytes[..]).await;
     }
 
@@ -213,6 +217,22 @@ async fn run_shell(
         close_channel(&writer, &mut reader).await;
     }
     Ok(status)
+}
+
+/// Best-effort agent (`auth-agent-req@openssh.com`) and X11 (`x11-req`)
+/// forwarding requests. Sent with `want_reply = false` so a server that refuses
+/// forwarding ignores them rather than failing the session; the handler then
+/// relays the channels the server opens.
+async fn request_forwarding(channel: &russh::Channel<client::Msg>, setup: &ShellSetup) {
+    if setup.forward_agent {
+        let _ = channel.agent_forward(false).await;
+    }
+    if let Some(x11) = &setup.x11 {
+        let cookie = x11.cookie_hex.as_str();
+        let _ = channel
+            .request_x11(false, false, x11.protocol, cookie, x11.screen)
+            .await;
+    }
 }
 
 /// End the shell channel politely (EOF, close, then the server's close in
@@ -340,6 +360,7 @@ async fn run_session(
 ) -> Result<SessionStatus, AppError> {
     // Abandons a pending host-key prompt if this returns mid-handshake.
     let _owner = handler.take_owner_token();
+    let x11 = handler.x11_request();
     let mut pty_size = (params.cols, params.rows);
     let (handle, jump) = tokio::select! {
         biased;
@@ -366,12 +387,34 @@ async fn run_session(
         control_rx,
         stop,
         pty_size,
-        params.forward_agent,
-        params.connect_snippet,
+        ShellSetup {
+            forward_agent: params.forward_agent,
+            x11,
+            connect_snippet: params.connect_snippet,
+        },
     )
     .await;
     close_connection(&handle, jump.as_ref()).await;
     status
+}
+
+/// X11 problems are written into the terminal, as `ssh` prints them there.
+fn with_x11(
+    handler: SshHandler,
+    local: Option<Result<X11Local, String>>,
+    sink: Arc<dyn SessionSink>,
+) -> SshHandler {
+    match local {
+        None => handler,
+        Some(Err(reason)) => {
+            sink.on_data(warning_line(&reason).as_bytes());
+            handler
+        }
+        Some(Ok(local)) => {
+            let notice = Box::new(move |text: &str| sink.on_data(text.as_bytes()));
+            handler.with_x11(Arc::new(X11Forward::new(local, notice)))
+        }
+    }
 }
 
 /// Owns all live sessions and the host-key machinery. Lives in Tauri managed
@@ -485,7 +528,7 @@ impl SessionManager {
     pub fn spawn_session(
         self: &Arc<Self>,
         session_id: String,
-        params: ConnectParams,
+        mut params: ConnectParams,
         sink: Arc<dyn SessionSink>,
     ) {
         let (control_tx, control_rx) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
@@ -505,6 +548,7 @@ impl SessionManager {
             params.keepalive,
             params.forward_agent,
         );
+        let handler = with_x11(handler, params.x11.take(), Arc::clone(&sink));
         let manager = Arc::clone(self);
         let connect_timeout = self.connect_timeout;
         let overall_timeout = self.overall_establish_timeout();

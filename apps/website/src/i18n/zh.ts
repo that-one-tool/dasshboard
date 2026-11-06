@@ -98,7 +98,7 @@ export const zh: SiteMessages = {
 			tunnels: {
 				title: "隧道和跳板机，无需记参数",
 				body: "为设备定义一次端口转发，然后在侧边栏的“隧道”卡片中启动和停止。通过已保存的堡垒机访问私有主机。",
-				points: ["本地（ssh -L）、远程（ssh -R）和动态 SOCKS（ssh -D）转发，支持自动启动", "通过已保存的设备进行 ProxyJump（ssh -J）", "可选的代理转发（ssh -A）", "每个转发的实时状态"],
+				points: ["本地（ssh -L）、远程（ssh -R）和动态 SOCKS（ssh -D）转发，支持自动启动", "通过已保存的设备进行 ProxyJump（ssh -J）", "可选的代理转发（ssh -A）和 X11 转发（ssh -X / -Y）", "每个转发的实时状态"],
 				alt: "“隧道”卡片列出本地端口转发及其状态",
 			},
 			broadcast: {

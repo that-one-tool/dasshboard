@@ -10,7 +10,16 @@
  */
 
 import { t } from "../i18n";
-import type { AgentIdentityInfo, Auth, Device, DeviceKind, FlowControl, Forward, Parity } from "../ipc";
+import type {
+	AgentIdentityInfo,
+	Auth,
+	Device,
+	DeviceKind,
+	FlowControl,
+	Forward,
+	Parity,
+	X11Forwarding,
+} from "../ipc";
 import { requireEl } from "../ui/dom";
 import { parseTags } from "./deviceFilter";
 import type { DeviceFormValues } from "./validation";
@@ -201,6 +210,9 @@ function populateSshFields(
 
 	const forwardAgent = root.querySelector<HTMLInputElement>("#device-forward-agent");
 	if (forwardAgent) forwardAgent.checked = device.forwardAgent ?? false;
+
+	const x11Forwarding = root.querySelector<HTMLSelectElement>("#device-x11-forwarding");
+	if (x11Forwarding) x11Forwarding.value = device.x11Forwarding ?? "off";
 }
 
 /** Fill the serial-only inputs (port + framing) from a device. */
@@ -313,6 +325,7 @@ function readSshValues(form: ParentNode, forwards: Forward[]): DeviceFormValues 
 		tunnelAutoStart: requireEl<HTMLInputElement>(form, "#device-tunnel-autostart").checked,
 		proxyJump: proxyJumpValue === "" ? null : proxyJumpValue,
 		forwardAgent: requireEl<HTMLInputElement>(form, "#device-forward-agent").checked,
+		x11Forwarding: requireEl<HTMLSelectElement>(form, "#device-x11-forwarding").value as X11Forwarding,
 	};
 }
 
@@ -373,5 +386,6 @@ export function buildDeviceFromForm(values: DeviceFormValues & { id: string }): 
 		tunnelAutoStart: values.tunnelAutoStart ?? false,
 		proxyJump: values.proxyJump ?? null,
 		forwardAgent: values.forwardAgent ?? false,
+		x11Forwarding: values.x11Forwarding ?? "off",
 	};
 }

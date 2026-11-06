@@ -259,6 +259,8 @@ export const pt: Messages = {
 	"devices.importRisk.networkSerialPort": "porta série numa partilha de rede",
 	"devices.importRisk.networkShellDir": "começa numa pasta de rede",
 	"devices.importRisk.replacesForwards": "substitui um dispositivo guardado, por isso os reencaminhamentos podem iniciar como antes",
+	"devices.importRisk.trustedX11Forwarding": "encaminhamento X11 fidedigno (o servidor pode ler as suas teclas e o seu ecrã)",
+	"devices.importRisk.untrustedX11Forwarding": "encaminhamento X11 não fidedigno (o servidor pode abrir janelas no seu ecrã)",
 	"devices.importedSsh.one": "{count} dispositivo importado da config SSH",
 	"devices.importedSsh.other": "{count} dispositivos importados da config SSH",
 	"devices.importedSshSkipped.one": "{count} dispositivo importado da config SSH (ignorados: {skipped})",
@@ -273,6 +275,12 @@ export const pt: Messages = {
 	"devices.forwardAgent.hint":
 		"Permite que programas no host remoto usem suas chaves SSH locais (git, saltos ssh adicionais); nenhuma chave é copiada para o servidor.",
 	"devices.forwardAgent.unavailable": "Nenhum agente SSH local detectado — inicie o seu agente SSH para usar o encaminhamento.",
+	"devices.x11Forwarding": "Encaminhamento X11",
+	"devices.x11Forwarding.off": "Desativado",
+	"devices.x11Forwarding.untrusted": "Não fidedigno (-X)",
+	"devices.x11Forwarding.trusted": "Fidedigno (-Y)",
+	"devices.x11Forwarding.hint":
+		"Mostra as janelas de programas remotos no servidor X desta máquina. Não fidedigno limita o que os programas remotos podem fazer (algumas aplicações podem não funcionar). Fidedigno dá-lhes acesso total ao seu servidor X, às suas teclas e ao seu ecrã: apenas para hosts de confiança.",
 
 	/* -- device validation -------------------------------------------------- */
 	"validation.name": "O nome é obrigatório",

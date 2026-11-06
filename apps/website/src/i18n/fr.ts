@@ -113,7 +113,7 @@ export const fr: SiteMessages = {
 				points: [
 					"Redirections locales (ssh -L), distantes (ssh -R) et dynamiques SOCKS (ssh -D) avec démarrage automatique",
 					"ProxyJump (ssh -J) via un appareil enregistré",
-					"Transfert d'agent sur demande (ssh -A)",
+					"Transfert d'agent (ssh -A) et X11 (ssh -X / -Y) sur demande",
 					"État en direct de chaque redirection",
 				],
 				alt: "La carte Tunnels listant les redirections de ports locales et leur état",

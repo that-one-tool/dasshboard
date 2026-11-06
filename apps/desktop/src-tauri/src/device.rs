@@ -124,6 +124,11 @@ pub enum Connection {
         /// the field is always emitted — the same pattern as `tunnel_auto_start`.
         #[serde(default)]
         forward_agent: bool,
+        /// Forward X11: programs on the remote host show their windows on
+        /// this machine's X server. Off by default, same pattern as
+        /// `forward_agent`.
+        #[serde(default)]
+        x11_forwarding: X11Mode,
     },
     #[serde(rename_all = "camelCase")]
     Serial {
@@ -233,6 +238,28 @@ pub enum FlowControl {
     Hardware,
 }
 
+/// X11 forwarding: off, untrusted (`ssh -X`: the remote client is limited by
+/// the X SECURITY extension) or trusted (`ssh -Y`: full access to the display).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum X11Mode {
+    #[default]
+    Off,
+    Untrusted,
+    Trusted,
+}
+
+impl X11Mode {
+    /// Whether forwarded clients are trusted; `None` when forwarding is off.
+    pub fn trusted(self) -> Option<bool> {
+        match self {
+            X11Mode::Off => None,
+            X11Mode::Untrusted => Some(false),
+            X11Mode::Trusted => Some(true),
+        }
+    }
+}
+
 /// Default serial framing: 8 data bits, 1 stop bit — the near-universal 8-N-1
 /// so a minimal serial device only needs `portName` + `baudRate`.
 fn default_data_bits() -> u8 {
@@ -274,6 +301,8 @@ struct ConnectionRaw {
     proxy_jump: Option<String>,
     #[serde(default)]
     forward_agent: bool,
+    #[serde(default)]
+    x11_forwarding: X11Mode,
     port_name: Option<String>,
     baud_rate: Option<u32>,
     #[serde(default = "default_data_bits")]
@@ -304,6 +333,7 @@ impl ConnectionRaw {
             tunnel_auto_start: self.tunnel_auto_start,
             proxy_jump: self.proxy_jump,
             forward_agent: self.forward_agent,
+            x11_forwarding: self.x11_forwarding,
         })
     }
 
@@ -428,6 +458,14 @@ impl Device {
         )
     }
 
+    /// How this device forwards X11. Always `Off` for a non-SSH device.
+    pub fn x11_mode(&self) -> X11Mode {
+        match &self.connection {
+            Connection::Ssh { x11_forwarding, .. } => *x11_forwarding,
+            _ => X11Mode::Off,
+        }
+    }
+
     /// The id of this device's jump host (`ProxyJump`), if any. `None` for a
     /// serial device or an SSH device with a direct connection.
     pub fn proxy_jump_id(&self) -> Option<&str> {
@@ -470,6 +508,7 @@ impl Device {
                 tunnel_auto_start: _,
                 proxy_jump,
                 forward_agent: _,
+                x11_forwarding: _,
             } => validate_ssh(host, *port, username, auth, forwards, proxy_jump, &self.id),
             Connection::Serial {
                 port_name,
@@ -701,6 +740,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: None,
             },
             auto_reconnect: false,
@@ -721,6 +761,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -739,6 +780,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -867,6 +909,7 @@ mod tests {
                 "tunnelAutoStart": false,
                 "proxyJump": null,
                 "forwardAgent": false,
+                "x11Forwarding": "off",
                 "autoReconnect": false,
                 "tags": [],
                 "connectSnippet": null,
@@ -945,6 +988,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: Some("bastion-id".to_string()),
             },
             ..valid_password_device()
@@ -973,6 +1017,7 @@ mod tests {
                 tunnel_auto_start: false,
                 proxy_jump: None,
                 forward_agent: true,
+                x11_forwarding: X11Mode::Off,
             },
             ..valid_password_device()
         };
@@ -987,6 +1032,53 @@ mod tests {
         assert!(!parsed.forward_agent_enabled());
     }
 
+    fn with_x11(mode: X11Mode) -> Device {
+        let mut device = valid_password_device();
+        if let Connection::Ssh { x11_forwarding, .. } = &mut device.connection {
+            *x11_forwarding = mode;
+        }
+        device
+    }
+
+    #[test]
+    fn x11_forwarding_round_trips_and_defaults_to_off() {
+        for (mode, wire) in [
+            (X11Mode::Off, "off"),
+            (X11Mode::Untrusted, "untrusted"),
+            (X11Mode::Trusted, "trusted"),
+        ] {
+            let value = serde_json::to_value(with_x11(mode)).unwrap();
+            assert_eq!(value["x11Forwarding"], serde_json::json!(wire));
+            let back: Device = serde_json::from_value(value).unwrap();
+            assert_eq!(back.x11_mode(), mode);
+        }
+
+        let legacy = r#"{ "id": "x", "name": "n", "host": "h", "port": 22, "username": "u", "auth": { "method": "password" } }"#;
+        let parsed: Device = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.x11_mode(), X11Mode::Off);
+    }
+
+    #[test]
+    fn a_serial_device_never_forwards_x11() {
+        assert_eq!(valid_serial_device().x11_mode(), X11Mode::Off);
+    }
+
+    #[test]
+    fn x11_mode_tells_whether_forwarding_is_trusted() {
+        assert_eq!(X11Mode::Off.trusted(), None);
+        assert_eq!(X11Mode::Untrusted.trusted(), Some(false));
+        assert_eq!(X11Mode::Trusted.trusted(), Some(true));
+    }
+
+    #[test]
+    fn agent_forwarding_does_not_depend_on_x11() {
+        let mut device = with_x11(X11Mode::Trusted);
+        if let Connection::Ssh { forward_agent, .. } = &mut device.connection {
+            *forward_agent = true;
+        }
+        assert!(device.forward_agent_enabled());
+    }
+
     #[test]
     fn rejects_a_device_that_jumps_through_itself() {
         let device = Device {
@@ -999,6 +1091,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: Some("self-id".to_string()),
             },
             ..valid_password_device()
@@ -1018,6 +1111,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: Some("other-id".to_string()),
             },
             ..valid_password_device()
@@ -1041,6 +1135,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: None,
             }
         );
@@ -1129,6 +1224,7 @@ mod tests {
                 tunnel_auto_start: false,
                 proxy_jump: None,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
             },
             Connection::Ssh {
                 host: "h".to_string(),
@@ -1139,6 +1235,7 @@ mod tests {
                 tunnel_auto_start: false,
                 proxy_jump: None,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
             },
             Connection::Ssh {
                 host: "h".to_string(),
@@ -1151,6 +1248,7 @@ mod tests {
                 tunnel_auto_start: false,
                 proxy_jump: None,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
             },
         ] {
             let device = Device {
@@ -1175,6 +1273,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -1196,6 +1295,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -1217,6 +1317,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -1238,6 +1339,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -1258,6 +1360,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: None,
             },
             ..valid_password_device()
@@ -1317,6 +1420,7 @@ mod tests {
                 forwards,
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: None,
             },
             ..valid_password_device()

@@ -25,6 +25,7 @@ use crate::session_recording::{Recorder, Recorders};
 use crate::session_sink::{SessionSink, SessionStatus};
 use crate::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPromptPayload};
 use crate::state::AppState;
+use crate::x11::X11Local;
 
 const SESSION_STATUS_EVENT: &str = "session_status";
 
@@ -275,6 +276,7 @@ async fn spawn_device_session(
                     keepalive: keepalive_config(state),
                     forward_agent: device.forward_agent_enabled(),
                     connect_snippet: device.connect_snippet().map(str::to_string),
+                    x11: device.x11_mode().trusted().map(X11Local::from_env),
                 },
                 sink,
             );

@@ -40,6 +40,7 @@ use dasshboard_lib::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPr
 use dasshboard_lib::tunnel::{
     ForwardStatus, TunnelManager, TunnelParams, TunnelSink, TunnelStatus,
 };
+use dasshboard_lib::x11::X11Local;
 
 /// Throwaway ed25519 host key for the in-process test server. Generated once
 /// with `ssh-keygen -t ed25519 -N ""`; it exists only to give the test server
@@ -106,6 +107,15 @@ struct TestServer {
     stray_probe: Option<mpsc::UnboundedSender<(&'static str, bool)>>,
     /// How the server uses keyboard-interactive auth, if at all.
     kbd: Option<KbdScenario>,
+    /// When set, reports on shell request the X11 cookie the client asked
+    /// for (`None` without an `x11-req`), then opens an X11 channel with it.
+    x11_probe: Option<mpsc::UnboundedSender<Option<String>>>,
+    /// When set, opens this many X11 channels on shell request (never sending
+    /// a setup) and reports how many the client accepted.
+    x11_flood: Option<(usize, mpsc::UnboundedSender<usize>)>,
+    /// When set, a jump host opens an X11 channel back on each `direct-tcpip`
+    /// and reports whether the client accepted it.
+    jump_x11_probe: Option<mpsc::UnboundedSender<bool>>,
 }
 
 /// The one-time code a keyboard-interactive test server expects.
@@ -146,6 +156,9 @@ impl TestServer {
             session_errors: None,
             stray_probe: None,
             kbd: None,
+            x11_probe: None,
+            x11_flood: None,
+            jump_x11_probe: None,
         }
     }
 }
@@ -165,6 +178,10 @@ impl server::Server for TestServer {
             stall_reads: self.stall_reads,
             stray_probe: self.stray_probe.clone(),
             kbd: self.kbd,
+            x11_probe: self.x11_probe.clone(),
+            x11_flood: self.x11_flood.clone(),
+            jump_x11_probe: self.jump_x11_probe.clone(),
+            x11_cookie: None,
             kbd_answers: 0,
             remote_listeners: HashMap::new(),
             forwarded: Arc::default(),
@@ -190,6 +207,11 @@ struct TestServerHandler {
     stall_reads: bool,
     stray_probe: Option<mpsc::UnboundedSender<(&'static str, bool)>>,
     kbd: Option<KbdScenario>,
+    x11_probe: Option<mpsc::UnboundedSender<Option<String>>>,
+    x11_flood: Option<(usize, mpsc::UnboundedSender<usize>)>,
+    jump_x11_probe: Option<mpsc::UnboundedSender<bool>>,
+    /// The cookie of this connection's `x11-req`, if any.
+    x11_cookie: Option<String>,
     /// Keyboard-interactive answers accepted so far on this connection.
     kbd_answers: usize,
     /// `ssh -R`: one real listener per granted `tcpip-forward`, by port.
@@ -235,6 +257,83 @@ fn probe_stray_channels(
         let opened = handle.channel_open_x11("127.0.0.1", 6000).await.is_ok();
         let _ = probe.send(("x11", opened));
     });
+}
+
+/// Stand in for a remote X client: open an X11 channel and send a setup
+/// carrying `cookie_hex`, then `ping`. Its bytes are never echoed.
+fn open_x11_client(
+    handle: server::Handle,
+    cookie_hex: String,
+    forwarded: Arc<Mutex<HashSet<ChannelId>>>,
+) {
+    tokio::spawn(async move {
+        let Ok(channel) = handle.channel_open_x11("127.0.0.1", 40000).await else {
+            return;
+        };
+        forwarded.lock().unwrap().insert(channel.id());
+        let setup = x11_setup(&decode_hex(&cookie_hex));
+        let _ = channel.data(&[setup, b"ping".to_vec()].concat()[..]).await;
+        // Hold the channel open until the test ends.
+        std::future::pending::<()>().await;
+    });
+}
+
+/// Open `count` X11 channels and hold them without sending a setup, then
+/// report how many the client accepted.
+fn flood_x11(handle: server::Handle, count: usize, probe: mpsc::UnboundedSender<usize>) {
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        for _ in 0..count {
+            if let Ok(channel) = handle.channel_open_x11("127.0.0.1", 40000).await {
+                held.push(channel);
+            }
+        }
+        let _ = probe.send(held.len());
+        std::future::pending::<()>().await;
+    });
+}
+
+const X11_COOKIE_PROTOCOL: &[u8] = b"MIT-MAGIC-COOKIE-1";
+
+/// A little-endian X11 connection setup carrying `cookie`.
+fn x11_setup(cookie: &[u8]) -> Vec<u8> {
+    let pad = |len: usize| vec![0u8; len.next_multiple_of(4) - len];
+    let len = |bytes: &[u8]| u16::try_from(bytes.len()).unwrap().to_le_bytes();
+    [
+        vec![b'l', 0, 11, 0, 0, 0],
+        len(X11_COOKIE_PROTOCOL).to_vec(),
+        len(cookie).to_vec(),
+        vec![0, 0],
+        X11_COOKIE_PROTOCOL.to_vec(),
+        pad(X11_COOKIE_PROTOCOL.len()),
+        cookie.to_vec(),
+        pad(cookie.len()),
+    ]
+    .concat()
+}
+
+/// An Xauthority file holding `cookie` for display `number`.
+fn xauthority_with(number: u16, cookie: &[u8]) -> Vec<u8> {
+    let number = number.to_string();
+    // FamilyWild: whatever address the X server is reached at.
+    let mut out = 65535u16.to_be_bytes().to_vec();
+    for field in [
+        b"".as_slice(),
+        number.as_bytes(),
+        X11_COOKIE_PROTOCOL,
+        cookie,
+    ] {
+        out.extend_from_slice(&u16::try_from(field.len()).unwrap().to_be_bytes());
+        out.extend_from_slice(field);
+    }
+    out
+}
+
+fn decode_hex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
+        .collect()
 }
 
 /// Open a `forwarded-tcpip` channel for `port` and report whether the client
@@ -342,7 +441,7 @@ impl server::Handler for TestServerHandler {
         _originator_address: &str,
         _originator_port: u32,
         reply: server::ChannelOpenHandle,
-        _session: &mut Session,
+        session: &mut Session,
     ) -> Result<(), Self::Error> {
         // Lets the SOCKS tests see how a refused `direct-tcpip` is reported.
         if host_to_connect == REFUSED_HOST {
@@ -350,6 +449,13 @@ impl server::Handler for TestServerHandler {
             return Ok(());
         }
         reply.accept().await;
+        if let Some(probe) = &self.jump_x11_probe {
+            let (handle, probe) = (session.handle(), probe.clone());
+            tokio::spawn(async move {
+                let opened = handle.channel_open_x11("127.0.0.1", 40000).await.is_ok();
+                let _ = probe.send(opened);
+            });
+        }
         if self.bridge_direct_tcpip {
             // Jump-host mode: actually connect to the requested target and pump
             // bytes both ways, so the client can complete a full SSH handshake
@@ -450,6 +556,32 @@ impl server::Handler for TestServerHandler {
         if let Some(probe) = &self.stray_probe {
             probe_stray_channels(session.handle(), probe.clone());
         }
+        if let Some(probe) = &self.x11_probe {
+            let _ = probe.send(self.x11_cookie.clone());
+            if let Some(cookie) = &self.x11_cookie {
+                open_x11_client(
+                    session.handle(),
+                    cookie.clone(),
+                    Arc::clone(&self.forwarded),
+                );
+            }
+        }
+        if let Some((count, probe)) = &self.x11_flood {
+            flood_x11(session.handle(), *count, probe.clone());
+        }
+        Ok(())
+    }
+
+    async fn x11_request(
+        &mut self,
+        _channel: ChannelId,
+        _single_connection: bool,
+        _protocol: &str,
+        cookie: &str,
+        _screen: u32,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.x11_cookie = Some(cookie.to_string());
         Ok(())
     }
 
@@ -803,9 +935,36 @@ fn spawn_pw_session_with_agent(
             keepalive: KeepaliveConfig::disabled(),
             forward_agent,
             connect_snippet: None,
+            x11: None,
         },
         sink,
     );
+}
+
+/// Spawn a password-auth session forwarding X11 to `x11`.
+fn spawn_pw_session_with_x11(
+    manager: &Arc<SessionManager>,
+    port: u16,
+    sink: Arc<dyn SessionSink>,
+    x11: Option<Result<X11Local, String>>,
+) {
+    manager.spawn_session("s1".to_string(), x11_params(port, x11), sink);
+}
+
+fn x11_params(port: u16, x11: Option<Result<X11Local, String>>) -> ConnectParams {
+    ConnectParams {
+        host: "127.0.0.1".to_string(),
+        port,
+        username: TEST_USER.to_string(),
+        creds: password_creds(),
+        cols: 80,
+        rows: 24,
+        jump: None,
+        keepalive: KeepaliveConfig::disabled(),
+        forward_agent: false,
+        connect_snippet: None,
+        x11,
+    }
 }
 
 /// Spawn a password-auth session carrying a connect snippet, so the end-to-end
@@ -831,6 +990,7 @@ fn spawn_pw_session_with_snippet(
             keepalive: KeepaliveConfig::disabled(),
             forward_agent: false,
             connect_snippet: Some(connect_snippet.to_string()),
+            x11: None,
         },
         sink,
     );
@@ -1208,6 +1368,257 @@ async fn agent_forwarding_disabled_rejects_agent_channel() {
     manager.disconnect("s1").await;
 }
 
+async fn spawn_x11_probe_server() -> (u16, mpsc::UnboundedReceiver<Option<String>>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let server = TestServer {
+        x11_probe: Some(tx),
+        ..TestServer::new(TEST_PASSWORD)
+    };
+    (
+        spawn_server(server, server_config(Duration::from_secs(30))).await,
+        rx,
+    )
+}
+
+/// A 32-byte X reply (little-endian) with `body` from byte 8, then `extra`.
+fn x_reply(body: &[u8], extra: &[u8]) -> Vec<u8> {
+    let words = u32::try_from(extra.len() / 4).unwrap();
+    let mut out = [&[1, 0, 1, 0][..], &words.to_le_bytes(), body].concat();
+    out.resize(32, 0);
+    [out, extra.to_vec()].concat()
+}
+
+/// What an X server with the SECURITY extension answers to a client asking
+/// for an untrusted cookie (setup, QueryExtension, QueryVersion, Generate).
+fn x_security_replies(present: bool, cookie: &[u8; 16]) -> Vec<u8> {
+    let setup_ok = vec![1, 0, 11, 0, 0, 0, 0, 0];
+    let extension = x_reply(&[u8::from(present), 140], &[]);
+    let version = x_reply(&[1, 0, 0, 0], &[]);
+    let generated = x_reply(&[0, 0, 0, 7, 16, 0], cookie);
+    [setup_ok, extension, version, generated].concat()
+}
+
+/// A local X server on TCP, its display name, and an Xauthority file with
+/// `real cookie` for it.
+async fn x_server_with_cookie(dir: &std::path::Path) -> (TcpListener, String, std::path::PathBuf) {
+    let x_server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let number = x_server.local_addr().unwrap().port() - 6000;
+    let xauthority = dir.join("Xauthority");
+    std::fs::write(&xauthority, xauthority_with(number, b"real cookie")).unwrap();
+    (x_server, format!("127.0.0.1:{number}"), xauthority)
+}
+
+async fn accept_x(x_server: &TcpListener) -> TcpStream {
+    let accepted = tokio::time::timeout(Duration::from_secs(5), x_server.accept()).await;
+    accepted
+        .expect("the X11 channel must reach the X server")
+        .unwrap()
+        .0
+}
+
+async fn expect_x_bytes(x_conn: &mut TcpStream, expected: &[u8]) {
+    use tokio::io::AsyncReadExt;
+    let mut received = vec![0u8; expected.len()];
+    x_conn.read_exact(&mut received).await.unwrap();
+    assert_eq!(received, expected);
+}
+
+/// Untrusted X11 forwarding: the client asks the X server for an untrusted
+/// cookie (with the real one), then relays the channel with that cookie.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn x11_untrusted_forwarding_relays_with_a_cookie_the_x_server_generated() {
+    use tokio::io::AsyncWriteExt;
+    let dir = tempfile::tempdir().unwrap();
+    let (port, _x11_rx) = spawn_x11_probe_server().await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let (x_server, display, xauthority) = x_server_with_cookie(dir.path()).await;
+    let local = X11Local::new(&display, Some(xauthority), false).map(Ok);
+
+    let (sink, _chans) = new_sink();
+    spawn_pw_session_with_x11(&manager, port, sink, local);
+
+    let mut security_conn = accept_x(&x_server).await;
+    let generated = *b"generated cookie";
+    security_conn
+        .write_all(&x_security_replies(true, &generated))
+        .await
+        .unwrap();
+    expect_x_bytes(&mut security_conn, &x11_setup(b"real cookie")).await;
+    let mut x_conn = accept_x(&x_server).await;
+    expect_x_bytes(
+        &mut x_conn,
+        &[x11_setup(&generated), b"ping".to_vec()].concat(),
+    )
+    .await;
+
+    manager.disconnect("s1").await;
+}
+
+/// Untrusted X11 forwarding on an X server without SECURITY: the channel is
+/// refused (never relayed with the real cookie) and the terminal says why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn x11_untrusted_failure_is_written_to_the_terminal() {
+    use tokio::io::AsyncWriteExt;
+    let dir = tempfile::tempdir().unwrap();
+    let (port, _x11_rx) = spawn_x11_probe_server().await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let (x_server, display, xauthority) = x_server_with_cookie(dir.path()).await;
+    let local = X11Local::new(&display, Some(xauthority), false).map(Ok);
+
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session_with_x11(&manager, port, sink, local);
+
+    let mut security_conn = accept_x(&x_server).await;
+    security_conn
+        .write_all(&x_security_replies(false, &[0; 16]))
+        .await
+        .unwrap();
+    let marker = b"X11 forwarding failed: no untrusted cookie";
+    let seen = read_until_marker(&mut chans.data_rx, marker).await;
+    assert!(seen.windows(marker.len()).any(|w| w == marker));
+    let relayed = tokio::time::timeout(Duration::from_millis(300), x_server.accept()).await;
+    assert!(relayed.is_err(), "the channel must not reach the X server");
+
+    manager.disconnect("s1").await;
+}
+
+/// Trusted X11 forwarding: the client asks for X11 with a fake cookie, and
+/// relays the server's X11 channel to the local X server with the real cookie.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn x11_trusted_forwarding_relays_to_the_local_x_server_with_the_real_cookie() {
+    use tokio::io::AsyncReadExt;
+    let dir = tempfile::tempdir().unwrap();
+    let (port, mut x11_rx) = spawn_x11_probe_server().await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let x_server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let number = x_server.local_addr().unwrap().port() - 6000;
+    let xauthority = dir.path().join("Xauthority");
+    std::fs::write(&xauthority, xauthority_with(number, b"real cookie")).unwrap();
+    let local = X11Local::new(&format!("127.0.0.1:{number}"), Some(xauthority), true).map(Ok);
+
+    let (sink, _chans) = new_sink();
+    spawn_pw_session_with_x11(&manager, port, sink, local);
+
+    let cookie = recv_timeout(&mut x11_rx, Duration::from_secs(5))
+        .await
+        .flatten();
+    let cookie = cookie.expect("the client must send an x11-req");
+    assert_ne!(decode_hex(&cookie), b"real cookie");
+    let accepted = tokio::time::timeout(Duration::from_secs(5), x_server.accept()).await;
+    let (mut x_conn, _) = accepted
+        .expect("the X11 channel must reach the X server")
+        .unwrap();
+    let expected = [x11_setup(b"real cookie"), b"ping".to_vec()].concat();
+    let mut received = vec![0u8; expected.len()];
+    x_conn.read_exact(&mut received).await.unwrap();
+    assert_eq!(received, expected);
+
+    manager.disconnect("s1").await;
+}
+
+/// A `DISPLAY` that can't be used: no `x11-req`, and the terminal says why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn x11_without_a_usable_display_warns_and_sends_no_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, mut x11_rx) = spawn_x11_probe_server().await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+
+    let (sink, mut chans) = new_sink();
+    let reason = "DISPLAY is not set".to_string();
+    spawn_pw_session_with_x11(&manager, port, sink, Some(Err(reason)));
+
+    let marker = b"X11 forwarding failed: DISPLAY is not set";
+    let seen = read_until_marker(&mut chans.data_rx, marker).await;
+    assert!(seen.windows(marker.len()).any(|w| w == marker));
+    let cookie = recv_timeout(&mut x11_rx, Duration::from_secs(5)).await;
+    assert_eq!(cookie, Some(None));
+
+    manager.disconnect("s1").await;
+}
+
+/// The client serves at most 32 X11 channels at once; the 33rd is refused
+/// and the terminal says why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn x11_channels_beyond_the_cap_are_refused_with_a_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    let (flood_tx, mut flood_rx) = mpsc::unbounded_channel();
+    let server = TestServer {
+        x11_flood: Some((33, flood_tx)),
+        ..TestServer::new(TEST_PASSWORD)
+    };
+    let port = spawn_server(server, server_config(Duration::from_secs(30))).await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let local = X11Local::new("127.0.0.1:0", None, true).map(Ok);
+
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session_with_x11(&manager, port, sink, local);
+
+    let accepted = recv_timeout(&mut flood_rx, Duration::from_secs(5)).await;
+    assert_eq!(accepted, Some(32));
+    let marker = b"more than 32 X11 connections at once";
+    let seen = read_until_marker(&mut chans.data_rx, marker).await;
+    assert!(seen.windows(marker.len()).any(|w| w == marker));
+
+    manager.disconnect("s1").await;
+}
+
+/// X11 forwarding is for the target only: the jump host's X11 channels are
+/// refused even when the target forwards X11.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_jump_host_cannot_open_x11_channels() {
+    let dir = tempfile::tempdir().unwrap();
+    let (target_port, mut x11_rx) = spawn_x11_probe_server().await;
+    let (jump_tx, mut jump_rx) = mpsc::unbounded_channel();
+    let jump = TestServer {
+        bridge_direct_tcpip: true,
+        jump_x11_probe: Some(jump_tx),
+        ..TestServer::new(TEST_PASSWORD)
+    };
+    let jump_port = spawn_server(jump, server_config(Duration::from_secs(30))).await;
+    seed_trusted(dir.path(), target_port);
+    seed_trusted(dir.path(), jump_port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+
+    // A display nothing listens on: the target's X11 channel goes nowhere.
+    let display = format!("{}:0", dir.path().join("no-x-server").display());
+    let (sink, _chans) = new_sink();
+    let mut params = x11_params(target_port, X11Local::new(&display, None, true).map(Ok));
+    params.jump = Some(jump_hop(jump_port, TEST_PASSWORD));
+    manager.spawn_session("s1".to_string(), params, sink);
+
+    let cookie = recv_timeout(&mut x11_rx, Duration::from_secs(5)).await;
+    assert!(
+        matches!(cookie, Some(Some(_))),
+        "the target must get an x11-req"
+    );
+    let opened = recv_timeout(&mut jump_rx, Duration::from_secs(5)).await;
+    assert_eq!(opened, Some(false));
+
+    manager.disconnect("s1").await;
+}
+
+/// X11 forwarding OFF: no `x11-req` is sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn x11_forwarding_off_sends_no_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, mut x11_rx) = spawn_x11_probe_server().await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_secs(60));
+
+    let (sink, _chans) = new_sink();
+    spawn_pw_session_with_x11(&manager, port, sink, None);
+
+    let cookie = recv_timeout(&mut x11_rx, Duration::from_secs(5)).await;
+    assert_eq!(cookie, Some(None));
+
+    manager.disconnect("s1").await;
+}
+
 /// ProxyJump: connect to a target through a jump host and prove the PTY works
 /// end-to-end over the jumped connection. The jump server bridges its
 /// `direct-tcpip` channel to the target server's real port, so the client runs a
@@ -1242,6 +1653,7 @@ async fn connects_to_target_through_a_jump_host() {
             keepalive: KeepaliveConfig::disabled(),
             forward_agent: false,
             connect_snippet: None,
+            x11: None,
         },
         sink,
     );
@@ -1320,6 +1732,7 @@ async fn jump_host_auth_failure_is_attributed_to_the_jump_host() {
             keepalive: KeepaliveConfig::disabled(),
             forward_agent: false,
             connect_snippet: None,
+            x11: None,
         },
         sink,
     );
@@ -1724,6 +2137,7 @@ async fn a_disconnect_closes_the_target_and_jump_host_cleanly() {
             keepalive: KeepaliveConfig::disabled(),
             forward_agent: false,
             connect_snippet: None,
+            x11: None,
         },
         sink,
     );

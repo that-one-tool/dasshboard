@@ -159,7 +159,7 @@ impl DeviceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device::{Auth, Connection};
+    use crate::device::{Auth, Connection, X11Mode};
     use std::fs;
     use tempfile::tempdir;
 
@@ -175,6 +175,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: None,
             },
             auto_reconnect: false,

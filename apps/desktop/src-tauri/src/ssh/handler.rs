@@ -1,12 +1,12 @@
 //! The russh client handler every SSH connection uses: host-key TOFU, agent
-//! forwarding, remote-forward routing, and rejecting channels never asked for.
+//! and X11 forwarding, remote-forward routing, and rejecting channels never asked for.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use russh::client;
 use russh::keys::ssh_key::{HashAlg, PublicKey};
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -16,6 +16,7 @@ use super::params::{JumpHop, KeepaliveConfig};
 use super::prompts::{ConnectPrompter, ConnectPrompts, HostKeyPromptPayload, PromptClosedNotice};
 use crate::known_hosts::{KnownHost, KnownHostsStore, Verdict};
 use crate::remote_forward::{serve_forwarded, RemoteRoutes};
+use crate::x11::{X11Forward, X11Request};
 
 /// Max forwarded SSH-agent channels served concurrently per session. Agent
 /// channels are short-lived (one signing exchange), so a handful is plenty; the
@@ -24,6 +25,11 @@ use crate::remote_forward::{serve_forwarded, RemoteRoutes};
 /// connections / file descriptors. Beyond the cap, further agent channels are
 /// rejected until an in-flight one finishes.
 const MAX_AGENT_CHANNELS: usize = 8;
+
+/// Max forwarded X11 channels served concurrently per session. Each X client
+/// (window) holds one for its lifetime, so this is higher than the agent cap;
+/// it still bounds what a hostile server can make us open.
+const MAX_X11_CHANNELS: usize = 32;
 
 /// russh client handler. The only frontend-facing thing it does is drive the
 /// host-key trust prompt; terminal I/O is handled via the `Channel` in the
@@ -51,6 +57,10 @@ pub(crate) struct SshHandler {
     /// `MAX_AGENT_CHANNELS`). Shared per handler; a permit is held for the life
     /// of each proxy task.
     agent_channel_limit: Arc<Semaphore>,
+    /// X11 forwarding: where the server's `x11` channels go. `None` (tunnels,
+    /// SFTP, jump hosts, or forwarding off) rejects every such channel.
+    x11: Option<Arc<X11Forward>>,
+    x11_channel_limit: Arc<Semaphore>,
     /// Closes when whoever started the handshake gives up on it. russh runs
     /// `check_server_key` on its own task, so dropping the handshake future
     /// alone would leave a host-key prompt waiting out its full timeout.
@@ -100,6 +110,8 @@ impl SshHandler {
             keepalive,
             forward_agent,
             agent_channel_limit: Arc::new(Semaphore::new(MAX_AGENT_CHANNELS)),
+            x11: None,
+            x11_channel_limit: Arc::new(Semaphore::new(MAX_X11_CHANNELS)),
             owner_gone,
             owner_token: Some(HandshakeOwner(owner_tx)),
             remote_routes: None,
@@ -121,6 +133,29 @@ impl SshHandler {
     pub(crate) fn with_remote_routes(mut self, routes: Arc<RemoteRoutes>) -> Self {
         self.remote_routes = Some(routes);
         self
+    }
+
+    /// Relay the server's `x11` channels through `x11`.
+    pub(crate) fn with_x11(mut self, x11: Arc<X11Forward>) -> Self {
+        self.x11 = Some(x11);
+        self
+    }
+
+    /// The `x11-req` to send on the shell channel, when forwarding X11.
+    pub(crate) fn x11_request(&self) -> Option<X11Request> {
+        self.x11.as_ref().map(|x11| x11.request())
+    }
+
+    /// A slot for one more X11 channel; when all are taken, the user is
+    /// told (once) why the new window won't open.
+    fn x11_permit(&self) -> Option<(Arc<X11Forward>, OwnedSemaphorePermit)> {
+        let x11 = Arc::clone(self.x11.as_ref()?);
+        let permit = Arc::clone(&self.x11_channel_limit).try_acquire_owned();
+        let Ok(permit) = permit else {
+            x11.warn_channel_limit(MAX_X11_CHANNELS);
+            return None;
+        };
+        Some((x11, permit))
     }
 
     /// Take the token whose drop abandons this handler's pending host-key
@@ -314,6 +349,30 @@ impl client::Handler for SshHandler {
         Ok(())
     }
 
+    /// A remote X client connecting back (X11 forwarding on): relayed to the
+    /// local X server once it shows the fake cookie. Rejected when forwarding
+    /// is off or the channel cap is reached.
+    async fn server_channel_open_x11(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        let Some((x11, permit)) = self.x11_permit() else {
+            drop(reply);
+            return Ok(());
+        };
+        reply.accept().await;
+        let stream = channel.into_stream();
+        tokio::spawn(async move {
+            let _permit = permit;
+            x11.serve(stream).await;
+        });
+        Ok(())
+    }
+
     // The channel types below are ones we never ask a server for; russh
     // accepts them by default, which would let a server park channels (and
     // their buffers) on us. Dropping `reply` rejects.
@@ -357,18 +416,6 @@ impl client::Handler for SshHandler {
         &mut self,
         _channel: russh::Channel<client::Msg>,
         _socket_path: &str,
-        reply: client::ChannelOpenHandle,
-        _session: &mut client::Session,
-    ) -> Result<(), Self::Error> {
-        drop(reply);
-        Ok(())
-    }
-
-    async fn server_channel_open_x11(
-        &mut self,
-        _channel: russh::Channel<client::Msg>,
-        _originator_address: &str,
-        _originator_port: u32,
         reply: client::ChannelOpenHandle,
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {

@@ -114,7 +114,7 @@ export const pt: SiteMessages = {
 				points: [
 					"Reencaminhamentos locais (ssh -L), remotos (ssh -R) e dinâmicos SOCKS (ssh -D) com início automático",
 					"ProxyJump (ssh -J) através de um dispositivo guardado",
-					"Reencaminhamento do agente opcional (ssh -A)",
+					"Reencaminhamento opcional do agente (ssh -A) e de X11 (ssh -X / -Y)",
 					"Estado em direto de cada reencaminhamento",
 				],
 				alt: "O cartão Túneis com os reencaminhamentos de portas locais e o seu estado",

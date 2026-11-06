@@ -260,6 +260,8 @@ export const zh: Messages = {
 	"devices.importRisk.networkSerialPort": "位于网络共享上的串口",
 	"devices.importRisk.networkShellDir": "在网络文件夹中启动",
 	"devices.importRisk.replacesForwards": "会替换已保存的设备，其转发可能像之前一样启动",
+	"devices.importRisk.trustedX11Forwarding": "受信任的 X11 转发（服务器可以读取您的按键和屏幕）",
+	"devices.importRisk.untrustedX11Forwarding": "不受信任的 X11 转发（服务器可以在您的屏幕上打开窗口）",
 	"devices.importedSsh.one": "已从 SSH 配置导入 {count} 个设备",
 	"devices.importedSsh.other": "已从 SSH 配置导入 {count} 个设备",
 	"devices.importedSshSkipped.one": "已从 SSH 配置导入 {count} 个设备（跳过 {skipped} 个）",
@@ -273,6 +275,12 @@ export const zh: Messages = {
 	"devices.forwardAgent": "转发 SSH 代理",
 	"devices.forwardAgent.hint": "允许远程主机上的程序使用你本地的 SSH 密钥（git、进一步的 ssh 跳转）；不会向服务器复制任何密钥。",
 	"devices.forwardAgent.unavailable": "未检测到本地 SSH 代理 — 请启动 SSH 代理以使用转发。",
+	"devices.x11Forwarding": "X11 转发",
+	"devices.x11Forwarding.off": "关闭",
+	"devices.x11Forwarding.untrusted": "不受信任 (-X)",
+	"devices.x11Forwarding.trusted": "受信任 (-Y)",
+	"devices.x11Forwarding.hint":
+		"在本机的 X 服务器上显示远程程序的窗口。“不受信任”会限制远程程序能做的事情（某些应用可能无法运行）。“受信任”会让它们完全访问你的显示、按键和屏幕：仅用于受信任的主机。",
 
 	/* -- device validation -------------------------------------------------- */
 	"validation.name": "名称为必填项",

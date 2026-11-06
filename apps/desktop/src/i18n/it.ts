@@ -259,6 +259,8 @@ export const it: Messages = {
 	"devices.importRisk.networkSerialPort": "porta seriale su una condivisione di rete",
 	"devices.importRisk.networkShellDir": "si avvia in una cartella di rete",
 	"devices.importRisk.replacesForwards": "sostituisce un dispositivo salvato, quindi i suoi inoltri potrebbero avviarsi come prima",
+	"devices.importRisk.trustedX11Forwarding": "inoltro X11 attendibile (il server può leggere i tuoi tasti e il tuo schermo)",
+	"devices.importRisk.untrustedX11Forwarding": "inoltro X11 non attendibile (il server può aprire finestre sul tuo schermo)",
 	"devices.importedSsh.one": "{count} dispositivo importato dalla config SSH",
 	"devices.importedSsh.other": "{count} dispositivi importati dalla config SSH",
 	"devices.importedSshSkipped.one": "{count} dispositivo importato dalla config SSH (ignorati: {skipped})",
@@ -273,6 +275,12 @@ export const it: Messages = {
 	"devices.forwardAgent.hint":
 		"Consente ai programmi sull'host remoto di usare le tue chiavi SSH locali (git, ulteriori salti ssh); nessuna chiave viene copiata sul server.",
 	"devices.forwardAgent.unavailable": "Nessun agente SSH locale rilevato — avvia il tuo agente SSH per usare l'inoltro.",
+	"devices.x11Forwarding": "Inoltro X11",
+	"devices.x11Forwarding.off": "Disattivato",
+	"devices.x11Forwarding.untrusted": "Non attendibile (-X)",
+	"devices.x11Forwarding.trusted": "Attendibile (-Y)",
+	"devices.x11Forwarding.hint":
+		"Mostra le finestre dei programmi remoti sul server X di questa macchina. Non attendibile limita ciò che i programmi remoti possono fare (alcune app potrebbero non funzionare). Attendibile dà loro pieno accesso al tuo display, ai tuoi tasti e al tuo schermo: solo per host fidati.",
 
 	/* -- device validation -------------------------------------------------- */
 	"validation.name": "Il nome è obbligatorio",

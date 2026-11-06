@@ -260,6 +260,8 @@ export const fr: Messages = {
 	"devices.importRisk.networkSerialPort": "port série sur un partage réseau",
 	"devices.importRisk.networkShellDir": "démarre dans un dossier réseau",
 	"devices.importRisk.replacesForwards": "remplace un appareil enregistré : ses redirections peuvent démarrer comme avant",
+	"devices.importRisk.trustedX11Forwarding": "transfert X11 approuvé (le serveur peut lire vos frappes et votre écran)",
+	"devices.importRisk.untrustedX11Forwarding": "transfert X11 non approuvé (le serveur peut ouvrir des fenêtres sur votre écran)",
 	"devices.importedSsh.one": "{count} appareil importé depuis la config SSH",
 	"devices.importedSsh.other": "{count} appareils importés depuis la config SSH",
 	"devices.importedSshSkipped.one": "{count} appareil importé depuis la config SSH (ignorés : {skipped})",
@@ -274,6 +276,12 @@ export const fr: Messages = {
 	"devices.forwardAgent.hint":
 		"Permet aux programmes de l'hôte distant d'utiliser vos clés SSH locales (git, sauts ssh supplémentaires) ; aucune clé n'est copiée sur le serveur.",
 	"devices.forwardAgent.unavailable": "Aucun agent SSH local détecté — démarrez votre agent SSH pour utiliser le transfert.",
+	"devices.x11Forwarding": "Transfert X11",
+	"devices.x11Forwarding.off": "Désactivé",
+	"devices.x11Forwarding.untrusted": "Non approuvé (-X)",
+	"devices.x11Forwarding.trusted": "Approuvé (-Y)",
+	"devices.x11Forwarding.hint":
+		"Affiche les fenêtres des programmes distants sur le serveur X de cette machine. Non approuvé limite ce que les programmes distants peuvent faire (certaines applications peuvent ne pas fonctionner). Approuvé leur donne un accès complet à votre affichage, vos frappes et votre écran : uniquement pour des hôtes de confiance.",
 
 	/* -- device validation -------------------------------------------------- */
 	"validation.name": "Le nom est requis",

@@ -266,6 +266,8 @@ export const en = {
 	"devices.importRisk.networkSerialPort": "serial port on a network share",
 	"devices.importRisk.networkShellDir": "starts in a network folder",
 	"devices.importRisk.replacesForwards": "replaces a saved device, so its forwards may start as before",
+	"devices.importRisk.trustedX11Forwarding": "trusted X11 forwarding (the server can read your keystrokes and screen)",
+	"devices.importRisk.untrustedX11Forwarding": "untrusted X11 forwarding (the server can open windows on your screen)",
 	"devices.importedSsh.one": "Imported {count} device from SSH config",
 	"devices.importedSsh.other": "Imported {count} devices from SSH config",
 	"devices.importedSshSkipped.one": "Imported {count} device from SSH config ({skipped} skipped)",
@@ -280,6 +282,12 @@ export const en = {
 	"devices.forwardAgent.hint":
 		"Lets programs on the remote host use your local SSH keys (git, further ssh hops); no key is copied to the server.",
 	"devices.forwardAgent.unavailable": "No local SSH agent detected — start your SSH agent to use forwarding.",
+	"devices.x11Forwarding": "X11 forwarding",
+	"devices.x11Forwarding.off": "Off",
+	"devices.x11Forwarding.untrusted": "Untrusted (-X)",
+	"devices.x11Forwarding.trusted": "Trusted (-Y)",
+	"devices.x11Forwarding.hint":
+		"Shows windows of remote programs on this machine's X server. Untrusted limits what remote programs can do (some apps may not work). Trusted gives them full access to your display, keystrokes and screen: only for trusted hosts.",
 
 	/* -- device validation (devices/validation.ts, forwardValidation.ts) ---- */
 	"validation.name": "Name is required",

@@ -25,9 +25,10 @@
   (one-time codes, PAM prompts) in a dialog; a saved password fills in the
   password question by itself.
 - **SSH extras** — jump hosts (`-J`, for shells, SFTP and tunnels), agent
-  forwarding (`-A`), named local (`-L`), remote (`-R`) and dynamic SOCKS (`-D`)
-  port forwards, started one by one or all at once, that resume as you left
-  them (or auto-start), keepalive and auto-reconnect (terminals and tunnels).
+  forwarding (`-A`), X11 forwarding (`-X`/`-Y`), named local (`-L`), remote
+  (`-R`) and dynamic SOCKS (`-D`) port forwards, started one by one or all at
+  once, that resume as you left them (or auto-start), keepalive and
+  auto-reconnect (terminals and tunnels).
 - **SFTP browser** — docked file panel with folder transfers, a background queue,
   bulk actions, bookmarks and chmod.
 - **Edit remote files** — open a remote file in your editor; every save is
@@ -57,8 +58,12 @@
 - Host keys are trusted on first use; a changed key blocks the connection until
   you explicitly accept it.
 - With SSH agent auth, private keys never enter the app.
+- X11 forwarding gives the server a fake cookie; your real X cookie never
+  leaves your machine. Untrusted mode (`-X`) limits what remote programs can
+  do to your display.
 - Importing a devices file first lists any settings that act on your machine
-  (agent forwarding, forwards that start on their own, local shell commands)
+  (agent or X11 forwarding, forwards that start on their own, local shell
+  commands)
   for you to confirm.
 - Strict CSP, no remote content.
 

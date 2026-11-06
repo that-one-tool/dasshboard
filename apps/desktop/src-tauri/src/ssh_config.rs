@@ -41,7 +41,7 @@ use std::path::Path;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::device::{Auth, Connection, Device};
+use crate::device::{Auth, Connection, Device, X11Mode};
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -92,6 +92,10 @@ struct ParsedHost {
     /// `ForwardAgent`: only `yes`/`true` enable it (a socket path names an
     /// agent other than the default one, which we don't support).
     forward_agent: Option<bool>,
+    /// `ForwardX11`: only `yes`/`true` enable it.
+    forward_x11: Option<bool>,
+    /// `ForwardX11Trusted`: `yes`/`true` makes forwarding trusted (`-Y`).
+    forward_x11_trusted: Option<bool>,
     /// The host's effective `ProxyJump` / `ProxyCommand`, from whichever
     /// applicable section of the file sets one first (see [`effective_jump`]).
     jump: JumpSpec,
@@ -238,6 +242,8 @@ impl Section {
             user: None,
             identity_file: None,
             forward_agent: None,
+            forward_x11: None,
+            forward_x11_trusted: None,
             jump: JumpSpec::Direct,
         });
         let patterns = patterns.split_whitespace().map(str::to_string).collect();
@@ -337,32 +343,59 @@ fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
     }
 }
 
-/// Apply one mappable keyword to the block under construction. Single-valued
-/// fields keep their first value (`is_none()` guard) to mirror OpenSSH, where
-/// the first setting obtained for a parameter is the one used. An unparseable
-/// `Port` is dropped (leaving the default) rather than aborting the host.
+/// Sets one mappable keyword on the block under construction.
+type KeywordSetter = fn(&mut ParsedHost, String);
+
+/// The keywords we map, by lowercased name. Single-valued fields keep their
+/// first value to mirror OpenSSH, where the first setting obtained for a
+/// parameter is the one used. An unparseable `Port` is dropped (leaving the
+/// default, and the next `Port` a chance) rather than aborting the host.
+const KEYWORDS: &[(&str, KeywordSetter)] = &[
+    ("hostname", |host, value| {
+        set_first(&mut host.host_name, value)
+    }),
+    ("port", |host, value| {
+        if host.port.is_none() {
+            host.port = value.parse().ok();
+        }
+    }),
+    ("user", |host, value| set_first(&mut host.user, value)),
+    ("identityfile", |host, value| {
+        set_first(&mut host.identity_file, value)
+    }),
+    ("forwardagent", |host, value| {
+        set_first_flag(&mut host.forward_agent, &value)
+    }),
+    ("forwardx11", |host, value| {
+        set_first_flag(&mut host.forward_x11, &value)
+    }),
+    ("forwardx11trusted", |host, value| {
+        set_first_flag(&mut host.forward_x11_trusted, &value)
+    }),
+];
+
 fn apply_keyword(host: &mut ParsedHost, keyword: &str, value: String) {
-    match keyword {
-        "hostname" if host.host_name.is_none() && !value.is_empty() => {
-            host.host_name = Some(value);
-        }
-        "port" if host.port.is_none() => {
-            if let Ok(port) = value.parse::<u16>() {
-                host.port = Some(port);
-            }
-        }
-        "user" if host.user.is_none() && !value.is_empty() => {
-            host.user = Some(value);
-        }
-        "identityfile" if host.identity_file.is_none() && !value.is_empty() => {
-            host.identity_file = Some(value);
-        }
-        "forwardagent" if host.forward_agent.is_none() => {
-            let on = value.eq_ignore_ascii_case("yes") || value.eq_ignore_ascii_case("true");
-            host.forward_agent = Some(on);
-        }
-        _ => {}
+    let setter = KEYWORDS.iter().find(|(name, _)| *name == keyword);
+    if let Some((_, set)) = setter {
+        set(host, value);
     }
+}
+
+/// Keep the first non-empty value.
+fn set_first(slot: &mut Option<String>, value: String) {
+    if slot.is_none() && !value.is_empty() {
+        *slot = Some(value);
+    }
+}
+
+fn set_first_flag(slot: &mut Option<bool>, value: &str) {
+    if slot.is_none() {
+        *slot = Some(is_yes(value));
+    }
+}
+
+fn is_yes(value: &str) -> bool {
+    value.eq_ignore_ascii_case("yes") || value.eq_ignore_ascii_case("true")
 }
 
 /// Read a `ProxyJump` value (see [`JumpSpec`]).
@@ -437,6 +470,7 @@ pub(crate) fn expand_tilde(path: &str, home: Option<&str>) -> String {
 /// config omits `User`, mirroring OpenSSH; an `IdentityFile` becomes key auth
 /// (`~` expanded), otherwise password auth with no stored secret.
 fn to_device(host: ParsedHost, default_user: Option<&str>, home: Option<&str>) -> Device {
+    let x11_mode = x11_mode_of(&host);
     let username = host
         .user
         .or_else(|| default_user.map(str::to_string))
@@ -448,10 +482,25 @@ fn to_device(host: ParsedHost, default_user: Option<&str>, home: Option<&str>) -
         username,
     );
     let mut device = new_ssh_device(host.name, endpoint, auth);
-    if let Connection::Ssh { forward_agent, .. } = &mut device.connection {
+    if let Connection::Ssh {
+        forward_agent,
+        x11_forwarding,
+        ..
+    } = &mut device.connection
+    {
         *forward_agent = host.forward_agent.unwrap_or(false);
+        *x11_forwarding = x11_mode;
     }
     device
+}
+
+/// Untrusted unless `ForwardX11Trusted yes`: OpenSSH's own default.
+fn x11_mode_of(host: &ParsedHost) -> X11Mode {
+    match (host.forward_x11, host.forward_x11_trusted) {
+        (Some(true), Some(true)) => X11Mode::Trusted,
+        (Some(true), _) => X11Mode::Untrusted,
+        _ => X11Mode::Off,
+    }
 }
 
 /// Key auth for an `IdentityFile` (`~` expanded), else password auth.
@@ -477,6 +526,7 @@ fn new_ssh_device(name: String, (host, port, username): HostKey, auth: Auth) -> 
             forwards: Vec::new(),
             tunnel_auto_start: false,
             forward_agent: false,
+            x11_forwarding: X11Mode::Off,
             proxy_jump: None,
         },
         auto_reconnect: false,
@@ -888,10 +938,10 @@ fn assign_aliases(devices: &[Device]) -> HashMap<String, String> {
 /// only the keywords our model carries and the importer round-trips: `HostName`,
 /// `Port` (only when non-default), `User`, `IdentityFile` (for key auth),
 /// `ProxyJump` (as the jump host's alias, when it resolves to an exported SSH
-/// device) and `ForwardAgent yes` (when enabled). A password never appears — it
-/// lives only in the OS keyring, never in the device — so an exported host with
-/// password auth simply has no credential line, exactly like a fresh `ssh`
-/// config entry.
+/// device), `ForwardAgent yes` and `ForwardX11`/`ForwardX11Trusted` (when
+/// enabled). A password never appears — it lives only in the OS keyring, never
+/// in the device — so an exported host with password auth simply has no
+/// credential line, exactly like a fresh `ssh` config entry.
 fn write_host_block(
     out: &mut String,
     device: &Device,
@@ -905,6 +955,7 @@ fn write_host_block(
         auth,
         proxy_jump,
         forward_agent,
+        x11_forwarding,
         ..
     } = &device.connection
     else {
@@ -933,6 +984,18 @@ fn write_host_block(
     if *forward_agent {
         let _ = writeln!(out, "    ForwardAgent yes");
     }
+    write_x11(out, *x11_forwarding);
+}
+
+/// `ForwardX11Trusted` is always written: some distributions default it to
+/// `yes`, which would turn an untrusted host trusted.
+fn write_x11(out: &mut String, mode: X11Mode) {
+    let Some(trusted) = mode.trusted() else {
+        return;
+    };
+    let trusted = if trusted { "yes" } else { "no" };
+    let _ = writeln!(out, "    ForwardX11 yes");
+    let _ = writeln!(out, "    ForwardX11Trusted {trusted}");
 }
 
 /// Serialize every SSH device to OpenSSH client-config text. Non-SSH devices are
@@ -1037,6 +1100,8 @@ Host nas
                 user: Some("admin".to_string()),
                 identity_file: None,
                 forward_agent: None,
+                forward_x11: None,
+                forward_x11_trusted: None,
                 jump: JumpSpec::Direct,
             }]
         );
@@ -1073,6 +1138,43 @@ Host app
                 "ForwardAgent {value}"
             );
         }
+    }
+
+    fn imported_x11(lines: &str) -> X11Mode {
+        let host = parse_hosts(&format!("Host a\n{lines}")).remove(0);
+        to_device(host, None, None).x11_mode()
+    }
+
+    #[test]
+    fn imports_x11_as_untrusted_unless_forward_x11_trusted_says_yes() {
+        for (lines, expected) in [
+            ("", X11Mode::Off),
+            ("  ForwardX11 no\n  ForwardX11Trusted yes\n", X11Mode::Off),
+            ("  ForwardX11 yes\n", X11Mode::Untrusted),
+            (
+                "  ForwardX11 TRUE\n  ForwardX11Trusted no\n",
+                X11Mode::Untrusted,
+            ),
+            (
+                "  ForwardX11 yes\n  ForwardX11Trusted yes\n",
+                X11Mode::Trusted,
+            ),
+            (
+                "  ForwardX11Trusted true\n  ForwardX11 yes\n",
+                X11Mode::Trusted,
+            ),
+        ] {
+            assert_eq!(imported_x11(lines), expected, "{lines}");
+        }
+    }
+
+    #[test]
+    fn the_first_x11_value_wins() {
+        let lines =
+            "  ForwardX11 yes\n  ForwardX11 no\n  ForwardX11Trusted yes\n  ForwardX11Trusted no\n";
+        assert_eq!(imported_x11(lines), X11Mode::Trusted);
+        let lines = "  ForwardX11 no\n  ForwardX11 yes\n";
+        assert_eq!(imported_x11(lines), X11Mode::Off);
     }
 
     fn hop(host: &str, user: Option<&str>, port: Option<u16>) -> JumpSpec {
@@ -1340,6 +1442,8 @@ Match host *.corp
             user: Some("me".to_string()),
             identity_file: Some("~/.ssh/id_ed25519".to_string()),
             forward_agent: None,
+            forward_x11: None,
+            forward_x11_trusted: None,
             jump: JumpSpec::Direct,
         };
         let device = to_device(host, None, Some("/home/j"));
@@ -1367,6 +1471,8 @@ Match host *.corp
             user: None,
             identity_file: None,
             forward_agent: None,
+            forward_x11: None,
+            forward_x11_trusted: None,
             jump: JumpSpec::Direct,
         };
         let device = to_device(host, Some("localjoe"), None);
@@ -1389,6 +1495,8 @@ Match host *.corp
             user: Some("me".to_string()),
             identity_file: None,
             forward_agent: None,
+            forward_x11: None,
+            forward_x11_trusted: None,
             jump: JumpSpec::Direct,
         };
         let device = to_device(host, None, None);
@@ -1883,6 +1991,7 @@ Host app
             tunnel_auto_start: false,
             proxy_jump,
             forward_agent,
+            x11_forwarding: X11Mode::Off,
         }
     }
 
@@ -2073,6 +2182,40 @@ Host app
         assert_eq!(target.proxy_jump_id(), Some(bastion.id.as_str()));
         assert!(target.forward_agent_enabled());
         assert!(!bastion.forward_agent_enabled());
+    }
+
+    #[test]
+    fn export_then_import_keeps_the_x11_mode() {
+        let src_dir = tempdir().unwrap();
+        let src = test_state(src_dir.path());
+        for (name, mode) in [
+            ("off", X11Mode::Off),
+            ("untrusted", X11Mode::Untrusted),
+            ("trusted", X11Mode::Trusted),
+        ] {
+            let host = format!("{name}.example");
+            let mut connection = ssh_conn(&host, 22, "u", Auth::Password, None, false);
+            if let Connection::Ssh { x11_forwarding, .. } = &mut connection {
+                *x11_forwarding = mode;
+            }
+            src.device_store
+                .upsert(ssh_device("", name, connection))
+                .unwrap();
+        }
+
+        let file = src_dir.path().join("config");
+        export_ssh_config_impl(&src, &file).unwrap();
+        let raw = fs::read_to_string(&file).unwrap();
+        assert_eq!(raw.matches("    ForwardX11 yes\n").count(), 2);
+        assert_eq!(raw.matches("    ForwardX11Trusted no\n").count(), 1);
+        assert_eq!(raw.matches("    ForwardX11Trusted yes\n").count(), 1);
+
+        let dst_dir = tempdir().unwrap();
+        let dst = test_state(dst_dir.path());
+        import_ssh_config_impl(&dst, &file).unwrap();
+        assert_eq!(named(&dst, "off").x11_mode(), X11Mode::Off);
+        assert_eq!(named(&dst, "untrusted").x11_mode(), X11Mode::Untrusted);
+        assert_eq!(named(&dst, "trusted").x11_mode(), X11Mode::Trusted);
     }
 
     #[test]

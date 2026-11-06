@@ -34,6 +34,9 @@ export type Parity = "none" | "odd" | "even";
 /** Serial flow control. */
 export type FlowControl = "none" | "software" | "hardware";
 
+/** X11 forwarding: off, untrusted (`ssh -X`) or trusted (`ssh -Y`). */
+export type X11Forwarding = "off" | "untrusted" | "trusted";
+
 /** Fields shared by both device kinds. */
 interface DeviceCommon {
   id: string;
@@ -110,6 +113,8 @@ export interface SshDevice extends DeviceCommon {
    * field, so it is always present.
    */
   forwardAgent: boolean;
+  /** X11 forwarding: remote programs show their windows here. */
+  x11Forwarding: X11Forwarding;
 }
 
 /**

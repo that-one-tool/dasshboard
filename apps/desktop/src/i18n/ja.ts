@@ -260,6 +260,8 @@ export const ja: Messages = {
 	"devices.importRisk.networkSerialPort": "ネットワーク共有上のシリアルポート",
 	"devices.importRisk.networkShellDir": "ネットワークフォルダーで開始",
 	"devices.importRisk.replacesForwards": "保存済みのデバイスを置き換えるため、その転送が以前どおり開始される可能性があります",
+	"devices.importRisk.trustedX11Forwarding": "信頼済みの X11 転送（サーバーがキー入力や画面を読み取れます）",
+	"devices.importRisk.untrustedX11Forwarding": "信頼されていない X11 転送（サーバーが画面にウィンドウを開けます）",
 	"devices.importedSsh.one": "SSH 設定から {count} 件のデバイスをインポートしました",
 	"devices.importedSsh.other": "SSH 設定から {count} 件のデバイスをインポートしました",
 	"devices.importedSshSkipped.one": "SSH 設定から {count} 件のデバイスをインポートしました（{skipped} 件スキップ）",
@@ -274,6 +276,12 @@ export const ja: Messages = {
 	"devices.forwardAgent.hint":
 		"リモートホスト上のプログラムがローカルの SSH 鍵を使用できるようにします（git、さらなる ssh ホップ）。鍵はサーバーにコピーされません。",
 	"devices.forwardAgent.unavailable": "ローカルの SSH エージェントが見つかりません — 転送を使うには SSH エージェントを起動してください。",
+	"devices.x11Forwarding": "X11 転送",
+	"devices.x11Forwarding.off": "オフ",
+	"devices.x11Forwarding.untrusted": "信頼されていない (-X)",
+	"devices.x11Forwarding.trusted": "信頼済み (-Y)",
+	"devices.x11Forwarding.hint":
+		"リモートのプログラムのウィンドウをこのマシンの X サーバーに表示します。「信頼されていない」はリモートのプログラムができることを制限します（一部のアプリは動作しない場合があります）。「信頼済み」はディスプレイ、キー入力、画面への完全なアクセスを与えます。信頼できるホストのみに使用してください。",
 
 	/* -- device validation -------------------------------------------------- */
 	"validation.name": "名前は必須です",

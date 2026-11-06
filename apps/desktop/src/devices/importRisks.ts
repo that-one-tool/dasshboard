@@ -21,6 +21,8 @@ const RISK_LABELS: Record<ImportRisk, MessageKey> = {
   networkSerialPort: "devices.importRisk.networkSerialPort",
   networkShellDir: "devices.importRisk.networkShellDir",
   replacesForwards: "devices.importRisk.replacesForwards",
+  trustedX11Forwarding: "devices.importRisk.trustedX11Forwarding",
+  untrustedX11Forwarding: "devices.importRisk.untrustedX11Forwarding",
 };
 
 export function importRiskMessage(devices: DeviceRisks[]): string {

@@ -113,7 +113,7 @@ export const en = {
 				points: [
 					"Local (ssh -L), remote (ssh -R) and dynamic SOCKS (ssh -D) forwards with auto-start",
 					"ProxyJump (ssh -J) through a saved device",
-					"Opt-in agent forwarding (ssh -A)",
+					"Opt-in agent (ssh -A) and X11 (ssh -X / -Y) forwarding",
 					"Live status for every forward",
 				],
 				alt: "The Tunnels card listing local port forwards and their status",

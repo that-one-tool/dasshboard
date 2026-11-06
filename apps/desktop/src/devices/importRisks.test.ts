@@ -18,6 +18,18 @@ describe("importRiskMessage", () => {
     expect(lines.some((l) => l.includes("Tools") && l.includes("program"))).toBe(true);
   });
 
+  it("tells trusted from untrusted X11 forwarding", () => {
+    const message = importRiskMessage([
+      device("Lab", ["trustedX11Forwarding"]),
+      device("Kiosk", ["untrustedX11Forwarding"]),
+    ]);
+
+    const lines = message.split("\n");
+    expect(lines.some((l) => l.includes("Lab") && l.includes("keystrokes"))).toBe(true);
+    expect(lines.some((l) => l.includes("Kiosk") && l.includes("open windows"))).toBe(true);
+    expect(lines.some((l) => l.includes("Kiosk") && l.includes("keystrokes"))).toBe(false);
+  });
+
   it("keeps a device name with line breaks on one line", () => {
     const message = importRiskMessage([device("Evil\n• Fake: fine", ["localSnippet"])]);
 

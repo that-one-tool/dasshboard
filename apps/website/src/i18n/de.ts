@@ -113,7 +113,7 @@ export const de: SiteMessages = {
 				points: [
 					"Lokale (ssh -L), Remote- (ssh -R) und dynamische SOCKS-Weiterleitungen (ssh -D) mit Autostart",
 					"ProxyJump (ssh -J) über ein gespeichertes Gerät",
-					"Optionale Agent-Weiterleitung (ssh -A)",
+					"Optionale Agent- (ssh -A) und X11-Weiterleitung (ssh -X / -Y)",
 					"Live-Status für jede Weiterleitung",
 				],
 				alt: "Die Tunnel-Karte mit lokalen Portweiterleitungen und ihrem Status",

@@ -14,6 +14,7 @@ const sshDevice: Device = {
   tunnelAutoStart: false,
   proxyJump: null,
   forwardAgent: false,
+  x11Forwarding: "off",
   autoReconnect: false,
   tags: [],
   connectSnippet: null,

@@ -56,6 +56,8 @@ pub mod sftp_edit;
 pub mod ssh;
 #[doc(hidden)]
 pub mod tunnel;
+#[doc(hidden)]
+pub mod x11;
 
 // The in-process SSH/SFTP integration tests live in `tests/` (a separate
 // crate), driving the library through its public API — see `tests/ssh_it.rs`

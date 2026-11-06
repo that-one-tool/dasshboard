@@ -259,6 +259,8 @@ export const es: Messages = {
 	"devices.importRisk.networkSerialPort": "puerto serie en un recurso de red",
 	"devices.importRisk.networkShellDir": "se inicia en una carpeta de red",
 	"devices.importRisk.replacesForwards": "reemplaza un dispositivo guardado, así que sus reenvíos pueden iniciarse como antes",
+	"devices.importRisk.trustedX11Forwarding": "reenvío X11 de confianza (el servidor puede leer tus pulsaciones y tu pantalla)",
+	"devices.importRisk.untrustedX11Forwarding": "reenvío X11 no confiable (el servidor puede abrir ventanas en tu pantalla)",
 	"devices.importedSsh.one": "{count} dispositivo importado desde la config SSH",
 	"devices.importedSsh.other": "{count} dispositivos importados desde la config SSH",
 	"devices.importedSshSkipped.one": "{count} dispositivo importado desde la config SSH (omitidos: {skipped})",
@@ -273,6 +275,12 @@ export const es: Messages = {
 	"devices.forwardAgent.hint":
 		"Permite que los programas del host remoto usen tus claves SSH locales (git, saltos ssh adicionales); no se copia ninguna clave al servidor.",
 	"devices.forwardAgent.unavailable": "No se detectó un agente SSH local: inicia tu agente SSH para usar el reenvío.",
+	"devices.x11Forwarding": "Reenvío X11",
+	"devices.x11Forwarding.off": "Desactivado",
+	"devices.x11Forwarding.untrusted": "No confiable (-X)",
+	"devices.x11Forwarding.trusted": "De confianza (-Y)",
+	"devices.x11Forwarding.hint":
+		"Muestra las ventanas de programas remotos en el servidor X de este equipo. No confiable limita lo que pueden hacer los programas remotos (algunas aplicaciones pueden no funcionar). De confianza les da acceso completo a tu servidor X, tus pulsaciones y tu pantalla: solo para hosts de confianza.",
 
 	/* -- device validation -------------------------------------------------- */
 	"validation.name": "El nombre es obligatorio",

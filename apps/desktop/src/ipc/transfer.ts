@@ -24,7 +24,9 @@ export type ImportRisk =
   | "networkKeyPath"
   | "networkSerialPort"
   | "networkShellDir"
-  | "replacesForwards";
+  | "replacesForwards"
+  | "trustedX11Forwarding"
+  | "untrustedX11Forwarding";
 
 /** One imported device's risky settings (mirrors `transfer::DeviceRisks`). */
 export interface DeviceRisks {

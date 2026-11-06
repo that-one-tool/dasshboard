@@ -168,6 +168,20 @@ describe("readFormValues", () => {
     expect(readFormValues(root, "dev-1", []).forwardAgent).toBe(true);
   });
 
+  it("reads x11Forwarding from the select, off by default", () => {
+    q<HTMLInputElement>("#device-name").value = "NAS";
+    q<HTMLInputElement>("#device-host").value = "10.0.0.1";
+    q<HTMLInputElement>("#device-port").value = "22";
+    q<HTMLInputElement>("#device-username").value = "root";
+
+    expect(readFormValues(root, "dev-1", []).x11Forwarding).toBe("off");
+
+    for (const mode of ["untrusted", "trusted"] as const) {
+      q<HTMLSelectElement>("#device-x11-forwarding").value = mode;
+      expect(readFormValues(root, "dev-1", []).x11Forwarding).toBe(mode);
+    }
+  });
+
   it("reads the connect snippet (blank ⇒ null, otherwise trimmed text)", () => {
     q<HTMLInputElement>("#device-name").value = "NAS";
     q<HTMLInputElement>("#device-host").value = "10.0.0.1";
@@ -201,6 +215,7 @@ describe("populateForm", () => {
       tunnelAutoStart: true,
       proxyJump: null,
       forwardAgent: true,
+      x11Forwarding: "trusted",
       autoReconnect: true,
       tags: ["web", "prod"],
       connectSnippet: "uptime\nwhoami",
@@ -217,11 +232,36 @@ describe("populateForm", () => {
     ).toBe(true);
     expect(q<HTMLInputElement>("#device-tunnel-autostart").checked).toBe(true);
     expect(q<HTMLInputElement>("#device-forward-agent").checked).toBe(true);
+    expect(q<HTMLSelectElement>("#device-x11-forwarding").value).toBe("trusted");
     expect(q<HTMLInputElement>("#device-auto-reconnect").checked).toBe(true);
     expect(q<HTMLInputElement>("#device-tags").value).toBe("web, prod");
     expect(
       q("#serial-fields").classList.contains("device-kind-hidden"),
     ).toBe(true);
+  });
+
+  it("resets x11Forwarding to off for a record without the field", () => {
+    q<HTMLSelectElement>("#device-x11-forwarding").value = "trusted";
+    const device = {
+      id: "old",
+      name: "Old",
+      kind: "ssh",
+      host: "h",
+      port: 22,
+      username: "u",
+      auth: { method: "password" },
+      forwards: [],
+      tunnelAutoStart: false,
+      proxyJump: null,
+      forwardAgent: false,
+      autoReconnect: false,
+      tags: [],
+      connectSnippet: null,
+    } as unknown as Device;
+
+    populateForm(root, device);
+
+    expect(q<HTMLSelectElement>("#device-x11-forwarding").value).toBe("off");
   });
 
   it("selects agent auth and seeds the picker with the saved fingerprint", () => {
@@ -237,6 +277,7 @@ describe("populateForm", () => {
       tunnelAutoStart: false,
       proxyJump: null,
       forwardAgent: false,
+      x11Forwarding: "off",
       autoReconnect: false,
       tags: [],
       connectSnippet: null,
@@ -369,6 +410,23 @@ describe("buildDeviceFromForm", () => {
     expect(device).toMatchObject({ kind: "ssh", host: "10.0.0.1", port: 22 });
     // Absent snippet ⇒ null (always emitted, like proxyJump).
     expect(device.connectSnippet).toBeNull();
+  });
+
+  it("carries x11Forwarding, off when absent", () => {
+    const values = {
+      id: "dev-1",
+      kind: "ssh" as const,
+      name: "NAS",
+      host: "10.0.0.1",
+      port: 22,
+      username: "root",
+      auth: { method: "password" as const },
+      autoReconnect: false,
+    };
+    expect(buildDeviceFromForm({ ...values, x11Forwarding: "untrusted" })).toMatchObject({
+      x11Forwarding: "untrusted",
+    });
+    expect(buildDeviceFromForm(values)).toMatchObject({ x11Forwarding: "off" });
   });
 
   it("carries the connect snippet onto the built device (any kind)", () => {

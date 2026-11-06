@@ -17,7 +17,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::command_library::SavedCommand;
-use crate::device::{Auth, Connection, Device, Forward, ForwardKind};
+use crate::device::{Auth, Connection, Device, Forward, ForwardKind, X11Mode};
 use crate::error::AppError;
 use crate::profile::Profile;
 use crate::state::AppState;
@@ -144,6 +144,12 @@ pub enum ImportRisk {
     /// for it (forwards left running, a running tunnel) then starts the
     /// imported forwards, auto-start or not.
     ReplacesForwards,
+    /// Programs on the server can open windows here, read keystrokes and
+    /// capture the screen.
+    TrustedX11Forwarding,
+    /// Programs on the server can open windows here (e.g. a fake password
+    /// dialog), but not read other windows or keystrokes.
+    UntrustedX11Forwarding,
 }
 
 /// One imported device's risky settings, by name (how the user knows it).
@@ -174,10 +180,12 @@ fn device_risks(device: &Device, saved: &[Device]) -> Vec<ImportRisk> {
             forwards,
             tunnel_auto_start,
             forward_agent,
+            x11_forwarding,
             ..
         } => {
             let mut risks = Vec::new();
             risks.extend(forward_agent.then_some(ImportRisk::AgentForwarding));
+            risks.extend(x11_risk(*x11_forwarding));
             risks.extend(
                 tunnel_auto_start
                     .then(|| auto_start_risk(forwards))
@@ -191,6 +199,14 @@ fn device_risks(device: &Device, saved: &[Device]) -> Vec<ImportRisk> {
         Connection::Serial { port_name, .. } => {
             Vec::from_iter(is_network_port(port_name).then_some(ImportRisk::NetworkSerialPort))
         }
+    }
+}
+
+fn x11_risk(mode: X11Mode) -> Option<ImportRisk> {
+    match mode {
+        X11Mode::Off => None,
+        X11Mode::Untrusted => Some(ImportRisk::UntrustedX11Forwarding),
+        X11Mode::Trusted => Some(ImportRisk::TrustedX11Forwarding),
     }
 }
 
@@ -460,7 +476,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use crate::device::{Auth, Connection, FlowControl, Forward, ForwardKind, Parity};
+    use crate::device::{Auth, Connection, FlowControl, Forward, ForwardKind, Parity, X11Mode};
     use crate::known_hosts::KnownHostsStore;
     use crate::profile::{Grid, Pane, ProfileTab};
     use crate::profile_store::ProfileStore;
@@ -511,6 +527,7 @@ mod tests {
                 forwards: Vec::new(),
                 tunnel_auto_start: false,
                 forward_agent: false,
+                x11_forwarding: X11Mode::Off,
                 proxy_jump: None,
             },
             auto_reconnect: false,
@@ -636,7 +653,17 @@ mod tests {
             serial_on(r"\\attacker\share\x", "Share port"),
             serial_on(r"\\.\COM10", "COM10"),
             shell_in(r"\\attacker\share", "Share dir"),
+            x11_on("X11 trusted", X11Mode::Trusted),
+            x11_on("X11 untrusted", X11Mode::Untrusted),
         ]
+    }
+
+    fn x11_on(name: &str, mode: X11Mode) -> Device {
+        let mut device = sample_device(name);
+        if let Connection::Ssh { x11_forwarding, .. } = &mut device.connection {
+            *x11_forwarding = mode;
+        }
+        device
     }
 
     fn serial_on(port: &str, name: &str) -> Device {
@@ -719,6 +746,8 @@ mod tests {
                     "Shell",
                     &[ImportRisk::CustomShell, ImportRisk::LocalSnippet][..]
                 ),
+                ("X11 trusted", &[ImportRisk::TrustedX11Forwarding][..]),
+                ("X11 untrusted", &[ImportRisk::UntrustedX11Forwarding][..]),
             ]
         );
     }
@@ -754,7 +783,7 @@ mod tests {
 
         let count = import_devices_impl(&state, &file, &confirmed).unwrap();
 
-        assert_eq!(count, 11);
+        assert_eq!(count, 13);
     }
 
     /// Import replaces a saved device with the same id, and what the app

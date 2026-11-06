@@ -113,7 +113,7 @@ export const it: SiteMessages = {
 				points: [
 					"Inoltri locali (ssh -L), remoti (ssh -R) e SOCKS dinamici (ssh -D) con avvio automatico",
 					"ProxyJump (ssh -J) tramite un dispositivo salvato",
-					"Inoltro dell'agente su richiesta (ssh -A)",
+					"Inoltro dell'agente (ssh -A) e di X11 (ssh -X / -Y) su richiesta",
 					"Stato in tempo reale per ogni inoltro",
 				],
 				alt: "Il pannello Tunnel con l'elenco degli inoltri di porta locali e il loro stato",

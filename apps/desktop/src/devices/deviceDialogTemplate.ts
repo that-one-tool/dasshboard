@@ -231,6 +231,15 @@ export function deviceManagerMarkup(): string {
                 ${t("devices.forwardAgent.unavailable")}
               </span>
             </div>
+            <div class="form-group">
+              <label for="device-x11-forwarding">${t("devices.x11Forwarding")}</label>
+              <select id="device-x11-forwarding">
+                <option value="off">${t("devices.x11Forwarding.off")}</option>
+                <option value="untrusted">${t("devices.x11Forwarding.untrusted")}</option>
+                <option value="trusted">${t("devices.x11Forwarding.trusted")}</option>
+              </select>
+              <span class="form-hint">${t("devices.x11Forwarding.hint")}</span>
+            </div>
             </div>
 
             <div id="serial-fields" class="device-kind-hidden">
