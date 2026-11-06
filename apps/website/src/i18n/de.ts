@@ -198,7 +198,7 @@ export const de: SiteMessages = {
 			},
 			{
 				question: "Welche Authentifizierungsmethoden werden unterstützt?",
-				answer: "Passwort, private Schlüsseldatei (mit optionaler Passphrase) und SSH-Agent — einschließlich Schlüsseln auf einem Hardware-Token.",
+				answer: "Passwort, private Schlüsseldatei (mit optionaler Passphrase) und SSH-Agent — einschließlich Schlüsseln auf einem Hardware-Token. Fragt ein Server mehr ab, etwa einen Einmalcode (2FA) oder andere PAM-Fragen, beantworten Sie diese in einem Dialog.",
 			},
 			{
 				question: "Kann ich meine vorhandenen Hosts importieren?",

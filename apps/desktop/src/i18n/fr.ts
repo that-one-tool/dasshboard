@@ -509,6 +509,9 @@ export const fr: Messages = {
 		"L'authenticité de {host}:{port} ne peut pas être établie car il s'agit de la première connexion. Vérifiez l'empreinte ci-dessous par un autre moyen, puis choisissez de l'approuver ou non.",
 	"hostkey.reset.heading": "ATTENTION : clé d'hôte impossible à vérifier",
 	"hostkey.reset.lead": "Vos hôtes de confiance enregistrés sont indisponibles pour l'instant (leur fichier était endommagé et a été réinitialisé, ou n'a pas pu être lu) : la clé de {host}:{port} ne peut donc pas être comparée à celle que vous aviez peut-être approuvée. Si vous vous êtes déjà connecté à ce serveur, sa clé a peut-être changé. Vérifiez l'empreinte ci-dessous par un autre moyen avant de l'approuver.",
+	"authPrompt.heading": "Authentification requise",
+	"authPrompt.lead": "{target} demande :",
+	"authPrompt.info": "{target} : {message}",
 
 	/* -- error prefixes ----------------------------------------------------- */
 	"error.prefix": "Erreur : {message}",

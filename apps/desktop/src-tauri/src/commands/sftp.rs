@@ -9,12 +9,13 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use super::auth_prompts::{emit_auth_prompt, emit_auth_prompt_closed};
 use super::device_access::{find_device, keepalive_config, resolve_credentials, resolve_jump_hop};
 use super::host_keys::{emit_host_key_prompt_closed, HOST_KEY_PROMPT_EVENT};
 use crate::device::{Connection, Device};
 use crate::error::AppError;
 use crate::sftp::{SftpEntry, SftpParams};
-use crate::ssh::prompts::{HostKeyPromptPayload, HostKeyPrompter};
+use crate::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPromptPayload};
 use crate::state::AppState;
 
 /// Event name for streamed SFTP transfer progress (see `sftp_progress_emitter`).
@@ -63,19 +64,25 @@ pub(super) fn sftp_progress_emitter(
     }
 }
 
-/// Production [`HostKeyPrompter`] for SFTP: forwards an SFTP handshake's
+/// Production [`ConnectPrompter`] for SFTP: forwards an SFTP handshake's
 /// host-key trust prompt onto the shared `host_key_prompt` event, so the same
 /// dialog a shell/tunnel raises handles it. Carries no secret material.
 struct TauriSftpPrompter {
     app: AppHandle,
 }
 
-impl HostKeyPrompter for TauriSftpPrompter {
+impl ConnectPrompter for TauriSftpPrompter {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
     }
     fn on_host_key_prompt_closed(&self, prompt_id: &str) {
         emit_host_key_prompt_closed(&self.app, prompt_id);
+    }
+    fn on_auth_prompt(&self, payload: AuthPromptPayload) {
+        emit_auth_prompt(&self.app, payload);
+    }
+    fn on_auth_prompt_closed(&self, prompt_id: &str) {
+        emit_auth_prompt_closed(&self.app, prompt_id);
     }
 }
 
@@ -112,7 +119,7 @@ pub async fn sftp_connect(
 
     let creds = resolve_credentials(&state, &device).await?;
     let jump = resolve_jump_hop(&state, &device).await?;
-    let prompter: Arc<dyn HostKeyPrompter> = Arc::new(TauriSftpPrompter { app });
+    let prompter: Arc<dyn ConnectPrompter> = Arc::new(TauriSftpPrompter { app });
     state
         .sftp_manager
         .connect(

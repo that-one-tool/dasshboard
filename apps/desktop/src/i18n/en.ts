@@ -515,6 +515,11 @@ export const en = {
 	"hostkey.reset.heading": "WARNING: host key can't be verified",
 	"hostkey.reset.lead": "Your saved trusted hosts can't be used right now (their file was damaged and reset, or couldn't be read), so the key for {host}:{port} can't be compared with one you may have trusted before. If you have connected to this server before, its key may have changed. Verify the fingerprint below out of band before trusting it.",
 
+	/* -- keyboard-interactive prompt dialog (terminal/authPromptDialog.ts) -- */
+	"authPrompt.heading": "Authentication required",
+	"authPrompt.lead": "{target} asks:",
+	"authPrompt.info": "{target}: {message}",
+
 	/* -- error prefixes (main.ts) ------------------------------------------- */
 	"error.prefix": "Error: {message}",
 	"error.reloadFailed": "Reload failed: {message}",

@@ -509,6 +509,9 @@ export const pt: Messages = {
 		"A autenticidade de {host}:{port} não pode ser estabelecida porque esta é a primeira ligação. Verifique a impressão digital abaixo por outro meio e depois decida se confia nela.",
 	"hostkey.reset.heading": "AVISO: não é possível verificar a chave do host",
 	"hostkey.reset.lead": "Os seus hosts confiáveis guardados não estão disponíveis agora (o ficheiro estava danificado e foi reposto, ou não pôde ser lido), por isso a chave de {host}:{port} não pode ser comparada com a que talvez tenha confiado antes. Se já se ligou a este servidor, a chave pode ter mudado. Verifique a impressão digital abaixo por outro meio antes de confiar nela.",
+	"authPrompt.heading": "Autenticação necessária",
+	"authPrompt.lead": "{target} pede:",
+	"authPrompt.info": "{target}: {message}",
 
 	/* -- error prefixes ----------------------------------------------------- */
 	"error.prefix": "Erro: {message}",

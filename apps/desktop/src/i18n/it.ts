@@ -507,6 +507,9 @@ export const it: Messages = {
 		"Non è possibile verificare l'autenticità di {host}:{port} perché questa è la prima connessione. Verifica l'impronta digitale qui sotto tramite un altro canale, poi scegli se considerarla attendibile.",
 	"hostkey.reset.heading": "ATTENZIONE: impossibile verificare la chiave host",
 	"hostkey.reset.lead": "Gli host attendibili salvati non possono essere usati al momento (il loro file era danneggiato ed è stato reimpostato, oppure non è stato possibile leggerlo), quindi la chiave di {host}:{port} non può essere confrontata con una che potresti aver considerato attendibile in passato. Se ti sei già connesso a questo server, la sua chiave potrebbe essere cambiata. Verifica l'impronta digitale qui sotto tramite un altro canale prima di considerarla attendibile.",
+	"authPrompt.heading": "Autenticazione richiesta",
+	"authPrompt.lead": "{target} chiede:",
+	"authPrompt.info": "{target}: {message}",
 
 	/* -- error prefixes ----------------------------------------------------- */
 	"error.prefix": "Errore: {message}",

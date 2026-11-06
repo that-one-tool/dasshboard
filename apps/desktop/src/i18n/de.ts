@@ -510,6 +510,9 @@ export const de: Messages = {
 		"Die Authentizität von {host}:{port} kann nicht festgestellt werden, da dies die erste Verbindung ist. Überprüfen Sie den Fingerabdruck unten auf anderem Weg und entscheiden Sie dann, ob Sie ihm vertrauen.",
 	"hostkey.reset.heading": "WARNUNG: Host-Schlüssel kann nicht überprüft werden",
 	"hostkey.reset.lead": "Ihre gespeicherten vertrauenswürdigen Hosts sind gerade nicht verfügbar (ihre Datei war beschädigt und wurde zurückgesetzt oder konnte nicht gelesen werden). Der Schlüssel von {host}:{port} kann daher nicht mit einem zuvor vertrauten verglichen werden. Wenn Sie sich schon einmal mit diesem Server verbunden haben, hat sich sein Schlüssel möglicherweise geändert. Überprüfen Sie den Fingerabdruck unten auf anderem Weg, bevor Sie ihm vertrauen.",
+	"authPrompt.heading": "Authentifizierung erforderlich",
+	"authPrompt.lead": "{target} fragt:",
+	"authPrompt.info": "{target}: {message}",
 
 	/* -- error prefixes ----------------------------------------------------- */
 	"error.prefix": "Fehler: {message}",

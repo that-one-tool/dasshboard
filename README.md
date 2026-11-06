@@ -21,6 +21,9 @@
   thin bar showing the connected devices and running port forwards.
 - **Profiles** — save a workspace of one or more tabs and set a default that
   reconnects every pane on launch.
+- **Two-factor login** — answers a server's keyboard-interactive questions
+  (one-time codes, PAM prompts) in a dialog; a saved password fills in the
+  password question by itself.
 - **SSH extras** — jump hosts (`-J`, for shells, SFTP and tunnels), agent
   forwarding (`-A`), named local (`-L`), remote (`-R`) and dynamic SOCKS (`-D`)
   port forwards, started one by one or all at once, that resume as you left

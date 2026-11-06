@@ -13,6 +13,7 @@ import { TabManager } from "./tabs/tabManager";
 import { ProfileManager, type ProfileWorkspace } from "./profiles/profileManager";
 import { SettingsController } from "./settings/settingsController";
 import { initHostKeyDialog } from "./terminal/hostKeyDialog";
+import { initAuthPromptDialog } from "./terminal/authPromptDialog";
 import { initTunnelsPanel } from "./tunnels/tunnelsPanel";
 import { initSftpPanel } from "./sftp/sftpPanel";
 import { openAboutDialog } from "./ui/aboutDialog";
@@ -85,6 +86,8 @@ function initChrome(): void {
 	wireClick("#trusted-hosts-btn", () => openKnownHostsDialog({ onError: showError }));
 	// Reacts to `host_key_prompt` from any source (a live connect or Test connection).
 	initHostKeyDialog();
+	// Reacts to `auth_prompt`: a server asking for a 2FA code or the like.
+	initAuthPromptDialog();
 }
 
 /** Each tab owns an independent grid of terminals; hidden tabs keep their

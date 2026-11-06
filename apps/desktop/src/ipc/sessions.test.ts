@@ -29,6 +29,9 @@ import {
 	testConnection,
 	onSessionStatus,
 	onHostKeyPrompt,
+	respondAuthPrompt,
+	onAuthPrompt,
+	onAuthPromptClosed,
 } from "./sessions";
 
 import { isLocalConfigWriteRecent } from "./invoke";
@@ -191,6 +194,50 @@ describe("session event subscriptions", () => {
 		const payload = { promptId: "pr1", host: "h", port: 22, changed: false };
 		captured?.({ payload });
 		expect(handler).toHaveBeenCalledWith(payload);
+	});
+});
+
+describe("keyboard-interactive prompts", () => {
+	beforeEach(() => {
+		invokeMock.mockReset();
+		listenMock.mockReset();
+	});
+
+	it("respondAuthPrompt sends the answers", async () => {
+		invokeMock.mockResolvedValue(undefined);
+		await respondAuthPrompt("a1", ["123456"]);
+		expect(invokeMock).toHaveBeenCalledWith("respond_auth_prompt", {
+			promptId: "a1",
+			answers: ["123456"],
+		});
+	});
+
+	it("respondAuthPrompt sends null answers to cancel", async () => {
+		invokeMock.mockResolvedValue(undefined);
+		await respondAuthPrompt("a1", null);
+		expect(invokeMock).toHaveBeenCalledWith("respond_auth_prompt", {
+			promptId: "a1",
+			answers: null,
+		});
+	});
+
+	it("onAuthPrompt and onAuthPromptClosed unwrap their payloads", async () => {
+		const callbacks = new Map<string, (e: { payload: unknown }) => void>();
+		listenMock.mockImplementation((event: string, cb: (e: { payload: unknown }) => void) => {
+			callbacks.set(event, cb);
+			return Promise.resolve(vi.fn());
+		});
+		const onPrompt = vi.fn();
+		const onClosed = vi.fn();
+		await onAuthPrompt(onPrompt);
+		await onAuthPromptClosed(onClosed);
+
+		const payload = { promptId: "a1", host: "h", port: 22, username: "u", name: "", instructions: "", fields: [] };
+		callbacks.get("auth_prompt")?.({ payload });
+		callbacks.get("auth_prompt_closed")?.({ payload: { promptId: "a1" } });
+
+		expect(onPrompt).toHaveBeenCalledWith(payload);
+		expect(onClosed).toHaveBeenCalledWith("a1");
 	});
 });
 

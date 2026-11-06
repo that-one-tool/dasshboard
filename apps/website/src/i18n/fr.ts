@@ -198,7 +198,7 @@ export const fr: SiteMessages = {
 			},
 			{
 				question: "Quelles méthodes d'authentification sont prises en charge ?",
-				answer: "Mot de passe, fichier de clé privée (avec phrase secrète facultative) et agent SSH — y compris les clés stockées sur une clé matérielle.",
+				answer: "Mot de passe, fichier de clé privée (avec phrase secrète facultative) et agent SSH — y compris les clés stockées sur une clé matérielle. Les serveurs qui en demandent plus, comme un code à usage unique (2FA) ou d'autres questions PAM, reçoivent leurs réponses via une boîte de dialogue.",
 			},
 			{
 				question: "Puis-je importer les hôtes que j'ai déjà ?",

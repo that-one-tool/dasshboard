@@ -10,8 +10,10 @@ use tokio::sync::{watch, Semaphore};
 use tokio::time::timeout;
 use uuid::Uuid;
 
+use super::deadline::{ConnectDeadline, DeadlinePause};
+use super::interactive_auth::PromptAsker;
 use super::params::{JumpHop, KeepaliveConfig};
-use super::prompts::{HostKeyPromptPayload, HostKeyPrompter, PromptClosedNotice, PromptRegistry};
+use super::prompts::{ConnectPrompter, ConnectPrompts, HostKeyPromptPayload, PromptClosedNotice};
 use crate::known_hosts::{KnownHost, KnownHostsStore, Verdict};
 use crate::remote_forward::{serve_forwarded, RemoteRoutes};
 
@@ -32,9 +34,9 @@ const MAX_AGENT_CHANNELS: usize = 8;
 /// rather than duplicating it — the shared-connect-path reuse called out in
 /// SPEC §2.
 pub(crate) struct SshHandler {
-    prompter: Arc<dyn HostKeyPrompter>,
+    prompter: Arc<dyn ConnectPrompter>,
     known_hosts: Arc<KnownHostsStore>,
-    prompts: Arc<PromptRegistry>,
+    prompts: Arc<ConnectPrompts>,
     host: String,
     port: u16,
     prompt_timeout: Duration,
@@ -60,6 +62,9 @@ pub(crate) struct SshHandler {
     /// `forwarded-tcpip` channels go. `None` (shells, SFTP, jump hosts) rejects
     /// every such channel.
     remote_routes: Option<Arc<RemoteRoutes>>,
+    /// The connect's overall deadline, held still while the user answers a
+    /// prompt. Shared with the jump host's handler.
+    deadline: Option<Arc<ConnectDeadline>>,
 }
 
 /// Held by the code that awaits a handshake: dropping it tells the handler to
@@ -75,9 +80,9 @@ impl SshHandler {
     // simply mirrors the struct's fields, so the arg-count lint doesn't apply.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        prompter: Arc<dyn HostKeyPrompter>,
+        prompter: Arc<dyn ConnectPrompter>,
         known_hosts: Arc<KnownHostsStore>,
-        prompts: Arc<PromptRegistry>,
+        prompts: Arc<ConnectPrompts>,
         host: String,
         port: u16,
         prompt_timeout: Duration,
@@ -98,7 +103,18 @@ impl SshHandler {
             owner_gone,
             owner_token: Some(HandshakeOwner(owner_tx)),
             remote_routes: None,
+            deadline: None,
         }
+    }
+
+    /// Hold `deadline` still while this connection waits on the user.
+    pub(super) fn with_deadline(mut self, deadline: Arc<ConnectDeadline>) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    fn pause_deadline(&self) -> Option<DeadlinePause> {
+        self.deadline.as_ref().map(ConnectDeadline::pause)
     }
 
     /// Route the server's `forwarded-tcpip` channels through `routes`.
@@ -117,7 +133,7 @@ impl SshHandler {
     /// trust store, prompt registry and keepalive, but the jump host's own
     /// address (its host-key prompt is keyed by it) and never agent forwarding.
     pub(super) fn for_jump_host(&self, jump: &JumpHop) -> SshHandler {
-        SshHandler::new(
+        let handler = SshHandler::new(
             Arc::clone(&self.prompter),
             Arc::clone(&self.known_hosts),
             Arc::clone(&self.prompts),
@@ -126,7 +142,25 @@ impl SshHandler {
             self.prompt_timeout,
             self.keepalive,
             false,
-        )
+        );
+        SshHandler {
+            deadline: self.deadline.clone(),
+            ..handler
+        }
+    }
+
+    /// Who answers this connection's keyboard-interactive questions for
+    /// `username`: the user, through the same prompter as host keys.
+    pub(super) fn auth_asker(&self, username: &str) -> PromptAsker {
+        PromptAsker {
+            prompter: Arc::clone(&self.prompter),
+            registry: Arc::clone(&self.prompts.auth),
+            timeout: self.prompt_timeout,
+            host: self.host.clone(),
+            port: self.port,
+            username: username.to_string(),
+            deadline: self.deadline.clone(),
+        }
     }
 
     /// Emit the host-key prompt event and await the user's decision, bounded
@@ -142,11 +176,10 @@ impl SshHandler {
         verdict: Verdict,
     ) -> bool {
         let prompt_id = Uuid::new_v4().to_string();
-        let (rx, _guard) = self.prompts.register(prompt_id.clone());
-        let _closed_notice = PromptClosedNotice {
-            prompter: Arc::clone(&self.prompter),
-            prompt_id: prompt_id.clone(),
-        };
+        let (rx, _guard) = self.prompts.host_keys.register(prompt_id.clone());
+        let _paused = self.pause_deadline();
+        let _closed_notice =
+            PromptClosedNotice::host_key(Arc::clone(&self.prompter), prompt_id.clone());
 
         self.prompter.on_host_key_prompt(HostKeyPromptPayload {
             prompt_id,

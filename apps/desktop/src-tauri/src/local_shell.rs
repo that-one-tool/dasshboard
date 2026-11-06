@@ -750,9 +750,12 @@ mod tests {
         }
     }
 
-    impl crate::ssh::prompts::HostKeyPrompter for RecordingSink {
+    impl crate::ssh::prompts::ConnectPrompter for RecordingSink {
         fn on_host_key_prompt(&self, _payload: crate::ssh::prompts::HostKeyPromptPayload) {
             unreachable!("local shell sessions never prompt for a host key");
+        }
+        fn on_auth_prompt(&self, _payload: crate::ssh::prompts::AuthPromptPayload) {
+            unreachable!("local shell sessions never prompt for authentication");
         }
     }
 

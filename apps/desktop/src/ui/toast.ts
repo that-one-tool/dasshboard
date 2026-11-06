@@ -10,6 +10,9 @@
  */
 
 const TOAST_DURATION_MS = 4000;
+/** An info toast may tell the user to act (approve a 2FA push) while the
+ * server waits, typically up to a minute. */
+const INFO_TOAST_DURATION_MS = 60_000;
 /** Max toasts stacked at once; a burst (e.g. N failed panes) drops the oldest. */
 const TOAST_MAX_CONCURRENT = 3;
 
@@ -32,8 +35,12 @@ function scheduleToastRemoval(toast: HTMLElement): void {
   if (existing !== undefined) clearTimeout(existing);
   toastTimers.set(
     toast,
-    setTimeout(() => toast.remove(), TOAST_DURATION_MS),
+    setTimeout(() => toast.remove(), toastDuration(toast)),
   );
+}
+
+function toastDuration(toast: HTMLElement): number {
+  return toast.dataset.type === "info" ? INFO_TOAST_DURATION_MS : TOAST_DURATION_MS;
 }
 
 /** Whether `el` already carries this exact toast message/type. */
@@ -70,7 +77,7 @@ function capToastCount(container: HTMLElement): void {
  */
 export function showToast(
   message: string,
-  type: "error" | "success" = "error",
+  type: "error" | "success" | "info" = "error",
 ): void {
   const container = getToastContainer();
 

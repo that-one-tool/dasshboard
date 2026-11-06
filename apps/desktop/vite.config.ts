@@ -35,7 +35,7 @@ export default defineConfig(async () => ({
       exclude: ["src/**/*.test.ts"],
       reporter: ["text-summary", "html"],
       // A floor at the measured baseline (target 90%): raise it, never lower it.
-      thresholds: { statements: 86, branches: 78, functions: 85, lines: 88 },
+      thresholds: { statements: 87, branches: 79, functions: 86, lines: 89 },
     },
   },
 }));

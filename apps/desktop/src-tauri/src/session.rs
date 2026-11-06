@@ -18,7 +18,7 @@
 //!   **never held across an `.await`** (every command clones the `Sender` out
 //!   under the lock, drops the guard, then awaits the send).
 //! - The host-key prompt (inside russh's `check_server_key`, which runs on the
-//!   session task) registers a `oneshot` receiver in the `PromptRegistry`,
+//!   session task) registers a `oneshot` receiver in the `ConnectPrompts`,
 //!   drops the registry lock, emits the event, then awaits the receiver with a
 //!   timeout. No lock is held while awaiting the user. A RAII `PromptGuard`
 //!   removes the registry entry on every exit path (user reply, timeout, or
@@ -41,12 +41,12 @@ use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
 use crate::session_sink::{SessionSink, SessionStatus};
 use crate::ssh::establish::{
-    close_jump, establish_target, JumpConnection, DEFAULT_CONNECT_TIMEOUT,
-    DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
+    close_jump, establish_target, overall_establish_timeout, JumpConnection,
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
 };
 use crate::ssh::handler::SshHandler;
 use crate::ssh::params::{AuthCredentials, Endpoint, JumpHop, KeepaliveConfig};
-use crate::ssh::prompts::PromptRegistry;
+use crate::ssh::prompts::{AuthAnswers, ConnectPrompts};
 
 /// PTY terminal type requested from the server — SPEC.md §6.
 const TERM: &str = "xterm-256color";
@@ -378,7 +378,7 @@ async fn run_session(
 /// state behind an `Arc` (see `AppState`).
 pub struct SessionManager {
     sessions: Mutex<HashMap<String, SessionHandle>>,
-    prompts: Arc<PromptRegistry>,
+    prompts: Arc<ConnectPrompts>,
     known_hosts: Arc<KnownHostsStore>,
     connect_timeout: Duration,
     prompt_timeout: Duration,
@@ -394,7 +394,7 @@ impl SessionManager {
     ) -> Self {
         SessionManager {
             sessions: Mutex::new(HashMap::new()),
-            prompts: Arc::new(PromptRegistry::default()),
+            prompts: Arc::new(ConnectPrompts::default()),
             known_hosts,
             connect_timeout,
             prompt_timeout,
@@ -421,13 +421,12 @@ impl SessionManager {
         Arc::clone(&self.known_hosts)
     }
 
-    /// Overall deadline for one `establish` call: TCP connect + SSH
-    /// handshake + any host-key prompt wait + authentication (B3). Bounds a
-    /// peer that accepts TCP but never speaks SSH, or stalls mid-auth, while
-    /// staying generously above `prompt_timeout` alone so a connection
-    /// legitimately waiting on the host-key prompt is never cut off early.
     fn overall_establish_timeout(&self) -> Duration {
-        self.connect_timeout + self.prompt_timeout + self.handshake_timeout
+        overall_establish_timeout(
+            self.connect_timeout,
+            self.prompt_timeout,
+            self.handshake_timeout,
+        )
     }
 
     /// Number of live sessions currently tracked. Used by the app-close handler
@@ -578,7 +577,12 @@ impl SessionManager {
 
     /// Resolve a pending host-key trust prompt (SPEC §5, `respond_host_key`).
     pub fn respond_host_key(&self, prompt_id: &str, accept: bool) {
-        self.prompts.respond(prompt_id, accept);
+        self.prompts.respond_host_key(prompt_id, accept);
+    }
+
+    /// Resolve a pending keyboard-interactive prompt; `false` if it isn't ours.
+    pub fn respond_auth(&self, prompt_id: &str, answers: AuthAnswers) -> bool {
+        self.prompts.respond_auth(prompt_id, answers)
     }
 
     /// Connect + authenticate + close, no shell (SPEC §5, `test_connection`).

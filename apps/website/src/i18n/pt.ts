@@ -199,7 +199,7 @@ export const pt: SiteMessages = {
 			},
 			{
 				question: "Que métodos de autenticação são suportados?",
-				answer: "Palavra-passe, ficheiro de chave privada (com frase-passe opcional) e agente SSH — incluindo chaves guardadas num token de hardware.",
+				answer: "Palavra-passe, ficheiro de chave privada (com frase-passe opcional) e agente SSH — incluindo chaves guardadas num token de hardware. Se um servidor pedir mais, como um código de utilização única (2FA) ou outras perguntas PAM, responde-se numa caixa de diálogo.",
 			},
 			{
 				question: "Posso importar os anfitriões que já tenho?",

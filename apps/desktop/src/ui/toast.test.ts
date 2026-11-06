@@ -29,6 +29,23 @@ describe("showToast container reuse", () => {
   });
 });
 
+describe("showToast types", () => {
+  it("styles an info toast as such", () => {
+    showToast("Approve the push", "info");
+    expect(toasts()[0]?.classList.contains("toast-info")).toBe(true);
+  });
+
+  it("keeps an info toast up as long as a server may wait on the user", () => {
+    vi.useFakeTimers();
+    showToast("Approve the push", "info");
+    vi.advanceTimersByTime(30_000);
+    expect(toasts()).toHaveLength(1);
+    vi.advanceTimersByTime(30_000);
+    expect(toasts()).toHaveLength(0);
+    vi.useRealTimers();
+  });
+});
+
 describe("showToast dedup", () => {
   it("does not stack an exact back-to-back repeat of the same message and type", () => {
     showToast("Connection failed", "error");

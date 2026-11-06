@@ -18,7 +18,7 @@
 //! safe — `russh_sftp` serializes requests by id internally.
 //!
 //! **Like `session.rs`, this module is deliberately Tauri-free.** The command
-//! layer supplies a [`HostKeyPrompter`] that emits the shared `host_key_prompt` event;
+//! layer supplies a [`ConnectPrompter`] that emits the shared `host_key_prompt` event;
 //! everything here speaks only in [`AppError`] and plain data.
 //!
 //! File transfers **stream chunk-by-chunk between the remote SFTP file and a
@@ -52,12 +52,12 @@ const TRANSFER_CHUNK: usize = 32 * 1024;
 use crate::error::AppError;
 use crate::known_hosts::KnownHostsStore;
 use crate::ssh::establish::{
-    close_jump, establish_target, JumpConnection, DEFAULT_CONNECT_TIMEOUT,
-    DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
+    close_jump, establish_target, overall_establish_timeout, JumpConnection,
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
 };
 use crate::ssh::handler::SshHandler;
 use crate::ssh::params::{AuthCredentials, Endpoint, JumpHop, KeepaliveConfig};
-use crate::ssh::prompts::{HostKeyPrompter, PromptRegistry};
+use crate::ssh::prompts::{AuthAnswers, ConnectPrompter, ConnectPrompts};
 
 /// One directory entry returned to the frontend for the file browser. Non-secret
 /// (a remote path/name and public stat fields only).
@@ -134,7 +134,7 @@ struct SftpConn {
 }
 
 /// Owns the live SFTP connections and the host-key prompt registry for SFTP
-/// handshakes. Its own `PromptRegistry` (like the tunnel manager's) is resolved
+/// handshakes. Its own `ConnectPrompts` (like the tunnel manager's) is resolved
 /// by the `respond_host_key` command, which fans a reply out to every manager.
 pub struct SftpManager {
     conns: Mutex<HashMap<String, Arc<SftpConn>>>,
@@ -144,7 +144,7 @@ pub struct SftpManager {
     /// transfer per device runs at a time (the frontend queue drains them
     /// sequentially), so a single flag per device is sufficient.
     transfers: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    prompts: Arc<PromptRegistry>,
+    prompts: Arc<ConnectPrompts>,
     known_hosts: Arc<KnownHostsStore>,
     connect_timeout: Duration,
     prompt_timeout: Duration,
@@ -162,7 +162,7 @@ impl SftpManager {
         Self {
             conns: Mutex::new(HashMap::new()),
             transfers: Mutex::new(HashMap::new()),
-            prompts: Arc::new(PromptRegistry::default()),
+            prompts: Arc::new(ConnectPrompts::default()),
             known_hosts,
             connect_timeout,
             prompt_timeout,
@@ -180,10 +180,12 @@ impl SftpManager {
         )
     }
 
-    /// Overall establish deadline: TCP connect + host-key prompt wait + auth,
-    /// the same composition `SessionManager`/`TunnelManager` use (B3).
     fn overall_establish_timeout(&self) -> Duration {
-        self.connect_timeout + self.prompt_timeout + self.handshake_timeout
+        overall_establish_timeout(
+            self.connect_timeout,
+            self.prompt_timeout,
+            self.handshake_timeout,
+        )
     }
 
     fn lock_conns(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<SftpConn>>> {
@@ -227,7 +229,12 @@ impl SftpManager {
     /// Returns whether a prompt with that id was waiting here (so the command
     /// layer knows which manager owned it).
     pub fn respond_host_key(&self, prompt_id: &str, accept: bool) -> bool {
-        self.prompts.respond(prompt_id, accept)
+        self.prompts.respond_host_key(prompt_id, accept)
+    }
+
+    /// Resolve a pending keyboard-interactive prompt; `false` if it isn't ours.
+    pub fn respond_auth(&self, prompt_id: &str, answers: AuthAnswers) -> bool {
+        self.prompts.respond_auth(prompt_id, answers)
     }
 
     /// Register a fresh cancel flag for a starting transfer on `device_id`,
@@ -276,7 +283,7 @@ impl SftpManager {
     pub async fn connect(
         &self,
         params: SftpParams,
-        prompter: Arc<dyn HostKeyPrompter>,
+        prompter: Arc<dyn ConnectPrompter>,
     ) -> Result<String, AppError> {
         let handler = SshHandler::new(
             prompter,

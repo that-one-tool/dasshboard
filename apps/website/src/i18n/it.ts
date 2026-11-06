@@ -198,7 +198,7 @@ export const it: SiteMessages = {
 			},
 			{
 				question: "Quali metodi di autenticazione sono supportati?",
-				answer: "Password, file di chiave privata (con passphrase facoltativa) e agente SSH — incluse le chiavi conservate su un token hardware.",
+				answer: "Password, file di chiave privata (con passphrase facoltativa) e agente SSH — incluse le chiavi conservate su un token hardware. Se un server chiede di più, come un codice monouso (2FA) o altre domande PAM, si risponde in una finestra di dialogo.",
 			},
 			{
 				question: "Posso importare gli host che ho già?",

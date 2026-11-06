@@ -26,7 +26,7 @@ use tokio::sync::Mutex as TokioMutex;
 use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
 use dasshboard_lib::sftp::{SftpManager, SftpParams};
 use dasshboard_lib::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig};
-use dasshboard_lib::ssh::prompts::{HostKeyPromptPayload, HostKeyPrompter};
+use dasshboard_lib::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPromptPayload};
 
 const TEST_USER: &str = "tester";
 const TEST_PASSWORD: &str = "correct-horse";
@@ -656,8 +656,9 @@ async fn spawn_jump_server() -> u16 {
  * ------------------------------------------------------------------------- */
 
 struct NoopPrompter;
-impl HostKeyPrompter for NoopPrompter {
+impl ConnectPrompter for NoopPrompter {
     fn on_host_key_prompt(&self, _payload: HostKeyPromptPayload) {}
+    fn on_auth_prompt(&self, _payload: AuthPromptPayload) {}
 }
 
 fn manager_with_trust(dir: &std::path::Path, port: u16, fingerprint: &str) -> SftpManager {

@@ -25,9 +25,10 @@ use std::time::Duration;
 
 use russh::keys::{HashAlg, PrivateKey};
 use russh::server::{self, Auth, Msg, Server as _, Session};
-use russh::{Channel, ChannelId, ChannelOpenFailure};
+use russh::{Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+use zeroize::Zeroizing;
 
 use dasshboard_lib::device::{Forward, ForwardKind};
 use dasshboard_lib::error::AppError;
@@ -35,7 +36,7 @@ use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
 use dasshboard_lib::session::{ConnectParams, SessionManager};
 use dasshboard_lib::session_sink::{SessionSink, SessionStatus};
 use dasshboard_lib::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig};
-use dasshboard_lib::ssh::prompts::{HostKeyPromptPayload, HostKeyPrompter};
+use dasshboard_lib::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPromptPayload};
 use dasshboard_lib::tunnel::{
     ForwardStatus, TunnelManager, TunnelParams, TunnelSink, TunnelStatus,
 };
@@ -103,6 +104,31 @@ struct TestServer {
     /// server for (on shell request) and reports each type and whether the
     /// client accepted it.
     stray_probe: Option<mpsc::UnboundedSender<(&'static str, bool)>>,
+    /// How the server uses keyboard-interactive auth, if at all.
+    kbd: Option<KbdScenario>,
+}
+
+/// The one-time code a keyboard-interactive test server expects.
+const TEST_CODE: &str = "424242";
+
+/// Plain `password` auth is refused; keyboard-interactive asks for the
+/// password, then (PAM + one-time code) for a code. russh's server can't
+/// report a partial success, so the two factors share one conversation.
+#[derive(Clone, Copy, PartialEq)]
+enum KbdScenario {
+    PasswordThroughKbd,
+    PasswordThenCode,
+}
+
+const PASSWORD_QUESTION: &str = "Password: ";
+const CODE_QUESTION: &str = "Verification code: ";
+
+fn kbd_question(question: &'static str) -> Auth {
+    Auth::Partial {
+        name: "".into(),
+        instructions: "".into(),
+        prompts: vec![(question.into(), false)].into(),
+    }
 }
 
 impl TestServer {
@@ -119,6 +145,7 @@ impl TestServer {
             stall_reads: false,
             session_errors: None,
             stray_probe: None,
+            kbd: None,
         }
     }
 }
@@ -137,6 +164,8 @@ impl server::Server for TestServer {
             forward_probe: self.forward_probe.clone(),
             stall_reads: self.stall_reads,
             stray_probe: self.stray_probe.clone(),
+            kbd: self.kbd,
+            kbd_answers: 0,
             remote_listeners: HashMap::new(),
             forwarded: Arc::default(),
         }
@@ -160,6 +189,9 @@ struct TestServerHandler {
     forward_probe: Option<mpsc::UnboundedSender<bool>>,
     stall_reads: bool,
     stray_probe: Option<mpsc::UnboundedSender<(&'static str, bool)>>,
+    kbd: Option<KbdScenario>,
+    /// Keyboard-interactive answers accepted so far on this connection.
+    kbd_answers: usize,
     /// `ssh -R`: one real listener per granted `tcpip-forward`, by port.
     remote_listeners: HashMap<u32, tokio::task::JoinHandle<()>>,
     /// The `forwarded-tcpip` channels opened back to the client: their bytes
@@ -248,11 +280,43 @@ impl server::Handler for TestServerHandler {
     type Error = russh::Error;
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
+        if self.kbd.is_some() {
+            return Ok(Auth::Reject {
+                proceed_with_methods: Some(MethodSet::from(&[MethodKind::KeyboardInteractive][..])),
+                partial_success: false,
+            });
+        }
         if user == TEST_USER && password == self.password {
             Ok(Auth::Accept)
         } else {
             Ok(Auth::reject())
         }
+    }
+
+    async fn auth_keyboard_interactive<'a>(
+        &'a mut self,
+        _user: &str,
+        _submethods: &str,
+        response: Option<server::Response<'a>>,
+    ) -> Result<Auth, Self::Error> {
+        let Some(scenario) = self.kbd else {
+            return Ok(Auth::reject());
+        };
+        let Some(mut response) = response else {
+            self.kbd_answers = 0;
+            return Ok(kbd_question(PASSWORD_QUESTION));
+        };
+        let expected = [self.password.as_str(), TEST_CODE][self.kbd_answers.min(1)];
+        if response.next().as_deref() != Some(expected.as_bytes()) {
+            return Ok(Auth::reject());
+        }
+        self.kbd_answers += 1;
+        let wants_code = scenario == KbdScenario::PasswordThenCode && self.kbd_answers == 1;
+        Ok(if wants_code {
+            kbd_question(CODE_QUESTION)
+        } else {
+            Auth::Accept
+        })
     }
 
     async fn channel_open_session(
@@ -606,6 +670,7 @@ struct TestSink {
     status_tx: mpsc::UnboundedSender<(SessionStatus, Option<String>)>,
     prompt_tx: mpsc::UnboundedSender<HostKeyPromptPayload>,
     prompt_closed_tx: mpsc::UnboundedSender<String>,
+    auth_prompt_tx: mpsc::UnboundedSender<AuthPromptPayload>,
     error_code_tx: mpsc::UnboundedSender<&'static str>,
 }
 
@@ -622,12 +687,15 @@ impl SessionSink for TestSink {
     }
 }
 
-impl HostKeyPrompter for TestSink {
+impl ConnectPrompter for TestSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.prompt_tx.send(payload);
     }
     fn on_host_key_prompt_closed(&self, prompt_id: &str) {
         let _ = self.prompt_closed_tx.send(prompt_id.to_string());
+    }
+    fn on_auth_prompt(&self, payload: AuthPromptPayload) {
+        let _ = self.auth_prompt_tx.send(payload);
     }
 }
 
@@ -636,6 +704,7 @@ struct SinkChannels {
     status_rx: mpsc::UnboundedReceiver<(SessionStatus, Option<String>)>,
     prompt_rx: mpsc::UnboundedReceiver<HostKeyPromptPayload>,
     prompt_closed_rx: mpsc::UnboundedReceiver<String>,
+    auth_prompt_rx: mpsc::UnboundedReceiver<AuthPromptPayload>,
     error_code_rx: mpsc::UnboundedReceiver<&'static str>,
 }
 
@@ -644,12 +713,14 @@ fn new_sink() -> (Arc<dyn SessionSink>, SinkChannels) {
     let (status_tx, status_rx) = mpsc::unbounded_channel();
     let (prompt_tx, prompt_rx) = mpsc::unbounded_channel();
     let (prompt_closed_tx, prompt_closed_rx) = mpsc::unbounded_channel();
+    let (auth_prompt_tx, auth_prompt_rx) = mpsc::unbounded_channel();
     let (error_code_tx, error_code_rx) = mpsc::unbounded_channel();
     let sink: Arc<dyn SessionSink> = Arc::new(TestSink {
         data_tx,
         status_tx,
         prompt_tx,
         prompt_closed_tx,
+        auth_prompt_tx,
         error_code_tx,
     });
     (
@@ -659,6 +730,7 @@ fn new_sink() -> (Arc<dyn SessionSink>, SinkChannels) {
             status_rx,
             prompt_rx,
             prompt_closed_rx,
+            auth_prompt_rx,
             error_code_rx,
         },
     )
@@ -1968,10 +2040,11 @@ impl TunnelSink for TestTunnelSink {
     }
 }
 
-impl HostKeyPrompter for TestTunnelSink {
+impl ConnectPrompter for TestTunnelSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.prompt_tx.send(payload);
     }
+    fn on_auth_prompt(&self, _payload: AuthPromptPayload) {}
 }
 
 struct TunnelSinkChannels {
@@ -3429,4 +3502,130 @@ async fn a_change_does_not_wait_behind_a_slow_remote_listen() {
     // Still starting, so a reloaded frontend sees it as asked for.
     assert_eq!(tunnel.manager.list()[0].forward_ids, ["f1", "r1", "f2"]);
     tunnel.manager.stop_tunnel("t1").await;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Keyboard-interactive authentication
+ * ------------------------------------------------------------------------- */
+
+async fn spawn_kbd_server(scenario: KbdScenario) -> u16 {
+    let server = TestServer {
+        kbd: Some(scenario),
+        ..TestServer::new(TEST_PASSWORD)
+    };
+    spawn_server(server, server_config(Duration::from_secs(30))).await
+}
+
+/// A trusted kbd server, its manager, and a password session started on it.
+async fn start_kbd_session(
+    dir: &std::path::Path,
+    scenario: KbdScenario,
+) -> (Arc<SessionManager>, SinkChannels) {
+    let port = spawn_kbd_server(scenario).await;
+    seed_trusted(dir, port);
+    let manager = manager_with(dir, Duration::from_secs(10));
+    let (sink, chans) = new_sink();
+    spawn_pw_session(&manager, "k1", port, sink);
+    (manager, chans)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_saved_password_answers_a_keyboard_interactive_password_question() {
+    let dir = tempfile::tempdir().unwrap();
+    let (manager, mut chans) = start_kbd_session(dir.path(), KbdScenario::PasswordThroughKbd).await;
+
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+    assert!(
+        chans.auth_prompt_rx.try_recv().is_err(),
+        "the user was asked nothing"
+    );
+    manager.disconnect("k1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_factor_is_asked_of_the_user_and_answered() {
+    let dir = tempfile::tempdir().unwrap();
+    let (manager, mut chans) = start_kbd_session(dir.path(), KbdScenario::PasswordThenCode).await;
+
+    let prompt = recv_timeout(&mut chans.auth_prompt_rx, Duration::from_secs(10))
+        .await
+        .expect("an auth_prompt");
+    assert_eq!(prompt.username, TEST_USER);
+    assert_eq!(prompt.fields.len(), 1);
+    assert_eq!(prompt.fields[0].label, CODE_QUESTION);
+    assert!(!prompt.fields[0].echo);
+    let answers = Some(Zeroizing::new(vec![TEST_CODE.to_string()]));
+    assert!(manager.respond_auth(&prompt.prompt_id, answers));
+
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+    manager.disconnect("k1").await;
+}
+
+/// Answer the session's one auth prompt with `answers`, then return the
+/// error code the session ended on.
+async fn auth_error_after_answering(answers: Option<Vec<String>>) -> &'static str {
+    let dir = tempfile::tempdir().unwrap();
+    let (manager, mut chans) = start_kbd_session(dir.path(), KbdScenario::PasswordThenCode).await;
+    let prompt = recv_timeout(&mut chans.auth_prompt_rx, Duration::from_secs(10))
+        .await
+        .expect("an auth_prompt");
+
+    manager.respond_auth(&prompt.prompt_id, answers.map(Zeroizing::new));
+
+    let (status, _) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Error);
+    recv_timeout(&mut chans.error_code_rx, Duration::from_secs(5))
+        .await
+        .expect("an error code")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wrong_second_factor_fails_as_an_auth_error() {
+    let code = auth_error_after_answering(Some(vec!["000000".to_string()])).await;
+    assert_eq!(code, AppError::SshAuth(String::new()).code());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_second_factor_fails_as_an_auth_error() {
+    let code = auth_error_after_answering(None).await;
+    assert_eq!(code, AppError::SshAuth(String::new()).code());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn time_spent_answering_prompts_does_not_count_toward_the_connect_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_kbd_server(KbdScenario::PasswordThenCode).await;
+    let quick = Duration::from_millis(200);
+    let known_hosts = Arc::new(KnownHostsStore::load(dir.path().to_path_buf()));
+    // Overall budget: 200 ms + 1 s + 200 ms; the two answers below take 1.6 s.
+    let manager = Arc::new(SessionManager::new(
+        known_hosts,
+        quick,
+        Duration::from_secs(1),
+        quick,
+    ));
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session(&manager, "k1", port, sink);
+    let slow_user = Duration::from_millis(800);
+
+    let host_key = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(5))
+        .await
+        .expect("a host_key_prompt");
+    tokio::time::sleep(slow_user).await;
+    manager.respond_host_key(&host_key.prompt_id, true);
+    let code = recv_timeout(&mut chans.auth_prompt_rx, Duration::from_secs(5))
+        .await
+        .expect("an auth_prompt");
+    tokio::time::sleep(slow_user).await;
+    manager.respond_auth(
+        &code.prompt_id,
+        Some(Zeroizing::new(vec![TEST_CODE.to_string()])),
+    );
+
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+    manager.disconnect("k1").await;
 }

@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use zeroize::Zeroize;
+use russh::MethodKind;
+use zeroize::{Zeroize, Zeroizing};
 
 /// SSH keepalive configuration for a connection, resolved from user settings
 /// (`KeepaliveSettings`) by the command layer and carried on the `SshHandler`
@@ -58,6 +59,25 @@ pub enum AuthCredentials {
     Agent {
         fingerprint: String,
     },
+}
+
+impl AuthCredentials {
+    /// The SSH auth method these credentials try first.
+    pub(super) fn method_kind(&self) -> MethodKind {
+        match self {
+            AuthCredentials::Password(_) => MethodKind::Password,
+            AuthCredentials::Key { .. } | AuthCredentials::Agent { .. } => MethodKind::PublicKey,
+        }
+    }
+
+    /// The saved password, which may also answer a keyboard-interactive
+    /// password question.
+    pub(super) fn saved_password(&self) -> Option<Zeroizing<String>> {
+        let AuthCredentials::Password(password) = self else {
+            return None;
+        };
+        Some(Zeroizing::new(password.clone()))
+    }
 }
 
 /// Wipe the secret once the connection no longer needs it (the copy russh
@@ -119,4 +139,44 @@ pub struct JumpHop {
     pub port: u16,
     pub username: String,
     pub creds: AuthCredentials,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key() -> AuthCredentials {
+        AuthCredentials::Key {
+            path: "k".into(),
+            passphrase: Some("pp".into()),
+        }
+    }
+
+    fn agent() -> AuthCredentials {
+        AuthCredentials::Agent {
+            fingerprint: "SHA256:x".into(),
+        }
+    }
+
+    #[test]
+    fn each_credential_names_the_ssh_method_it_tries() {
+        let password = AuthCredentials::Password("pw".into());
+        assert_eq!(password.method_kind(), MethodKind::Password);
+        assert_eq!(key().method_kind(), MethodKind::PublicKey);
+        assert_eq!(agent().method_kind(), MethodKind::PublicKey);
+    }
+
+    #[test]
+    fn only_a_password_credential_has_a_saved_password() {
+        let password = AuthCredentials::Password("pw".into());
+        assert_eq!(
+            password.saved_password().as_deref().map(String::as_str),
+            Some("pw")
+        );
+        assert!(
+            key().saved_password().is_none(),
+            "a passphrase is no password"
+        );
+        assert!(agent().saved_password().is_none());
+    }
 }

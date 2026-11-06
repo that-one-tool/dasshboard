@@ -1,10 +1,11 @@
 //! Reaching and authenticating to an SSH server, directly or through one jump
 //! host — the one connect path shells, tunnels and SFTP share.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use russh::client;
+use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
 use tokio::net::TcpStream;
@@ -12,7 +13,9 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 use zeroize::Zeroizing;
 
+use super::deadline::ConnectDeadline;
 use super::handler::SshHandler;
+use super::interactive_auth::{finish_authentication, KbdTransport};
 use super::params::{AuthCredentials, Endpoint, JumpHop};
 use crate::error::AppError;
 use crate::relay::{bridge_until_either_ends, Pace};
@@ -28,8 +31,19 @@ const TARGET_CLOSE_GRACE: Duration = Duration::from_millis(250);
 /// Default slack budgeted for the SSH version exchange/KEX and the
 /// authentication exchange, on top of whatever `DEFAULT_CONNECT_TIMEOUT` and
 /// `DEFAULT_PROMPT_TIMEOUT` already cover (B3). Together they form the
-/// overall `establish` deadline — see `SessionManager::overall_establish_timeout`.
+/// overall `establish` deadline — see `overall_establish_timeout`.
 pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Overall deadline for one establish (B3), both hops of a jumped one
+/// included. Time spent on a prompt doesn't count (see `ConnectDeadline`);
+/// the prompt allowance is kept as slack for slow links.
+pub(crate) fn overall_establish_timeout(
+    connect: Duration,
+    prompt: Duration,
+    handshake: Duration,
+) -> Duration {
+    connect + prompt + handshake
+}
 
 /// Maps a russh handshake/transport error to the right `AppError` code.
 fn map_connect_err(err: russh::Error) -> AppError {
@@ -113,92 +127,135 @@ where
         ..Default::default()
     });
 
+    let asker = handler.auth_asker(username);
     let mut handle = client::connect_stream(config, stream, handler)
         .await
         .map_err(map_connect_err)?;
 
-    let auth_result = match creds {
-        AuthCredentials::Password(password) => handle
-            .authenticate_password(username, password.clone())
-            .await
-            .map_err(|e| AppError::SshAuth(format!("password authentication error: {e}")))?,
-        AuthCredentials::Key { path, passphrase } => {
-            // Key/passphrase failures describe the format/crypto problem only,
-            // never the passphrase or key bytes. Loading an OpenSSH key runs a
-            // deliberately CPU-expensive KDF (bcrypt_pbkdf) for a
-            // passphrase-protected key plus a synchronous file read, so it runs
-            // on `spawn_blocking` rather than stalling this async connect path
-            // (and, in Phase 3, unrelated sessions sharing the runtime).
-            let path = path.clone();
-            let passphrase = Zeroizing::new(passphrase.clone());
-            let key =
-                tokio::task::spawn_blocking(move || load_secret_key(&path, passphrase.as_deref()))
-                    .await
-                    .map_err(|e| AppError::SshAuth(format!("key-load task failed: {e}")))?
-                    .map_err(|e| AppError::SshAuth(format!("could not load key file: {e}")))?;
-            let hash = handle
-                .best_supported_rsa_hash()
-                .await
-                .ok()
-                .flatten()
-                .flatten();
-            handle
-                .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
-                .await
-                .map_err(|e| AppError::SshAuth(format!("publickey authentication error: {e}")))?
-        }
-        AuthCredentials::Agent { fingerprint } => {
-            // Connect to the local agent, find the user-selected identity by its
-            // (public) fingerprint, and delegate signing to the agent. The agent
-            // — possibly a hardware token — owns the key; we only relay the
-            // challenge/response, so no key material passes through this process.
-            // A hostile/spoofed agent cannot succeed here: it would have to
-            // produce a signature the server accepts without the private key.
-            let mut agent = crate::agent_ident::connect_agent_for_auth().await?;
-            let public = crate::agent_ident::find_public_key(&agent.identities, fingerprint)
-                .ok_or_else(|| {
-                    AppError::SshAuth(
-                        "the SSH agent does not hold the selected identity — is the token \
-                         plugged in and unlocked?"
-                            .to_string(),
-                    )
-                })?;
-            // RSA agent keys need an explicit signature-hash negotiation; other
-            // key types (ed25519, ecdsa, sk-*) ignore it.
-            let hash = if public.algorithm().is_rsa() {
-                handle
-                    .best_supported_rsa_hash()
-                    .await
-                    .ok()
-                    .flatten()
-                    .flatten()
-            } else {
-                None
-            };
-            handle
-                .authenticate_publickey_with(username, public, hash, &mut agent.client)
-                .await
-                .map_err(|e| AppError::SshAuth(format!("agent authentication error: {e}")))?
-        }
-    };
-
-    if !auth_result.success() {
-        return Err(AppError::SshAuth(
-            "authentication failed — check the stored password/key and the username".to_string(),
-        ));
-    }
-
+    let first = authenticate_configured(&mut handle, username, creds).await?;
+    finish_authentication(
+        &mut handle,
+        username,
+        first,
+        creds.method_kind(),
+        creds.saved_password(),
+        &asker,
+    )
+    .await?;
     Ok(handle)
 }
 
-/// Wrap [`establish`] with an overall deadline covering the ENTIRE
+/// Try the device's configured auth method once. Errors describe only the
+/// format/crypto problem, never secret material.
+async fn authenticate_configured(
+    handle: &mut client::Handle<SshHandler>,
+    username: &str,
+    creds: &AuthCredentials,
+) -> Result<AuthResult, AppError> {
+    match creds {
+        AuthCredentials::Password(password) => handle
+            .authenticate_password(username, password.clone())
+            .await
+            .map_err(|e| AppError::SshAuth(format!("password authentication error: {e}"))),
+        AuthCredentials::Key { path, passphrase } => {
+            authenticate_with_key(handle, username, path, passphrase).await
+        }
+        AuthCredentials::Agent { fingerprint } => {
+            authenticate_with_agent(handle, username, fingerprint).await
+        }
+    }
+}
+
+async fn authenticate_with_key(
+    handle: &mut client::Handle<SshHandler>,
+    username: &str,
+    path: &str,
+    passphrase: &Option<String>,
+) -> Result<AuthResult, AppError> {
+    // Loading an OpenSSH key runs a deliberately CPU-expensive KDF
+    // (bcrypt_pbkdf) for a passphrase-protected key plus a synchronous file
+    // read, so it runs on `spawn_blocking` rather than stalling this async
+    // connect path (and unrelated sessions sharing the runtime).
+    let path = path.to_string();
+    let passphrase = Zeroizing::new(passphrase.clone());
+    let key = tokio::task::spawn_blocking(move || load_secret_key(&path, passphrase.as_deref()))
+        .await
+        .map_err(|e| AppError::SshAuth(format!("key-load task failed: {e}")))?
+        .map_err(|e| AppError::SshAuth(format!("could not load key file: {e}")))?;
+    let hash = handle
+        .best_supported_rsa_hash()
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+    handle
+        .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
+        .await
+        .map_err(|e| AppError::SshAuth(format!("publickey authentication error: {e}")))
+}
+
+/// Find the user-selected identity in the local agent by its (public)
+/// fingerprint and delegate signing to the agent. The agent — possibly a
+/// hardware token — owns the key; no key material passes through this
+/// process. A hostile/spoofed agent cannot succeed: it would have to produce
+/// a signature the server accepts without the private key.
+async fn authenticate_with_agent(
+    handle: &mut client::Handle<SshHandler>,
+    username: &str,
+    fingerprint: &str,
+) -> Result<AuthResult, AppError> {
+    let mut agent = crate::agent_ident::connect_agent_for_auth().await?;
+    let public =
+        crate::agent_ident::find_public_key(&agent.identities, fingerprint).ok_or_else(|| {
+            AppError::SshAuth(
+                "the SSH agent does not hold the selected identity — is the token \
+                 plugged in and unlocked?"
+                    .to_string(),
+            )
+        })?;
+    // RSA agent keys need an explicit signature-hash negotiation; other key
+    // types (ed25519, ecdsa, sk-*) ignore it.
+    let hash = if public.algorithm().is_rsa() {
+        handle
+            .best_supported_rsa_hash()
+            .await
+            .ok()
+            .flatten()
+            .flatten()
+    } else {
+        None
+    };
+    handle
+        .authenticate_publickey_with(username, public, hash, &mut agent.client)
+        .await
+        .map_err(|e| AppError::SshAuth(format!("agent authentication error: {e}")))
+}
+
+impl KbdTransport for client::Handle<SshHandler> {
+    async fn start(&mut self, username: &str) -> Result<KeyboardInteractiveAuthResponse, AppError> {
+        self.authenticate_keyboard_interactive_start(username, None)
+            .await
+            .map_err(keyboard_interactive_error)
+    }
+
+    async fn respond(
+        &mut self,
+        answers: Vec<String>,
+    ) -> Result<KeyboardInteractiveAuthResponse, AppError> {
+        self.authenticate_keyboard_interactive_respond(answers)
+            .await
+            .map_err(keyboard_interactive_error)
+    }
+}
+
+fn keyboard_interactive_error(err: russh::Error) -> AppError {
+    AppError::SshAuth(format!("keyboard-interactive authentication error: {err}"))
+}
+
+/// Run [`establish`] within `deadline`, which covers the ENTIRE
 /// handshake+auth flow — not just the TCP connect `establish` already bounds
-/// internally (B3). A host that accepts TCP but never speaks SSH, or stalls
-/// mid-auth, is therefore always bounded. `overall_timeout` must be sized
-/// generously above the prompt-wait cap so a connection legitimately waiting
-/// on the host-key prompt is never cut off early — see
-/// `SessionManager::overall_establish_timeout`, which builds it from
-/// `connect_timeout + prompt_timeout + handshake_timeout`.
+/// internally (B3) — minus the time the user spends on a prompt. A host that
+/// accepts TCP but never speaks SSH, or stalls mid-auth, is always bounded.
 async fn establish_with_deadline(
     host: &str,
     port: u16,
@@ -206,18 +263,24 @@ async fn establish_with_deadline(
     creds: &AuthCredentials,
     handler: SshHandler,
     connect_timeout: Duration,
-    overall_timeout: Duration,
+    deadline: &ConnectDeadline,
 ) -> Result<client::Handle<SshHandler>, AppError> {
-    match timeout(
-        overall_timeout,
-        establish(host, port, username, creds, handler, connect_timeout),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => Err(AppError::SshConnect(format!(
+    let work = establish(host, port, username, creds, handler, connect_timeout);
+    within_deadline(deadline, work).await.unwrap_or_else(|| {
+        Err(AppError::SshConnect(format!(
             "connecting to {host}:{port} timed out during the SSH handshake or authentication"
-        ))),
+        )))
+    })
+}
+
+/// `None` once `deadline` ran out before `work` finished.
+async fn within_deadline<T>(
+    deadline: &ConnectDeadline,
+    work: impl Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        result = work => Some(result),
+        _ = deadline.expired() => None,
     }
 }
 
@@ -332,6 +395,8 @@ pub(crate) async fn establish_target(
     connect_timeout: Duration,
     overall_timeout: Duration,
 ) -> Result<(client::Handle<SshHandler>, Option<JumpConnection>), AppError> {
+    let deadline = ConnectDeadline::new(overall_timeout);
+    let target_handler = target_handler.with_deadline(Arc::clone(&deadline));
     let Some(jump) = jump else {
         let handle = establish_with_deadline(
             target.host,
@@ -340,7 +405,7 @@ pub(crate) async fn establish_target(
             target.creds,
             target_handler,
             connect_timeout,
-            overall_timeout,
+            &deadline,
         )
         .await?;
         return Ok((handle, None));
@@ -350,15 +415,11 @@ pub(crate) async fn establish_target(
     // never exceed the same budget a direct one gets, and a jump host that
     // accepts but black-holes the channel-open to an unreachable target can't
     // hang the connection in "Connecting".
-    match timeout(
-        overall_timeout,
-        connect_through_jump(&target, target_handler, jump, connect_timeout),
-    )
-    .await
-    {
-        Ok(Ok((target_handle, jump_handle))) => Ok((target_handle, Some(jump_handle))),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(AppError::SshConnect(format!(
+    let work = connect_through_jump(&target, target_handler, jump, connect_timeout);
+    match within_deadline(&deadline, work).await {
+        Some(Ok((target_handle, jump_handle))) => Ok((target_handle, Some(jump_handle))),
+        Some(Err(e)) => Err(e),
+        None => Err(AppError::SshConnect(format!(
             "connecting to {}:{} through jump host {}:{} timed out",
             target.host, target.port, jump.host, jump.port
         ))),
@@ -383,6 +444,13 @@ pub(crate) async fn close_jump(jump: Option<&JumpConnection>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_overall_deadline_adds_up_connect_prompt_and_handshake() {
+        let second = Duration::from_secs(1);
+        let overall = overall_establish_timeout(second, 10 * second, 100 * second);
+        assert_eq!(overall, 111 * second);
+    }
 
     #[tokio::test]
     async fn read_ahead_takes_any_amount_while_the_target_is_not_reading() {

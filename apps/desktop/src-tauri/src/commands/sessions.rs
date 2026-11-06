@@ -7,6 +7,7 @@ use serde::Serialize;
 use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use super::auth_prompts::{emit_auth_prompt, emit_auth_prompt_closed};
 use super::client_ids::{client_chosen_id, id_in_use};
 use super::device_access::{
     find_device, keepalive_config, resolve_credentials, resolve_jump_hop, resolve_test_credentials,
@@ -19,7 +20,7 @@ use crate::output_stream::{Chunk, OutputStream, OutputStreams, MAX_READ, READ_WA
 use crate::serial::SerialParams;
 use crate::session::ConnectParams;
 use crate::session_sink::{SessionSink, SessionStatus};
-use crate::ssh::prompts::{HostKeyPromptPayload, HostKeyPrompter};
+use crate::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPromptPayload};
 use crate::state::AppState;
 
 const SESSION_STATUS_EVENT: &str = "session_status";
@@ -114,12 +115,18 @@ impl SessionSink for TauriSessionSink {
     }
 }
 
-impl HostKeyPrompter for TauriSessionSink {
+impl ConnectPrompter for TauriSessionSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
     }
     fn on_host_key_prompt_closed(&self, prompt_id: &str) {
         emit_host_key_prompt_closed(&self.app, prompt_id);
+    }
+    fn on_auth_prompt(&self, payload: AuthPromptPayload) {
+        emit_auth_prompt(&self.app, payload);
+    }
+    fn on_auth_prompt_closed(&self, prompt_id: &str) {
+        emit_auth_prompt_closed(&self.app, prompt_id);
     }
 }
 

@@ -509,6 +509,9 @@ export const es: Messages = {
 		"No se puede establecer la autenticidad de {host}:{port} porque es la primera conexión. Verifica la huella de abajo por otro medio y luego decide si confiar en ella.",
 	"hostkey.reset.heading": "ADVERTENCIA: no se puede verificar la clave del host",
 	"hostkey.reset.lead": "Tus hosts de confianza guardados no están disponibles ahora (su archivo estaba dañado y se restableció, o no se pudo leer), así que la clave de {host}:{port} no se puede comparar con la que quizá aprobaste antes. Si ya te habías conectado a este servidor, su clave puede haber cambiado. Verifica la huella de abajo por otro medio antes de confiar en ella.",
+	"authPrompt.heading": "Autenticación requerida",
+	"authPrompt.lead": "{target} solicita:",
+	"authPrompt.info": "{target}: {message}",
 
 	/* -- error prefixes ----------------------------------------------------- */
 	"error.prefix": "Error: {message}",

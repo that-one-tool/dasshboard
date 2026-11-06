@@ -5,12 +5,13 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use super::auth_prompts::{emit_auth_prompt, emit_auth_prompt_closed};
 use super::client_ids::{client_chosen_id, id_in_use};
 use super::device_access::{find_device, keepalive_config, resolve_credentials, resolve_jump_hop};
 use super::host_keys::{emit_host_key_prompt_closed, HOST_KEY_PROMPT_EVENT};
 use crate::device::{Connection, Device, Forward};
 use crate::error::AppError;
-use crate::ssh::prompts::{HostKeyPromptPayload, HostKeyPrompter};
+use crate::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPromptPayload};
 use crate::state::AppState;
 use crate::tunnel::{ForwardStatus, TunnelInfo, TunnelParams, TunnelSink, TunnelStatus};
 
@@ -82,12 +83,18 @@ impl TunnelSink for TauriTunnelSink {
     }
 }
 
-impl HostKeyPrompter for TauriTunnelSink {
+impl ConnectPrompter for TauriTunnelSink {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
         let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
     }
     fn on_host_key_prompt_closed(&self, prompt_id: &str) {
         emit_host_key_prompt_closed(&self.app, prompt_id);
+    }
+    fn on_auth_prompt(&self, payload: AuthPromptPayload) {
+        emit_auth_prompt(&self.app, payload);
+    }
+    fn on_auth_prompt_closed(&self, prompt_id: &str) {
+        emit_auth_prompt_closed(&self.app, prompt_id);
     }
 }
 

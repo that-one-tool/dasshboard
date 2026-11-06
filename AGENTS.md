@@ -46,7 +46,10 @@ files, releasing),
       overlay view, device dropdown, clipboard, xterm factory, DOM-free
       `sessionSlot` owning the open/opening session), overlay, reconnect
       (`reconnectBudget`: one backoff sequence, shared with the Tunnels
-      panel's per-device retries), paste, host-key dialog, terminal
+      panel's per-device retries), paste, host-key dialog, auth prompt
+      dialog (`authPromptDialog`: keyboard-interactive questions, one at a
+      time via the DOM-free `promptQueue`; a round asking nothing is a
+      toast), terminal
       settings, `terminalReplies` (keeps xterm's own query replies / mouse
       reports out of broadcast input), `inputQueue` (a pane's `write_stdin`
       calls one at a time, so keys arrive in order), `outputReader` (pulls a
@@ -138,9 +141,16 @@ files, releasing),
       so a second running instance picks up on-disk changes
     - `secret.rs` — OS keychain access; secrets never touch the JSON stores
     - `ssh/` — the SSH connection layer shells, tunnels and SFTP share:
-      `params` (credentials, jump hop, keepalive), `prompts` (host-key prompt
-      registry, and `HostKeyPrompter`: the prompt-only seam the handler
-      needs; `SessionSink` and `TunnelSink` extend it, SFTP implements it alone),
+      `params` (credentials, jump hop, keepalive), `prompts` (the host-key and
+      auth prompt registries, and `ConnectPrompter`: the prompt-only seam a
+      connection needs; `SessionSink` and `TunnelSink` extend it, SFTP
+      implements it alone), `interactive_auth` (keyboard-interactive after
+      the configured method, only when the server needs it: a partial
+      success, a rejected saved password — which may answer the first lone
+      hidden question — or the method tried not offered; the user answers
+      the rest through `auth_prompt`, and a round asking nothing is shown
+      as an info toast), `deadline` (the overall connect deadline, held
+      still while the user answers a prompt),
       `handler` (russh client handler: host-key TOFU, agent
       forwarding, remote-forward routing; server-opened channels we never
       asked for are rejected), `establish` (TCP with TCP_NODELAY as in

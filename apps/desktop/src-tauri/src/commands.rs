@@ -8,6 +8,7 @@
 //! invoked from the frontend as `{ deviceId: ... }`).
 
 pub mod app;
+pub mod auth_prompts;
 mod client_ids;
 pub mod config;
 mod device_access;

@@ -2,7 +2,7 @@
 //! its lifecycle [`SessionStatus`] and the [`SessionSink`] it streams into.
 
 use crate::error::AppError;
-use crate::ssh::prompts::HostKeyPrompter;
+use crate::ssh::prompts::ConnectPrompter;
 
 /// Lifecycle status mirrored to the frontend `session_status` event
 /// (SPEC.md §5). Serializes to the exact lowercase strings in the spec.
@@ -48,10 +48,10 @@ impl SessionStatus {
 }
 
 /// Sink for everything a terminal session surfaces to the frontend (its
-/// host-key prompts through [`HostKeyPrompter`]). The production impl emits
+/// host-key prompts through [`ConnectPrompter`]). The production impl emits
 /// Tauri events / streams over the IPC channel; the test impl records into
 /// channels. Kept object-safe (`Arc<dyn SessionSink>`).
-pub trait SessionSink: HostKeyPrompter {
+pub trait SessionSink: ConnectPrompter {
     /// Verbatim server output bytes → per-session IPC channel (SPEC.md §3).
     fn on_data(&self, bytes: &[u8]);
     /// A lifecycle change → `session_status` event.

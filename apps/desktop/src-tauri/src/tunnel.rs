@@ -61,12 +61,12 @@ use crate::relay::{bridge, Pace};
 use crate::remote_forward::RemoteRoutes;
 use crate::socks;
 use crate::ssh::establish::{
-    close_jump, establish_target, DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT,
-    DEFAULT_PROMPT_TIMEOUT,
+    close_jump, establish_target, overall_establish_timeout, DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
 };
 use crate::ssh::handler::SshHandler;
 use crate::ssh::params::{AuthCredentials, Endpoint, JumpHop, KeepaliveConfig};
-use crate::ssh::prompts::{HostKeyPrompter, PromptRegistry};
+use crate::ssh::prompts::{AuthAnswers, ConnectPrompter, ConnectPrompts};
 
 /// Control-channel bound. A tunnel's control channel carries the occasional
 /// user-driven forward add/remove and a final `Stop`; the bound just keeps it
@@ -125,10 +125,10 @@ pub struct TunnelInfo {
 }
 
 /// Sink for everything the tunnel core surfaces to the frontend (its host-key
-/// prompts — the same event a shell raises — through [`HostKeyPrompter`]).
+/// prompts — the same event a shell raises — through [`ConnectPrompter`]).
 /// The production impl emits `tunnel_status` events; the test impl records
 /// into channels. Kept object-safe (`Arc<dyn TunnelSink>`).
-pub trait TunnelSink: HostKeyPrompter {
+pub trait TunnelSink: ConnectPrompter {
     /// A lifecycle change → `tunnel_status` event. `forwards` carries per-forward
     /// bind state on a `Listening` status and is empty otherwise.
     fn on_status(
@@ -211,11 +211,11 @@ struct Controls {
 /// Owns all live tunnels. Lives in Tauri managed state behind an `Arc` (see
 /// `AppState`). Shares the host-key TOFU store with `SessionManager` so a trust
 /// decision made for a shell applies to a tunnel to the same host and vice
-/// versa; its own `PromptRegistry` is resolved by the `respond_host_key` command
+/// versa; its own `ConnectPrompts` is resolved by the `respond_host_key` command
 /// fanning a response out to both managers.
 pub struct TunnelManager {
     tunnels: Mutex<HashMap<String, TunnelHandle>>,
-    prompts: Arc<PromptRegistry>,
+    prompts: Arc<ConnectPrompts>,
     known_hosts: Arc<KnownHostsStore>,
     connect_timeout: Duration,
     prompt_timeout: Duration,
@@ -232,7 +232,7 @@ impl TunnelManager {
     ) -> Self {
         TunnelManager {
             tunnels: Mutex::new(HashMap::new()),
-            prompts: Arc::new(PromptRegistry::default()),
+            prompts: Arc::new(ConnectPrompts::default()),
             known_hosts,
             connect_timeout,
             prompt_timeout,
@@ -265,10 +265,12 @@ impl TunnelManager {
         )
     }
 
-    /// Overall deadline for the establish flow — TCP connect + handshake + any
-    /// host-key prompt wait + auth (B3). Same composition as `SessionManager`.
     fn overall_establish_timeout(&self) -> Duration {
-        self.connect_timeout + self.prompt_timeout + self.handshake_timeout
+        overall_establish_timeout(
+            self.connect_timeout,
+            self.prompt_timeout,
+            self.handshake_timeout,
+        )
     }
 
     /// Number of live tunnels currently tracked. Used by the app-close handler
@@ -323,7 +325,12 @@ impl TunnelManager {
     /// whether a prompt with that id was actually waiting here, so the command
     /// layer can fan the response out to both managers and know which owned it.
     pub fn respond_host_key(&self, prompt_id: &str, accept: bool) -> bool {
-        self.prompts.respond(prompt_id, accept)
+        self.prompts.respond_host_key(prompt_id, accept)
+    }
+
+    /// Resolve a pending keyboard-interactive prompt; `false` if it isn't ours.
+    pub fn respond_auth(&self, prompt_id: &str, answers: AuthAnswers) -> bool {
+        self.prompts.respond_auth(prompt_id, answers)
     }
 
     /// Spawn a live tunnel. Inserts the handle synchronously (so the map reflects
@@ -355,7 +362,7 @@ impl TunnelManager {
 
         let routes = Arc::new(RemoteRoutes::new(self.pace));
         let handler = SshHandler::new(
-            Arc::clone(&sink) as Arc<dyn HostKeyPrompter>,
+            Arc::clone(&sink) as Arc<dyn ConnectPrompter>,
             Arc::clone(&self.known_hosts),
             Arc::clone(&self.prompts),
             params.host.clone(),

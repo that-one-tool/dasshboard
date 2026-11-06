@@ -208,6 +208,7 @@ pub fn run() {
             commands::sessions::resize_pty,
             commands::sessions::disconnect,
             commands::host_keys::respond_host_key,
+            commands::auth_prompts::respond_auth_prompt,
             commands::host_keys::list_known_hosts,
             commands::host_keys::forget_host,
             commands::host_keys::known_hosts_reset,

@@ -198,7 +198,7 @@ export const es: SiteMessages = {
 			},
 			{
 				question: "¿Qué métodos de autenticación admite?",
-				answer: "Contraseña, archivo de clave privada (con frase de contraseña opcional) y agente SSH, incluidas las claves guardadas en una llave de hardware.",
+				answer: "Contraseña, archivo de clave privada (con frase de contraseña opcional) y agente SSH, incluidas las claves guardadas en una llave de hardware. Si un servidor pide más, como un código de un solo uso (2FA) u otras preguntas PAM, se responden en un diálogo.",
 			},
 			{
 				question: "¿Puedo importar los hosts que ya tengo?",

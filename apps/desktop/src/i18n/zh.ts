@@ -505,6 +505,9 @@ export const zh: Messages = {
 	"hostkey.unknown.lead": "无法确认 {host}:{port} 的真实性，因为这是首次连接。请通过其他方式核对下面的指纹，然后决定是否信任它。",
 	"hostkey.reset.heading": "警告：无法验证主机密钥",
 	"hostkey.reset.lead": "您保存的受信任主机暂时无法使用（其文件已损坏并被重置，或无法读取），因此无法将 {host}:{port} 的密钥与您之前可能信任的密钥进行比较。如果您以前连接过此服务器，其密钥可能已更改。请先通过其他方式核对下面的指纹，再决定是否信任。",
+	"authPrompt.heading": "需要身份验证",
+	"authPrompt.lead": "{target} 请求：",
+	"authPrompt.info": "{target}：{message}",
 
 	/* -- error prefixes ----------------------------------------------------- */
 	"error.prefix": "错误：{message}",

@@ -26,6 +26,24 @@ export interface SessionStatusEvent {
   code?: ErrorCode;
 }
 
+/** Payload of the `auth_prompt` event: one keyboard-interactive round. Every
+ * text is the server's own. */
+export interface AuthPromptEvent {
+  promptId: string;
+  host: string;
+  port: number;
+  username: string;
+  name: string;
+  instructions: string;
+  fields: AuthPromptField[];
+}
+
+/** One answer the server asks for; `echo: false` is a hidden input. */
+export interface AuthPromptField {
+  label: string;
+  echo: boolean;
+}
+
 /** Payload of the `host_key_prompt` event (SPEC §5–6). */
 export interface HostKeyPromptEvent {
   promptId: string;
@@ -127,6 +145,14 @@ export async function respondHostKey(
   if (accept) markLocalConfigWrite();
 }
 
+/** Answer a keyboard-interactive prompt, one answer per field; `null` cancels. */
+export async function respondAuthPrompt(
+  promptId: string,
+  answers: string[] | null,
+): Promise<void> {
+  await invokeChecked<void>("respond_auth_prompt", { promptId, answers });
+}
+
 /** Connect + authenticate + close, no shell (SPEC §5), with the device as
  * edited (saved or not). No `secret` falls back to the stored one. */
 export async function testConnection(device: Device, secret?: string): Promise<void> {
@@ -155,6 +181,24 @@ export function onHostKeyPromptClosed(
   handler: (promptId: string) => void,
 ): Promise<UnlistenFn> {
   return listen<{ promptId: string }>("host_key_prompt_closed", (e) =>
+    handler(e.payload.promptId),
+  );
+}
+
+/** Subscribes to `auth_prompt` events: a server asks the user something
+ * (a 2FA code…) while a connection authenticates. */
+export function onAuthPrompt(
+  handler: (event: AuthPromptEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AuthPromptEvent>("auth_prompt", (e) => handler(e.payload));
+}
+
+/** Subscribes to `auth_prompt_closed` events: the backend stopped waiting on
+ * an auth prompt (answered, timed out, or its connection went away). */
+export function onAuthPromptClosed(
+  handler: (promptId: string) => void,
+): Promise<UnlistenFn> {
+  return listen<{ promptId: string }>("auth_prompt_closed", (e) =>
     handler(e.payload.promptId),
   );
 }

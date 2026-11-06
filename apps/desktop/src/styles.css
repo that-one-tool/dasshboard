@@ -1199,6 +1199,36 @@ body.grid-dragging-row * {
 	color: var(--danger);
 }
 
+/* Keyboard-interactive prompt dialog */
+.authprompt-content {
+	max-width: 30rem;
+}
+
+.authprompt-body {
+	display: grid;
+	gap: 0.75rem;
+	padding: 1rem;
+}
+
+.authprompt-body p {
+	margin: 0;
+	font-size: 0.9rem;
+	line-height: 1.45;
+}
+
+.authprompt-lead {
+	color: var(--text-secondary);
+}
+
+.authprompt-body p,
+.authprompt-body label {
+	overflow-wrap: anywhere;
+}
+
+.authprompt-instructions {
+	white-space: pre-wrap;
+}
+
 /* ============================================================================
  * Buttons
  * ============================================================================ */
@@ -1690,6 +1720,9 @@ body.grid-dragging-row * {
 }
 
 .toast {
+	max-width: min(28rem, 90vw);
+	overflow-wrap: anywhere;
+	white-space: pre-line;
 	padding: 12px 16px;
 	border-radius: var(--radius);
 	font-size: 0.9rem;
@@ -1703,7 +1736,8 @@ body.grid-dragging-row * {
 	color: #fff;
 }
 
-.toast-success {
+.toast-success,
+.toast-info {
 	background-color: var(--text-bright);
 	color: var(--surface-1);
 }

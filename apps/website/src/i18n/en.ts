@@ -198,7 +198,7 @@ export const en = {
 			},
 			{
 				question: "Which authentication methods are supported?",
-				answer: "Password, private key file (with an optional passphrase), and SSH agent — including keys held on a hardware token.",
+				answer: "Password, private key file (with an optional passphrase), and SSH agent — including keys held on a hardware token. Servers asking for more, like a one-time code (2FA) or other PAM questions, get their questions answered in a dialog.",
 			},
 			{
 				question: "Can I import the hosts I already have?",
