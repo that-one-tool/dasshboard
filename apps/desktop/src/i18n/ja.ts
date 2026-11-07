@@ -105,6 +105,7 @@ export const ja: Messages = {
 	"pane.record.started": "{path} に記録しています",
 	"pane.record.stopped": "記録を {path} に保存しました",
 	"pane.record.failed": "記録が停止しました: {message}",
+	"pane.record.noSession": "記録していません: セッションが終了しました",
 	"pane.link.hint": "Ctrl+クリックでリンクを開く",
 	"pane.link.hintMac": "Cmd+クリックでリンクを開く",
 

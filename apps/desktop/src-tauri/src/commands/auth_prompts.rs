@@ -48,3 +48,12 @@ pub fn respond_auth_prompt(
             .respond_auth(&prompt_id, answers.clone())
         || state.sftp_manager.respond_auth(&prompt_id, answers);
 }
+
+/// The dialog shows an auth prompt (one at a time): its answer time starts
+/// now, not while it waited behind others. Unknown/stale ⇒ no-op.
+#[tauri::command]
+pub fn auth_prompt_shown(state: State<'_, AppState>, prompt_id: String) {
+    let _ = state.session_manager.mark_auth_shown(&prompt_id)
+        || state.tunnel_manager.mark_auth_shown(&prompt_id)
+        || state.sftp_manager.mark_auth_shown(&prompt_id);
+}

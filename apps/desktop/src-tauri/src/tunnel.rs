@@ -333,6 +333,11 @@ impl TunnelManager {
         self.prompts.respond_auth(prompt_id, answers)
     }
 
+    /// The dialog shows an auth prompt; `false` if it isn't ours.
+    pub fn mark_auth_shown(&self, prompt_id: &str) -> bool {
+        self.prompts.mark_auth_shown(prompt_id)
+    }
+
     /// Spawn a live tunnel. Inserts the handle synchronously (so the map reflects
     /// the tunnel the instant this returns) and drives the rest on a tokio task
     /// that removes its own entry on exit.

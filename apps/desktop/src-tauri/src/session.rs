@@ -629,6 +629,11 @@ impl SessionManager {
         self.prompts.respond_auth(prompt_id, answers)
     }
 
+    /// The dialog shows an auth prompt; `false` if it isn't ours.
+    pub fn mark_auth_shown(&self, prompt_id: &str) -> bool {
+        self.prompts.mark_auth_shown(prompt_id)
+    }
+
     /// Connect + authenticate + close, no shell (SPEC §5, `test_connection`).
     /// Uses the same host-key path as a real connect, so a first-contact test
     /// can raise a trust prompt just like a live session. Bounded by the same

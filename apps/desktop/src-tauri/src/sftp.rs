@@ -237,6 +237,11 @@ impl SftpManager {
         self.prompts.respond_auth(prompt_id, answers)
     }
 
+    /// The dialog shows an auth prompt; `false` if it isn't ours.
+    pub fn mark_auth_shown(&self, prompt_id: &str) -> bool {
+        self.prompts.mark_auth_shown(prompt_id)
+    }
+
     /// Register a fresh cancel flag for a starting transfer on `device_id`,
     /// returning it for the streaming loop to poll. Replaces any stale flag.
     fn begin_transfer(&self, device_id: &str) -> Arc<AtomicBool> {

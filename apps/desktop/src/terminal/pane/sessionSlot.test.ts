@@ -54,6 +54,16 @@ describe("SessionSlot", () => {
     expect(slot.isConnected()).toBe(true);
   });
 
+  it("lists the open and the opening session", () => {
+    expect(slot.ids()).toEqual([]);
+    slot.open("s1");
+    expect(slot.ids()).toEqual(["s1"]);
+    slot.adopt("s1");
+    slot.open("s2");
+    expect(slot.ids()).toEqual(["s1", "s2"]);
+    expect(slot.isBusy()).toBe(true);
+  });
+
   it("release returns every id it held and empties the slot", () => {
     slot.open("s1");
     slot.adopt("s1");

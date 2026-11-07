@@ -111,6 +111,7 @@ export const en = {
 	"pane.record.started": "Recording to {path}",
 	"pane.record.stopped": "Recording saved to {path}",
 	"pane.record.failed": "Recording stopped: {message}",
+	"pane.record.noSession": "Not recording: the session ended",
 	"pane.link.hint": "Ctrl+click to open the link",
 	"pane.link.hintMac": "Cmd+click to open the link",
 

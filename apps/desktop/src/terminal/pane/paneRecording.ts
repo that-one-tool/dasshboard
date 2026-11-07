@@ -14,6 +14,8 @@ import { outputFileName } from "../scrollbackText";
 export interface PaneRecordingOptions {
   /** The pane's open session, if any. */
   sessionId: () => string | null;
+  /** Every session of the pane, also one still connecting: it records already. */
+  sessionIds: () => string[];
   ownsSession: (sessionId: string) => boolean;
   deviceName: () => string;
   onError: (message: string) => void;
@@ -54,8 +56,10 @@ export class PaneRecording {
   private async start(): Promise<void> {
     const path = await pickLogSavePath(outputFileName(this.options.deviceName(), new Date(), "log"));
     // Read after the dialog: the session may have ended or been replaced.
+    if (!path) return;
     const sessionId = this.options.sessionId();
-    if (path && sessionId) await this.record(sessionId, path);
+    if (sessionId) await this.record(sessionId, path);
+    else this.options.onError(t("pane.record.noSession"));
   }
 
   private async record(sessionId: string, path: string): Promise<void> {
@@ -70,8 +74,8 @@ export class PaneRecording {
 
   private async stop(path: string): Promise<void> {
     this.setPath(null);
-    const sessionId = this.options.sessionId();
-    if (sessionId) await stopRecording(sessionId).catch(() => {});
+    const stops = this.options.sessionIds().map((id) => stopRecording(id).catch(() => {}));
+    await Promise.all(stops);
     showToast(t("pane.record.stopped", { path }), "success");
   }
 

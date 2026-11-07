@@ -104,6 +104,7 @@ export const pt: Messages = {
 	"pane.record.started": "Gravando em {path}",
 	"pane.record.stopped": "Gravação salva em {path}",
 	"pane.record.failed": "Gravação interrompida: {message}",
+	"pane.record.noSession": "Sem gravação: a sessão terminou",
 	"pane.link.hint": "Ctrl+clique para abrir o link",
 	"pane.link.hintMac": "Cmd+clique para abrir o link",
 

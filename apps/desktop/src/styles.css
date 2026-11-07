@@ -1207,6 +1207,10 @@ body.grid-dragging-row * {
 }
 
 /* Keyboard-interactive prompt dialog */
+.authprompt-form:focus {
+  outline: none;
+}
+
 .authprompt-content {
 	max-width: 30rem;
 }

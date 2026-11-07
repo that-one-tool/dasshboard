@@ -7,6 +7,7 @@
  */
 
 import {
+  markAuthPromptShown,
   onAuthPrompt,
   onAuthPromptClosed,
   respondAuthPrompt,
@@ -18,6 +19,14 @@ import { consumeKey, isTopDialog, pushDialog, removeDialog } from "../ui/dialogS
 import { t } from "../i18n";
 import { PromptQueue } from "./promptQueue";
 import { showToast } from "../ui/toast";
+
+/** A key pressed elsewhere this recently means the user is typing there: a
+ * prompt shown now must not take the rest of those keys (a password meant for
+ * a terminal). */
+const TYPING_PAUSE_MS = 1000;
+/** A prompt this new ignores Enter and Escape: a repeated Enter or a vim
+ * user's Esc was not meant for it. */
+const ARM_DELAY_MS = 1000;
 
 interface AuthPromptView {
   root: HTMLElement;
@@ -37,8 +46,11 @@ class AuthPromptDialog {
   private readonly view = buildView();
   private readonly queue = new PromptQueue<AuthPromptEvent>();
   private readonly unlisteners: Promise<() => void>[];
+  private lastOutsideKeyAt = Number.NEGATIVE_INFINITY;
+  private shownAt = Number.NEGATIVE_INFINITY;
   private readonly onKey = (e: KeyboardEvent): void => {
-    if (!this.isEscapeForThis(e)) return;
+    this.noteOutsideKey(e);
+    if (!this.isEscapeForThis(e) || !this.isArmed()) return;
     consumeKey(e);
     this.answer(null);
   };
@@ -71,7 +83,16 @@ class AuthPromptDialog {
 
   private submit(e: Event): void {
     e.preventDefault();
-    this.answer(readAnswers(this.view.fields));
+    if (this.isArmed()) this.answer(readAnswers(this.view.fields));
+  }
+
+  private noteOutsideKey(e: KeyboardEvent): void {
+    if (e.target instanceof Node && this.view.root.contains(e.target)) return;
+    this.lastOutsideKeyAt = performance.now();
+  }
+
+  private isArmed(): boolean {
+    return performance.now() - this.shownAt >= ARM_DELAY_MS;
   }
 
   private cancelOnButton(e: Event): void {
@@ -93,7 +114,11 @@ class AuthPromptDialog {
   }
 
   private render(): void {
-    renderPrompt(this.view, this.queue.current);
+    this.shownAt = performance.now();
+    const typing = this.shownAt - this.lastOutsideKeyAt < TYPING_PAUSE_MS;
+    const prompt = this.queue.current;
+    renderPrompt(this.view, prompt, typing);
+    if (prompt) void markShown(prompt.promptId);
   }
 }
 
@@ -118,7 +143,7 @@ function buildView(): AuthPromptView {
 function dialogMarkup(): string {
   return `
     <div class="dialog-overlay"></div>
-    <form class="dialog-content authprompt-content authprompt-form" autocomplete="off">
+    <form class="dialog-content authprompt-content authprompt-form" autocomplete="off" tabindex="-1">
       <div class="dialog-header">
         <h2 data-i18n="authPrompt.heading">${t("authPrompt.heading")}</h2>
       </div>
@@ -144,7 +169,7 @@ function actionsMarkup(): string {
   `;
 }
 
-function renderPrompt(view: AuthPromptView, prompt: AuthPromptEvent | null): void {
+function renderPrompt(view: AuthPromptView, prompt: AuthPromptEvent | null, typing: boolean): void {
   view.fields.replaceChildren();
   if (!prompt) {
     hide(view.root);
@@ -156,7 +181,14 @@ function renderPrompt(view: AuthPromptView, prompt: AuthPromptEvent | null): voi
   setOptionalText(view.instructions, prompt.instructions);
   view.fields.append(...prompt.fields.map(buildField));
   show(view.root);
-  view.fields.querySelector("input")?.focus();
+  focusPrompt(view, typing);
+}
+
+/** While the user types, the dialog itself takes focus: keys go nowhere and
+ * Enter submits nothing; Tab or a click reaches the field. */
+function focusPrompt(view: AuthPromptView, typing: boolean): void {
+  const field = view.fields.querySelector("input");
+  (typing || !field ? view.form : field).focus();
 }
 
 function buildField(field: AuthPromptField, index: number): HTMLElement {
@@ -210,6 +242,16 @@ function hide(root: HTMLElement): void {
   root.classList.add("dialog-hidden");
   root.setAttribute("aria-hidden", "true");
   removeDialog(root);
+}
+
+/** The backend times the prompt out from now; failing that, from when it
+ * sent it. */
+async function markShown(promptId: string): Promise<void> {
+  try {
+    await markAuthPromptShown(promptId);
+  } catch {
+    /* the backend times the prompt out on its own */
+  }
 }
 
 async function deliver(promptId: string, answers: string[] | null): Promise<void> {

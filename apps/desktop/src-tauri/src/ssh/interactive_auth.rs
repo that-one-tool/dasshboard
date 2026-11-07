@@ -6,8 +6,7 @@ use std::time::Duration;
 
 use russh::client::{AuthResult, KeyboardInteractiveAuthResponse, Prompt};
 use russh::{MethodKind, MethodSet};
-use tokio::sync::oneshot::error::RecvError;
-use tokio::time::error::Elapsed;
+use tokio::sync::oneshot::{self, error::RecvError};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -29,6 +28,9 @@ const MAX_PHASES: usize = 3;
 const MAX_FIELDS: usize = 16;
 /// Server-written texts are clipped to this many characters for display.
 const MAX_TEXT_CHARS: usize = 1024;
+/// Longest wait for the dialog to show a prompt queued behind others (it
+/// shows one at a time): a prompt the user never sees must end too.
+pub(super) const AUTH_PROMPT_QUEUE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// One keyboard-interactive round, as the server worded it.
 pub(super) struct AuthRound<'a> {
@@ -46,7 +48,7 @@ pub(super) trait KbdTransport {
     ) -> Result<KeyboardInteractiveAuthResponse, AppError>;
 }
 
-/// Who answers a round the saved password can't (the user, in production).
+/// Who answers a round (the user, in production).
 pub(super) trait AnswerSource {
     async fn ask(&self, round: &AuthRound<'_>) -> Result<Zeroizing<Vec<String>>, AppError>;
     /// Show a round that asks nothing ("approve the push on your phone").
@@ -72,7 +74,7 @@ pub(super) fn needs_keyboard_interactive(result: &AuthResult, tried: MethodKind)
 
 /// Take authentication from the configured method's `first` result to the
 /// end, through keyboard-interactive when the server needs it. The saved
-/// password may answer the first question (a lone hidden one) unless the
+/// password may answer a password question (see `answer_round`) unless the
 /// server already accepted it (a partial success then asks for a 2nd factor).
 pub(super) async fn finish_authentication<T: KbdTransport, A: AnswerSource>(
     transport: &mut T,
@@ -100,12 +102,6 @@ pub(super) async fn finish_authentication<T: KbdTransport, A: AnswerSource>(
     Err(authentication_failed())
 }
 
-pub(super) fn authentication_failed() -> AppError {
-    AppError::SshAuth(
-        "authentication failed — check the stored password/key and the username".to_string(),
-    )
-}
-
 fn is_partial_success(result: &AuthResult) -> bool {
     matches!(
         result,
@@ -113,6 +109,12 @@ fn is_partial_success(result: &AuthResult) -> bool {
             partial_success: true,
             ..
         }
+    )
+}
+
+pub(super) fn authentication_failed() -> AppError {
+    AppError::SshAuth(
+        "authentication failed — check the stored password/key and the username".to_string(),
     )
 }
 
@@ -171,8 +173,10 @@ fn into_info_request(reply: KeyboardInteractiveAuthResponse) -> Result<InfoReque
 }
 
 /// A round asking nothing is shown (if it says something) and answered
-/// empty; the first real one is offered the saved password, used only if it
-/// is a lone hidden question; the user answers the rest.
+/// empty; the saved password answers the phase's first lone hidden question
+/// worded as a password (also after a one-time code); the user answers the
+/// rest.
+/// Answers are moved, not copied, out of `Zeroizing`: no copy left unwiped.
 async fn answer_round<A: AnswerSource>(
     round: &AuthRound<'_>,
     saved: &mut Option<Zeroizing<String>>,
@@ -183,11 +187,11 @@ async fn answer_round<A: AnswerSource>(
         return Ok(Vec::new());
     }
     check_field_count(round.prompts)?;
-    let offered = saved.take();
-    if let Some(password) = offered.filter(|_| is_password_question(round.prompts)) {
-        return Ok(vec![password.to_string()]);
+    if let Some(mut password) = saved.take_if(|_| is_password_question(round.prompts)) {
+        return Ok(vec![std::mem::take(&mut *password)]);
     }
-    Ok(user.ask(round).await?.to_vec())
+    let mut answers = user.ask(round).await?;
+    Ok(std::mem::take(&mut *answers))
 }
 
 fn show_information<A: AnswerSource>(round: &AuthRound<'_>, user: &A) {
@@ -207,7 +211,96 @@ fn check_field_count(prompts: &[Prompt]) -> Result<(), AppError> {
 }
 
 fn is_password_question(prompts: &[Prompt]) -> bool {
-    matches!(prompts, [only] if !only.echo)
+    matches!(prompts, [only] if !only.echo && is_password_label(&only.prompt))
+}
+
+/// What a server's password question says, in the app's languages. Matched
+/// anywhere: German compounds ("Anmeldepasswort") and CJK have no spaces.
+const PASSWORD_STEMS: &[&str] = &[
+    "password",
+    "passphrase",
+    "passwort",
+    "kennwort",
+    "mot de passe",
+    "contraseña",
+    "senha",
+    "パスワード",
+    "密码",
+];
+/// What a one-time code or a password change question says (its "password"
+/// is not the saved one), as whole words, so that a user or host name in the
+/// label ("root@shipping-db") can't match "pin".
+const NOT_PASSWORD_WORDS: &[&str] = &[
+    "one time",
+    "otp",
+    "code",
+    "token",
+    "passcode",
+    "pin",
+    "verification",
+    "sms",
+    "dynamic",
+    "temporary",
+    "new",
+    "retype",
+    "confirm",
+    "again",
+    "repeat",
+    "neues",
+    "neue",
+    "usage unique",
+    "temporaire",
+    "nouveau",
+    "confirmez",
+    "confirmer",
+    "un solo uso",
+    "temporal",
+    "nueva",
+    "nuevo",
+    "repita",
+    "confirme",
+    "nova",
+    "novo",
+    "nuova",
+    "nuovo",
+    "conferma",
+    "temporanea",
+];
+/// The same, matched anywhere (compounds, CJK, word stems).
+const NOT_PASSWORD_STEMS: &[&str] = &[
+    "einmal",
+    "bestätig",
+    "wiederhol",
+    "temporár",
+    "ワンタイム",
+    "新しい",
+    "確認",
+    "动态",
+    "一次性",
+    "新密码",
+    "确认",
+];
+
+/// Worded as a password and not as a one-time code or a new password. Unusual
+/// wording is not: the user is asked, never the wrong secret sent.
+fn is_password_label(label: &str) -> bool {
+    let label = label.to_lowercase();
+    let words = as_words(&label);
+    let has_stem = |stems: &[&str]| stems.iter().any(|stem| label.contains(stem));
+    let has_word = |list: &[&str]| list.iter().any(|word| words.contains(&format!(" {word} ")));
+    has_stem(PASSWORD_STEMS) && !has_stem(NOT_PASSWORD_STEMS) && !has_word(NOT_PASSWORD_WORDS)
+}
+
+/// `label`'s words, space-separated and space-padded: " root shipping db ".
+fn as_words(label: &str) -> String {
+    let spaced: String = label
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    format!(
+        " {} ",
+        spaced.split_whitespace().collect::<Vec<_>>().join(" ")
+    )
 }
 
 fn into_auth_result(verdict: KeyboardInteractiveAuthResponse) -> AuthResult {
@@ -228,11 +321,14 @@ fn into_auth_result(verdict: KeyboardInteractiveAuthResponse) -> AuthResult {
 }
 
 /// Asks the user through the `auth_prompt` event and waits for their answer
-/// (or cancel), bounded like a host-key prompt.
+/// (or cancel): `timeout` from when the dialog shows it (`on_screen`), which
+/// it must do within `queue_timeout`.
 pub(crate) struct PromptAsker {
     pub(super) prompter: Arc<dyn ConnectPrompter>,
     pub(super) registry: Arc<PromptRegistry<AuthAnswers>>,
+    pub(super) on_screen: Arc<PromptRegistry<()>>,
     pub(super) timeout: Duration,
+    pub(super) queue_timeout: Duration,
     pub(super) host: String,
     pub(super) port: u16,
     pub(super) username: String,
@@ -243,11 +339,12 @@ impl AnswerSource for PromptAsker {
     async fn ask(&self, round: &AuthRound<'_>) -> Result<Zeroizing<Vec<String>>, AppError> {
         let prompt_id = Uuid::new_v4().to_string();
         let (rx, _guard) = self.registry.register(prompt_id.clone());
+        let (shown, _shown_guard) = self.on_screen.register(prompt_id.clone());
         let _paused = self.deadline.as_ref().map(ConnectDeadline::pause);
         let _closed_notice =
             PromptClosedNotice::auth(Arc::clone(&self.prompter), prompt_id.clone());
         self.prompter.on_auth_prompt(self.payload(prompt_id, round));
-        let answered = tokio::time::timeout(self.timeout, rx).await;
+        let answered = self.answer(rx, shown).await;
         accept_answers(answered, round.prompts.len())
     }
 
@@ -259,6 +356,21 @@ impl AnswerSource for PromptAsker {
 }
 
 impl PromptAsker {
+    /// The answer, if the prompt is shown within `queue_timeout` and answered
+    /// within `timeout` of that.
+    async fn answer(
+        &self,
+        mut answer: oneshot::Receiver<AuthAnswers>,
+        shown: oneshot::Receiver<()>,
+    ) -> Option<Result<AuthAnswers, RecvError>> {
+        tokio::select! {
+            answered = &mut answer => return Some(answered),
+            _ = shown => {}
+            () = tokio::time::sleep(self.queue_timeout) => return None,
+        }
+        tokio::time::timeout(self.timeout, answer).await.ok()
+    }
+
     fn payload(&self, prompt_id: String, round: &AuthRound<'_>) -> AuthPromptPayload {
         AuthPromptPayload {
             prompt_id,
@@ -283,19 +395,20 @@ fn clip(text: &str) -> String {
     text.chars().take(MAX_TEXT_CHARS).collect()
 }
 
+/// `answered`: `None` when the wait timed out.
 fn accept_answers(
-    answered: Result<Result<AuthAnswers, RecvError>, Elapsed>,
+    answered: Option<Result<AuthAnswers, RecvError>>,
     expected: usize,
 ) -> Result<Zeroizing<Vec<String>>, AppError> {
     match answered {
-        Err(_) => Err(AppError::SshAuth(
+        None => Err(AppError::SshAuth(
             "the server's authentication question went unanswered".to_string(),
         )),
-        Ok(Ok(Some(answers))) if answers.len() == expected => Ok(answers),
-        Ok(Ok(Some(_))) => Err(AppError::SshAuth(
+        Some(Ok(Some(answers))) if answers.len() == expected => Ok(answers),
+        Some(Ok(Some(_))) => Err(AppError::SshAuth(
             "the answers don't match the server's questions".to_string(),
         )),
-        Ok(_) => Err(AppError::SshAuth(
+        Some(_) => Err(AppError::SshAuth(
             "authentication was cancelled".to_string(),
         )),
     }
@@ -543,6 +656,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_saved_password_never_answers_a_one_time_code_question() {
+        let mut server = ScriptedServer::new(vec![
+            info(&[("Verification code: ", false)]),
+            info(&[("Password: ", false)]),
+            KeyboardInteractiveAuthResponse::Success,
+        ]);
+        let user = ScriptedUser::answering("123456");
+        let first = rejected(&[KBD], false);
+        let result = finish(&mut server, first, MethodKind::Password, saved("pw"), &user).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            server.sent,
+            vec![vec!["123456".to_string()], vec!["pw".to_string()]]
+        );
+    }
+
+    #[test]
+    fn only_a_question_worded_as_a_password_gets_the_saved_one() {
+        for label in [
+            "Password: ",
+            "Password for root@nas: ",
+            "Enter passphrase:",
+            "Passwort: ",
+            "Mot de passe : ",
+            "Contraseña: ",
+            "Senha: ",
+            "パスワード: ",
+            "密码：",
+            "(current) UNIX password: ",
+            "Password for root@shipping-db: ",
+            "jasper@codeserver.lan's password: ",
+            "Password for pinto@pine.lan: ",
+        ] {
+            assert!(is_password_label(label), "{label:?}");
+        }
+        for label in [
+            "Verification code: ",
+            "One-time password (OATH) for `root': ",
+            "OTP password: ",
+            "Passcode or option (1-3): ",
+            "Token: ",
+            "PIN: ",
+            "Username: ",
+            "SMS password: ",
+            "Temporary password: ",
+            "Dynamic password: ",
+            "ワンタイムパスワード: ",
+            "动态密码：",
+            "一次性密码：",
+            "Einmalpasswort: ",
+            "Mot de passe à usage unique : ",
+            "Contraseña de un solo uso: ",
+            "Senha temporária: ",
+            "New password: ",
+            "Retype new password: ",
+            "Confirm password: ",
+            "Enter password again: ",
+            "Neues Passwort: ",
+            "Passwort wiederholen: ",
+            "Nouveau mot de passe : ",
+            "Confirmez le mot de passe : ",
+            "Nueva contraseña: ",
+            "Nova senha: ",
+            "Nuova password: ",
+            "新しいパスワード: ",
+            "新密码：",
+            "确认密码：",
+        ] {
+            assert!(!is_password_label(label), "{label:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_round_with_too_many_questions_is_refused() {
         let labels = vec![("Q: ", true); MAX_FIELDS + 1];
         let mut server = ScriptedServer::new(vec![info(&labels)]);
@@ -674,7 +860,9 @@ mod tests {
         let asker = PromptAsker {
             prompter: Arc::clone(&prompter) as Arc<dyn ConnectPrompter>,
             registry,
+            on_screen: Arc::default(),
             timeout: Duration::from_millis(50),
+            queue_timeout: Duration::from_millis(50),
             host: "h".into(),
             port: 22,
             username: "u".into(),
@@ -733,6 +921,89 @@ mod tests {
         let result = asker.ask(&round(&prompts)).await;
         assert!(matches!(result, Err(AppError::SshAuth(_))));
         assert_eq!(prompter.closed.lock().unwrap().len(), 1);
+    }
+
+    /// The id of the prompt `prompter` was shown, once it was.
+    async fn shown_prompt_id(prompter: &AnsweringPrompter) -> String {
+        loop {
+            if let Some(shown) = prompter.shown.lock().unwrap().first() {
+                return shown.prompt_id.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn the_answer_time_starts_once_the_dialog_shows_the_prompt() {
+        let (mut asker, prompter) = asker_answering(None);
+        asker.queue_timeout = Duration::from_secs(5);
+        let (on_screen, registry) = (Arc::clone(&asker.on_screen), Arc::clone(&asker.registry));
+        let user = async {
+            let prompt_id = shown_prompt_id(&prompter).await;
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            assert!(on_screen.respond(&prompt_id, ()));
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            registry.respond(&prompt_id, Some(Zeroizing::new(vec!["42".to_string()])));
+        };
+        let prompts = one_prompt();
+
+        let asked = round(&prompts);
+        let (answers, ()) = tokio::join!(asker.ask(&asked), user);
+
+        assert_eq!(answers.unwrap().as_slice(), ["42".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_prompt_shown_late_still_gets_the_full_answer_time() {
+        let (mut asker, prompter) = asker_answering(None);
+        asker.queue_timeout = Duration::from_millis(100);
+        asker.timeout = Duration::from_millis(300);
+        let (on_screen, registry) = (Arc::clone(&asker.on_screen), Arc::clone(&asker.registry));
+        let user = async {
+            let prompt_id = shown_prompt_id(&prompter).await;
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            on_screen.respond(&prompt_id, ());
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            registry.respond(&prompt_id, Some(Zeroizing::new(vec!["42".to_string()])));
+        };
+        let prompts = one_prompt();
+
+        let asked = round(&prompts);
+        let (answers, ()) = tokio::join!(asker.ask(&asked), user);
+
+        assert_eq!(answers.unwrap().as_slice(), ["42".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_shown_prompt_left_unanswered_times_out() {
+        let (mut asker, prompter) = asker_answering(None);
+        asker.queue_timeout = Duration::from_secs(5);
+        let on_screen = Arc::clone(&asker.on_screen);
+        let user = async {
+            let prompt_id = shown_prompt_id(&prompter).await;
+            on_screen.respond(&prompt_id, ());
+        };
+        let prompts = one_prompt();
+
+        let started = std::time::Instant::now();
+        let asked = round(&prompts);
+        let (result, ()) = tokio::join!(asker.ask(&asked), user);
+
+        assert!(matches!(result, Err(AppError::SshAuth(_))));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn a_prompt_never_shown_times_out_after_the_queue_limit() {
+        let (mut asker, _prompter) = asker_answering(None);
+        asker.timeout = Duration::from_secs(5);
+        let prompts = one_prompt();
+
+        let started = std::time::Instant::now();
+        let result = asker.ask(&round(&prompts)).await;
+
+        assert!(matches!(result, Err(AppError::SshAuth(_))));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test]

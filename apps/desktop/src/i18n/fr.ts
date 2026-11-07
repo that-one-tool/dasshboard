@@ -105,6 +105,7 @@ export const fr: Messages = {
 	"pane.record.started": "Enregistrement dans {path}",
 	"pane.record.stopped": "Enregistrement sauvegardé dans {path}",
 	"pane.record.failed": "Enregistrement arrêté : {message}",
+	"pane.record.noSession": "Pas d'enregistrement : la session s'est terminée",
 	"pane.link.hint": "Ctrl+clic pour ouvrir le lien",
 	"pane.link.hintMac": "Cmd+clic pour ouvrir le lien",
 

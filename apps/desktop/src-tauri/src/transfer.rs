@@ -468,7 +468,7 @@ pub(crate) fn export_commands_impl(state: &AppState, path: &Path) -> Result<u32,
 pub(crate) fn import_commands_impl(state: &AppState, path: &Path) -> Result<u32, AppError> {
     let contents = fs::read_to_string(path)?;
     let commands = parse_commands_import(&contents)?;
-    Ok(state.command_store.upsert_all(commands)? as u32)
+    Ok(state.command_store.add_all(commands)? as u32)
 }
 
 #[cfg(test)]
@@ -1299,7 +1299,7 @@ mod tests {
     }
 
     #[test]
-    fn commands_round_trip_export_then_import_is_idempotent() {
+    fn commands_round_trip_export_then_import_adds_copies_and_keeps_originals() {
         let src_dir = tempdir().unwrap();
         let src = test_state(src_dir.path());
         src.command_store.upsert(sample_command("A")).unwrap();
@@ -1310,9 +1310,12 @@ mod tests {
         let dst_dir = tempdir().unwrap();
         let dst = test_state(dst_dir.path());
         assert_eq!(import_commands_impl(&dst, &file).unwrap(), 2);
-        import_commands_impl(&dst, &file).unwrap();
-
         assert_eq!(dst.command_store.list(), src.command_store.list());
+
+        import_commands_impl(&dst, &file).unwrap();
+        let list = dst.command_store.list();
+        assert_eq!(list.len(), 4);
+        assert_eq!(list[..2], src.command_store.list()[..]);
     }
 
     #[test]

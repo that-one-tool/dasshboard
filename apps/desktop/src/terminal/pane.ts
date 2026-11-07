@@ -235,6 +235,7 @@ export class TerminalPane {
   private makeRecording(): PaneRecording {
     return new PaneRecording(this.root, {
       sessionId: () => this.session.current,
+      sessionIds: () => this.session.ids(),
       ownsSession: (sessionId) => this.session.isOwnerOf(sessionId),
       deviceName: () => this.assignedDeviceName(),
       onError: (message) => this.options.onError?.(message),

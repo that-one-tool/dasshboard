@@ -104,6 +104,7 @@ export const it: Messages = {
 	"pane.record.started": "Registrazione in {path}",
 	"pane.record.stopped": "Registrazione salvata in {path}",
 	"pane.record.failed": "Registrazione interrotta: {message}",
+	"pane.record.noSession": "Nessuna registrazione: la sessione è terminata",
 	"pane.link.hint": "Ctrl+clic per aprire il link",
 	"pane.link.hintMac": "Cmd+clic per aprire il link",
 

@@ -3959,6 +3959,29 @@ async fn the_saved_password_answers_a_keyboard_interactive_password_question() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_auth_prompt_waits_in_the_queue_until_it_is_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_kbd_server(KbdScenario::PasswordThenCode).await;
+    seed_trusted(dir.path(), port);
+    let manager = manager_with(dir.path(), Duration::from_millis(300));
+    let (sink, mut chans) = new_sink();
+    spawn_pw_session(&manager, "k1", port, sink);
+    let prompt = recv_timeout(&mut chans.auth_prompt_rx, Duration::from_secs(10))
+        .await
+        .expect("an auth_prompt");
+
+    // Queued behind another prompt for longer than the answer time.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(manager.mark_auth_shown(&prompt.prompt_id));
+    let answers = Some(Zeroizing::new(vec![TEST_CODE.to_string()]));
+    assert!(manager.respond_auth(&prompt.prompt_id, answers));
+
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+    manager.disconnect("k1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_second_factor_is_asked_of_the_user_and_answered() {
     let dir = tempfile::tempdir().unwrap();
     let (manager, mut chans) = start_kbd_session(dir.path(), KbdScenario::PasswordThenCode).await;

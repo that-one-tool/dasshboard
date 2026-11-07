@@ -11,7 +11,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use super::deadline::{ConnectDeadline, DeadlinePause};
-use super::interactive_auth::PromptAsker;
+use super::interactive_auth::{PromptAsker, AUTH_PROMPT_QUEUE_TIMEOUT};
 use super::params::{JumpHop, KeepaliveConfig};
 use super::prompts::{ConnectPrompter, ConnectPrompts, HostKeyPromptPayload, PromptClosedNotice};
 use crate::known_hosts::{KnownHost, KnownHostsStore, Verdict};
@@ -190,7 +190,9 @@ impl SshHandler {
         PromptAsker {
             prompter: Arc::clone(&self.prompter),
             registry: Arc::clone(&self.prompts.auth),
+            on_screen: Arc::clone(&self.prompts.auth_on_screen),
             timeout: self.prompt_timeout,
+            queue_timeout: AUTH_PROMPT_QUEUE_TIMEOUT.max(self.prompt_timeout),
             host: self.host.clone(),
             port: self.port,
             username: username.to_string(),

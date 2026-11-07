@@ -9,6 +9,7 @@ const h = vi.hoisted(() => ({
   promptHandler: null as ((event: AuthPromptEvent) => void) | null,
   closedHandler: null as ((promptId: string) => void) | null,
   respond: vi.fn(async (_promptId: string, _answers: string[] | null) => {}),
+  shown: vi.fn(async (_promptId: string) => {}),
 }));
 
 vi.mock("../ipc", () => ({
@@ -21,6 +22,7 @@ vi.mock("../ipc", () => ({
     return () => {};
   }),
   respondAuthPrompt: (promptId: string, answers: string[] | null) => h.respond(promptId, answers),
+  markAuthPromptShown: (promptId: string) => h.shown(promptId),
 }));
 
 import { initAuthPromptDialog } from "./authPromptDialog";
@@ -69,15 +71,27 @@ function submit(): void {
 
 describe("initAuthPromptDialog", () => {
   let dispose: () => void;
+  let clock: number;
+  let monotonicNow: ReturnType<typeof vi.spyOn>;
+  /** Past the time a new prompt ignores Enter and Escape. */
+  const later = (): void => {
+    clock += 1500;
+  };
 
   beforeEach(async () => {
+    clock = 100_000;
+    monotonicNow = vi.spyOn(performance, "now").mockImplementation(() => clock);
     document.body.innerHTML = "";
     h.respond.mockClear();
+    h.shown.mockClear();
     dispose = initAuthPromptDialog();
     await flush();
   });
 
-  afterEach(() => dispose());
+  afterEach(() => {
+    dispose();
+    monotonicNow.mockRestore();
+  });
 
   it("starts hidden", () => {
     expect(root().classList.contains("dialog-hidden")).toBe(true);
@@ -101,6 +115,77 @@ describe("initAuthPromptDialog", () => {
     const labels = [...document.querySelectorAll(".authprompt-fields label")];
     expect(labels.map((l) => l.textContent)).toEqual(["Password: ", "Token name: "]);
     expect(document.activeElement).toBe(secret);
+  });
+
+  it("doesn't take the keys of a user typing elsewhere", () => {
+    const terminal = document.createElement("textarea");
+    document.body.append(terminal);
+    terminal.focus();
+    terminal.dispatchEvent(new KeyboardEvent("keydown", { key: "s", bubbles: true }));
+
+    show(promptEvent());
+
+    expect(document.activeElement).toBe(q(".authprompt-form"));
+  });
+
+  it("focuses the field once the user stopped typing", () => {
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "s", bubbles: true }));
+    later();
+
+    show(promptEvent());
+
+    expect(document.activeElement).toBe(inputs()[0]);
+  });
+
+  it("after an answer, the next prompt's field takes the next code", async () => {
+    show(promptEvent({ promptId: "a1" }));
+    show(promptEvent({ promptId: "a2", host: "10.0.0.2" }));
+    later();
+    inputs()[0]!.value = "111111";
+    inputs()[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    submit();
+    await flush();
+
+    expect(q(".authprompt-lead").textContent).toContain("root@10.0.0.2:22");
+    expect(document.activeElement).toBe(inputs()[0]);
+  });
+
+  it("an Enter repeated into the next prompt answers nothing", async () => {
+    show(promptEvent({ promptId: "a1" }));
+    show(promptEvent({ promptId: "a2", host: "10.0.0.2" }));
+    later();
+    inputs()[0]!.value = "111111";
+    submit();
+    submit();
+    await flush();
+
+    expect(h.respond.mock.calls).toEqual([["a1", ["111111"]]]);
+    later();
+    submit();
+    await flush();
+    expect(h.respond).toHaveBeenLastCalledWith("a2", [""]);
+  });
+
+  it("a system clock set back doesn't lock the prompt", async () => {
+    const wallClock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    show(promptEvent());
+    wallClock.mockReturnValue(0);
+    later();
+
+    submit();
+    await flush();
+
+    expect(h.respond).toHaveBeenCalledWith("a1", [""]);
+    wallClock.mockRestore();
+  });
+
+  it("an Escape pressed as a prompt appears doesn't cancel it", async () => {
+    show(promptEvent());
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flush();
+
+    expect(h.respond).not.toHaveBeenCalled();
+    expect(root().classList.contains("dialog-hidden")).toBe(false);
   });
 
   it("puts the server's texts in as plain text", () => {
@@ -128,6 +213,7 @@ describe("initAuthPromptDialog", () => {
     const [first, second] = inputs();
     first!.value = "pw";
     second!.value = "123456";
+    later();
 
     submit();
     await flush();
@@ -140,12 +226,32 @@ describe("initAuthPromptDialog", () => {
   it("shows queued prompts one after the other", async () => {
     show(promptEvent({ promptId: "a1" }));
     show(promptEvent({ promptId: "a2", host: "second.host" }));
+    later();
 
     submit();
     await flush();
 
     expect(root().classList.contains("dialog-hidden")).toBe(false);
     expect(q(".authprompt-lead").textContent).toContain("second.host");
+  });
+
+  it("tells the backend when each prompt is on screen, not while queued", async () => {
+    show(promptEvent({ promptId: "a1" }));
+    show(promptEvent({ promptId: "a2" }));
+    expect(h.shown.mock.calls).toEqual([["a1"]]);
+    later();
+
+    submit();
+    await flush();
+
+    expect(h.shown.mock.calls).toEqual([["a1"], ["a2"]]);
+  });
+
+  it("a failed shown notice is ignored", async () => {
+    h.shown.mockRejectedValueOnce(new Error("ipc down"));
+    show(promptEvent());
+    await flush();
+    expect(root().classList.contains("dialog-hidden")).toBe(false);
   });
 
   it("Cancel cancels the prompt", async () => {
@@ -158,6 +264,7 @@ describe("initAuthPromptDialog", () => {
 
   it("Escape cancels the prompt", async () => {
     show(promptEvent());
+    later();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flush();
     expect(h.respond).toHaveBeenCalledWith("a1", null);
@@ -177,6 +284,7 @@ describe("initAuthPromptDialog", () => {
   it("a failed answer delivery is ignored (the backend times out)", async () => {
     h.respond.mockRejectedValueOnce(new Error("ipc down"));
     show(promptEvent());
+    later();
     submit();
     await flush();
     expect(root().classList.contains("dialog-hidden")).toBe(true);
@@ -193,6 +301,7 @@ describe("initAuthPromptDialog", () => {
 
   it("Escape is left to a newer dialog on top", () => {
     show(promptEvent());
+    later();
     const newer = document.createElement("div");
     pushDialog(newer);
 

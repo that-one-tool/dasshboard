@@ -105,6 +105,7 @@ export const zh: Messages = {
 	"pane.record.started": "正在记录到 {path}",
 	"pane.record.stopped": "记录已保存到 {path}",
 	"pane.record.failed": "记录已停止：{message}",
+	"pane.record.noSession": "未记录：会话已结束",
 	"pane.link.hint": "Ctrl+单击打开链接",
 	"pane.link.hintMac": "Cmd+单击打开链接",
 

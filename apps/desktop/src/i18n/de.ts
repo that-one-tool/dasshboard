@@ -105,6 +105,7 @@ export const de: Messages = {
 	"pane.record.started": "Aufzeichnung nach {path}",
 	"pane.record.stopped": "Aufzeichnung gespeichert unter {path}",
 	"pane.record.failed": "Aufzeichnung beendet: {message}",
+	"pane.record.noSession": "Keine Aufzeichnung: Die Sitzung wurde beendet",
 	"pane.link.hint": "Strg+Klick öffnet den Link",
 	"pane.link.hintMac": "Cmd+Klick öffnet den Link",
 

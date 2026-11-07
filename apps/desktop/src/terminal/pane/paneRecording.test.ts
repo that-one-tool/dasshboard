@@ -33,6 +33,7 @@ import { PaneRecording } from "./paneRecording";
 describe("PaneRecording", () => {
   let root: HTMLElement;
   let sessionId: string | null;
+  let sessionIds: string[];
   let onError: ReturnType<typeof vi.fn<(message: string) => void>>;
   let recording: PaneRecording;
 
@@ -45,9 +46,11 @@ describe("PaneRecording", () => {
     root = document.createElement("div");
     root.innerHTML = paneMarkup();
     sessionId = "s1";
+    sessionIds = ["s1"];
     onError = vi.fn<(message: string) => void>();
     recording = new PaneRecording(root, {
       sessionId: () => sessionId,
+      sessionIds: () => sessionIds,
       ownsSession: (id) => id === "s1" || id === "s2",
       deviceName: () => "NAS",
       onError,
@@ -88,7 +91,7 @@ describe("PaneRecording", () => {
     expect(recording.recordTo()).toBeUndefined();
   });
 
-  it("does nothing when the session ended while the dialog was open", async () => {
+  it("reports that it did not start when the session ended while the dialog was open", async () => {
     pickLogSavePathMock.mockImplementation(async () => {
       sessionId = null;
       return "/home/me/rec.log";
@@ -96,6 +99,7 @@ describe("PaneRecording", () => {
     await click();
     expect(startRecording).not.toHaveBeenCalled();
     expect(recording.recordTo()).toBeUndefined();
+    expect(onError).toHaveBeenCalledWith(t("pane.record.noSession"));
   });
 
   it("reports a recording that could not start", async () => {
@@ -115,9 +119,19 @@ describe("PaneRecording", () => {
     expect(showToastMock).toHaveBeenCalledWith(t("pane.record.stopped", { path: "/home/me/rec.log" }), "success");
   });
 
+  it("stops a session still connecting, which already records", async () => {
+    await click();
+    sessionId = null;
+    sessionIds = ["s2"];
+    await click();
+    expect(stopRecording).toHaveBeenCalledWith("s2");
+    expect(recording.recordTo()).toBeUndefined();
+  });
+
   it("stays stoppable while the pane has no session (reconnecting)", async () => {
     await click();
     sessionId = null;
+    sessionIds = [];
     recording.updateControls();
     expect(button().disabled).toBe(false);
     await click();

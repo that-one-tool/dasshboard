@@ -30,6 +30,7 @@ import {
 	onSessionStatus,
 	onHostKeyPrompt,
 	respondAuthPrompt,
+	markAuthPromptShown,
 	onAuthPrompt,
 	onAuthPromptClosed,
 } from "./sessions";
@@ -223,6 +224,12 @@ describe("keyboard-interactive prompts", () => {
 			promptId: "a1",
 			answers: ["123456"],
 		});
+	});
+
+	it("markAuthPromptShown tells the backend the prompt is on screen", async () => {
+		invokeMock.mockResolvedValue(undefined);
+		await markAuthPromptShown("a1");
+		expect(invokeMock).toHaveBeenCalledWith("auth_prompt_shown", { promptId: "a1" });
 	});
 
 	it("respondAuthPrompt sends null answers to cancel", async () => {

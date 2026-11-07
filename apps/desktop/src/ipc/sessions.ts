@@ -154,6 +154,11 @@ export async function respondAuthPrompt(
   await invokeChecked<void>("respond_auth_prompt", { promptId, answers });
 }
 
+/** The dialog shows a keyboard-interactive prompt: its answer time starts. */
+export async function markAuthPromptShown(promptId: string): Promise<void> {
+  await invokeChecked<void>("auth_prompt_shown", { promptId });
+}
+
 /** Connect + authenticate + close, no shell (SPEC §5), with the device as
  * edited (saved or not). No `secret` falls back to the stored one. */
 export async function testConnection(device: Device, secret?: string): Promise<void> {

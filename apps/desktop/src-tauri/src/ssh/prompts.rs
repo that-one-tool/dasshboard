@@ -83,12 +83,14 @@ impl<T> Default for PromptRegistry<T> {
     }
 }
 
-/// A manager's two prompt registries, answered by the `respond_host_key` and
-/// `respond_auth_prompt` commands.
+/// A manager's prompt registries, answered by the `respond_host_key` and
+/// `respond_auth_prompt` commands; `auth_on_screen` hears from
+/// `auth_prompt_shown` when the dialog shows an auth prompt.
 #[derive(Default)]
 pub struct ConnectPrompts {
     pub(super) host_keys: Arc<PromptRegistry<bool>>,
     pub(super) auth: Arc<PromptRegistry<AuthAnswers>>,
+    pub(super) auth_on_screen: Arc<PromptRegistry<()>>,
 }
 
 impl ConnectPrompts {
@@ -100,6 +102,12 @@ impl ConnectPrompts {
     /// Resolve a pending auth prompt; `false` if none had that id.
     pub fn respond_auth(&self, prompt_id: &str, answers: AuthAnswers) -> bool {
         self.auth.respond(prompt_id, answers)
+    }
+
+    /// The dialog shows an auth prompt: its answer time starts; `false` if
+    /// none had that id.
+    pub fn mark_auth_shown(&self, prompt_id: &str) -> bool {
+        self.auth_on_screen.respond(prompt_id, ())
     }
 }
 
@@ -307,6 +315,11 @@ mod tests {
         );
         assert!(prompts.respond_host_key("h1", true));
         assert!(prompts.respond_auth("a1", Some(Zeroizing::new(vec!["123456".into()]))));
+
+        let (shown_rx, _shown_guard) = prompts.auth_on_screen.register("a1".into());
+        assert!(prompts.mark_auth_shown("a1"));
+        assert!(!prompts.mark_auth_shown("h1"));
+        assert_eq!(shown_rx.blocking_recv().ok(), Some(()));
 
         assert_eq!(host_rx.blocking_recv().ok(), Some(true));
         let answers = auth_rx.blocking_recv().unwrap().unwrap();

@@ -74,9 +74,14 @@ export class SessionSlot {
     this.connected = false;
   }
 
+  /** The open and the opening session. */
+  ids(): string[] {
+    return [this.currentId, this.pendingId].filter((id) => id !== null);
+  }
+
   /** Let go of the current and any opening session; returns their ids to close. */
   release(): string[] {
-    const ids = [this.currentId, this.pendingId].filter((id) => id !== null);
+    const ids = this.ids();
     this.end();
     return ids;
   }

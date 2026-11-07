@@ -58,7 +58,8 @@ src/  (TypeScript UI)  ──invoke──▶  src-tauri/src/commands/    ──�
       corrupt files).
     - `secret`: the OS keychain.
 
-[AGENTS.md](../../AGENTS.md) describes the layout module by module.
+The `desktop-frontend` and `desktop-backend` skills in `.claude/skills/` describe
+the layout module by module.
 
 ## Testing
 
