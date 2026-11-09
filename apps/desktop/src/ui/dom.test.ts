@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { describe, it, expect } from "vitest";
-import { isDialogOpen, remToPx, requireEl } from "./dom";
+import { createOption, isDialogOpen, listen, remToPx, requireEl } from "./dom";
 
 describe("requireEl", () => {
   it("returns the matching element, typed as requested", () => {
@@ -48,5 +48,30 @@ describe("isDialogOpen", () => {
     expect(isDialogOpen()).toBe(false);
     document.body.insertAdjacentHTML("beforeend", `<div class="dialog confirm-dialog"></div>`);
     expect(isDialogOpen()).toBe(true);
+  });
+});
+
+describe("listen", () => {
+  it("adds the listener to the first match under root", () => {
+    const root = document.createElement("div");
+    root.innerHTML = `<button class="a">1</button><button class="a">2</button>`;
+    const seen: string[] = [];
+    listen(root, ".a", "click", (e) => seen.push((e.target as HTMLElement).textContent ?? ""));
+    root.querySelectorAll<HTMLElement>(".a").forEach((button) => button.click());
+    expect(seen).toEqual(["1"]);
+  });
+
+  it("does nothing when no element matches", () => {
+    const root = document.createElement("div");
+    expect(() => listen(root, ".missing", "click", () => {})).not.toThrow();
+  });
+});
+
+describe("createOption", () => {
+  it("builds an option with the value and text (not markup)", () => {
+    const option = createOption("v1", "<b>Label</b>");
+    expect(option.value).toBe("v1");
+    expect(option.textContent).toBe("<b>Label</b>");
+    expect(option.querySelector("b")).toBeNull();
   });
 });

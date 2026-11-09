@@ -1,59 +1,20 @@
 /**
  * Device manager UI: sidebar device list, add/edit/delete dialogs.
  *
- * This module handles the DOM structure and event binding for device management.
- * State and validation logic are kept in separate modules for testability.
+ * `DeviceManagerImpl` only wires its parts in `manager/`: the list, the editor
+ * dialog, the editor's buttons and the import/export actions.
  */
 
-import type { Device, AppError, DeviceRisks } from "../ipc";
-import {
-  listDevices,
-  saveDevice,
-  deleteDevice,
-  testConnection,
-  exportDevices,
-  importDevices,
-  previewDevicesImport,
-  importSshConfig,
-  exportSshConfig,
-  sshAgentAvailable,
-  listAgentIdentities,
-} from "../ipc";
-import { validateDevice } from "./validation";
-import {
-  deviceGroupKey,
-  filterDevices,
-  groupDevicesByFirstTag,
-  type DeviceGroup,
-} from "./deviceFilter";
-import { ForwardsEditor } from "./forwardsEditor";
-import { decideSecretToSend } from "./savePayload";
-import { deviceEndpoint } from "./deviceEndpoint";
+import { deleteDevice, listDevices, type AppError, type Device } from "../ipc";
 import { deviceManagerMarkup } from "./deviceDialogTemplate";
-import {
-  buildDeviceFromForm,
-  clearAgentIdentities,
-  clearSecretFields,
-  displayFieldErrors,
-  populateAgentIdentities,
-  populateForm,
-  readFormValues,
-  setSecretPlaceholder,
-  updateAuthMethodDisplay,
-  updateKindDisplay,
-} from "./deviceForm";
 import { confirm } from "../ui/confirm";
-import { importRiskMessage } from "./importRisks";
-import {
-  pickJsonSavePath,
-  pickJsonOpenPath,
-  pickSshConfigOpenPath,
-  pickSshConfigSavePath,
-} from "../ui/fileDialog";
-import { chevronUpIcon, pencilIcon, trashIcon } from "../ui/icons";
-import { t, tp } from "../i18n";
-
-type FormValues = ReturnType<typeof readFormValues>;
+import { listen } from "../ui/dom";
+import { t } from "../i18n";
+import { DeviceDialog } from "./manager/deviceDialog";
+import { deviceFeedback, type DeviceFeedback } from "./manager/deviceFeedback";
+import { FILE_ACTIONS, runFileAction } from "./manager/deviceFileActions";
+import { DeviceFormActions } from "./manager/deviceFormActions";
+import { DeviceList } from "./manager/deviceList";
 
 export interface DeviceManagerOptions {
   onError?: (error: AppError) => void;
@@ -96,30 +57,23 @@ export function initDeviceManager(
 }
 
 export class DeviceManagerImpl {
-  private container: HTMLElement;
-  private options: DeviceManagerOptions;
-  private devices: Device[] = [];
-  private editingDeviceId: string | null = null;
-  // A save in flight: a double-click on Save (or a second Enter) must not save
-  // twice — for a new device (empty id) that created two devices.
-  private saving = false;
-  /** Current sidebar search query; filters the rendered list (feature #3). */
-  private searchQuery = "";
-  /** Keys (`deviceGroupKey`) of the tag sections the user collapsed. */
-  private collapsedGroupKeys: Set<string>;
-  /**
-   * The "Port forwarding" sub-editor for the SSH device dialog. Populated on
-   * open (from the device being edited, or empty for a new device) and read
-   * back on save. Created once the dialog markup exists (see `render`).
-   */
-  private forwardsEditor: ForwardsEditor | null = null;
+  private readonly feedback: DeviceFeedback;
+  private readonly list: DeviceList;
+  private readonly dialog: DeviceDialog;
+  private readonly formActions: DeviceFormActions;
 
-  constructor(container: HTMLElement, options: DeviceManagerOptions) {
-    this.container = container;
-    this.options = options;
-    this.collapsedGroupKeys = new Set(
-      (options.initialCollapsedGroups ?? []).map((key) => key.toLowerCase()),
-    );
+  constructor(
+    private readonly container: HTMLElement,
+    options: DeviceManagerOptions,
+  ) {
+    this.feedback = deviceFeedback(options);
+    this.list = new DeviceList(container, {
+      onEdit: (id) => this.dialog.open(id, this.list.all()),
+      onDelete: (id) => void this.deleteDevice(id),
+      onPersist: () => options.onPersist?.(),
+    }, options.initialCollapsedGroups);
+    this.dialog = new DeviceDialog(container);
+    this.formActions = new DeviceFormActions(container, this.dialog, this.feedback, () => this.loadDevices());
   }
 
   async init(): Promise<void> {
@@ -149,623 +103,55 @@ export class DeviceManagerImpl {
   }
 
   collapsedGroups(): string[] | undefined {
-    if (this.collapsedGroupKeys.size === 0) return undefined;
-    return [...this.collapsedGroupKeys].sort();
+    return this.list.collapsedGroups();
   }
 
   private renderUI(): void {
     this.container.innerHTML = deviceManagerMarkup();
-
-    // Restore the search box across a language re-render (renderUI rebuilds the
-    // markup, blanking the input); the initial render leaves it empty.
-    const search = this.container.querySelector<HTMLInputElement>(".device-search");
-    if (search) search.value = this.searchQuery;
-
-    const forwardsContainer =
-      this.container.querySelector<HTMLElement>("#device-forwards");
-    if (forwardsContainer) {
-      this.forwardsEditor = new ForwardsEditor(forwardsContainer);
-    }
-
-    this.attachEventListeners();
+    this.list.wireSearch();
+    this.dialog.attach();
+    this.formActions.attach();
+    this.wireToolbar();
   }
 
-  private attachEventListeners(): void {
-    // Add button
-    this.container
-      .querySelector(".device-add-btn")
-      ?.addEventListener("click", () => this.openDialog(null));
-
-    // Export / import the whole device list via native file pickers.
-    this.container
-      .querySelector(".device-export-btn")
-      ?.addEventListener("click", () => void this.handleExport());
-    this.container
-      .querySelector(".device-import-btn")
-      ?.addEventListener("click", () => void this.handleImport());
-    this.container
-      .querySelector(".device-import-ssh-btn")
-      ?.addEventListener("click", () => void this.handleImportSshConfig());
-    this.container
-      .querySelector(".device-export-ssh-btn")
-      ?.addEventListener("click", () => void this.handleExportSshConfig());
-
-    // Live search over the device list (name / endpoint / tags).
-    this.container
-      .querySelector<HTMLInputElement>(".device-search")
-      ?.addEventListener("input", (e) => {
-        this.searchQuery = (e.target as HTMLInputElement).value;
-        this.renderDeviceList();
-      });
-
-    // Dialog close buttons
-    this.container.querySelectorAll("[data-close-dialog]").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        if (e.target === btn) {
-          this.closeDialog();
-        }
-      });
-    });
-
-    // Connection-type selector (SSH vs serial): swaps which field group shows.
-    this.container
-      .querySelector("#device-kind")
-      ?.addEventListener("change", () => updateKindDisplay(this.container));
-
-    // Auth method radio buttons
-    const authRadios = this.container.querySelectorAll<HTMLInputElement>(
-      'input[name="auth-method"]',
-    );
-    authRadios.forEach((radio) => {
-      radio.addEventListener("change", () =>
-        updateAuthMethodDisplay(this.container),
-      );
-    });
-
-    // Agent-identity picker: refresh the list from the live SSH agent.
-    this.container
-      .querySelector("#device-agent-refresh")
-      ?.addEventListener("click", () => void this.handleAgentRefresh());
-
-    // Form submission
-    const form = this.container.querySelector<HTMLFormElement>("#device-form");
-    form?.addEventListener("submit", (e) => this.handleFormSubmit(e));
-
-    // Test connection (uses the form's values, saved or not).
-    this.container
-      .querySelector(".btn-test-connection")
-      ?.addEventListener("click", () => void this.handleTestConnection());
-
-    // Escape closes the dialog (keyboard parity with the shared modals).
-    this.container
-      .querySelector("#device-dialog")
-      ?.addEventListener("keydown", (e) => {
-        if ((e as KeyboardEvent).key === "Escape") this.closeDialog();
-      });
-  }
-
-  private openDialog(deviceId: string | null): void {
-    this.editingDeviceId = deviceId;
-    const dialog = this.container.querySelector("#device-dialog");
-    const title = this.container.querySelector<HTMLElement>(
-      "#device-dialog-title",
-    );
-    const form = this.container.querySelector<HTMLFormElement>("#device-form");
-
-    if (!dialog || !title || !form) return;
-
-    // Always start from a fully clean form on every open, for BOTH the new
-    // and edit paths. Without this, a secret typed for one device and then
-    // cancelled would survive in `#device-secret`/`#device-passphrase` and be
-    // silently saved against the next device edited (SPEC §7: the secret is
-    // "never pre-filled when editing"; SPEC §8: secrets must not leak between
-    // devices). `form.reset()` restores every field to its markup default
-    // (empty text inputs, password radio checked); `clearSecretFields()` is a
-    // belt-and-suspenders guarantee that the two secret inputs are blank so
-    // the empty-field ⇒ omit-secret rule in `decideSecretToSend` holds.
-    form.reset();
-    clearSecretFields(this.container);
-    clearAgentIdentities(this.container);
-    // `form.reset()` restores the kind selector to its default (SSH); reflect
-    // that in which field group is shown. The edit path re-runs this from
-    // `populateForm` after setting the device's actual kind.
-    updateKindDisplay(this.container);
-
-    // Start with an empty forwards list; the edit path fills it from the device
-    // below. Reset here so a cancelled edit can't leak forwards into the next
-    // device opened.
-    this.forwardsEditor?.setForwards([]);
-
-    // Rebuild the jump-host dropdown from the current device list every open (it
-    // may have changed). Must run before `populateForm` so the edit path can
-    // select the saved jump host.
-    this.populateProxyJumpOptions(deviceId);
-
-    if (deviceId === null) {
-      // New device
-      title.textContent = t("devices.dialog.addTitle");
-      setSecretPlaceholder(this.container, false);
-    } else {
-      // Edit device
-      const device = this.devices.find((d) => d.id === deviceId);
-      if (!device) return;
-
-      if (device.kind === "ssh") {
-        this.forwardsEditor?.setForwards(device.forwards);
-      }
-      title.textContent = t("devices.dialog.editTitle");
-      populateForm(this.container, device);
-      setSecretPlaceholder(this.container, true);
-    }
-
-    dialog.classList.remove("dialog-hidden");
-    dialog.setAttribute("aria-hidden", "false");
-    // Move keyboard focus into the dialog so it doesn't linger on the trigger
-    // button behind the overlay.
-    this.container.querySelector<HTMLInputElement>("#device-name")?.focus();
-
-    // Show the "no agent detected" hint under the forward-agent toggle if the
-    // backend can't reach a local SSH agent. Best-effort and async — a failure
-    // just leaves the hint hidden (the toggle stays usable either way).
-    void this.refreshAgentAvailabilityHint();
-  }
-
-  /** Toggle the agent-forwarding "unavailable" hint from the backend probe. */
-  private async refreshAgentAvailabilityHint(): Promise<void> {
-    const hint = this.container.querySelector<HTMLElement>(
-      ".device-agent-unavailable",
-    );
-    if (!hint) return;
-    try {
-      hint.hidden = await sshAgentAvailable();
-    } catch {
-      hint.hidden = true;
-    }
-  }
-
-  /**
-   * (Re)fill the ProxyJump `<select>` with the other SSH devices as candidate
-   * jump hosts. A device can't jump through itself (the one being edited is
-   * excluded) and serial devices can't be jump hosts (excluded). The leading
-   * "None" option (a direct connection) is always present.
-   */
-  private populateProxyJumpOptions(editingId: string | null): void {
-    const select =
-      this.container.querySelector<HTMLSelectElement>("#device-proxy-jump");
-    if (!select) return;
-    select.innerHTML = "";
-
-    const none = document.createElement("option");
-    none.value = "";
-    none.textContent = t("devices.proxyJump.none");
-    select.appendChild(none);
-
-    for (const device of this.devices) {
-      if (device.kind !== "ssh") continue;
-      if (device.id === editingId) continue;
-      const opt = document.createElement("option");
-      opt.value = device.id;
-      opt.textContent = `${device.name} (${deviceEndpoint(device)})`;
-      select.appendChild(opt);
-    }
-  }
-
-  private closeDialog(): void {
-    const dialog = this.container.querySelector("#device-dialog");
-    dialog?.classList.add("dialog-hidden");
-    dialog?.setAttribute("aria-hidden", "true");
-    // Never let secret material linger in the DOM after the dialog closes,
-    // whether it was closed via Save, Cancel, the ✕, or the overlay.
-    clearSecretFields(this.container);
-    this.editingDeviceId = null;
-    this.forwardsEditor?.setForwards([]);
-  }
-
-  private async handleFormSubmit(e: Event): Promise<void> {
-    e.preventDefault();
-    if (this.saving) return;
-    const values = this.readValidFormValues();
-    if (!values) return;
-
-    this.saving = true;
-    try {
-      await this.saveFormValues(values);
-    } finally {
-      this.saving = false;
-    }
-  }
-
-  /** The form's values, or null once their errors are shown. SSH forwards are
-   * validated by their sub-editor, which marks each offending row inline. */
-  private readValidFormValues(): FormValues | null {
-    const values = this.readCurrentFormValues();
-    const errors = validateDevice(values);
-    displayFieldErrors(this.container, errors);
-    const forwardsOk = this.validateForwards(values.kind);
-    return errors.length === 0 && forwardsOk ? values : null;
-  }
-
-  private readCurrentFormValues(): FormValues {
-    const forwards = this.forwardsEditor?.getForwards() ?? [];
-    return readFormValues(this.container, this.editingDeviceId, forwards);
-  }
-
-  private validateForwards(kind: FormValues["kind"]): boolean {
-    if (kind !== "ssh" || !this.forwardsEditor) return true;
-    return this.forwardsEditor.validate();
-  }
-
-  /** Saves validated form values, then closes the dialog and reloads the list;
-   * a failure reaches the user as a toast and leaves the dialog open. */
-  private async saveFormValues(values: FormValues): Promise<void> {
-    try {
-      await saveDevice(buildDeviceFromForm(values), getSecretToSend(values));
-
-      this.options.onSuccess?.(t("devices.saved"));
-      this.closeDialog();
-      await this.loadDevices();
-    } catch (err) {
-      const error = err as AppError;
-      // F10: no `#device-general` element exists in the dialog markup, so
-      // routing a general save failure through `displayFieldErrors` was a
-      // silent no-op. The toast below is the only (and sufficient) surface
-      // for this error.
-      this.options.onError?.(error);
-    }
-  }
-
-  private async handleTestConnection(): Promise<void> {
-    const values = this.readValidFormValues();
-    if (!values) return;
-    const btn = this.container.querySelector<HTMLButtonElement>(
-      ".btn-test-connection",
-    );
-    const original = btn?.textContent ?? t("devices.test");
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = t("devices.test.testing");
-    }
-    try {
-      // A first-contact host key raises a `host_key_prompt`, handled by the
-      // global host-key dialog; on accept the test proceeds.
-      await testConnection(buildDeviceFromForm(values), getSecretToSend(values));
-      this.options.onSuccess?.(t("devices.test.success"));
-    } catch (err) {
-      const error = err as AppError;
-      this.options.onError?.(error);
-    } finally {
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = original;
-      }
-    }
-  }
-
-  /**
-   * Refresh the agent-identity picker from the live SSH agent. Preserves any
-   * currently-selected fingerprint (e.g. the saved device's), and reports a
-   * short inline status (count, "none", or the agent error) beneath the picker.
-   */
-  private async handleAgentRefresh(): Promise<void> {
-    const btn = this.container.querySelector<HTMLButtonElement>("#device-agent-refresh");
-    const status = this.container.querySelector<HTMLElement>("#device-agent-status");
-    const selected =
-      this.container.querySelector<HTMLSelectElement>("#device-agent-identity")?.value || undefined;
-    if (btn) btn.disabled = true;
-    if (status) status.textContent = t("devices.agent.loading");
-    try {
-      // Certificates can't be used by the agent-auth path (only bare public
-      // keys), so don't offer them as selectable identities.
-      const identities = (await listAgentIdentities()).filter((id) => !id.isCertificate);
-      populateAgentIdentities(this.container, identities, selected);
-      if (status) {
-        status.textContent =
-          identities.length === 0
-            ? t("devices.agent.empty")
-            : tp("devices.agent.count", identities.length);
-      }
-    } catch (err) {
-      // No agent reachable: keep the saved fingerprint selectable and show why.
-      if (status) status.textContent = (err as AppError).message ?? t("devices.agent.error");
-    } finally {
-      if (btn) btn.disabled = false;
-    }
-  }
-
-  /**
-   * Exports every device to a user-chosen JSON file. The backend writes the
-   * file (never including secrets); a cancelled save dialog is a silent no-op.
-   */
-  private async handleExport(): Promise<void> {
-    try {
-      const path = await pickJsonSavePath("dasshboard-devices.json");
-      if (path === null) return; // user cancelled the picker
-      const count = await exportDevices(path);
-      this.options.onSuccess?.(tp("devices.exported", count));
-    } catch (err) {
-      this.options.onError?.(err as AppError);
-    }
-  }
-
-  /**
-   * Imports devices from a user-chosen JSON file (upsert by id, backend-side),
-   * once the user confirmed any settings that would act on this machine.
-   * Routes the success through `onSuccess` so `main.ts` also refreshes the pane
-   * dropdowns and profiles, then reloads the sidebar list. Cancel is a no-op.
-   */
-  private async handleImport(): Promise<void> {
-    try {
-      const path = await pickJsonOpenPath();
-      if (path === null) return; // user cancelled the picker
-      const risks = await previewDevicesImport(path);
-      if (risks.length > 0 && !(await confirmImportRisks(risks))) return;
-      const count = await importDevices(path, risks);
-      this.options.onSuccess?.(tp("devices.imported", count));
-      await this.loadDevices();
-    } catch (err) {
-      this.options.onError?.(err as AppError);
-    }
-  }
-
-  /**
-   * Imports devices from an OpenSSH client config (`~/.ssh/config` by default),
-   * upserting each concrete host. Reports how many were added and, when any
-   * were skipped (wildcard/`Match`-only blocks, entries missing a username, or
-   * duplicates of existing devices), how many. Routes success through
-   * `onSuccess` so the pane dropdowns / profiles / tunnels refresh, then reloads
-   * the sidebar. Cancel is a no-op.
-   */
-  private async handleImportSshConfig(): Promise<void> {
-    try {
-      const path = await pickSshConfigOpenPath();
-      if (path === null) return; // user cancelled the picker
-      const { imported, skipped } = await importSshConfig(path);
-      const message =
-        skipped > 0
-          ? tp("devices.importedSshSkipped", imported, { skipped })
-          : tp("devices.importedSsh", imported);
-      this.options.onSuccess?.(message);
-      await this.loadDevices();
-    } catch (err) {
-      this.options.onError?.(err as AppError);
-    }
-  }
-
-  /**
-   * Exports every SSH device to a user-chosen OpenSSH client config file (the
-   * reverse of Import SSH config). Reports how many were written and, when any
-   * non-SSH devices were skipped, how many. A cancelled save dialog is a silent
-   * no-op.
-   */
-  private async handleExportSshConfig(): Promise<void> {
-    try {
-      const path = await pickSshConfigSavePath();
-      if (path === null) return; // user cancelled the picker
-      const { exported, skipped } = await exportSshConfig(path);
-      const message =
-        skipped > 0
-          ? tp("devices.exportedSshSkipped", exported, { skipped })
-          : tp("devices.exportedSsh", exported);
-      this.options.onSuccess?.(message);
-    } catch (err) {
-      this.options.onError?.(err as AppError);
+  private wireToolbar(): void {
+    listen(this.container, ".device-add-btn", "click", () => this.dialog.open(null, this.list.all()));
+    const context = { feedback: this.feedback, reload: () => this.loadDevices() };
+    for (const action of FILE_ACTIONS) {
+      listen(this.container, action.selector, "click", () => void runFileAction(action, context));
     }
   }
 
   private async loadDevices(): Promise<void> {
     try {
-      this.devices = await listDevices();
-      this.renderDeviceList();
+      this.list.show(await listDevices());
     } catch (err) {
-      const error = err as AppError;
-      this.options.onError?.(error);
+      this.feedback.error(err);
     }
   }
 
-  private renderDeviceList(): void {
-    const listItems = this.container.querySelector(".device-list-items");
-    if (!listItems) return;
-
-    if (this.devices.length === 0) {
-      listItems.innerHTML = `<div class="empty-state">${t("devices.empty")}</div>`;
-      return;
-    }
-
-    // Filter by the search query, then group by first tag. A device with no
-    // tags falls into the untagged group; when nothing is tagged the result is
-    // one untagged group and we render a flat list (no headers).
-    const filtered = filterDevices(this.devices, this.searchQuery);
-    if (filtered.length === 0) {
-      listItems.innerHTML = `<div class="empty-state">${t("devices.noMatches")}</div>`;
-      return;
-    }
-
-    const groups = groupDevicesByFirstTag(filtered);
-    const flat = groups.length === 1 && groups[0]?.tag === null;
-    listItems.innerHTML = flat
-      ? groups[0]!.devices.map((d) => this.deviceItemHtml(d)).join("")
-      : groups.map((g, i) => this.deviceGroupHtml(g, i)).join("");
-
-    this.attachDeviceListeners();
+  private async deleteDevice(deviceId: string): Promise<void> {
+    const device = this.list.find(deviceId);
+    if (!device || !(await confirmDelete(device))) return;
+    await this.removeDevice(deviceId);
   }
 
-  /**
-   * A collapsible tag section: a header button (the tag, or "Untagged", then
-   * the device count and a chevron) over its device rows. While searching every section shows
-   * expanded and its toggle is disabled, so no match is hidden.
-   */
-  private deviceGroupHtml(group: DeviceGroup, index: number): string {
-    const searching = this.searchQuery.trim() !== "";
-    const expanded = searching || !this.collapsedGroupKeys.has(deviceGroupKey(group.tag));
-    const itemsId = `device-group-items-${index}`;
-    return `
-      <div class="device-group">
-        ${this.deviceGroupHeaderHtml(group, itemsId, expanded, searching)}
-        <div class="device-group-items" id="${itemsId}" ${expanded ? "" : "hidden"}>
-          ${group.devices.map((d) => this.deviceItemHtml(d)).join("")}
-        </div>
-      </div>
-    `;
-  }
-
-  private deviceGroupHeaderHtml(
-    group: DeviceGroup,
-    itemsId: string,
-    expanded: boolean,
-    disabled: boolean,
-  ): string {
-    return `
-        <button
-          type="button"
-          class="device-group-header"
-          data-group-key="${escapeHtml(deviceGroupKey(group.tag))}"
-          aria-expanded="${expanded}"
-          aria-controls="${itemsId}"
-          ${disabled ? "disabled" : ""}
-        >
-          <span class="device-group-label">${escapeHtml(groupLabel(group.tag))}</span>
-          <span class="device-group-count">(${group.devices.length})</span>
-          <span class="device-group-chevron">${chevronUpIcon}</span>
-        </button>
-    `;
-  }
-
-
-  /** Collapse or expand a section in place (keeping focus on its header). */
-  private toggleGroup(header: HTMLButtonElement): void {
-    const collapsed = this.flipCollapsed(header.dataset.groupKey ?? "");
-    header.setAttribute("aria-expanded", String(!collapsed));
-    const items = this.container.querySelector<HTMLElement>(
-      `#${header.getAttribute("aria-controls")}`,
-    );
-    if (items) items.hidden = collapsed;
-    this.options.onPersist?.();
-  }
-
-  /** Flip a section's collapsed state; returns whether it is now collapsed. */
-  private flipCollapsed(key: string): boolean {
-    if (this.collapsedGroupKeys.delete(key)) return false;
-    this.collapsedGroupKeys.add(key);
-    return true;
-  }
-
-  /** One device tile: name + edit/delete actions, then the endpoint. */
-  private deviceItemHtml(device: Device): string {
-    return `
-      <div class="device-item">
-        <div class="device-row">
-          <div class="device-name">${escapeHtml(device.name)}</div>
-          ${this.deviceActionsHtml(device)}
-        </div>
-        <div class="device-row">
-          <div class="device-host">${escapeHtml(deviceEndpoint(device))}</div>
-        </div>
-      </div>
-    `;
-  }
-
-  private deviceActionsHtml(device: Device): string {
-    return `
-        <div class="device-actions">
-          <button
-            class="btn btn-icon btn-edit"
-            data-device-id="${escapeHtml(device.id)}"
-            title="${t("devices.edit.aria")}"
-            aria-label="${t("devices.edit.aria")}"
-          >
-            ${pencilIcon}
-          </button>
-          <button
-            class="btn btn-icon btn-danger btn-delete"
-            data-device-id="${escapeHtml(device.id)}"
-            title="${t("devices.delete.aria")}"
-            aria-label="${t("devices.delete.aria")}"
-          >
-            ${trashIcon}
-          </button>
-        </div>
-    `;
-  }
-
-  private attachDeviceListeners(): void {
-    this.container
-      .querySelectorAll<HTMLButtonElement>(".device-group-header")
-      .forEach((header) => {
-        header.addEventListener("click", () => this.toggleGroup(header));
-      });
-
-    this.container
-      .querySelectorAll<HTMLButtonElement>(".device-item .btn-edit")
-      .forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const deviceId = btn.dataset.deviceId;
-          if (deviceId) this.openDialog(deviceId);
-        });
-      });
-
-    this.container
-      .querySelectorAll<HTMLButtonElement>(".device-item .btn-delete")
-      .forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const deviceId = btn.dataset.deviceId;
-          if (deviceId) this.handleDeleteDevice(deviceId);
-        });
-      });
-  }
-
-  private async handleDeleteDevice(deviceId: string): Promise<void> {
-    const device = this.devices.find((d) => d.id === deviceId);
-    if (!device) return;
-
-    // Shared modal (Phase 6): the raw name is passed through — the dialog sets
-    // it via textContent, so no manual escaping (the old native `confirm()`
-    // showed HTML entities literally).
-    const confirmed = await confirm(
-      t("devices.delete.message", { name: device.name }),
-      { title: t("devices.delete.title"), confirmLabel: t("common.delete"), danger: true },
-    );
-    if (!confirmed) return;
-
+  private async removeDevice(deviceId: string): Promise<void> {
     try {
       await deleteDevice(deviceId);
-      this.options.onSuccess?.(t("devices.deleted"));
+      this.feedback.success(t("devices.deleted"));
       await this.loadDevices();
     } catch (err) {
-      const error = err as AppError;
-      this.options.onError?.(error);
+      this.feedback.error(err);
     }
   }
 }
 
-const HTML_ENTITIES: Record<string, string> = {
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  '"': "&quot;",
-  "'": "&#39;",
-};
-
-/** Escapes text for element content and quoted attribute values alike. */
-function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (char) => HTML_ENTITIES[char] ?? char);
-}
-
-/** Serial/local-shell and agent-auth devices never carry a secret (SPEC §4),
- * whatever the hidden secret field holds. */
-function getSecretToSend(values: FormValues): string | undefined {
-  return decideSecretToSend(values.secret, values.kind, values.auth?.method);
-}
-
-/** A tag section's header label: the tag, or "Untagged". */
-function groupLabel(tag: string | null): string {
-  return tag ?? t("devices.group.untagged");
-}
-
-function confirmImportRisks(risks: DeviceRisks[]): Promise<boolean> {
-  return confirm(importRiskMessage(risks), {
-    title: t("devices.importRisks.title"),
-    confirmLabel: t("devices.importRisks.confirm"),
+/** The raw name goes in: the shared modal sets it as text, not markup. */
+function confirmDelete(device: Device): Promise<boolean> {
+  return confirm(t("devices.delete.message", { name: device.name }), {
+    title: t("devices.delete.title"),
+    confirmLabel: t("common.delete"),
     danger: true,
-    keepLineBreaks: true,
   });
 }

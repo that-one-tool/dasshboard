@@ -8,9 +8,14 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { confirm, prompt, chooseEditConflict } from "./confirm";
+import { confirm, prompt, chooseConflict, chooseEditConflict } from "./confirm";
 
 afterEach(() => {
+  // Answer every dialog a test left open, so none stays in the dialog stack
+  // with a live document keydown listener.
+  document.querySelectorAll(".dialog-overlay").forEach((overlay) => {
+    overlay.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
   document.body.innerHTML = "";
 });
 
@@ -171,5 +176,68 @@ describe("chooseEditConflict", () => {
     press("Enter");
     click('.confirm-dialog [data-action="cancel"]');
     expect(await p).toBeNull();
+  });
+});
+
+describe("chooseConflict", () => {
+  it("shows the message as text and resolves each policy", async () => {
+    for (const action of ["overwrite", "skip", "rename"] as const) {
+      const p = chooseConflict("<b>exists</b>");
+      expect(document.querySelector(".confirm-message")?.textContent).toBe("<b>exists</b>");
+      click(`.confirm-dialog [data-action="${action}"]`);
+      await expect(p).resolves.toBe(action);
+    }
+  });
+
+  it("focuses Overwrite and resolves null on cancel, overlay and Escape", async () => {
+    const cancelled = chooseConflict("x");
+    expect((document.activeElement as HTMLElement).dataset.action).toBe("overwrite");
+    click('.confirm-dialog [data-action="cancel"]');
+    await expect(cancelled).resolves.toBeNull();
+    const overlay = chooseConflict("x");
+    click(".confirm-dialog .dialog-overlay");
+    await expect(overlay).resolves.toBeNull();
+    const escaped = chooseConflict("x");
+    press("Escape");
+    await expect(escaped).resolves.toBeNull();
+  });
+
+  it("does not pick a policy on Enter", () => {
+    void chooseConflict("x");
+    press("Enter");
+    expect(document.querySelector(".confirm-dialog")).not.toBeNull();
+  });
+});
+
+describe("prompt keys", () => {
+  it("ignores other keys", () => {
+    void prompt("Name", "n", "a");
+    const input = document.querySelector<HTMLInputElement>(".prompt-input");
+    input?.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+    expect(document.querySelector(".prompt-dialog")).not.toBeNull();
+  });
+
+  it("Enter on the focused Cancel button cancels instead of accepting", async () => {
+    const p = prompt("Name", "n", "typed");
+    document.querySelector<HTMLButtonElement>('.prompt-dialog [data-action="cancel"]')?.focus();
+    press("Enter");
+    expect(await p).toBeNull();
+  });
+
+  it("Enter accepts once focus fell back to the body", async () => {
+    const p = prompt("Name", "n", "typed");
+    (document.activeElement as HTMLElement | null)?.blur();
+    press("Enter");
+    expect(await p).toBe("typed");
+  });
+
+  it("a key reaches only the newest dialog", async () => {
+    const below = prompt("Name", "n", "typed");
+    const above = confirm("sure?");
+    press("Escape");
+    expect(await above).toBe(false);
+    expect(document.querySelector(".prompt-dialog")).not.toBeNull();
+    press("Escape");
+    expect(await below).toBeNull();
   });
 });

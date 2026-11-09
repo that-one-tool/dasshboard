@@ -16,16 +16,20 @@ Vite + vanilla TypeScript (no framework), xterm.js. Vitest + happy-dom.
 
 ## Modules
 
-- `grid.ts`, `gridModel.ts` — the pane grid.
+- `grid.ts`, `gridModel.ts` — the pane grid. DOM parts in `grid/`: toolbar,
+  splitters.
 - `terminal/` — terminal pane. Its parts live in `pane/`: overlay, reconnect,
   paste, host-key and auth-prompt dialogs, search bar, links, save output,
   output recording. `inputQueue` and `outputReader` keep input and output in
   order.
 - `devices/` — device editor, validation, port-forward editor, import risks.
+  `deviceManager` only wires its parts in `manager/`; `form/` reads, fills and
+  builds the device dialog's form.
 - `tunnels/` — Tunnels sidebar card (start/stop forwards, status, reconnect).
 - `sftp/` — Files panel (browser, transfer queue, bookmarks, edit in place).
   `sftpPanel` only wires its parts in `sftp/panel/`.
-- `tabs/` — each tab keeps its `Grid` and sessions alive.
+- `tabs/` — each tab keeps its `Grid` and sessions alive. `tabStrip`,
+  `tabRename`: strip buttons and inline rename.
 - `profiles/` — saved workspaces.
 - `commandLibrary/` — Commands card and editor. A command goes to the focused
   pane, or to all connected panes during broadcast.
@@ -33,8 +37,10 @@ Vite + vanilla TypeScript (no framework), xterm.js. Vitest + happy-dom.
 - `tray/` — sends translated tray labels to the backend.
 - `updates/` — update check and install, About dialog badge.
 - `layout/` — resizable sidebar and its collapsed bar.
-- `ui/` — shared dialogs, toasts, DOM helpers (`remToPx`), splitter, shortcut
-  keys, dialog stack (only the newest dialog gets Escape/Enter).
+- `ui/` — shared dialogs (`modalDialog`: their open/answer/close lifecycle;
+  `sessionTeardown`: the close-live-sessions confirm),
+  toasts, DOM helpers (`remToPx`), splitter, shortcut keys, dialog stack (only
+  the newest dialog gets Escape/Enter).
 
 ## Backend mirrors
 

@@ -14,22 +14,6 @@
       "count": 3
     }
   },
-  "src/devices/deviceForm.ts": {
-    "complexity": {
-      "count": 9
-    },
-    "max-lines-per-function": {
-      "count": 6
-    }
-  },
-  "src/devices/deviceManager.ts": {
-    "complexity": {
-      "count": 14
-    },
-    "max-lines-per-function": {
-      "count": 7
-    }
-  },
   "src/devices/forwardValidation.ts": {
     "complexity": {
       "count": 5
@@ -54,14 +38,6 @@
     },
     "max-lines-per-function": {
       "count": 1
-    }
-  },
-  "src/grid.ts": {
-    "complexity": {
-      "count": 9
-    },
-    "max-lines-per-function": {
-      "count": 3
     }
   },
   "src/gridModel.ts": {
@@ -136,14 +112,6 @@
       "count": 3
     }
   },
-  "src/tabs/tabManager.ts": {
-    "complexity": {
-      "count": 13
-    },
-    "max-lines-per-function": {
-      "count": 4
-    }
-  },
   "src/tabs/tabShortcuts.ts": {
     "complexity": {
       "count": 1
@@ -191,14 +159,6 @@
     },
     "max-lines-per-function": {
       "count": 1
-    }
-  },
-  "src/ui/confirm.ts": {
-    "complexity": {
-      "count": 8
-    },
-    "max-lines-per-function": {
-      "count": 10
     }
   },
   "src/ui/keyboard.ts": {

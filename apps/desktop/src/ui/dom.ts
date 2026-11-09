@@ -38,3 +38,20 @@ export function remToPx(rem: number): number {
 export function isDialogOpen(): boolean {
   return document.querySelector(".dialog:not(.dialog-hidden)") !== null;
 }
+
+/** Adds a listener to the first element under `root` matching `selector`, if any. */
+export function listen<K extends keyof HTMLElementEventMap>(
+  root: ParentNode,
+  selector: string,
+  type: K,
+  handler: (event: HTMLElementEventMap[K]) => void,
+): void {
+  root.querySelector<HTMLElement>(selector)?.addEventListener(type, handler);
+}
+
+export function createOption(value: string, text: string): HTMLOptionElement {
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = text;
+  return option;
+}

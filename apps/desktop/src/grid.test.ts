@@ -203,6 +203,7 @@ describe("Grid broadcast mode", () => {
     const btn = document.querySelector<HTMLButtonElement>(".grid-broadcast-btn");
     expect(btn?.classList.contains("grid-broadcast-active")).toBe(true);
     expect(btn?.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector(".grid-container")?.classList.contains("grid-broadcasting")).toBe(true);
   });
 });
 
@@ -286,6 +287,19 @@ describe("Grid splitter drag DOM churn (F4)", () => {
     // Same DOM node identities — not torn down and recreated.
     expect(after[0]).toBe(before[0]);
     expect(after[1]).toBe(before[1]);
+  });
+
+  it("ends the drag chrome when disposed mid-drag", async () => {
+    const grid = makeGrid();
+    await grid.init();
+    await internals(grid).setPreset("2x2");
+    document.querySelector(".grid-splitter-col")?.dispatchEvent(new MouseEvent("mousedown"));
+    expect(document.body.classList.contains("grid-dragging-col")).toBe(true);
+
+    grid.dispose();
+
+    expect(document.body.classList.contains("grid-dragging-col")).toBe(false);
+    expect(dragInternals(grid).drag).toBeNull();
   });
 
   // A shape change (different splitter count per axis) must still fully rebuild.

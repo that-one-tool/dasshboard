@@ -8,23 +8,26 @@
 
 import { TerminalPane } from "./terminal/pane";
 import {
-  cumulativeFractions,
   paneCount,
   presetIdFor,
   presetToModel,
   remapPanes,
-  resizeTrack,
-  shrinkConfirmMessage,
-  PRESET_IDS,
   type GridModel,
   type PaneRemap,
   type PresetId,
 } from "./gridModel";
 import { shouldConfirmTeardown, type WorkspaceSnapshot } from "./profiles/workspace";
-import { confirm } from "./ui/confirm";
 import { requireEl } from "./ui/dom";
 import { t } from "./i18n";
 import type { TerminalSettings } from "./ipc";
+import { draggedModel, layoutGrid, type DragAxis, type SplitterDrag } from "./grid/gridSplitters";
+import {
+  markActivePreset,
+  renderGridToolbar,
+  setPresetButtonsDisabled,
+  showBroadcastButton,
+} from "./grid/gridToolbar";
+import { confirmSessionTeardown } from "./ui/sessionTeardown";
 
 export interface GridOptions {
   onError?: (message: string) => void;
@@ -47,8 +50,6 @@ interface Cell {
   wrapper: HTMLElement;
   pane: TerminalPane;
 }
-
-type DragAxis = "col" | "row";
 
 export class Grid {
   private root: HTMLElement;
@@ -80,7 +81,7 @@ export class Grid {
   // Splitter drag state. `drag` is non-null only while a splitter is held; the
   // pointer position is coalesced into a single rAF so we relayout/re-fit at most
   // once per frame instead of on every mousemove (SPEC §7).
-  private drag: { axis: DragAxis; boundary: number } | null = null;
+  private drag: SplitterDrag | null = null;
   private dragPointer = { x: 0, y: 0 };
   private dragRaf = 0;
 
@@ -128,47 +129,16 @@ export class Grid {
   private renderToolbar(): void {
     const toolbar = this.toolbar;
     if (!toolbar) return;
-    toolbar.innerHTML = "";
-    const label = document.createElement("span");
-    label.className = "grid-toolbar-label";
-    label.textContent = t("grid.layout");
-    toolbar.appendChild(label);
-    for (const id of PRESET_IDS) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "btn btn-small grid-preset-btn";
-      btn.textContent = id;
-      btn.dataset.preset = id;
-      btn.addEventListener("click", () => void this.setPreset(id));
-      toolbar.appendChild(btn);
-    }
-    this.appendBroadcastButton(toolbar);
+    renderGridToolbar(toolbar, {
+      onPreset: (id) => void this.setPreset(id),
+      onBroadcast: () => this.toggleBroadcast(),
+    });
+    this.updateBroadcastUI();
     this.updateToolbarActive();
   }
 
-  /** The broadcast-mode toggle, pushed to the right of the preset buttons. */
-  private appendBroadcastButton(toolbar: HTMLElement): void {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn btn-small grid-broadcast-btn";
-    btn.textContent = t("grid.broadcast");
-    btn.title = t("grid.broadcast.aria");
-    btn.setAttribute("aria-label", t("grid.broadcast.aria"));
-    btn.setAttribute("aria-pressed", String(this.broadcast));
-    btn.addEventListener("click", () => this.toggleBroadcast());
-    toolbar.appendChild(btn);
-    this.updateBroadcastUI();
-  }
-
   private updateToolbarActive(): void {
-    const toolbar = this.toolbar;
-    if (!toolbar) return;
-    const active = presetIdFor(this.model);
-    for (const btn of toolbar.querySelectorAll<HTMLButtonElement>(
-      ".grid-preset-btn",
-    )) {
-      btn.classList.toggle("grid-preset-active", btn.dataset.preset === active);
-    }
+    if (this.toolbar) markActivePreset(this.toolbar, presetIdFor(this.model));
   }
 
   /* -------------------------------------------------------------------------
@@ -184,14 +154,17 @@ export class Grid {
   /** Reflect the current broadcast state in the toggle button and the grid
    * container's indicator class (a highlight on the panes while it is on). */
   private updateBroadcastUI(): void {
-    const btn = this.toolbar?.querySelector<HTMLButtonElement>(
-      ".grid-broadcast-btn",
-    );
-    if (btn) {
-      btn.classList.toggle("grid-broadcast-active", this.broadcast);
-      btn.setAttribute("aria-pressed", String(this.broadcast));
-    }
+    if (this.toolbar) showBroadcastButton(this.toolbar, this.broadcast);
     this.container?.classList.toggle("grid-broadcasting", this.broadcast);
+  }
+
+  /** A load swaps every pane to (potentially) different hosts, so silently
+   * keeping broadcast on would fan the next keystroke out to hosts the user
+   * didn't choose to broadcast to. */
+  private stopBroadcast(): void {
+    if (!this.broadcast) return;
+    this.broadcast = false;
+    this.updateBroadcastUI();
   }
 
   /**
@@ -202,14 +175,11 @@ export class Grid {
    */
   private onPaneInput(source: TerminalPane, data: string): void {
     if (!this.broadcast) return;
-    for (const cell of this.cells) {
-      // Skip the source (it already wrote its own input) and any pane that
-      // isn't connected — `sendInput` self-guards too, but checking here keeps
-      // the intent explicit and testable.
-      if (cell.pane !== source && cell.pane.isConnected()) {
-        cell.pane.sendInput(data);
-      }
-    }
+    // Skip the source (it already wrote its own input) and any pane that isn't
+    // connected — `sendInput` self-guards too, but checking here keeps the
+    // intent explicit and testable.
+    const targets = this.cells.filter((cell) => cell.pane !== source && cell.pane.isConnected());
+    for (const cell of targets) cell.pane.sendInput(data);
   }
 
   /** Where a library command goes: every connected pane while broadcasting,
@@ -268,11 +238,7 @@ export class Grid {
       (i) => this.cells[i]?.pane.hasLiveSession() ?? false,
     ).length;
     if (liveCount === 0) return true;
-    return confirm(shrinkConfirmMessage(liveCount), {
-      title: t("grid.closeSessions.title"),
-      confirmLabel: t("common.continue"),
-      danger: true,
-    });
+    return confirmSessionTeardown(liveCount);
   }
 
   /**
@@ -284,15 +250,7 @@ export class Grid {
     next: GridModel,
     remap: PaneRemap,
   ): Promise<void> {
-    // Tear down dropped panes (disposes listeners/observers and closes any
-    // backend session — see TerminalPane.dispose).
-    for (const i of remap.dropped) {
-      const cell = this.cells[i];
-      if (!cell) continue;
-      cell.pane.dispose();
-      cell.wrapper.remove();
-    }
-
+    this.disposeCells(remap.dropped);
     const kept = this.cells.slice(0, paneCount(next));
     const added = await this.createLiveCells(remap.added.length);
     if (!added) return;
@@ -306,6 +264,15 @@ export class Grid {
     this.applyLayout();
     this.updateToolbarActive();
     this.setFocus(Math.min(this.focusedIndex, this.cells.length - 1), false);
+  }
+
+  /** Tears down the cells at `indices` (disposes listeners/observers and
+   * closes any backend session — see TerminalPane.dispose). */
+  private disposeCells(indices: number[]): void {
+    for (const i of indices) {
+      const cell = this.cells[i];
+      if (cell) destroyCell(cell);
+    }
   }
 
   /** Notifies the profile manager that the workspace saved-state may have changed. */
@@ -364,7 +331,7 @@ export class Grid {
    * splitter drag runs on drag-end.
    */
   refit(): void {
-    for (const cell of this.cells) cell.pane.fit();
+    this.fitPanes();
     for (const cell of this.cells) cell.pane.syncSize();
   }
 
@@ -400,7 +367,7 @@ export class Grid {
     const container = this.beginTransition();
     if (!container) return false;
     try {
-      if (!(await this.confirmProfileTeardown(opts.confirmTeardown ?? true))) {
+      if (!(await this.confirmProfileTeardown(opts.confirmTeardown))) {
         return false;
       }
       await this.loadWorkspaceCells(container, snapshot);
@@ -411,16 +378,13 @@ export class Grid {
     return true;
   }
 
-  /** Confirms tearing down any live sessions before loading over them. */
-  private async confirmProfileTeardown(confirmTeardown: boolean): Promise<boolean> {
-    if (!confirmTeardown || !shouldConfirmTeardown(this.liveSessionCount())) {
+  /** Confirms tearing down any live sessions before loading over them, unless
+   * `confirmTeardown` is false. */
+  private async confirmProfileTeardown(confirmTeardown: boolean | undefined): Promise<boolean> {
+    if (confirmTeardown === false || !shouldConfirmTeardown(this.liveSessionCount())) {
       return true;
     }
-    return confirm(shrinkConfirmMessage(this.liveSessionCount()), {
-      title: t("grid.closeSessions.title"),
-      confirmLabel: t("common.continue"),
-      danger: true,
-    });
+    return confirmSessionTeardown(this.liveSessionCount());
   }
 
   /**
@@ -434,49 +398,41 @@ export class Grid {
     this.loading = true;
     this.loadingSnapshot = copySnapshot(snapshot);
     try {
-      this.teardownAllCells();
-      // A load swaps every pane to (potentially) different hosts, so silently
-      // keeping broadcast on would fan the next keystroke out to hosts the user
-      // didn't choose to broadcast to. Reset it off.
-      if (this.broadcast) {
-        this.broadcast = false;
-        this.updateBroadcastUI();
-      }
-      this.model = {
-        rows: snapshot.grid.rows,
-        cols: snapshot.grid.cols,
-        rowSizes: [...snapshot.grid.rowSizes],
-        colSizes: [...snapshot.grid.colSizes],
-      };
-
-      const cells = await this.createLiveCells(paneCount(this.model));
-      if (!cells) return;
-      this.cells = cells;
-      this.loadingSnapshot = null;
-      container.append(...this.cells.map((c) => c.wrapper));
-      this.applyLayout();
-      this.updateToolbarActive();
-      this.focusedIndex = 0;
-      this.setFocus(0, false);
-
-      const connects = this.assignSnapshotDevices(snapshot);
-      // The layout and devices already match the snapshot: report it now rather
-      // than after every connect settles (host-key prompts, timeouts), so a
-      // just-loaded profile tab doesn't read as unsaved meanwhile.
-      this.options.onChange?.();
-      await Promise.allSettled(connects);
+      await this.rebuildFromSnapshot(container, snapshot);
     } finally {
       this.loading = false;
       this.loadingSnapshot = null;
     }
   }
 
+  private async rebuildFromSnapshot(container: HTMLElement, snapshot: WorkspaceSnapshot): Promise<void> {
+    this.teardownAllCells();
+    this.stopBroadcast();
+    this.model = modelOf(snapshot);
+    const cells = await this.createLiveCells(paneCount(this.model));
+    if (!cells) return;
+    this.mountLoadedCells(container, cells);
+    const connects = this.assignSnapshotDevices(snapshot);
+    // The layout and devices already match the snapshot: report it now rather
+    // than after every connect settles (host-key prompts, timeouts), so a
+    // just-loaded profile tab doesn't read as unsaved meanwhile.
+    this.options.onChange?.();
+    await Promise.allSettled(connects);
+  }
+
+  private mountLoadedCells(container: HTMLElement, cells: Cell[]): void {
+    this.cells = cells;
+    this.loadingSnapshot = null;
+    container.append(...this.cells.map((c) => c.wrapper));
+    this.applyLayout();
+    this.updateToolbarActive();
+    this.focusedIndex = 0;
+    this.setFocus(0, false);
+  }
+
   /** Disposes every current pane (closing any live session) and clears the grid. */
   private teardownAllCells(): void {
-    for (const cell of this.cells) {
-      cell.pane.dispose();
-      cell.wrapper.remove();
-    }
+    this.cells.forEach(destroyCell);
     this.cells = [];
   }
 
@@ -494,13 +450,7 @@ export class Grid {
 
   /** Enables/disables the preset buttons for the duration of a transition. */
   private setPresetButtonsDisabled(disabled: boolean): void {
-    const toolbar = this.toolbar;
-    if (!toolbar) return;
-    for (const btn of toolbar.querySelectorAll<HTMLButtonElement>(
-      ".grid-preset-btn",
-    )) {
-      btn.disabled = disabled;
-    }
+    if (this.toolbar) setPresetButtonsDisabled(this.toolbar, disabled);
   }
 
   /* -------------------------------------------------------------------------
@@ -514,10 +464,7 @@ export class Grid {
     const cells: Cell[] = [];
     for (let i = 0; i < count; i++) {
       cells.push(await this.createCell());
-      if (this.disposed) {
-        for (const cell of cells) cell.pane.dispose();
-        return null;
-      }
+      if (this.disposed) return disposeAbandoned(cells);
     }
     return cells;
   }
@@ -553,94 +500,30 @@ export class Grid {
   }
 
   private setFocus(index: number, focusTerminal: boolean): void {
-    if (index < 0 || index >= this.cells.length) return;
+    if (!this.hasCell(index)) return;
     this.focusedIndex = index;
     this.cells.forEach((cell, i) => {
       cell.wrapper.classList.toggle("grid-cell-focused", i === index);
     });
-    if (focusTerminal) this.cells[index]?.pane.focus();
+    if (focusTerminal) this.focusPane(index);
+  }
+
+  private hasCell(index: number): boolean {
+    return index >= 0 && index < this.cells.length;
+  }
+
+  private focusPane(index: number): void {
+    this.cells[index]?.pane.focus();
   }
 
   /* -------------------------------------------------------------------------
    * Layout (CSS grid tracks + splitters)
    * ---------------------------------------------------------------------- */
 
-  /**
-   * Applies the current model's track sizes to the grid, then updates the
-   * splitter overlay. A splitter drag calls this every animation frame with the
-   * track *count* unchanged (only sizes move) — rebuilding every splitter node
-   * on each tick would churn the DOM up to 60x/sec and drop `:hover`/`:active`
-   * state on the dragged splitter. So the splitter count per axis is checked
-   * first: unchanged ⇒ reposition the existing nodes in place (cheap, keeps
-   * their listeners); changed (a preset/profile switch) ⇒ full rebuild.
-   */
+  /** Lays the grid out to the current model (see `layoutGrid`). */
   private applyLayout(): void {
-    const container = this.container;
-    if (!container) return;
-    container.style.gridTemplateColumns = this.model.colSizes
-      .map((f) => `${f}fr`)
-      .join(" ");
-    container.style.gridTemplateRows = this.model.rowSizes
-      .map((f) => `${f}fr`)
-      .join(" ");
-
-    if (this.splitterShapeMatches(container)) {
-      this.repositionSplitters(container);
-    } else {
-      this.rebuildSplitters(container);
-    }
-  }
-
-  /** True when the DOM already has exactly the col/row splitter count the model needs. */
-  private splitterShapeMatches(container: HTMLElement): boolean {
-    const expectedCols = Math.max(0, this.model.colSizes.length - 1);
-    const expectedRows = Math.max(0, this.model.rowSizes.length - 1);
-    const actualCols = container.querySelectorAll(".grid-splitter-col").length;
-    const actualRows = container.querySelectorAll(".grid-splitter-row").length;
-    return actualCols === expectedCols && actualRows === expectedRows;
-  }
-
-  /** Moves existing splitter nodes to the current boundary fractions, in place. */
-  private repositionSplitters(container: HTMLElement): void {
-    const cols = container.querySelectorAll<HTMLElement>(".grid-splitter-col");
-    cumulativeFractions(this.model.colSizes).forEach((frac, i) => {
-      const el = cols[i];
-      if (el) el.style.left = `${frac * 100}%`;
-    });
-    const rows = container.querySelectorAll<HTMLElement>(".grid-splitter-row");
-    cumulativeFractions(this.model.rowSizes).forEach((frac, i) => {
-      const el = rows[i];
-      if (el) el.style.top = `${frac * 100}%`;
-    });
-  }
-
-  /** Removes and recreates every splitter (cells are left untouched). */
-  private rebuildSplitters(container: HTMLElement): void {
-    for (const s of container.querySelectorAll(".grid-splitter")) s.remove();
-    cumulativeFractions(this.model.colSizes).forEach((frac, boundary) => {
-      container.appendChild(this.makeSplitter("col", boundary, frac));
-    });
-    cumulativeFractions(this.model.rowSizes).forEach((frac, boundary) => {
-      container.appendChild(this.makeSplitter("row", boundary, frac));
-    });
-  }
-
-  private makeSplitter(
-    axis: DragAxis,
-    boundary: number,
-    cumFraction: number,
-  ): HTMLElement {
-    const el = document.createElement("div");
-    el.className = `grid-splitter grid-splitter-${axis}`;
-    el.setAttribute("role", "separator");
-    el.setAttribute(
-      "aria-orientation",
-      axis === "col" ? "vertical" : "horizontal",
-    );
-    if (axis === "col") el.style.left = `${cumFraction * 100}%`;
-    else el.style.top = `${cumFraction * 100}%`;
-    el.addEventListener("mousedown", (e) => this.startDrag(e, axis, boundary));
-    return el;
+    if (!this.container) return;
+    layoutGrid(this.container, this.model, (e, axis, boundary) => this.startDrag(e, axis, boundary));
   }
 
   /* -------------------------------------------------------------------------
@@ -670,43 +553,41 @@ export class Grid {
 
   private applyDrag = (): void => {
     this.dragRaf = 0;
-    const drag = this.drag;
-    const container = this.container;
+    const { drag, container } = this;
     if (!drag || !container) return;
-    const rect = container.getBoundingClientRect();
-    if (drag.axis === "col" && rect.width > 0) {
-      const target = (this.dragPointer.x - rect.left) / rect.width;
-      this.model = {
-        ...this.model,
-        colSizes: resizeTrack(this.model.colSizes, drag.boundary, target),
-      };
-    } else if (drag.axis === "row" && rect.height > 0) {
-      const target = (this.dragPointer.y - rect.top) / rect.height;
-      this.model = {
-        ...this.model,
-        rowSizes: resizeTrack(this.model.rowSizes, drag.boundary, target),
-      };
-    }
+    this.model = draggedModel(this.model, drag, this.dragPointer, container.getBoundingClientRect());
     this.applyLayout();
     // Re-fit visually (once per frame); resize_pty is held until drag end.
-    for (const cell of this.cells) cell.pane.fit();
+    this.fitPanes();
   };
+
+  private fitPanes(): void {
+    for (const cell of this.cells) cell.pane.fit();
+  }
 
   private onDragEnd = (): void => {
     window.removeEventListener("mousemove", this.onDragMove);
     window.removeEventListener("mouseup", this.onDragEnd);
-    if (this.dragRaf !== 0) {
-      cancelAnimationFrame(this.dragRaf);
-      this.dragRaf = 0;
-    }
-    document.body.classList.remove("grid-dragging-col", "grid-dragging-row");
-    this.drag = null;
+    this.cancelDragFrame();
+    this.endDragChrome();
     for (const cell of this.cells) cell.pane.setResizeThrottled(false);
     // Push the final size to every live session's PTY exactly once.
     for (const cell of this.cells) cell.pane.syncSize();
     // Splitter sizes are part of the saved-state → may now differ from profile.
     this.emitChange();
   };
+
+  /** Ends a drag's app-wide state: the body's dragging cursor class. */
+  private endDragChrome(): void {
+    document.body.classList.remove("grid-dragging-col", "grid-dragging-row");
+    this.drag = null;
+  }
+
+  private cancelDragFrame(): void {
+    if (this.dragRaf === 0) return;
+    cancelAnimationFrame(this.dragRaf);
+    this.dragRaf = 0;
+  }
 
   /**
    * Full teardown when its tab closes: disposes every pane (which closes any
@@ -722,15 +603,10 @@ export class Grid {
     this.disposed = true;
     window.removeEventListener("mousemove", this.onDragMove);
     window.removeEventListener("mouseup", this.onDragEnd);
-    if (this.dragRaf !== 0) {
-      cancelAnimationFrame(this.dragRaf);
-      this.dragRaf = 0;
-    }
-    for (const cell of this.cells) {
-      cell.pane.dispose();
-      cell.wrapper.remove();
-    }
-    this.cells = [];
+    this.cancelDragFrame();
+    // Only a grid mid-drag owns the body's dragging class.
+    if (this.drag) this.endDragChrome();
+    this.teardownAllCells();
   }
 }
 
@@ -741,4 +617,20 @@ function copySnapshot(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
     grid: { ...grid, rowSizes: [...grid.rowSizes], colSizes: [...grid.colSizes] },
     panes: [...panes],
   };
+}
+
+function modelOf(snapshot: WorkspaceSnapshot): GridModel {
+  const { grid } = snapshot;
+  return { rows: grid.rows, cols: grid.cols, rowSizes: [...grid.rowSizes], colSizes: [...grid.colSizes] };
+}
+
+function destroyCell(cell: Cell): void {
+  cell.pane.dispose();
+  cell.wrapper.remove();
+}
+
+/** Disposes cells a disposed grid never adopted; always `null`. */
+function disposeAbandoned(cells: Cell[]): null {
+  for (const cell of cells) cell.pane.dispose();
+  return null;
 }

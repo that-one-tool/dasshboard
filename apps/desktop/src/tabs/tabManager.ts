@@ -17,14 +17,25 @@
  */
 
 import { Grid, type GridOptions } from "../grid";
-import { confirm } from "../ui/confirm";
 import { isDialogOpen, requireEl } from "../ui/dom";
 import { tabShortcut, type TabAction, type TabJump, type TabShortcut } from "./tabShortcuts";
-import { closeIcon, plusIcon } from "../ui/icons";
-import { shrinkConfirmMessage } from "../gridModel";
+import { plusIcon } from "../ui/icons";
+import { confirmSessionTeardown } from "../ui/sessionTeardown";
 import { t } from "../i18n";
-import type { WorkspaceState } from "../ipc";
+import type { WorkspaceState, WorkspaceTabState } from "../ipc";
 import type { TabSnapshot } from "../profiles/workspace";
+import { DebouncedWrite } from "./debouncedWrite";
+import { startRename } from "./tabRename";
+import {
+  createTabButton,
+  retranslateStrip,
+  retranslateTabButton,
+  showTabState,
+  stripHtml,
+  type TabProfileState,
+} from "./tabStrip";
+
+export type { TabProfileState } from "./tabStrip";
 
 /** One open tab: its live grid, the panel it lives in, and its strip button. */
 interface Tab {
@@ -36,14 +47,6 @@ interface Tab {
   name: string;
   /** Profile this tab is linked to (drives the badge + dirty diff), or null. */
   linkedProfileId: string | null;
-}
-
-/** How a tab relates to its linked profile, for the strip badge + dirty dot. */
-export interface TabProfileState {
-  /** True when `linkedProfileId` resolves to an existing profile. */
-  linked: boolean;
-  /** True when the tab's live workspace differs from that profile. */
-  dirty: boolean;
 }
 
 /** What other parts of the window store in `workspace_state.json`. */
@@ -82,7 +85,7 @@ export class TabManager {
    * (and the very first save is a real change, not the restore echo).
    */
   private ready = false;
-  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly saver = new DebouncedWrite(() => this.options.persist?.(this.serialize()), PERSIST_DEBOUNCE_MS);
 
   /** The profile links of tabs still being built, so a {@link clearProfileLink}
    * that runs meanwhile reaches them too. */
@@ -138,41 +141,38 @@ export class TabManager {
    * profile into that blank tab afterwards).
    */
   async init(state?: WorkspaceState): Promise<void> {
-    this.root.classList.add("tab-root");
-    this.root.innerHTML = `
-      <div class="tab-strip" role="tablist" aria-label="${t("tabs.aria")}">
-        <div class="tab-strip-tabs"></div>
-        <button type="button" class="tab-new-btn"
-          title="${t("tabs.new")}" aria-label="${t("tabs.new")}"></button>
-      </div>
-      <div class="tab-stack"></div>
-    `;
-    this.stripTabs = requireEl<HTMLElement>(this.root, ".tab-strip-tabs");
-    this.stack = requireEl<HTMLElement>(this.root, ".tab-stack");
-
-    const newBtn = requireEl<HTMLButtonElement>(this.root, ".tab-new-btn");
-    newBtn.innerHTML = plusIcon;
-    newBtn.addEventListener("click", () => void this.newTab());
-
-    // Mount the app-action buttons at the right end of the strip row (they live
-    // here now instead of a separate app header).
-    const actions = this.options.headerActions;
-    if (actions) {
-      actions.hidden = false;
-      requireEl<HTMLElement>(this.root, ".tab-strip").appendChild(actions);
-    }
-
+    this.buildStrip();
+    this.mountHeaderActions();
     window.addEventListener("keydown", this.onKeyDown, true);
     // Flush any debounced save before the window tears down, so a fast quit
     // doesn't drop the last ≤500 ms of workspace changes.
     window.addEventListener("beforeunload", this.onBeforeUnload);
-
-    if (state && state.tabs.length > 0) {
-      await this.restore(state);
-    } else {
-      await this.newTab();
-    }
+    await this.openInitialTabs(state);
     this.ready = true;
+  }
+
+  private buildStrip(): void {
+    this.root.classList.add("tab-root");
+    this.root.innerHTML = stripHtml();
+    this.stripTabs = requireEl<HTMLElement>(this.root, ".tab-strip-tabs");
+    this.stack = requireEl<HTMLElement>(this.root, ".tab-stack");
+    const newBtn = requireEl<HTMLButtonElement>(this.root, ".tab-new-btn");
+    newBtn.innerHTML = plusIcon;
+    newBtn.addEventListener("click", () => void this.newTab());
+  }
+
+  /** Mounts the app-action buttons at the right end of the strip row (they
+   * live here instead of a separate app header). */
+  private mountHeaderActions(): void {
+    const actions = this.options.headerActions;
+    if (!actions) return;
+    actions.hidden = false;
+    requireEl<HTMLElement>(this.root, ".tab-strip").appendChild(actions);
+  }
+
+  private async openInitialTabs(state: WorkspaceState | undefined): Promise<void> {
+    if (state && state.tabs.length > 0) await this.restore(state);
+    else await this.newTab();
   }
 
   /**
@@ -182,23 +182,8 @@ export class TabManager {
    * profile-link badge are refreshed. Live grids are re-translated separately.
    */
   retranslate(): void {
-    this.root
-      .querySelector<HTMLElement>(".tab-strip")
-      ?.setAttribute("aria-label", t("tabs.aria"));
-    const newBtn = this.root.querySelector<HTMLElement>(".tab-new-btn");
-    if (newBtn) {
-      newBtn.title = t("tabs.new");
-      newBtn.setAttribute("aria-label", t("tabs.new"));
-    }
-    for (const tab of this.tabs) {
-      const close = tab.button.querySelector<HTMLElement>(".tab-close");
-      if (close) {
-        close.title = t("tabs.close");
-        close.setAttribute("aria-label", t("tabs.close"));
-      }
-      const badge = tab.button.querySelector<HTMLElement>(".tab-badge");
-      if (badge) badge.title = t("tabs.linked");
-    }
+    retranslateStrip(this.root);
+    for (const tab of this.tabs) retranslateTabButton(tab.button);
   }
 
   /**
@@ -277,16 +262,24 @@ export class TabManager {
     }
     // New tabs first, so replacing every tab never empties the strip.
     await this.removeTabsOwning(replacing);
-    if (grids[0]) this.activateGrid(grids[0]);
+    this.activateFirst(grids);
     return grids;
+  }
+
+  private activateFirst(grids: Grid[]): void {
+    if (grids[0]) this.activateGrid(grids[0]);
   }
 
   /** Closes, without a confirm, the tabs owning `grids` that are still open
    * (any can have been closed while the caller awaited). */
   private async removeTabsOwning(grids: readonly Grid[]): Promise<void> {
     for (const tab of this.tabs.filter((candidate) => grids.includes(candidate.grid))) {
-      if (this.tabs.includes(tab)) await this.removeTab(tab);
+      await this.removeIfOpen(tab);
     }
+  }
+
+  private async removeIfOpen(tab: Tab): Promise<void> {
+    if (this.tabs.includes(tab)) await this.removeTab(tab);
   }
 
   /** Where the next tab of an {@link openTabs} batch goes: after the last one it
@@ -311,27 +304,34 @@ export class TabManager {
     linkedProfileId: string | null,
     slot: () => number = () => this.tabs.length,
   ): Promise<Grid> {
-    const stack = this.stack;
-    const stripTabs = this.stripTabs;
+    const { stack, stripTabs } = this.requireStrip();
+    const { panel, host } = createTabPanel(stack);
+    const grid = this.createGrid(host);
+    const profileId = await this.initGrid(grid, linkedProfileId);
+    const tab: Tab = { grid, panel, button: this.createTabButton(name), name, linkedProfileId: profileId };
+    this.insertTab(tab, slot(), stack, stripTabs);
+    return grid;
+  }
+
+  private requireStrip(): { stack: HTMLElement; stripTabs: HTMLElement } {
+    const { stack, stripTabs } = this;
     if (!stack || !stripTabs) throw new Error("TabManager.init() has not run");
+    return { stack, stripTabs };
+  }
 
-    // The panel is a plain visibility wrapper; the grid gets its OWN host child.
-    // Grid.init() adds `.grid-root` (display:flex) to whatever element it's given,
-    // so if the panel itself were the grid root, that flex rule would override
-    // `.tab-hidden`'s display:none and every tab would stay visible side by side.
-    const panel = document.createElement("div");
-    panel.className = "tab-panel tab-hidden";
-    const host = document.createElement("div");
-    panel.appendChild(host);
-    stack.appendChild(panel);
-
-    // Wrap the shared grid onChange so a workspace edit in ANY tab both bubbles
-    // to the app (dirty dot) and schedules a persist of the whole tab set.
-    const grid = new Grid(host, {
+  /** Wraps the shared grid onChange so a workspace edit in ANY tab both bubbles
+   * to the app (dirty dot) and schedules a persist of the whole tab set. */
+  private createGrid(host: HTMLElement): Grid {
+    return new Grid(host, {
       ...this.options.grid,
       onChange: () => this.notifyWorkspaceChange(),
       onConnectionChange: () => notifyAll(this.connectionListeners),
     });
+  }
+
+  /** Initializes `grid`; resolves the tab's profile link, which a
+   * {@link clearProfileLink} meanwhile may have cleared. */
+  private async initGrid(grid: Grid, linkedProfileId: string | null): Promise<string | null> {
     const link = { profileId: linkedProfileId };
     this.pendingLinks.add(link);
     try {
@@ -339,23 +339,18 @@ export class TabManager {
     } finally {
       this.pendingLinks.delete(link);
     }
+    return link.profileId;
+  }
 
-    const tab: Tab = {
-      grid,
-      panel,
-      button: this.createTabButton(name),
-      name,
-      linkedProfileId: link.profileId,
-    };
-    const index = slot();
+  private insertTab(tab: Tab, index: number, stack: HTMLElement, stripTabs: HTMLElement): void {
     const before = this.tabs[index];
-    stack.insertBefore(panel, before?.panel ?? null);
+    const [panelAfter, buttonAfter] = before ? [before.panel, before.button] : [null, null];
+    stack.insertBefore(tab.panel, panelAfter);
     this.tabs.splice(index, 0, tab);
-    stripTabs.insertBefore(tab.button, before?.button ?? null);
+    stripTabs.insertBefore(tab.button, buttonAfter);
     this.refreshStrip();
     this.activate(index);
     this.schedulePersist();
-    return grid;
   }
 
   /**
@@ -365,52 +360,58 @@ export class TabManager {
    * blank tab in its place.
    */
   async closeTab(index: number): Promise<void> {
-    const tab = this.tabs[index];
-    if (!tab || this.closing.has(tab)) return;
+    const tab = this.closableTab(index);
+    if (!tab) return;
+    // The tab set may have changed during the confirm: act on this tab, by
+    // identity, wherever it now sits.
+    if (await this.confirmCloseOnce(tab)) await this.removeIfOpen(tab);
+  }
 
+  /** Tab `index`, unless absent or already waiting on its close confirm. */
+  private closableTab(index: number): Tab | undefined {
+    const tab = this.tabs[index];
+    return tab && !this.closing.has(tab) ? tab : undefined;
+  }
+
+  private async confirmCloseOnce(tab: Tab): Promise<boolean> {
     this.closing.add(tab);
     try {
-      if (!(await this.confirmClose(tab))) return;
+      return await this.confirmClose(tab);
     } finally {
       this.closing.delete(tab);
     }
-    // The tab set may have changed during the confirm: act on this tab, by
-    // identity, wherever it now sits.
-    if (this.tabs.includes(tab)) await this.removeTab(tab);
   }
 
   /** Asks before closing a tab that has live sessions. */
   private async confirmClose(tab: Tab): Promise<boolean> {
     const live = tab.grid.liveSessionCount();
     if (live === 0) return true;
-    return confirm(shrinkConfirmMessage(live), {
-      title: t("grid.closeSessions.title"),
-      confirmLabel: t("common.continue"),
-      danger: true,
-    });
+    return confirmSessionTeardown(live);
   }
 
   private async removeTab(tab: Tab): Promise<void> {
     const index = this.tabs.indexOf(tab);
     const active = this.tabs[this.activeIndex];
-    tab.grid.dispose();
-    tab.panel.remove();
-    tab.button.remove();
+    destroyTab(tab);
     this.tabs.splice(index, 1);
 
     if (this.tabs.length === 0) {
       await this.newTab();
       return;
     }
-    // Closing a background tab keeps the active one; closing the active tab
-    // moves to the tab that shifted into its slot (or the new last tab).
-    const next =
-      active && active !== tab ? this.tabs.indexOf(active) : Math.min(index, this.tabs.length - 1);
+    const next = this.indexAfterRemoval(active, tab, index);
     this.activeIndex = -1; // force activate() to re-apply visibility
     this.activate(next);
     this.refreshStrip();
     // A closed tab leaves its profile's group (→ dirty).
     this.notifyWorkspaceChange();
+  }
+
+  /** Closing a background tab keeps the active one; closing the active tab
+   * moves to the tab that shifted into its slot (or the new last tab). */
+  private indexAfterRemoval(active: Tab | undefined, removed: Tab, index: number): number {
+    if (active && active !== removed) return this.tabs.indexOf(active);
+    return Math.min(index, this.tabs.length - 1);
   }
 
   /**
@@ -421,13 +422,14 @@ export class TabManager {
   activate(index: number): void {
     if (index < 0 || index >= this.tabs.length) return;
     this.activeIndex = index;
-    this.tabs.forEach((tab, i) => {
-      const active = i === index;
-      tab.panel.classList.toggle("tab-hidden", !active);
-      tab.button.classList.toggle("tab-active", active);
-      tab.button.setAttribute("aria-selected", String(active));
-    });
-    const tab = this.tabs[index];
+    this.tabs.forEach((tab, i) => showActive(tab, i === index));
+    this.showActiveGrid();
+  }
+
+  /** Re-fits the now-visible active grid (a hidden panel can't be measured),
+   * focuses its pane, tells the active-tab listeners and schedules a save. */
+  private showActiveGrid(): void {
+    const tab = this.tabs[this.activeIndex];
     if (!tab) return;
     tab.grid.refit();
     tab.grid.focus();
@@ -513,17 +515,11 @@ export class TabManager {
    */
   clearProfileLink(profileId: string): void {
     this.clearPendingLinks(profileId);
-    let changed = false;
-    for (const tab of this.tabs) {
-      if (tab.linkedProfileId === profileId) {
-        tab.linkedProfileId = null;
-        changed = true;
-      }
-    }
-    if (changed) {
-      this.refreshStrip();
-      this.schedulePersist();
-    }
+    const linked = this.tabs.filter((tab) => tab.linkedProfileId === profileId);
+    for (const tab of linked) tab.linkedProfileId = null;
+    if (linked.length === 0) return;
+    this.refreshStrip();
+    this.schedulePersist();
   }
 
   private clearPendingLinks(profileId: string): void {
@@ -540,15 +536,7 @@ export class TabManager {
   serialize(): WorkspaceState {
     return {
       ...this.collectExtras(),
-      tabs: this.tabs.map((tab) => {
-        const snap = tab.grid.snapshot();
-        return {
-          name: tab.name,
-          grid: snap.grid,
-          panes: snap.panes.map((deviceId) => ({ deviceId })),
-          linkedProfileId: tab.linkedProfileId,
-        };
-      }),
+      tabs: this.tabs.map(tabState),
       activeIndex: Math.max(0, this.activeIndex),
     };
   }
@@ -577,20 +565,12 @@ export class TabManager {
    * initial blank tab don't write), and only when a `persist` callback is wired.
    */
   private schedulePersist(): void {
-    if (!this.ready || !this.options.persist) return;
-    if (this.persistTimer !== null) clearTimeout(this.persistTimer);
-    this.persistTimer = setTimeout(() => {
-      this.persistTimer = null;
-      this.options.persist?.(this.serialize());
-    }, PERSIST_DEBOUNCE_MS);
+    if (this.ready && this.options.persist) this.saver.schedule();
   }
 
   /** Writes any pending debounced save immediately (called on app quit). */
   flushPersist(): void {
-    if (this.persistTimer === null) return;
-    clearTimeout(this.persistTimer);
-    this.persistTimer = null;
-    this.options.persist?.(this.serialize());
+    this.saver.flush();
   }
 
   private onBeforeUnload = (): void => this.flushPersist();
@@ -611,89 +591,27 @@ export class TabManager {
    * ---------------------------------------------------------------------- */
 
   private createTabButton(name: string): HTMLElement {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "tab";
-    button.setAttribute("role", "tab");
-    button.innerHTML = `
-      <span class="tab-name"></span>
-      <span class="tab-badge" title="${t("tabs.linked")}" hidden></span>
-      <span class="tab-dirty-dot" hidden></span>
-      <button type="button" class="tab-close" tabindex="-1"
-        title="${t("tabs.close")}" aria-label="${t("tabs.close")}"></button>
-    `;
-    requireEl<HTMLElement>(button, ".tab-name").textContent = name;
-    const close = requireEl<HTMLButtonElement>(button, ".tab-close");
-    close.innerHTML = closeIcon;
-    close.addEventListener("click", (e) => {
-      e.stopPropagation(); // don't also activate the tab we're closing
-      const index = this.tabs.findIndex((tb) => tb.button === button);
-      if (index >= 0) void this.closeTab(index);
+    return createTabButton(name, {
+      onActivate: (button) => this.withButtonIndex(button, (index) => this.activate(index)),
+      onClose: (button) => this.withButtonIndex(button, (index) => void this.closeTab(index)),
+      onRename: (button) => this.withButtonIndex(button, (index) => this.startRename(index)),
     });
-    button.addEventListener("click", () => {
-      const index = this.tabs.findIndex((tb) => tb.button === button);
-      if (index >= 0) this.activate(index);
-    });
-    button.addEventListener("dblclick", (e) => {
-      // Double-clicking the close glyph shouldn't start a rename.
-      if (e.target instanceof HTMLElement && e.target.closest(".tab-close")) return;
-      const index = this.tabs.findIndex((tb) => tb.button === button);
-      if (index >= 0) this.startRename(index);
-    });
-    return button;
   }
 
-  /**
-   * Inline-renames a tab: swaps its name label for a text input (double-click).
-   * Enter / blur commits a non-empty trimmed value; Escape cancels. Pointer
-   * events inside the input are stopped so they don't re-activate or close the
-   * tab underneath.
-   */
+  private withButtonIndex(button: HTMLElement, action: (index: number) => void): void {
+    const index = this.tabs.findIndex((tab) => tab.button === button);
+    if (index >= 0) action(index);
+  }
+
   private startRename(index: number): void {
     const tab = this.tabs[index];
     if (!tab) return;
-    const nameEl = tab.button.querySelector<HTMLElement>(".tab-name");
-    if (!nameEl || tab.button.querySelector(".tab-rename-input")) return; // already editing
+    startRename(tab.button, tab.name, (next) => this.renameTab(tab, next));
+  }
 
-    const input = document.createElement("input");
-    input.type = "text";
-    input.className = "tab-rename-input";
-    input.value = tab.name;
-    input.setAttribute("aria-label", t("tabs.rename"));
-    nameEl.hidden = true;
-    nameEl.after(input);
-    input.focus();
-    input.select();
-
-    for (const type of ["mousedown", "click", "dblclick"] as const) {
-      input.addEventListener(type, (e) => e.stopPropagation());
-    }
-
-    let done = false;
-    const finish = (commit: boolean): void => {
-      if (done) return;
-      done = true;
-      if (commit) {
-        const next = input.value.trim();
-        if (next && next !== tab.name) {
-          tab.name = next;
-          nameEl.textContent = next;
-          this.notifyWorkspaceChange();
-        }
-      }
-      input.remove();
-      nameEl.hidden = false;
-    };
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        finish(true);
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        finish(false);
-      }
-    });
-    input.addEventListener("blur", () => finish(true));
+  private renameTab(tab: Tab, name: string): void {
+    tab.name = name;
+    this.notifyWorkspaceChange();
   }
 
   /**
@@ -701,13 +619,7 @@ export class TabManager {
    * the unsaved-changes dot (both hidden until a resolver is set).
    */
   refreshStrip(): void {
-    for (const tab of this.tabs) {
-      const state = this.resolveTabState(tab.linkedProfileId);
-      const badge = tab.button.querySelector<HTMLElement>(".tab-badge");
-      if (badge) badge.hidden = !state.linked;
-      const dot = tab.button.querySelector<HTMLElement>(".tab-dirty-dot");
-      if (dot) dot.hidden = !state.dirty;
-    }
+    for (const tab of this.tabs) showTabState(tab.button, this.resolveTabState(tab.linkedProfileId));
   }
 
   /* -------------------------------------------------------------------------
@@ -765,15 +677,49 @@ export class TabManager {
     window.removeEventListener("keydown", this.onKeyDown, true);
     window.removeEventListener("beforeunload", this.onBeforeUnload);
     this.flushPersist();
-    for (const tab of this.tabs) {
-      tab.grid.dispose();
-      tab.panel.remove();
-      tab.button.remove();
-    }
+    this.tabs.forEach(destroyTab);
     this.tabs = [];
   }
 }
 
 function notifyAll(listeners: readonly (() => void)[]): void {
   for (const listener of listeners) listener();
+}
+
+/**
+ * A hidden tab panel in `stack`. The panel is a plain visibility wrapper; the
+ * grid gets its OWN host child. Grid.init() adds `.grid-root` (display:flex) to
+ * whatever element it's given, so if the panel itself were the grid root, that
+ * flex rule would override `.tab-hidden`'s display:none and every tab would
+ * stay visible side by side.
+ */
+function createTabPanel(stack: HTMLElement): { panel: HTMLElement; host: HTMLElement } {
+  const panel = document.createElement("div");
+  panel.className = "tab-panel tab-hidden";
+  const host = document.createElement("div");
+  panel.appendChild(host);
+  stack.appendChild(panel);
+  return { panel, host };
+}
+
+function showActive(tab: Tab, active: boolean): void {
+  tab.panel.classList.toggle("tab-hidden", !active);
+  tab.button.classList.toggle("tab-active", active);
+  tab.button.setAttribute("aria-selected", String(active));
+}
+
+function destroyTab(tab: Tab): void {
+  tab.grid.dispose();
+  tab.panel.remove();
+  tab.button.remove();
+}
+
+function tabState(tab: Tab): WorkspaceTabState {
+  const snap = tab.grid.snapshot();
+  return {
+    name: tab.name,
+    grid: snap.grid,
+    panes: snap.panes.map((deviceId) => ({ deviceId })),
+    linkedProfileId: tab.linkedProfileId,
+  };
 }
