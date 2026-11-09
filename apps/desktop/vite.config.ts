@@ -33,6 +33,8 @@ export default defineConfig(async () => ({
     target: ["es2021", "chrome105", "safari15"],
   },
   test: {
+    // Process the stylesheets so `?raw` returns their source (styles.test.ts).
+    css: { include: [/src\/styles(\.css|\/)/] },
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],

@@ -9,7 +9,7 @@
 import { remToPx } from "../ui/dom";
 import { MIN_GRID_REM, clampWidth, wireSplitter, type WidthBounds } from "../ui/splitter";
 
-/** Matches `.sidebar { width; min-width }` in styles.css. */
+/** Matches `.sidebar { width; min-width }` in styles/sidebar.css. */
 export const SIDEBAR_MIN_REM = 20;
 
 export interface SidebarResizeOptions {

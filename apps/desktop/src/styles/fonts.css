@@ -1,0 +1,26 @@
+/* Bundled icon font: Symbols Nerd Font Mono (icons-only Nerd Font). Used only
+ * as a per-glyph fallback in the terminal font chain so Powerline / Nerd Font
+ * glyphs in remote prompts (zsh + Powerlevel10k, oh-my-zsh, starship, …) render
+ * even when no Nerd Font is installed. Latin/text still comes from Cascadia Mono
+ * — this face carries no ASCII glyphs. Licensed under the SIL OFL; see
+ * assets/fonts/LICENSE-SymbolsNerdFont.txt. */
+@font-face {
+	font-family: "Symbols Nerd Font Mono";
+	src: url("../assets/fonts/SymbolsNerdFontMono-Regular.ttf") format("truetype");
+	font-weight: normal;
+	font-style: normal;
+	font-display: swap;
+}
+
+/* Bundled UI font: Inter (variable weight, Latin subset — covers every shipped
+ * Latin-script locale; CJK falls back per glyph to the OS font). Bundled because
+ * the CSP forbids remote fonts and Inter is rarely installed, which silently
+ * dropped the UI to Arial. Licensed under the SIL OFL; see
+ * assets/fonts/LICENSE-Inter.txt. */
+@font-face {
+	font-family: "Inter";
+	src: url("../assets/fonts/InterVariable-latin.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}

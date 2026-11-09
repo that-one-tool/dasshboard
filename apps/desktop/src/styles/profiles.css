@@ -1,0 +1,124 @@
+/* ============================================================================
+ * Profiles (Phase 4): sidebar list + toolbar bar with dirty dot
+ * ========================================================================== */
+
+/* Mirrors `.device-list-header`: padded, underlined section title. A flex row
+ * so the Export / Import / Save / Save As actions sit on the right of the title
+ * (like the Devices header). */
+.sidebar-section-title {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 0 4px 0 8px;
+	margin-bottom: 6px;
+}
+
+.profile-header-actions,
+.device-header-actions {
+	display: flex;
+	gap: var(--gap-btn);
+	flex: 0 0 auto;
+}
+
+.sidebar-empty {
+	font-size: 12px;
+	color: var(--text-muted);
+	margin: 4px 8px;
+}
+
+/* Laid out like a `.device-item`'s top row — name on the left, icon actions on
+ * the right at the same level — so the two sidebar sections read identically. */
+.profile-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 7px 8px;
+	border-radius: var(--radius);
+	margin-bottom: 2px;
+	font-size: 0.9rem;
+	transition: background-color 120ms ease;
+}
+
+.profile-item-loaded {
+	background-color: var(--surface-2);
+}
+
+/* Status dot to the left of the current profile's name: green normally, gold
+ * when its workspace has unsaved changes (toggled via `.dirty` in JS). Only
+ * rendered on the loaded item. */
+.profile-status-dot {
+	color: var(--ok);
+	font-size: 16px;
+	line-height: 1;
+	flex: 0 0 auto;
+}
+
+.profile-status-dot.dirty {
+	color: var(--warn);
+}
+
+.profile-name {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	background: none;
+	border: none;
+	color: var(--text-bright);
+	cursor: pointer;
+	text-align: left;
+	padding: 0;
+	font-size: 0.9rem;
+	font-weight: 500;
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.profile-item-name {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.profile-name:hover {
+	color: var(--text-bright);
+}
+
+.profile-item-actions {
+	display: flex;
+	gap: var(--gap-btn);
+	flex: 0 0 auto;
+}
+
+/* Filled "default" star gets the gold tint the old inline marker used, so the
+ * default profile stays visually obvious at a glance. */
+.btn-star-active {
+	color: var(--warn);
+}
+
+.btn-star-active:hover:not(:disabled) {
+	color: var(--warn-hover);
+}
+
+/* Prompt dialog (Save As / Rename) reuses the shared .dialog styling. The body
+ * isn't in a padded wrapper, so inset the input and actions directly (matches
+ * `.settings-content` / `.confirm-content` — Phase 6). */
+.prompt-input {
+	width: calc(100% - 2rem);
+	box-sizing: border-box;
+	padding: 8px;
+	margin: 16px 16px 12px;
+	background-color: var(--surface-1);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
+	color: var(--text-primary);
+	font-family: inherit;
+	font-size: 14px;
+}
+
+.prompt-input:focus {
+	outline: none;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 3px var(--accent-soft);
+}

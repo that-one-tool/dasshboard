@@ -1,0 +1,194 @@
+/* ============================================================================
+ * Tabs (Tabs milestone, Phase 1): strip on top, the active workspace below.
+ * `#pane-root` keeps its `.pane-root` class (flex) but `.tab-root` stacks the
+ * strip over the workspace stack. Inactive panels are `display:none` so their
+ * background sessions keep running; the active panel holds a full `.grid-root`.
+ * ============================================================================ */
+
+.tab-root {
+	flex-direction: column;
+	gap: var(--gutter);
+}
+
+/* The strip is the app's header bar: a white card holding the tabs (as a
+ * segmented pill track), the `+` button and the app-action buttons. */
+.tab-strip {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: 0 0 auto;
+	padding: 6px 8px 6px 6px;
+	background-color: var(--surface-1);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-sm);
+}
+
+/* Only the tabs scroll when they overflow; the `+` button and the mounted
+ * app-action buttons after it stay pinned at the right. The grey track is what
+ * makes the tabs read as one segmented control. */
+.tab-strip-tabs {
+	display: flex;
+	align-items: stretch;
+	gap: 2px;
+	padding: 3px;
+	min-width: 0;
+	flex: 0 1 auto;
+	background-color: var(--surface-2);
+	border-radius: var(--radius);
+	overflow-x: auto;
+	overflow-y: hidden; /* stop overflow-x:auto from forcing a vertical scrollbar */
+	scrollbar-width: thin;
+}
+
+.tab {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	padding: 6px 12px;
+	min-width: 5.75rem;
+	max-width: 13.75rem;
+	border: none;
+	border-radius: var(--radius-sm);
+	background: transparent;
+	color: var(--text-secondary);
+	font-size: 0.83rem;
+	cursor: pointer;
+	white-space: nowrap;
+	transition:
+		background 150ms ease,
+		color 150ms ease;
+}
+
+.tab:hover {
+	color: var(--text-primary);
+}
+
+/* Active tab: a raised card-coloured chip inside the grey track. */
+.tab.tab-active {
+	background: var(--surface-1);
+	color: var(--text-bright);
+	font-weight: 600;
+	box-shadow: var(--shadow-raised);
+}
+
+.tab-name {
+	flex: 0 1 auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Inline rename field (double-click a tab), sized to sit in place of the name. */
+.tab-rename-input {
+	font: inherit;
+	color: var(--text-bright);
+	background: var(--surface-1);
+	border: 1px solid var(--accent);
+	border-radius: var(--radius-sm);
+	padding: 1px 5px;
+	width: 12ch;
+	min-width: 0;
+}
+
+/* Profile-link badge (blue ring) and unsaved-changes dot (warm accent); both a
+ * touch larger with a soft halo so they register without shouting. Toggled via
+ * the `hidden` attribute. */
+.tab-badge,
+.tab-dirty-dot {
+	width: 0.4375rem;
+	height: 0.4375rem;
+	border-radius: 50%;
+	flex: 0 0 auto;
+}
+
+.tab-badge {
+	background: var(--accent);
+	box-shadow: 0 0 0 2px var(--accent-halo);
+}
+
+.tab-dirty-dot {
+	background: var(--warn);
+	box-shadow: 0 0 0 2px var(--warn-soft);
+}
+
+/* Close affordance: reserves its slot always (no width shift), but only fades in
+ * on hover or for the active tab. */
+.tab-close {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	width: 1.0625rem;
+	height: 1.0625rem;
+	margin-right: -4px;
+	border: none;
+	border-radius: var(--radius-pill);
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+	opacity: 0;
+	transition:
+		opacity 120ms ease,
+		background 120ms ease;
+}
+
+/* The shared 16px close glyph is scaled down to sit inside the small slot. */
+.tab-close svg {
+	width: 0.875rem;
+	height: 0.875rem;
+}
+
+.tab:hover .tab-close,
+.tab.tab-active .tab-close {
+	opacity: 0.55;
+}
+
+.tab-close:hover {
+	opacity: 1;
+	background: var(--surface-3);
+}
+
+/* "New tab" button: a quiet ghost icon that echoes the tab hover treatment. */
+.tab-new-btn {
+	flex: 0 0 auto;
+	align-self: center;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.875rem;
+	height: 1.875rem;
+	padding: 0;
+	border: none;
+	border-radius: var(--radius-sm);
+	background: transparent;
+	color: var(--text-secondary);
+	cursor: pointer;
+	transition:
+		background 150ms ease,
+		color 150ms ease;
+}
+
+.tab-new-btn:hover {
+	background: var(--surface-2);
+	color: var(--text-primary);
+}
+
+.tab-stack {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	min-width: 0;
+	display: flex;
+}
+
+.tab-panel {
+	flex: 1 1 auto;
+	min-height: 0;
+	min-width: 0;
+	display: flex;
+}
+
+.tab-hidden {
+	display: none;
+}

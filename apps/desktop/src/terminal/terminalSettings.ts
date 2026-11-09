@@ -15,7 +15,7 @@ export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
 };
 
 /**
- * Bundled icons-only Nerd Font (see the `@font-face` in styles.css). It carries
+ * Bundled icons-only Nerd Font (see the `@font-face` in styles/fonts.css). It carries
  * only Nerd/Powerline glyphs — no ASCII, box-drawing, or CJK — so it wins
  * per-glyph for icon codepoints while all text falls through to the next family.
  */
@@ -41,7 +41,7 @@ export interface XtermTheme {
 }
 
 // Kept in lockstep with the CSS `--surface-1` / `--text-primary` / `--accent`
-// tokens (styles.css) so the terminal canvas never seams against the pane card
+// tokens (styles/tokens.css) so the terminal canvas never seams against the pane card
 // it sits in, and the cursor picks up the app's blue accent.
 const DARK: XtermTheme = {
   background: "#15171b",

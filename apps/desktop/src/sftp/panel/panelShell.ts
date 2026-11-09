@@ -8,7 +8,7 @@ import { MIN_GRID_REM, wireSplitter, type WidthBounds } from "../../ui/splitter"
 import { PanelLayout } from "./panelLayout";
 
 /** The toolbar's nine icon buttons on one row: 9 × 1.875rem + 8 gaps + padding
- * + border = 22rem. Mirrored by `.sftp-panel { min-width }` in styles.css. */
+ * + border = 22rem. Mirrored by `.sftp-panel { min-width }` in styles/workspace.css. */
 const MIN_PANEL_REM = 22;
 const DEFAULT_PANEL_REM = 22.5;
 /** Absolute upper bound for a restored width (the live drag re-clamps against

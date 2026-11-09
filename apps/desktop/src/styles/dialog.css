@@ -1,0 +1,117 @@
+/* ============================================================================
+ * Dialog
+ * ============================================================================ */
+
+.btn-test-connection {
+	flex: 0 0 auto;
+}
+
+.dialog {
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 1000;
+	opacity: 1;
+	transition: opacity 150ms ease-in-out;
+}
+
+.dialog-hidden {
+	opacity: 0;
+	pointer-events: none;
+	/* `visibility: hidden` also removes the hidden dialog's controls from the tab
+   * order — otherwise the persistent (device / host-key) dialogs stay reachable
+   * by keyboard even while invisible. */
+	visibility: hidden;
+}
+
+.dialog-overlay {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background-color: var(--scrim);
+	cursor: pointer;
+}
+
+.dialog-content {
+	position: relative;
+	background-color: var(--surface-1);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	padding: 0;
+	max-width: 31.25rem;
+	width: 90%;
+	max-height: 90vh;
+	display: flex;
+	flex-direction: column;
+	box-shadow: var(--shadow-lg);
+}
+
+.dialog-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	padding: 16px 20px;
+	border-bottom: 1px solid var(--border);
+	flex: 0 0 auto;
+}
+
+.dialog-header h2 {
+	margin: 0;
+	font-size: 1.1rem;
+	font-weight: 600;
+	color: var(--text-bright);
+	flex: 1 1 auto;
+}
+
+.dialog-close-btn {
+	background: none;
+	border: none;
+	border-radius: var(--radius-pill);
+	color: var(--text-secondary);
+	font-size: 1.5rem;
+	cursor: pointer;
+	padding: 0;
+	width: 2rem;
+	height: 2rem;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: color 150ms ease-in-out;
+}
+
+.dialog-close-btn:hover {
+	background-color: var(--surface-2);
+	color: var(--text-bright);
+}
+
+.device-form {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 16px;
+	overflow-y: auto;
+	flex: 1 1 auto;
+}
+
+/* The SSH/serial field groups are single children of `.device-form`, so the
+ * form's `gap` doesn't reach the fields *inside* them (Host, Port, Username,
+ * Authentication, Secret, …). Give each wrapper the same column gap so every
+ * field is evenly spaced, matching the top-level fields.
+ *
+ * The `:not(.device-kind-hidden)` guard is essential: an ID selector outweighs
+ * the `.device-kind-hidden { display: none }` toggle, so without it this rule's
+ * `display: flex` would force the hidden group visible (both SSH and serial
+ * fields showing at once). Excluding the hidden state lets the toggle win. */
+#ssh-fields:not(.device-kind-hidden),
+#serial-fields:not(.device-kind-hidden) {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}

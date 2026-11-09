@@ -1,0 +1,23 @@
+/* ============================================================================
+ * Scrollbars
+ * ============================================================================ */
+
+::-webkit-scrollbar {
+	width: 0.625rem;
+	height: 0.625rem;
+}
+
+::-webkit-scrollbar-track {
+	background-color: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+	background-color: var(--border-strong);
+	border: 2px solid transparent;
+	background-clip: padding-box;
+	border-radius: var(--radius-pill);
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background-color: var(--surface-3);
+}

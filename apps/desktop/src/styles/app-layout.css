@@ -1,0 +1,33 @@
+/* ============================================================================
+ * Main layout
+ * ============================================================================ */
+
+.app-layout {
+	display: flex;
+	flex-direction: column;
+	height: 100vh;
+}
+
+/* The app-action buttons (reload / trusted-hosts / settings / help). There is no
+ * separate app header any more — the TabManager mounts this group at the right
+ * end of the tab-strip row, where `margin-left:auto` pins it past the tabs. */
+/* Hidden until TabManager mounts it into the tab strip; `display: flex` below
+ * would otherwise beat the `[hidden]` UA rule and flash it at first paint. */
+.header-actions[hidden] {
+	display: none;
+}
+
+.header-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--gap-btn);
+	margin-left: auto;
+	align-self: center;
+	flex: 0 0 auto;
+}
+
+.app-content {
+	display: flex;
+	flex: 1 1 auto;
+	min-height: 0;
+}

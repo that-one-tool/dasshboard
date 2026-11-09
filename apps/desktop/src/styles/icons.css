@@ -1,0 +1,68 @@
+/* ============================================================================
+ * Icons and header icon buttons
+ * ========================================================================== */
+
+/* Icon glyphs (ui/icons.ts) carry no size attributes: they are sized here, in
+ * rem, so they scale with the text. Contextual rules (e.g. `.btn-icon svg`)
+ * are more specific and still override these. */
+.icon {
+	width: 1rem;
+	height: 1rem;
+	flex: 0 0 auto;
+}
+
+.icon-lg {
+	width: 1.125rem;
+	height: 1.125rem;
+}
+
+/* Header action buttons (help / reload / trusted-hosts / settings). Square-ish
+ * icon buttons carrying an inline SVG glyph via `currentColor`, so the icon
+ * takes the button's text color and brightens on hover. */
+.icon-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 2rem;
+	height: 2rem;
+	background: none;
+	border: none;
+	border-radius: var(--radius-pill);
+	color: var(--text-secondary);
+	line-height: 0;
+	padding: 0;
+	cursor: pointer;
+	transition:
+		background-color 120ms ease,
+		color 120ms ease;
+}
+
+.icon-btn:hover {
+	background-color: var(--surface-2);
+	color: var(--text-bright);
+}
+
+.icon-btn:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+.icon-btn svg {
+	display: block;
+}
+
+/* A found app update badges the About (help) button with an accent dot. */
+.icon-btn.has-update {
+	position: relative;
+}
+
+.icon-btn.has-update::after {
+	content: "";
+	position: absolute;
+	top: 5px;
+	right: 5px;
+	width: 0.4375rem;
+	height: 0.4375rem;
+	border-radius: 50%;
+	background: var(--accent);
+}

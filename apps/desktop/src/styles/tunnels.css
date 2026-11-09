@@ -1,0 +1,147 @@
+/* ============================================================================
+ * Tunnels sidebar card
+ * ============================================================================ */
+
+/* --- Tunnels sidebar card (a section like Devices / Profiles) --- */
+
+.tunnel-list-items {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding-top: 6px;
+}
+
+.tunnels-empty {
+	color: var(--text-muted);
+	font-size: 0.85rem;
+	padding: 0 8px;
+}
+
+.tunnel-card {
+	border-radius: var(--radius);
+	padding: 8px 10px;
+	background-color: var(--surface-2);
+	font-size: 0.9rem;
+}
+
+.tunnel-card-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.tunnel-card-name {
+	flex: 1 1 auto;
+	color: var(--text-bright);
+	font-weight: 500;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Status as a wifi glyph (crossed out when stopped), colored per state. */
+.tunnel-status {
+	flex: 0 0 auto;
+	display: inline-flex;
+	color: var(--text-muted);
+}
+
+.tunnel-status.is-listening {
+	color: var(--ok-text);
+}
+
+.tunnel-status.is-connecting {
+	color: var(--warn-text);
+}
+
+.tunnel-status.is-error {
+	color: var(--danger-text);
+}
+
+/* Match the 16px glyphs of the device tiles' icon buttons. */
+.tunnel-card .btn-icon svg {
+	width: 1rem;
+	height: 1rem;
+}
+
+.tunnel-forwards {
+	list-style: none;
+	margin: 8px 0 0;
+	padding: 0;
+}
+
+.tunnel-forward {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 0;
+}
+
+/* Per-forward status: gray stopped, yellow connecting, green listening, red
+ * when its local port could not be bound. */
+.tunnel-forward-dot {
+	flex: 0 0 auto;
+	width: 0.5rem;
+	height: 0.5rem;
+	border-radius: 50%;
+	background-color: var(--dot-idle);
+}
+
+.tunnel-forward-dot.is-connecting {
+	background-color: var(--warn);
+}
+
+.tunnel-forward-dot.is-listening {
+	background-color: var(--ok);
+}
+
+.tunnel-forward-dot.is-unbound {
+	background-color: var(--danger);
+}
+
+/* Name over endpoint; `min-width: 0` lets both lines ellipsize. */
+.tunnel-forward-text {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.tunnel-forward-label {
+	display: flex;
+	align-items: baseline;
+	gap: 0.4rem;
+	min-width: 0;
+}
+
+.tunnel-forward-name {
+	color: var(--text-primary);
+	font-size: 0.82rem;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tunnel-forward-endpoint {
+	color: var(--endpoint);
+	font-family: "Cascadia Mono", Consolas, monospace;
+	font-size: 0.72rem;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tunnel-forward.is-unbound .tunnel-forward-endpoint {
+	color: var(--text-muted);
+	text-decoration: line-through;
+}
+
+.tunnel-forward-warn {
+	flex: 0 0 auto;
+	color: var(--danger-text);
+	font-size: 0.72rem;
+}
+
+.tunnel-copy {
+	flex: 0 0 auto;
+}

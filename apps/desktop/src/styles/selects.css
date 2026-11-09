@@ -1,0 +1,51 @@
+/* ============================================================================
+ * Dropdowns (select) — one consistent look app-wide
+ *
+ * Native `<select>` chrome differs per OS/browser and clashed with the dark
+ * theme (the Connection-type box looked unstyled). Reset the native appearance
+ * and paint a custom chevron so every dropdown matches the text inputs.
+ * ============================================================================ */
+
+.form-group select,
+.forward-row select,
+.settings-content select,
+.pane-device-select,
+.sftp-device-select {
+	appearance: none;
+	-webkit-appearance: none;
+	-moz-appearance: none;
+	background-image: var(--select-chevron);
+	background-repeat: no-repeat;
+	background-position: right 10px center;
+	background-size: 16px;
+	padding-right: 32px;
+	cursor: pointer;
+}
+
+/* Box styling for the device-editor selects (Connection type + serial framing,
+ * forward type), matching `.form-group input`. */
+.form-group select,
+.forward-row select {
+	padding-top: 8px;
+	padding-bottom: 8px;
+	padding-left: 10px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background-color: var(--surface-0);
+	color: var(--text-primary);
+	font-size: 0.9rem;
+	font-family: inherit;
+	transition: border-color 150ms ease-in-out;
+}
+
+.form-group select:focus,
+.forward-row select:focus {
+	outline: none;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* Remove the native focus ring on options list where supported. */
+.form-group select:focus-visible {
+	outline: none;
+}

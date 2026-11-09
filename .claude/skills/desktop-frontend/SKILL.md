@@ -42,6 +42,13 @@ Vite + vanilla TypeScript (no framework), xterm.js. Vitest + happy-dom.
   toasts, DOM helpers (`remToPx`), splitter, shortcut keys, dialog stack (only
   the newest dialog gets Escape/Enter).
 
+## Styles
+
+- `styles.css` (linked from `index.html`) only `@import`s the parts in
+  `styles/`, one per feature or concern (tokens, buttons, dialog, sftp, …).
+- Import order is cascade order: later parts win specificity ties. Keep a
+  moved rule's relative order; `styles.test.ts` pins the list.
+
 ## Backend mirrors
 
 - `ipc/` — typed `invoke` wrappers, one module per domain. Import them from the

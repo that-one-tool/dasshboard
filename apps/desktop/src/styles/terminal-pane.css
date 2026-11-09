@@ -1,0 +1,323 @@
+/* ============================================================================
+ * SSH terminal pane (Phase 2)
+ * ============================================================================ */
+
+.pane {
+	flex: 1 1 auto;
+	min-height: 0;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	container: pane / inline-size;
+	background-color: var(--surface-1);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	overflow: hidden;
+	box-shadow: var(--shadow-sm);
+	transition:
+		border-color 150ms ease,
+		box-shadow 150ms ease;
+}
+
+.pane-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	border-bottom: 1px solid var(--border);
+}
+
+.pane-device-select {
+	flex: 0 1 20rem;
+	min-width: 0;
+	padding: 5px 8px;
+	background-color: var(--surface-2);
+	color: var(--text-primary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	font-family: inherit;
+	font-size: 0.9rem;
+}
+
+/* Status chip, pinned to the right of the pane header: a tinted pill whose
+ * fill, text and dot all come from the state's status tokens. */
+.pane-status {
+	--chip-bg: var(--surface-2);
+	--chip-fg: var(--text-muted);
+	--chip-dot: var(--dot-idle);
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex: 0 0 auto;
+	margin-left: auto;
+	padding: 3px 10px;
+	border-radius: var(--radius-pill);
+	background-color: var(--chip-bg);
+	color: var(--chip-fg);
+	font-size: 0.72rem;
+	font-weight: 500;
+	white-space: nowrap;
+}
+
+.pane-status-dot {
+	width: 0.375rem;
+	height: 0.375rem;
+	border-radius: 50%;
+	flex: 0 0 auto;
+	background-color: var(--chip-dot);
+}
+
+/* In a narrow pane the device picker and Connect button need the room, so the
+ * chip collapses to its dot (the state stays readable via its tooltip). */
+@container pane (max-width: 23.75rem) {
+	.pane-status {
+		padding: 6px;
+	}
+
+	.pane-status-label {
+		display: none;
+	}
+}
+
+.pane-status-connecting {
+	--chip-bg: var(--warn-soft);
+	--chip-fg: var(--warn-text);
+	--chip-dot: var(--warn);
+}
+.pane-status-connected {
+	--chip-bg: var(--ok-soft);
+	--chip-fg: var(--ok-text);
+	--chip-dot: var(--ok);
+}
+.pane-status-disconnected,
+.pane-status-exited,
+.pane-status-error {
+	--chip-bg: var(--danger-soft);
+	--chip-fg: var(--danger-text);
+	--chip-dot: var(--danger);
+}
+
+/* Find / save-output / record: quiet ghost icons just left of the status chip, which
+ * gives up its auto margin to them. */
+.pane-tools {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	flex: 0 0 auto;
+	margin-left: auto;
+}
+
+.pane-tools + .pane-status {
+	margin-left: 0;
+}
+
+.pane-tools .btn-icon,
+.pane-search .btn-icon {
+	background-color: transparent;
+	color: var(--text-secondary);
+}
+
+.pane-tools .btn-icon:hover:not(:disabled),
+.pane-search .btn-icon:hover:not(:disabled) {
+	background-color: var(--surface-3);
+	color: var(--text-primary);
+}
+
+/* Recording: the record button stays red until stopped. */
+.pane-tools .pane-record.is-recording,
+.pane-tools .pane-record.is-recording:hover:not(:disabled) {
+	color: var(--danger);
+}
+
+/* Find bar, floating over the terminal's top-right corner (clear of the
+ * scrollbar); above the status overlay so an ended session stays searchable. */
+.pane-search {
+	position: absolute;
+	top: 6px;
+	right: 1.25rem;
+	z-index: 6;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	max-width: calc(100% - 2rem);
+	padding: 4px 4px 4px 6px;
+	background-color: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	box-shadow: var(--shadow-md);
+}
+
+.pane-search[hidden] {
+	display: none;
+}
+
+.pane-search-input {
+	flex: 0 1 12rem;
+	min-width: 0;
+	padding: 4px 6px;
+	background-color: var(--surface-1);
+	color: var(--text-primary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	font-family: inherit;
+	font-size: 0.85rem;
+}
+
+.pane-search-input:focus {
+	outline: 2px solid var(--accent);
+	outline-offset: -1px;
+}
+
+.pane-search-count {
+	flex: 0 0 auto;
+	min-width: 3.5rem;
+	color: var(--text-muted);
+	font-size: 0.75rem;
+	text-align: center;
+	white-space: nowrap;
+}
+
+.pane-body {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	padding: 6px 4px 4px 8px;
+}
+
+.pane-terminal {
+	position: absolute;
+	inset: 6px 4px 4px 8px;
+	overflow: hidden;
+}
+
+.pane-overlay {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: var(--overlay);
+	z-index: 5;
+}
+
+.overlay-inner {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 12px;
+	text-align: center;
+	padding: 24px;
+	max-width: 80%;
+}
+
+.overlay-title {
+	font-size: 1.05rem;
+	font-weight: 600;
+	color: var(--text-primary);
+}
+
+.pane-overlay.overlay-error .overlay-title {
+	color: var(--danger);
+}
+
+.overlay-detail {
+	color: var(--text-secondary);
+	font-size: 0.9rem;
+	word-break: break-word;
+}
+
+.overlay-spinner {
+	width: 1.75rem;
+	height: 1.75rem;
+	border: 3px solid var(--border);
+	border-top-color: var(--accent);
+	border-radius: 50%;
+	animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+/* Host-key trust dialog */
+.hostkey-content {
+	max-width: 35rem;
+}
+
+.hostkey-lead {
+	color: var(--text-secondary);
+	font-size: 0.9rem;
+	line-height: 1.45;
+	margin: 0;
+	padding: 16px 16px 0;
+}
+
+.hostkey-facts {
+	margin: 0;
+	padding: 12px 16px 16px;
+	display: grid;
+	gap: 6px;
+}
+
+.hostkey-facts > div {
+	display: flex;
+	gap: 8px;
+}
+
+.hostkey-facts dt {
+	flex: 0 0 5.625rem;
+	color: var(--text-muted);
+	font-size: 0.85rem;
+}
+
+.hostkey-facts dd {
+	margin: 0;
+	font-family: "Cascadia Mono", Consolas, monospace;
+	font-size: 0.85rem;
+	color: var(--text-primary);
+	word-break: break-all;
+}
+
+.hostkey-content.hostkey-danger {
+	border: 1px solid var(--danger);
+}
+
+.hostkey-content.hostkey-danger .hostkey-heading {
+	color: var(--danger);
+}
+
+/* Keyboard-interactive prompt dialog */
+.authprompt-form:focus {
+  outline: none;
+}
+
+.authprompt-content {
+	max-width: 30rem;
+}
+
+.authprompt-body {
+	display: grid;
+	gap: 0.75rem;
+	padding: 1rem;
+}
+
+.authprompt-body p {
+	margin: 0;
+	font-size: 0.9rem;
+	line-height: 1.45;
+}
+
+.authprompt-lead {
+	color: var(--text-secondary);
+}
+
+.authprompt-body p,
+.authprompt-body label {
+	overflow-wrap: anywhere;
+}
+
+.authprompt-instructions {
+	white-space: pre-wrap;
+}

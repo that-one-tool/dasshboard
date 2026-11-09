@@ -1,0 +1,147 @@
+/* ============================================================================
+ * Port-forwarding editor (device dialog)
+ * ============================================================================ */
+
+/* --- Forwarding section inside the device editor --- */
+
+.forwards-section {
+	margin: 0;
+	padding: 10px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	/* Lets each forward pick its one-line or two-line layout from the space
+	 * the section actually has (see the @container block below). */
+	container-type: inline-size;
+}
+
+.forwards-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+
+.forwards-title {
+	color: var(--text-primary);
+	font-size: 0.85rem;
+	font-weight: 600;
+}
+
+/* Each forward is a small block: its name (+ remove) on one line, the
+ * `local → remote` endpoints on the next. */
+.forward-row {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+	padding: 0.6rem 0;
+	border-top: 1px solid var(--border);
+}
+
+.forward-row:first-child {
+	border-top: none;
+	padding-top: 0;
+}
+
+.forward-name-line {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.forward-name-line .forward-name {
+	font-weight: 500;
+}
+
+.forward-endpoints {
+	display: grid;
+	/* No auto tracks: each row is its own grid, so an auto track would size to
+	 * that row's content (the type label, a dynamic row's missing arrow) and
+	 * misalign the rows. */
+	/* Source and destination mirror each other: same host width, same port width. */
+	grid-template-columns:
+		minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(0, 1fr) 1rem
+		minmax(0, 1.4fr) minmax(0, 1fr);
+	align-items: center;
+	gap: 0.5rem;
+}
+
+/* Looks come from the shared `.form-group input` rule; this only lets the
+ * grid cells shrink below the inputs' intrinsic width. */
+.forward-row input {
+	min-width: 0;
+}
+
+.forward-arrow {
+	color: var(--text-muted);
+	text-align: center;
+}
+
+/* Stands in for a dynamic forward's (hidden) arrow + remote host + remote port,
+ * spanning their three tracks. */
+.forward-socks-hint {
+	grid-column: span 3;
+	color: var(--text-muted);
+	font-size: 0.85rem;
+}
+
+/* Same height as the inputs beside it. */
+.forward-remove {
+	align-self: stretch;
+	aspect-ratio: 1;
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
+	background: none;
+	color: var(--text-primary);
+	cursor: pointer;
+	font-size: 1.1rem;
+	line-height: 1;
+}
+
+.forward-remove:hover {
+	background-color: var(--danger-strong);
+	border-color: var(--danger-strong);
+	color: #fff;
+}
+
+.forward-row .error-text {
+	color: var(--danger-text);
+	font-size: 0.75rem;
+}
+
+/* One line per forward when the section is wide enough: the two wrapper lines
+ * dissolve into a single grid row (name · type · local addr · local port →
+ * remote host · remote port · ×). Narrower, the two-line layout above applies.
+ * Deleting this block alone restores the two-line layout everywhere. */
+@container (min-width: 40em) {
+	.forward-row {
+		display: grid;
+		grid-template-columns:
+			minmax(0, 1.3fr) minmax(0, 1.2fr) minmax(0, 1.6fr) minmax(0, 0.7fr) 1rem
+			minmax(0, 1.6fr) minmax(0, 0.7fr) auto;
+		align-items: center;
+		column-gap: 0.5rem;
+		row-gap: 0.25rem;
+		padding: 0.4rem 0;
+	}
+
+	.forward-name-line,
+	.forward-endpoints {
+		display: contents;
+	}
+
+	/* Slimmer side padding so the port placeholders fit their column. */
+	.forward-row input {
+		padding-inline: 0.5rem;
+	}
+
+	.forward-remove {
+		grid-row: 1;
+		grid-column: -2;
+	}
+
+	.forward-row .error-text {
+		grid-column: 1 / -1;
+	}
+}

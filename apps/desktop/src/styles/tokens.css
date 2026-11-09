@@ -1,0 +1,171 @@
+/* ============================================================================
+ * Design tokens
+ *
+ * Every surface, border, text tier, accent and status colour in the app resolves
+ * to a variable here — no component rule hardcodes a hex. Dark is the default on
+ * `:root`; the light theme redefines the same tokens under
+ * `:root[data-theme="light"]`. The whole-app theme is driven by the "Appearance"
+ * setting (shared with the terminal theme): main.ts sets `data-theme` on <html>.
+ *
+ * Scales: surfaces step 0 (page) → 1 (cards, sidebar) → 2 (soft fill: hover,
+ * secondary buttons, tracks) → 3 (pressed); radius sm/md/lg + pill. The look is
+ * flat: neutral greys, near-invisible hairlines instead of shadows, and one
+ * saturated royal-blue accent kept for the few things that matter.
+ * ============================================================================ */
+:root {
+	color-scheme: dark;
+	font-family: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+	font-size: 16px;
+	line-height: 1.4;
+	font-weight: 400;
+
+	/* Surfaces: neutral charcoal. Cards and the sidebar sit on `--surface-1`. */
+	--surface-0: #0d0e11;
+	--surface-1: #15171b;
+	--surface-2: #1d2025;
+	--surface-3: #272a31;
+
+	/* Borders: a hairline, plus a stronger step for hover / emphasis. */
+	--border: #22252b;
+	--border-strong: #2e3239;
+
+	/* Text tiers. `--text-bright` is for the few near-white emphases. */
+	--text-bright: #f4f5f7;
+	--text-primary: #e3e5ea;
+	--text-secondary: #a2a8b3;
+	--text-muted: #737985;
+
+	/* Accent (royal blue) + its interactive + soft/glow variants. */
+	--accent: #4d7cff;
+	--accent-hover: #6690ff;
+	--on-accent: #ffffff;
+	--accent-soft: rgba(77, 124, 255, 0.14);
+	--accent-soft-strong: rgba(77, 124, 255, 0.28);
+	--accent-halo: rgba(77, 124, 255, 0.24);
+	/* Monospace endpoints (hosts, paths) — quiet secondary text, not a colour. */
+	--endpoint: #a2a8b3;
+	/* Lucide chevron-down for custom <select>s, stroked in `--text-secondary`
+	 * (a data URI can't use currentColor, so each theme bakes its own). */
+	--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a2a8b3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+
+	/* Status: connected / warning / error, each with a soft fill + on-soft text. */
+	--ok: #2fbf71;
+	--ok-text: #5fd896;
+	--ok-soft: rgba(47, 191, 113, 0.14);
+	--warn: #f0b43c;
+	--warn-hover: #f6cc75;
+	--warn-text: #f3c463;
+	--warn-strong: #d9781f;
+	--warn-soft: rgba(240, 180, 60, 0.14);
+	--danger: #f0565b;
+	--danger-hover: #ff7479;
+	--danger-text: #f7878a;
+	--danger-strong: #d93a40;
+	--danger-strong-hover: #e5484d;
+	--danger-soft: rgba(240, 86, 91, 0.14);
+	--dot-idle: #4a4f59;
+
+	/* Scrims behind dialogs / pane overlays. */
+	--scrim: rgba(5, 6, 8, 0.66);
+	--overlay: rgba(21, 23, 27, 0.86);
+
+	/* Radius scale. */
+	--radius-sm: 8px;
+	--radius: 10px;
+	--radius-lg: 14px;
+	--radius-pill: 999px;
+
+	/* Spacing between grouped controls. `--gap-btn` is the one rhythm every
+	 * action/toolbar button group uses so spacing reads the same everywhere;
+	 * `--gap-lg` is only for dialog-footer CTAs (larger buttons). `--gutter` is
+	 * the outer spacing between the app's major cards. */
+	--gap-btn: 6px;
+	--gap-lg: 8px;
+	--gutter: 12px;
+
+	/* Elevation: flat by default; `--shadow-raised` lifts the active chip in a
+	 * segmented track; md/lg are for floating layers (toasts, dialogs). */
+	--shadow-sm: none;
+	--shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.5);
+	--shadow-md: 0 8px 24px rgba(0, 0, 0, 0.4);
+	--shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.55);
+
+	--mono-font: "Cascadia Mono", Consolas, monospace;
+
+	color: var(--text-primary);
+	background-color: var(--surface-0);
+
+	font-synthesis: none;
+	text-rendering: optimizeLegibility;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	-webkit-text-size-adjust: 100%;
+}
+
+/* Light theme: same token names, redefined. Chrome and terminal switch together
+ * via the Appearance setting (main.ts toggles `data-theme` on <html>). */
+:root[data-theme="light"] {
+	color-scheme: light;
+
+	--surface-0: #f5f6f8;
+	--surface-1: #ffffff;
+	--surface-2: #f1f3f6;
+	--surface-3: #e6e9ee;
+
+	--border: #eceef2;
+	--border-strong: #dde1e7;
+
+	--text-bright: #101217;
+	--text-primary: #23272f;
+	--text-secondary: #5d6472;
+	--text-muted: #8b919c;
+
+	--accent: #1f5eff;
+	--accent-hover: #1a50e0;
+	--on-accent: #ffffff;
+	--accent-soft: rgba(31, 94, 255, 0.09);
+	--accent-soft-strong: rgba(31, 94, 255, 0.2);
+	--accent-halo: rgba(31, 94, 255, 0.18);
+	--endpoint: #5d6472;
+	--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235d6472' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+
+	--ok: #12a150;
+	--ok-text: #0c7f3e;
+	--ok-soft: #e6f7ed;
+	--warn: #e59a0b;
+	--warn-hover: #c7860a;
+	--warn-text: #8a5d06;
+	--warn-strong: #d9781f;
+	--warn-soft: #fdf3de;
+	--danger: #e5484d;
+	--danger-hover: #d13b40;
+	--danger-text: #c9363b;
+	--danger-strong: #e5484d;
+	--danger-strong-hover: #d13b40;
+	--danger-soft: #fdecec;
+	--dot-idle: #c3c8d0;
+
+	--scrim: rgba(16, 18, 23, 0.32);
+	--overlay: rgba(255, 255, 255, 0.86);
+
+	--shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
+	--shadow-raised: 0 1px 3px rgba(16, 24, 40, 0.1);
+	--shadow-md: 0 8px 24px rgba(16, 24, 40, 0.1);
+	--shadow-lg: 0 20px 48px rgba(16, 24, 40, 0.16);
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	height: 100%;
+}
+
+body {
+	background-color: var(--surface-0);
+}

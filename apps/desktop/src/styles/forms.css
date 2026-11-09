@@ -1,0 +1,161 @@
+/* ============================================================================
+ * Form elements
+ * ============================================================================ */
+
+.form-group {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.form-group label {
+	font-size: 0.9rem;
+	font-weight: 500;
+	color: var(--text-primary);
+}
+
+.form-group input[type="text"],
+.form-group input[type="password"],
+.form-group input[type="number"],
+.forward-row input {
+	padding: 8px 12px;
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
+	background-color: var(--surface-1);
+	color: var(--text-primary);
+	font-size: 0.9rem;
+	font-family: inherit;
+	transition:
+		border-color 150ms ease-in-out,
+		box-shadow 150ms ease-in-out;
+}
+
+.form-group input:focus,
+.forward-row input:focus {
+	outline: none;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.form-group input::placeholder,
+.forward-row input::placeholder {
+	color: var(--text-muted);
+}
+
+.form-fieldset {
+	border: none;
+	padding: 0;
+	margin: 0;
+}
+
+.form-fieldset legend {
+	/* Reset the native legend's default horizontal padding so "Authentication"
+   * aligns with the other field labels (Host, Port, …) rather than sitting a
+   * couple of pixels to their right. */
+	padding: 0;
+	font-size: 0.9rem;
+	font-weight: 500;
+	color: var(--text-primary);
+	margin-bottom: 8px;
+}
+
+.form-group label[for^="device-"]::before,
+.form-group input[type="radio"] {
+	vertical-align: middle;
+}
+
+.form-group input[type="radio"] {
+	margin-right: 6px;
+	cursor: pointer;
+}
+
+.form-group label input[type="radio"] + span {
+	margin-left: 4px;
+}
+
+.form-fieldset .form-group label {
+	display: inline-flex;
+	align-items: center;
+	font-weight: normal;
+	margin-right: 16px;
+	cursor: pointer;
+}
+
+.form-fieldset .form-group label input {
+	margin: 0 6px 0 0;
+}
+
+/* Password / Key / SSH agent side by side; wraps on a narrow window. */
+.auth-method-choices {
+	flex-direction: row;
+	flex-wrap: wrap;
+	row-gap: 0.4rem;
+}
+
+.auth-method-section {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 12px;
+	background-color: var(--surface-2);
+	border-radius: var(--radius);
+}
+
+.auth-method-hidden {
+	display: none;
+}
+
+/* Agent-identity picker: the <select> grows, the Refresh button hugs its label. */
+.agent-identity-row {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.agent-identity-row select {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.agent-identity-row .btn {
+	flex: 0 0 auto;
+}
+
+/* Toggles the SSH-only vs serial-only field groups in the device editor. */
+.device-kind-hidden {
+	display: none;
+}
+
+.error-text {
+	font-size: 0.8rem;
+	color: var(--danger-text);
+	/* Collapse to nothing when empty so five fields don't reserve ~5 blank lines
+   * (which forced the editor to scroll); it grows only when an error is shown. */
+	min-height: 0;
+}
+
+.error-text:empty {
+	display: none;
+}
+
+/* Dialog footer. By default the action row is a DIRECT child of
+ * `.dialog-content` (host-key, known-hosts, confirm, prompt, settings), which
+ * has no padding of its own, so the footer carries the full inset here — one
+ * place, so no dialog can end up with buttons flush to the edge. The device
+ * editor is the exception (its actions live inside the already-padded
+ * `.device-form`); it overrides the horizontal inset below. */
+.form-actions {
+	display: flex;
+	gap: var(--gap-lg);
+	justify-content: flex-end;
+	padding: 12px 16px;
+	border-top: 1px solid var(--border);
+	flex: 0 0 auto;
+}
+
+/* The device editor's actions sit inside `.device-form` (padding: 16px), so
+ * the horizontal inset is already supplied — keep only the top gap above the
+ * separator. */
+.device-form .form-actions {
+	padding: 12px 0 0;
+}

@@ -1,0 +1,91 @@
+/* ============================================================================
+ * Buttons
+ * ============================================================================ */
+
+.btn {
+	padding: 7px 14px;
+	border: 1px solid transparent;
+	border-radius: var(--radius-sm);
+	background-color: var(--surface-2);
+	color: var(--text-primary);
+	font-size: 0.88rem;
+	font-weight: 500;
+	font-family: inherit;
+	cursor: pointer;
+	transition: all 150ms ease-in-out;
+	white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+	background-color: var(--surface-3);
+}
+
+.btn:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+.btn:active:not(:disabled) {
+	background-color: var(--surface-3);
+}
+
+.btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.btn-primary {
+	background-color: var(--accent);
+	border-color: var(--accent);
+	color: var(--on-accent);
+	font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled) {
+	background-color: var(--accent-hover);
+	border-color: var(--accent-hover);
+}
+
+.btn-secondary {
+	background-color: var(--surface-2);
+}
+
+/* Destructive actions (Delete, session teardown). Placed after `.btn` and using
+ * `:not(:disabled)` on hover — like `.btn-primary` — so the red actually wins
+ * the cascade over the base `.btn` background. */
+.btn-danger {
+	background-color: var(--danger-strong);
+	border-color: var(--danger-strong);
+	color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+	background-color: var(--danger-strong-hover);
+	border-color: var(--danger-strong-hover);
+}
+
+.btn-small {
+	padding: 4px 9px;
+	font-size: 0.8rem;
+}
+
+/* Icon-only button: a compact square that centers an inline SVG (see ui/icons).
+ * Sits in an action row next to text buttons; the row's flex `stretch` keeps it
+ * the same height as its neighbours. */
+.btn-icon {
+	padding: 4px 6px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	line-height: 0;
+}
+
+.btn-icon svg {
+	display: block;
+}
+
+/* `display: inline-flex` above beats the `[hidden]` UA rule; icon buttons that
+ * toggle (e.g. a pane's connect / disconnect pair) must still disappear. */
+.btn-icon[hidden] {
+	display: none;
+}

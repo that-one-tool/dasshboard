@@ -1,0 +1,86 @@
+/* ============================================================================
+ * Known-hosts dialog
+ * ============================================================================ */
+
+.known-hosts-lead {
+	color: var(--text-secondary);
+	font-size: 0.9rem;
+	line-height: 1.45;
+	margin: 0;
+	padding: 16px 16px 12px;
+}
+
+.known-hosts-reset {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin: 0 16px 12px;
+	padding: 8px 10px;
+	background-color: var(--danger-soft);
+	border: 1px solid var(--danger);
+	border-radius: var(--radius);
+}
+
+.known-hosts-reset[hidden] {
+	display: none;
+}
+
+.known-hosts-reset-text {
+	flex: 1 1 auto;
+	margin: 0;
+	color: var(--text-primary);
+	font-size: 0.9rem;
+	line-height: 1.45;
+}
+
+.known-hosts-list {
+	list-style: none;
+	margin: 0;
+	padding: 0 16px 16px;
+	max-height: 20rem;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.known-hosts-empty {
+	color: var(--text-muted);
+	font-size: 0.9rem;
+	padding: 12px 0;
+}
+
+.known-hosts-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 8px 10px;
+	background-color: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.known-hosts-info {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+	flex: 1 1 auto;
+}
+
+.known-hosts-id {
+	color: var(--text-primary);
+	font-size: 0.9rem;
+	font-weight: 600;
+}
+
+.known-hosts-fp {
+	color: var(--text-muted);
+	font-family: "Cascadia Mono", Consolas, monospace;
+	font-size: 0.8rem;
+	word-break: break-all;
+}
+
+.known-hosts-forget {
+	flex: 0 0 auto;
+}

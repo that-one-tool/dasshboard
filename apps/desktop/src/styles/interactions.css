@@ -1,0 +1,24 @@
+/* ============================================================================
+ * Interactions: global focus ring and list-row hover (late: overrides `.btn`)
+ * ============================================================================ */
+
+/* One consistent, visible keyboard-focus ring across every interactive control.
+ * `:focus-visible` keeps it to keyboard users; mouse clicks stay clean. */
+.btn:focus-visible,
+.btn-icon:focus-visible,
+.tab:focus-visible,
+.tab-new-btn:focus-visible,
+.device-search:focus-visible,
+.sftp-filter:focus-visible,
+.profile-name:focus-visible,
+.sftp-entry-name:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+/* Selectable list rows: a quiet hover so the sidebar feels responsive. */
+.device-item:hover,
+.profile-item:hover {
+	border-color: var(--border-strong);
+	background-color: var(--surface-2);
+}

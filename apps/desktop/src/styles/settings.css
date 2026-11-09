@@ -1,0 +1,176 @@
+/* ============================================================================
+ * Settings dialog (Phase 5)
+ * ============================================================================ */
+
+/* The main dialogs share one width, wider than the default: field hints wrap
+ * less, and long host names and fingerprints fit. */
+.settings-content,
+.known-hosts-content,
+.about-content {
+	max-width: 48rem;
+}
+
+/* The device editor is wider still, so a forward row's host fields are roomy
+ * on one line. */
+#device-dialog .dialog-content {
+	max-width: 56rem;
+}
+
+/* General / Connections tabs: the same segmented pill track as the workspace
+ * tabs, fixed above the scrolling fields. */
+.settings-tabs {
+	display: flex;
+	align-self: flex-start;
+	gap: 2px;
+	flex: 0 0 auto;
+	margin: 12px 16px 0;
+	padding: 3px;
+	background-color: var(--surface-2);
+	border-radius: var(--radius);
+}
+
+.settings-tab {
+	padding: 6px 14px;
+	border: none;
+	border-radius: var(--radius-sm);
+	background: transparent;
+	color: var(--text-secondary);
+	font-family: inherit;
+	font-size: 0.83rem;
+	cursor: pointer;
+	transition:
+		background 150ms ease,
+		color 150ms ease;
+}
+
+.settings-tab:hover {
+	color: var(--text-primary);
+}
+
+.settings-tab[aria-selected="true"] {
+	background: var(--surface-1);
+	color: var(--text-bright);
+	font-weight: 600;
+	box-shadow: var(--shadow-raised);
+}
+
+.settings-tab:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+/* The fields scroll between the fixed header and footer, only once they
+ * outgrow the dialog's own cap (`.dialog-content` max-height: 90vh). Without
+ * `min-height: 0` the flex item refuses to shrink and spills out of the card. */
+.settings-body {
+	display: grid;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	padding-bottom: 1rem;
+}
+
+/* Both tab panels share one grid cell, so the body is always as tall as the
+ * tallest tab and switching tabs never resizes the dialog. The inactive panel
+ * keeps its space but is invisible (which also takes it out of the tab order
+ * and the accessibility tree). */
+.settings-panel {
+	grid-area: 1 / 1;
+}
+
+.settings-panel[hidden] {
+	display: block;
+	visibility: hidden;
+}
+
+/* The settings body isn't wrapped in a padded form like the device editor, so
+ * pad its fields directly (the footer inset is handled by the shared
+ * `.form-actions` rule). */
+.settings-content .form-field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-bottom: 12px;
+	padding: 0 16px;
+}
+
+.settings-content .form-field:first-of-type {
+	margin-top: 16px;
+}
+
+.settings-content .form-field > span {
+	font-size: 12px;
+	color: var(--text-secondary);
+}
+
+.settings-content input,
+.settings-content select {
+	padding: 8px;
+	background-color: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	color: var(--text-primary);
+	font-size: 14px;
+}
+
+.settings-content input:focus,
+.settings-content select:focus {
+	outline: none;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+/* A checkbox row (the launch update check): inset like the fields above, and
+ * exempt from the text-input chrome the rules above would give its box. */
+.settings-content .form-group-checkbox {
+	margin-bottom: 12px;
+	padding: 0 16px;
+}
+
+.settings-content input[type="checkbox"] {
+	padding: 0;
+	border: none;
+	background: none;
+	box-shadow: none;
+}
+
+/* The text-input focus style above is removed for the checkbox, so give it its
+ * own keyboard focus ring. */
+.settings-content input[type="checkbox"]:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+/* Auto-reconnect checkbox in the device editor (Phase 5) */
+.form-group-checkbox label {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 13px;
+	cursor: pointer;
+}
+
+.form-group-checkbox input[type="checkbox"] {
+	width: auto;
+	margin: 0;
+}
+
+/* Muted helper text under a form control (e.g. the agent-forwarding hint). */
+/* `display: block` below would beat the `[hidden]` UA rule (e.g. the "no SSH
+ * agent detected" warning, toggled via `hidden`). */
+.form-hint[hidden] {
+	display: none;
+}
+
+.form-hint {
+	display: block;
+	margin-top: 4px;
+	font-size: 12px;
+	line-height: 1.4;
+	color: var(--text-muted);
+}
+
+/* A hint that flags a problem (e.g. no local SSH agent detected). */
+.form-hint-warn {
+	color: var(--warn);
+}
