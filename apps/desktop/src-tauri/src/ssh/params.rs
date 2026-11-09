@@ -116,7 +116,7 @@ impl std::fmt::Debug for AuthCredentials {
     }
 }
 
-/// The SSH server a connection authenticates to, as [`establish_target`] takes
+/// The SSH server a connection authenticates to, as [`establish_target`](super::establish::establish_target) takes
 /// it — borrowed from a shell's, tunnel's or SFTP connection's own params.
 pub(crate) struct Endpoint<'a> {
     pub(crate) host: &'a str,

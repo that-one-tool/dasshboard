@@ -35,8 +35,9 @@ const MAX_X11_CHANNELS: usize = 32;
 /// host-key trust prompt; terminal I/O is handled via the `Channel` in the
 /// session task, not the handler's data callbacks.
 ///
-/// `pub(crate)` so the tunnel and SFTP layers (`tunnel.rs`, `sftp.rs`) can
-/// reuse the exact same host-key-TOFU handshake path via [`establish_target`],
+/// `pub(crate)` so the tunnel and SFTP layers (`tunnel/`, `sftp/`) can
+/// reuse the exact same host-key-TOFU handshake path via
+/// [`establish_target`](super::establish::establish_target),
 /// rather than duplicating it — the shared-connect-path reuse called out in
 /// SPEC §2.
 pub(crate) struct SshHandler {
@@ -83,12 +84,10 @@ pub(crate) struct HandshakeOwner(#[allow(dead_code)] watch::Sender<()>);
 
 impl SshHandler {
     /// Construct a handler. Used by `SessionManager::build_handler` and, for
-    /// tunnels, by `tunnel.rs` (which shares the same known-hosts store + prompt
+    /// tunnels, by `tunnel/` (which shares the same known-hosts store + prompt
     /// registry so host-key trust decisions are consistent across shells and
-    /// tunnels).
-    // A plain field-by-field constructor for `SshHandler`; the parameter count
-    // simply mirrors the struct's fields, so the arg-count lint doesn't apply.
-    #[allow(clippy::too_many_arguments)]
+    /// tunnels). Agent forwarding is off unless [`Self::with_agent_forwarding`]
+    /// turns it on.
     pub(crate) fn new(
         prompter: Arc<dyn ConnectPrompter>,
         known_hosts: Arc<KnownHostsStore>,
@@ -97,7 +96,6 @@ impl SshHandler {
         port: u16,
         prompt_timeout: Duration,
         keepalive: KeepaliveConfig,
-        forward_agent: bool,
     ) -> Self {
         let (owner_tx, owner_gone) = watch::channel(());
         SshHandler {
@@ -108,7 +106,7 @@ impl SshHandler {
             port,
             prompt_timeout,
             keepalive,
-            forward_agent,
+            forward_agent: false,
             agent_channel_limit: Arc::new(Semaphore::new(MAX_AGENT_CHANNELS)),
             x11: None,
             x11_channel_limit: Arc::new(Semaphore::new(MAX_X11_CHANNELS)),
@@ -117,6 +115,12 @@ impl SshHandler {
             remote_routes: None,
             deadline: None,
         }
+    }
+
+    /// Relay the server's agent channels to the local SSH agent (`ssh -A`).
+    pub(crate) fn with_agent_forwarding(mut self, forward_agent: bool) -> Self {
+        self.forward_agent = forward_agent;
+        self
     }
 
     /// Hold `deadline` still while this connection waits on the user.
@@ -176,7 +180,6 @@ impl SshHandler {
             jump.port,
             self.prompt_timeout,
             self.keepalive,
-            false,
         );
         SshHandler {
             deadline: self.deadline.clone(),
@@ -423,5 +426,42 @@ impl client::Handler for SshHandler {
     ) -> Result<(), Self::Error> {
         drop(reply);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ssh::prompts::{AuthPromptPayload, HostKeyPromptPayload};
+
+    struct SilentPrompter;
+
+    impl ConnectPrompter for SilentPrompter {
+        fn on_host_key_prompt(&self, _payload: HostKeyPromptPayload) {}
+        fn on_auth_prompt(&self, _payload: AuthPromptPayload) {}
+    }
+
+    fn handler() -> SshHandler {
+        let dir = tempfile::tempdir().unwrap();
+        SshHandler::new(
+            Arc::new(SilentPrompter),
+            Arc::new(KnownHostsStore::load(dir.path().to_path_buf())),
+            Arc::new(ConnectPrompts::default()),
+            "host".to_string(),
+            22,
+            Duration::from_secs(1),
+            KeepaliveConfig::disabled(),
+        )
+    }
+
+    #[test]
+    fn a_new_handler_never_forwards_the_agent() {
+        assert!(!handler().forward_agent);
+    }
+
+    #[test]
+    fn agent_forwarding_is_on_only_when_asked() {
+        assert!(handler().with_agent_forwarding(true).forward_agent);
+        assert!(!handler().with_agent_forwarding(false).forward_agent);
     }
 }

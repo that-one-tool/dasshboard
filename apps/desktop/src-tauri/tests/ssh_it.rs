@@ -19,8 +19,8 @@
 //! through its public API rather than reaching into private internals.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use russh::keys::{HashAlg, PrivateKey};
@@ -1066,11 +1066,8 @@ async fn unreachable_host_is_ssh_connect() {
         Duration::from_secs(10),
     ));
 
-    // Bind then drop a listener to obtain a port that is (almost certainly) closed.
-    let port = {
-        let l = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        l.local_addr().unwrap().port()
-    };
+    // A port nothing listens on, and no other test is handed.
+    let port = free_local_port().await;
 
     let (sink, _chans) = new_sink();
     let result = manager
@@ -2524,11 +2521,20 @@ async fn await_listening(
     }
 }
 
-/// Obtain an ephemeral local port that is (very likely) free by binding then
-/// dropping a listener — the port the tunnel will bind for its forward.
+/// A free local port no other test gets: handed out once each, from below the
+/// kernel's ephemeral range, so a parallel test's `bind(0)` or outgoing
+/// connection can't take it between this check and the tunnel's bind. The
+/// pid-derived start keeps concurrent test processes apart.
 async fn free_local_port() -> u16 {
-    let l = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    l.local_addr().unwrap().port()
+    static NEXT: OnceLock<AtomicU16> = OnceLock::new();
+    let next = NEXT.get_or_init(|| AtomicU16::new(20_000 + (std::process::id() % 50) as u16 * 200));
+    loop {
+        let port = next.fetch_add(1, Ordering::Relaxed);
+        assert!(port < 32_000, "ran out of test ports");
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
 }
 
 /// A tunnel binds a local listener and round-trips bytes to the SSH server over
@@ -2842,6 +2848,41 @@ async fn stopping_a_jumped_tunnel_mid_download_closes_both_cleanly() {
     stream.read_exact(&mut [0u8; 64 * 1024]).await.unwrap();
 
     manager.stop_tunnel("t1").await;
+    await_no_tunnels(&manager).await;
+
+    let error = recv_timeout(&mut target_errors, Duration::from_millis(500)).await;
+    assert_eq!(error, None, "the target saw the connection drop");
+    let error = recv_timeout(&mut jump_errors, Duration::from_millis(500)).await;
+    assert_eq!(error, None, "the jump host saw the connection drop");
+}
+
+/// A jumped tunnel none of whose forwards start still closes the target's
+/// connection and the jump host's cleanly before reporting the error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_jumped_tunnel_that_binds_nothing_closes_both_cleanly() {
+    let dir = tempfile::tempdir().unwrap();
+    let (target_port, mut target_errors) = spawn_error_reporting_server(TEST_PASSWORD, false).await;
+    let (jump_port, mut jump_errors) = spawn_error_reporting_server(TEST_PASSWORD, true).await;
+    seed_trusted(dir.path(), target_port);
+    seed_trusted(dir.path(), jump_port);
+    let manager = tunnel_manager_with(dir.path());
+    let occupied = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let forward = echo_forward("f1", occupied.local_addr().unwrap().port());
+    let mut chans = spawn_jumped_tunnel(&manager, target_port, jump_port, TEST_PASSWORD, forward);
+
+    let (status, _) = recv_timeout(&mut chans.status_rx, Duration::from_secs(10))
+        .await
+        .expect("a tunnel status");
+    let status = match status {
+        TunnelStatus::Connecting => {
+            recv_timeout(&mut chans.status_rx, Duration::from_secs(10))
+                .await
+                .expect("a tunnel status")
+                .0
+        }
+        other => other,
+    };
+    assert_eq!(status, TunnelStatus::Error);
     await_no_tunnels(&manager).await;
 
     let error = recv_timeout(&mut target_errors, Duration::from_millis(500)).await;

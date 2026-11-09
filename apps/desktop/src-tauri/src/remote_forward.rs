@@ -1,6 +1,6 @@
 //! Remote port forwarding (`ssh -R`): the SSH server listens and opens a
 //! `forwarded-tcpip` channel back to us per connection; this module routes each
-//! one to its forward's local target. A tunnel (`tunnel.rs`) owns the routes —
+//! one to its forward's local target. A tunnel (`tunnel/`) owns the routes —
 //! adding one before asking the server to listen, removing it after cancelling
 //! — and shares them with its connection's [`SshHandler`](crate::session),
 //! which receives the channels.

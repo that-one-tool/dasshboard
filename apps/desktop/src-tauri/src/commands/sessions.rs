@@ -247,7 +247,7 @@ async fn spawn_device_session(
     state: &AppState,
     session_id: &str,
     device: &Device,
-    (cols, rows): (u32, u32),
+    size: (u32, u32),
     sink: Arc<dyn SessionSink>,
 ) -> Result<(), AppError> {
     let session_id = session_id.to_string();
@@ -258,28 +258,10 @@ async fn spawn_device_session(
             username,
             ..
         } => {
-            let creds = resolve_credentials(state, device).await?;
-            // Resolve the optional jump host (ProxyJump) up front, so a
-            // misconfigured jump surfaces as a connect error rather than a
-            // half-open session.
-            let jump = resolve_jump_hop(state, device).await?;
-            state.session_manager.spawn_session(
-                session_id,
-                ConnectParams {
-                    host: host.clone(),
-                    port: *port,
-                    username: username.clone(),
-                    creds,
-                    cols,
-                    rows,
-                    jump,
-                    keepalive: keepalive_config(state),
-                    forward_agent: device.forward_agent_enabled(),
-                    connect_snippet: device.connect_snippet().map(str::to_string),
-                    x11: device.x11_mode().trusted().map(X11Local::from_env),
-                },
-                sink,
-            );
+            let params = ssh_params_of(state, device, (host, *port, username), size).await?;
+            state
+                .session_manager
+                .spawn_session(session_id, params, sink);
         }
         Connection::Serial { .. } => {
             state.serial_manager.spawn_session(
@@ -289,20 +271,56 @@ async fn spawn_device_session(
             );
         }
         Connection::LocalShell { shell, cwd } => {
-            state.local_shell_manager.spawn_session(
-                session_id,
-                LocalShellParams {
-                    shell: shell.clone(),
-                    cwd: cwd.clone(),
-                    cols: cols.min(u16::MAX as u32) as u16,
-                    rows: rows.min(u16::MAX as u32) as u16,
-                    connect_snippet: device.connect_snippet().map(str::to_string),
-                },
-                sink,
-            );
+            let params = local_shell_params_of(device, shell, cwd, size);
+            state
+                .local_shell_manager
+                .spawn_session(session_id, params, sink);
         }
     }
     Ok(())
+}
+
+/// An SSH device's connect parameters, its credentials resolved.
+async fn ssh_params_of(
+    state: &AppState,
+    device: &Device,
+    (host, port, username): (&str, u16, &str),
+    (cols, rows): (u32, u32),
+) -> Result<ConnectParams, AppError> {
+    let creds = resolve_credentials(state, device).await?;
+    // Resolve the optional jump host (ProxyJump) up front, so a
+    // misconfigured jump surfaces as a connect error rather than a
+    // half-open session.
+    let jump = resolve_jump_hop(state, device).await?;
+    Ok(ConnectParams {
+        host: host.to_string(),
+        port,
+        username: username.to_string(),
+        creds,
+        cols,
+        rows,
+        jump,
+        keepalive: keepalive_config(state),
+        forward_agent: device.forward_agent_enabled(),
+        connect_snippet: device.connect_snippet().map(str::to_string),
+        x11: device.x11_mode().trusted().map(X11Local::from_env),
+    })
+}
+
+/// A local-shell device's parameters; the terminal size is clamped to `u16`.
+fn local_shell_params_of(
+    device: &Device,
+    shell: &Option<String>,
+    cwd: &Option<String>,
+    (cols, rows): (u32, u32),
+) -> LocalShellParams {
+    LocalShellParams {
+        shell: shell.clone(),
+        cwd: cwd.clone(),
+        cols: cols.min(u16::MAX as u32) as u16,
+        rows: rows.min(u16::MAX as u32) as u16,
+        connect_snippet: device.connect_snippet().map(str::to_string),
+    }
 }
 
 /// Build [`SerialParams`] from a `Connection::Serial`. A defensive `expect`

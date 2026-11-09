@@ -152,50 +152,75 @@ async fn run_shell(
     handle: &client::Handle<SshHandler>,
     sink: Arc<dyn SessionSink>,
     control_rx: mpsc::Receiver<SessionControl>,
-    mut stop: watch::Receiver<bool>,
-    (cols, rows): (u32, u32),
+    stop: watch::Receiver<bool>,
+    size: (u32, u32),
     setup: ShellSetup,
 ) -> Result<SessionStatus, AppError> {
+    let channel = open_shell(handle, size, &setup).await?;
+    type_connect_snippet(&channel, &setup).await;
+    Ok(pump_shell(channel, sink, control_rx, stop).await)
+}
+
+/// Open a session channel and start a shell on a PTY, sending the forwarding
+/// and locale requests first.
+async fn open_shell(
+    handle: &client::Handle<SshHandler>,
+    (cols, rows): (u32, u32),
+    setup: &ShellSetup,
+) -> Result<russh::Channel<client::Msg>, AppError> {
     let channel = handle
         .channel_open_session()
         .await
         .map_err(|e| AppError::SshChannel(format!("could not open session channel: {e}")))?;
-
     channel
         .request_pty(false, TERM, cols, rows, 0, 0, PTY_MODES)
         .await
         .map_err(|e| AppError::SshChannel(format!("PTY request failed: {e}")))?;
-
-    request_forwarding(&channel, &setup).await;
-
-    // Best-effort locale hint (see `LOCALE_ENV`). `want_reply = false` so a
-    // server that rejects the vars via `AcceptEnv` doesn't fail the session.
-    for (name, value) in LOCALE_ENV {
-        let _ = channel.set_env(false, *name, *value).await;
-    }
-
+    request_forwarding(&channel, setup).await;
+    send_locale(&channel).await;
     channel
         .request_shell(true)
         .await
         .map_err(|e| AppError::SshChannel(format!("shell request failed: {e}")))?;
+    Ok(channel)
+}
 
-    // Connect snippet: type the device's saved commands into the fresh shell, as
-    // if the user had. Best-effort — a write failure just means the first
-    // keystrokes didn't land, not a reason to fail the whole session.
+/// Best-effort locale hint (see `LOCALE_ENV`). `want_reply = false` so a
+/// server that rejects the vars via `AcceptEnv` doesn't fail the session.
+async fn send_locale(channel: &russh::Channel<client::Msg>) {
+    for (name, value) in LOCALE_ENV {
+        let _ = channel.set_env(false, *name, *value).await;
+    }
+}
+
+/// Connect snippet: type the device's saved commands into the fresh shell, as
+/// if the user had. Best-effort — a write failure just means the first
+/// keystrokes didn't land, not a reason to fail the whole session.
+async fn type_connect_snippet(channel: &russh::Channel<client::Msg>, setup: &ShellSetup) {
     if let Some(bytes) = crate::device::connect_snippet_bytes(setup.connect_snippet.as_deref()) {
         let _ = channel.data(&bytes[..]).await;
     }
+}
 
-    // Keepalive is handled by russh from the `client::Config` (see
-    // `KeepaliveConfig`): it pings an idle link and drops the connection after
-    // `keepalive_max` unanswered pings, which surfaces here as the channel
-    // closing — so the pump loop only needs the data and control arms.
-    //
-    // Writes run on their own task so server output keeps being read while a
-    // write waits on russh (a full outbound window, or its small session
-    // queue). Reading only between writes deadlocked under heavy output: russh's
-    // session loop blocked handing us output we weren't reading, so it never
-    // took the rest of our write, and the terminal froze.
+/// Pump the shell until the channel closes, the writes end it, or a
+/// disconnect is requested.
+///
+/// Keepalive is handled by russh from the `client::Config` (see
+/// `KeepaliveConfig`): it pings an idle link and drops the connection after
+/// `keepalive_max` unanswered pings, which surfaces here as the channel
+/// closing — so the pump loop only needs the data and control arms.
+///
+/// Writes run on their own task so server output keeps being read while a
+/// write waits on russh (a full outbound window, or its small session
+/// queue). Reading only between writes deadlocked under heavy output: russh's
+/// session loop blocked handing us output we weren't reading, so it never
+/// took the rest of our write, and the terminal froze.
+async fn pump_shell(
+    channel: russh::Channel<client::Msg>,
+    sink: Arc<dyn SessionSink>,
+    control_rx: mpsc::Receiver<SessionControl>,
+    mut stop: watch::Receiver<bool>,
+) -> SessionStatus {
     let (mut reader, writer) = channel.split();
     let writer = Arc::new(writer);
     let mut writes = tokio::spawn(pump_controls(control_rx, Arc::clone(&writer)));
@@ -216,7 +241,7 @@ async fn run_shell(
     if *stop.borrow() {
         close_channel(&writer, &mut reader).await;
     }
-    Ok(status)
+    status
 }
 
 /// Best-effort agent (`auth-agent-req@openssh.com`) and X11 (`x11-req`)
@@ -517,8 +542,8 @@ impl SessionManager {
             port,
             self.prompt_timeout,
             keepalive,
-            forward_agent,
         )
+        .with_agent_forwarding(forward_agent)
     }
 
     /// Spawn a live shell session. Inserts the handle synchronously (so the map

@@ -2,7 +2,7 @@
 //!
 //! A dynamic forward's local listener speaks SOCKS to the client (a browser,
 //! `curl --socks5-hostname`, ...) only long enough to learn where it wants to
-//! go; `tunnel.rs` then opens a `direct-tcpip` channel to that target and
+//! go; `tunnel/` then opens a `direct-tcpip` channel to that target and
 //! reports the outcome with [`reply`]. Supports SOCKS5 (no-auth only — the
 //! listener is loopback-bound, SPEC §8), SOCKS4 and SOCKS4a, `CONNECT` only.
 //! A domain name is passed through unresolved, so the SSH server does the DNS

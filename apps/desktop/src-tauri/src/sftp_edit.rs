@@ -14,7 +14,7 @@
 //!   content as of the last download/upload. A save whose content matches the
 //!   digest needs no upload; a remote whose stamp moved is a conflict.
 //!
-//! Like `sftp.rs`, this module is Tauri-free: transfers go through the
+//! Like `sftp/`, this module is Tauri-free: transfers go through the
 //! [`SftpManager`] passed into each call, and a change is reported through an
 //! [`EditSink`].
 

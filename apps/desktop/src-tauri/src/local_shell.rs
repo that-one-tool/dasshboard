@@ -400,29 +400,13 @@ async fn run_session(
     sink.on_status(SessionStatus::Connected, None);
 
     let OpenedShell {
-        master,
+        mut master,
         reader,
         writer,
         child,
     } = opened;
-
-    let reader_done = Arc::new(AtomicBool::new(false));
-    let reader_sink = Arc::clone(&sink);
-    let stop = Arc::clone(&reader_done);
-    std::thread::spawn(move || pump_output(reader, reader_sink.as_ref(), &stop));
-
-    // Writer thread: drain keystroke chunks into the PTY. A std mpsc bridges the
-    // async control task (non-blocking `send`) to the blocking writer.
-    let (write_tx, write_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-    std::thread::spawn(move || {
-        let mut writer = writer;
-        while let Ok(bytes) = write_rx.recv() {
-            if writer.write_all(&bytes).is_err() {
-                break;
-            }
-            let _ = writer.flush();
-        }
-    });
+    let reader_done = spawn_output_pump(reader, Arc::clone(&sink));
+    let write_tx = spawn_writer(writer);
 
     // Connect snippet: type the device's saved commands into the fresh shell via
     // the writer thread. Best-effort — if the writer is already gone the send
@@ -435,32 +419,7 @@ async fn run_session(
     let (done_tx, mut done_rx) = mpsc::channel::<Option<u32>>(1);
     spawn_reaper(child, kill_rx, done_tx);
 
-    let status = loop {
-        tokio::select! {
-            ctrl = control_rx.recv() => {
-                match ctrl {
-                    Some(ShellControl::Write(bytes)) => {
-                        // Writer thread gone ⇒ PTY is dead; end the session.
-                        if write_tx.send(bytes).is_err() {
-                            break SessionStatus::Exited;
-                        }
-                    }
-                    Some(ShellControl::Resize { cols, rows }) => {
-                        let _ = master.resize(PtySize {
-                            rows: rows.max(1),
-                            cols: cols.max(1),
-                            pixel_width: 0,
-                            pixel_height: 0,
-                        });
-                    }
-                    // Explicit disconnect, or the manager dropped the handle.
-                    Some(ShellControl::Disconnect) | None => break SessionStatus::Disconnected,
-                }
-            }
-            // The shell process ended on its own.
-            exit_code = done_rx.recv() => break SessionStatus::for_shell_exit(exit_code.flatten()),
-        }
-    };
+    let status = pump_controls(&mut control_rx, &mut done_rx, &write_tx, master.as_mut()).await;
 
     // Teardown: have the reaper kill the child (a no-op if it already exited),
     // end the writer thread by dropping its sender, and drop the master so the
@@ -470,6 +429,76 @@ async fn run_session(
     drop(write_tx);
     drop(master);
     Ok(status)
+}
+
+/// Start the reader thread (see [`pump_output`]); setting the returned flag
+/// stops it.
+fn spawn_output_pump(reader: PtyReader, sink: Arc<dyn SessionSink>) -> Arc<AtomicBool> {
+    let reader_done = Arc::new(AtomicBool::new(false));
+    let stop = Arc::clone(&reader_done);
+    std::thread::spawn(move || pump_output(reader, sink.as_ref(), &stop));
+    reader_done
+}
+
+/// Writer thread: drain keystroke chunks into the PTY. A std mpsc bridges the
+/// async control task (non-blocking `send`) to the blocking writer; dropping
+/// the returned sender ends the thread.
+fn spawn_writer(mut writer: Box<dyn Write + Send>) -> std::sync::mpsc::Sender<Vec<u8>> {
+    let (write_tx, write_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        while let Ok(bytes) = write_rx.recv() {
+            if writer.write_all(&bytes).is_err() {
+                break;
+            }
+            let _ = writer.flush();
+        }
+    });
+    write_tx
+}
+
+/// Apply controls until one ends the session or the shell exits on its own;
+/// returns the final status.
+async fn pump_controls(
+    control_rx: &mut mpsc::Receiver<ShellControl>,
+    done_rx: &mut mpsc::Receiver<Option<u32>>,
+    write_tx: &std::sync::mpsc::Sender<Vec<u8>>,
+    master: &mut (dyn MasterPty + Send),
+) -> SessionStatus {
+    loop {
+        let end = tokio::select! {
+            ctrl = control_rx.recv() => apply_control(ctrl, write_tx, &*master),
+            // The shell process ended on its own.
+            exit_code = done_rx.recv() => Some(SessionStatus::for_shell_exit(exit_code.flatten())),
+        };
+        if let Some(status) = end {
+            return status;
+        }
+    }
+}
+
+/// Apply one control; `Some` with the final status when it ends the session.
+fn apply_control(
+    ctrl: Option<ShellControl>,
+    write_tx: &std::sync::mpsc::Sender<Vec<u8>>,
+    master: &(dyn MasterPty + Send),
+) -> Option<SessionStatus> {
+    match ctrl {
+        // Writer thread gone ⇒ PTY is dead; end the session.
+        Some(ShellControl::Write(bytes)) => {
+            write_tx.send(bytes).err().map(|_| SessionStatus::Exited)
+        }
+        Some(ShellControl::Resize { cols, rows }) => {
+            let _ = master.resize(PtySize {
+                rows: rows.max(1),
+                cols: cols.max(1),
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+            None
+        }
+        // Explicit disconnect, or the manager dropped the handle.
+        Some(ShellControl::Disconnect) | None => Some(SessionStatus::Disconnected),
+    }
 }
 
 /// Reader thread: pump PTY output into the sink until EOF or a read error

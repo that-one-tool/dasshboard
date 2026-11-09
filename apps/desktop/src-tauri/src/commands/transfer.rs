@@ -53,7 +53,7 @@ pub fn import_profiles(state: State<'_, AppState>, path: String) -> Result<u32, 
 /// Import SSH devices from an OpenSSH client config at `path` (typically
 /// `~/.ssh/config`). Best-effort: each concrete `Host` block becomes an SSH
 /// device; hosts that don't validate or duplicate an existing one are skipped,
-/// never fatal. Returns the imported/skipped counts (see `ssh_config.rs`).
+/// never fatal. Returns the imported/skipped counts (see `ssh_config/`).
 #[tauri::command]
 pub fn import_ssh_config(
     state: State<'_, AppState>,
