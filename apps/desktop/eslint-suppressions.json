@@ -131,14 +131,6 @@
       "count": 3
     }
   },
-  "src/sftp/sftpPanel.ts": {
-    "complexity": {
-      "count": 46
-    },
-    "max-lines-per-function": {
-      "count": 6
-    }
-  },
   "src/sftp/transferQueue.ts": {
     "complexity": {
       "count": 3

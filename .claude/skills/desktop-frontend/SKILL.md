@@ -24,6 +24,7 @@ Vite + vanilla TypeScript (no framework), xterm.js. Vitest + happy-dom.
 - `devices/` — device editor, validation, port-forward editor, import risks.
 - `tunnels/` — Tunnels sidebar card (start/stop forwards, status, reconnect).
 - `sftp/` — Files panel (browser, transfer queue, bookmarks, edit in place).
+  `sftpPanel` only wires its parts in `sftp/panel/`.
 - `tabs/` — each tab keeps its `Grid` and sessions alive.
 - `profiles/` — saved workspaces.
 - `commandLibrary/` — Commands card and editor. A command goes to the focused

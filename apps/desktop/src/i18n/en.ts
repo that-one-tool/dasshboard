@@ -413,7 +413,7 @@ export const en = {
 	"tunnels.error.generic": "the tunnel stopped with an error",
 	"tunnels.error.jumpRemoved": "the tunnels of {name} were stopped: its jump host was removed",
 
-	/* -- files / SFTP (sftp/sftpPanel.ts) ----------------------------------- */
+	/* -- files / SFTP (sftp/, sftp/panel/) ----------------------------------- */
 	"sftp.panelTitle": "SFTP",
 	"sftp.selectDevice": "Select a device…",
 	"sftp.disconnect": "Disconnect",

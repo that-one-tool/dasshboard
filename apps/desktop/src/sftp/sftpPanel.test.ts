@@ -127,8 +127,10 @@ import {
   sftpEditOpen,
   sftpEditUpload,
   sftpEditClose,
+  onSftpProgress,
+  onSftpEditChanged,
 } from "../ipc";
-import { chooseConflict, confirm } from "../ui/confirm";
+import { chooseConflict, confirm, prompt } from "../ui/confirm";
 import { pickDownloadDirPath } from "../ui/fileDialog";
 import type { AppError } from "../ipc";
 import { connectIcon, disconnectIcon } from "../ui/icons";
@@ -1101,6 +1103,119 @@ describe("SftpPanel", () => {
     await flush();
 
     expect(sftpDownloadDir).toHaveBeenCalledWith("a", "/home/j/sub", "C:/dest/sub", "overwrite");
+  });
+
+  describe("after a language change (panel rebuilt)", () => {
+    it("select-all still selects every row (one click, one toggle)", async () => {
+      const panel = await setup();
+      panel.retranslate();
+      await browse();
+
+      q<HTMLButtonElement>('[data-action="select-all"]').click();
+
+      expect(checks().every((c) => c.checked)).toBe(true);
+    });
+
+    it("Connect starts a single connection", async () => {
+      const panel = await setup({
+        initialState: { open: true, collapsed: false, width: 360, deviceId: "a" },
+      });
+      panel.retranslate();
+
+      q<HTMLButtonElement>('.sftp-panel [data-action="conn-toggle"]').click();
+      await flush();
+
+      expect(sftpConnect).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("a page without the .sftp-panel element", () => {
+    it("leaves the panel inert: no build, no IPC, no callbacks, no aria-pressed", async () => {
+      document.body.innerHTML = `<button id="sftp-btn" aria-pressed="false"></button>`;
+      const options = { onError: vi.fn(), onSuccess: vi.fn(), onLayoutChange: vi.fn(), onPersist: vi.fn() };
+      const panel = new SftpPanel({
+        ...options,
+        initialState: { open: true, collapsed: false, width: 360, deviceId: "a" },
+      });
+
+      await panel.init();
+      panel.open();
+      panel.openWith("a");
+      panel.toggle();
+      panel.retranslate();
+      panel.onIdleSettingChange();
+      await panel.refresh();
+      await panel.resyncConnection();
+      await flush();
+
+      for (const fn of [listDevices, sftpConnect, sftpConnectedDevices, onSftpProgress, onSftpEditChanged]) {
+        expect(fn).not.toHaveBeenCalled();
+      }
+      for (const fn of Object.values(options)) expect(fn).not.toHaveBeenCalled();
+      expect(q("#sftp-btn").getAttribute("aria-pressed")).toBe("false");
+      expect(panel.isOpen()).toBe(false);
+      expect(panel.layoutState()).toBeUndefined();
+      panel.dispose();
+    });
+  });
+
+  describe("event subscriptions", () => {
+    it("a second init() doesn't run click actions twice", async () => {
+      const panel = await setup();
+      await panel.init();
+      await browse();
+
+      q<HTMLButtonElement>('[data-action="select-all"]').click();
+
+      expect(checks().every((c) => c.checked)).toBe(true);
+    });
+
+    it("subscribes to progress once, even across early language changes", async () => {
+      mountShell();
+      const unlisten = vi.fn();
+      vi.mocked(onSftpProgress).mockImplementationOnce(async (handler) => {
+        h.progressHandler = handler;
+        return unlisten;
+      });
+      const panel = new SftpPanel();
+      const init = panel.init();
+      panel.retranslate(); // before the subscription resolved
+      panel.retranslate();
+      await init;
+      await flush();
+
+      expect(onSftpProgress).toHaveBeenCalledOnce();
+      panel.dispose();
+      await flush();
+      expect(unlisten).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe("an entry action whose dialog outlived its device", () => {
+    beforeEach(() => {
+      h.devices = [sshDevice("a", "Alpha"), sshDevice("b", "Beta")];
+    });
+
+    async function switchToB(): Promise<void> {
+      const select = q<HTMLSelectElement>(".sftp-device-select");
+      select.value = "b";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await flush();
+    }
+
+    it("rename renames nothing on the device connected meanwhile", async () => {
+      await setup();
+      await browse();
+      vi.mocked(prompt).mockImplementationOnce(async () => {
+        await switchToB();
+        return "renamed.txt";
+      });
+
+      q<HTMLButtonElement>('.sftp-entry.is-file [aria-label="Rename"]').click();
+      for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(sftpRename).not.toHaveBeenCalled();
+    });
   });
 
   describe("single-file upload over an existing remote file", () => {

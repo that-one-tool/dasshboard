@@ -14,78 +14,45 @@
  *     off) disconnects it after N minutes;
  *   - hidden    → fully closed (header toggle off, or the × / Disconnect), which
  *     disconnects immediately.
- * Switching the device picker disconnects the previous device before connecting
- * the new one (one live browse at a time; the backend keys connections by id).
  *
- * Remote paths are POSIX; see `sftpFormat.ts` for the path/size/time helpers.
+ * `SftpPanel` wires the parts in `panel/` together and owns the panel's
+ * visibility; each part owns one concern.
  */
 
-import {
-  listDevices,
-  sftpConnect,
-  sftpDisconnect,
-  sftpConnectedDevices,
-  sftpDownload,
-  sftpList,
-  sftpMkdir,
-  sftpRealpath,
-  sftpRemove,
-  sftpRename,
-  sftpUpload,
-  sftpDownloadDir,
-  sftpUploadDir,
-  sftpLocalExists,
-  sftpExists,
-  sftpCancelTransfer,
-  sftpChmod,
-  sftpBookmarks,
-  sftpBookmarkAdd,
-  sftpBookmarkRemove,
-  onSftpProgress,
-  onSftpEditChanged,
-  type AppError,
-  type ConflictPolicy,
-  type Device,
-  type SftpEntry,
-  type SftpPanelState,
-  type SshDevice,
-} from "../ipc";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
-  pickDownloadSavePath,
-  pickDownloadDirPath,
-  pickUploadOpenPath,
-  pickUploadDirPath,
-} from "../ui/fileDialog";
-import {
-  confirm,
-  prompt,
-  chooseConflict,
-  choosePermissions,
-  chooseEditConflict,
-} from "../ui/confirm";
-import { connectIcon, disconnectIcon } from "../ui/icons";
-import { joinRemote, parentOf, isLocalFileName, skippedSummary } from "./sftpFormat";
-import { TransferQueue, type TransferItem } from "./transferQueue";
-import { EditSessions, type EditTransferSpec } from "./editSessions";
+  listDevices,
+  onSftpEditChanged,
+  onSftpProgress,
+  type AppError,
+  type Device,
+  type SftpPanelState,
+} from "../ipc";
+import { confirm, chooseEditConflict } from "../ui/confirm";
+import { EditSessions } from "./editSessions";
 import { renderEditList } from "./editList";
-import { basename, join } from "@tauri-apps/api/path";
-import { t, tp } from "../i18n";
-import { remToPx } from "../ui/dom";
-import { MIN_GRID_REM, wireSplitter, type WidthBounds } from "../ui/splitter";
-import { sftpPanelMarkup } from "./panel/panelTemplate";
+import { joinRemote } from "./sftpFormat";
+import { BulkActions } from "./panel/bulkActions";
+import { DevicePicker } from "./panel/devicePicker";
+import { DirectoryBrowser } from "./panel/directoryBrowser";
 import { DirHistory } from "./panel/dirHistory";
-import { DEFAULT_SORT, nextSort, viewEntries, type SortKey, type SortState } from "./panel/entryView";
-import { EntrySelection } from "./panel/entrySelection";
-import { findFreeName } from "./panel/freeName";
-import { renderEntryRow, type EntryRowActions } from "./panel/entryRow";
-import * as queueView from "./panel/queueView";
-import { renderBookmarks, renderBookmarkToggle } from "./panel/bookmarksBar";
-import { MoveClipboard, planMoves, type MoveStep } from "./panel/moveClipboard";
-import { getBulkOutcome, runEach, type BulkResult } from "./panel/bulkRun";
-import { LatestAttempt } from "./panel/latestAttempt";
-import { IdleTimer } from "./panel/idleTimer";
-import { PanelLayout } from "./panel/panelLayout";
+import { EntryList } from "./panel/entryList";
+import { EntryOperations } from "./panel/entryOperations";
+import type { EntryRowActions } from "./panel/entryRow";
+import { IdleDisconnect } from "./panel/idleDisconnect";
+import { MoveClipboard } from "./panel/moveClipboard";
+import { PanelBookmarks } from "./panel/panelBookmarks";
+import { PanelConnection } from "./panel/panelConnection";
+import { PanelControls } from "./panel/panelControls";
+import { buildPanelElements, type PanelElements } from "./panel/panelElements";
+import { withPath, withSortKey, withTransferId, wireActionClicks, wireControlEvents } from "./panel/panelEvents";
+import { PanelFeedback } from "./panel/panelFeedback";
+import { PanelSession } from "./panel/panelSession";
+import { PanelShell } from "./panel/panelShell";
+import { QueueController } from "./panel/queueController";
+import { TransferActions } from "./panel/transferActions";
+
+export { browsableDevices } from "./panel/devicePicker";
 
 export interface SftpPanelOptions {
   onError?: (error: AppError) => void;
@@ -112,192 +79,190 @@ export interface SftpPanelOptions {
   initialState?: SftpPanelState;
 }
 
-/** The SSH devices — the only ones that can be browsed over SFTP. */
-export function browsableDevices(devices: Device[]): SshDevice[] {
-  return devices.filter((d): d is SshDevice => d.kind === "ssh");
-}
-
-/** Panel width bounds, in rem so they scale with the root font size like the
- * rest of the layout. The panel's own width is user state (dragged, persisted)
- * and so is kept in px. */
-/** The toolbar's nine icon buttons on one row: 9 × 1.875rem + 8 gaps + padding
- * + border = 22rem. Mirrored by `.sftp-panel { min-width }` in styles.css. */
-const MIN_PANEL_REM = 22;
-const DEFAULT_PANEL_REM = 22.5;
-/** Absolute upper bound for a restored width (the live drag re-clamps against
- * the workspace row so the grid never disappears). */
-const MAX_PANEL_REM = 125;
-
 export class SftpPanel {
-  private devices: Device[] = [];
+  // Setup order: the parts below are field initializers, so an eager
+  // reference may only name a field declared above it (TypeScript checks this,
+  // TS2729); references to later parts and to `options` (assigned after the
+  // fields) go inside callbacks only.
 
-  /** The docked panel + its resize splitter (both live in `index.html`). */
-  private panel: HTMLElement | null;
-  private splitter: HTMLElement | null;
-  private deviceSelectEl: HTMLSelectElement | null = null;
-  private connDotEl: HTMLElement | null = null;
-  private connToggleEl: HTMLButtonElement | null = null;
-  private pathEl: HTMLInputElement | null = null;
-  private listEl: HTMLElement | null = null;
-  private filterEl: HTMLInputElement | null = null;
-  private bookmarksEl: HTMLElement | null = null;
-  private bulkBarEl: HTMLElement | null = null;
-  private selectAllEl: HTMLInputElement | null = null;
-  private selCountEl: HTMLElement | null = null;
-  private pasteBtnEl: HTMLButtonElement | null = null;
-  private statusEl: HTMLElement | null = null;
-  /** Container for the background transfer-queue list (rendered from `queue`). */
-  private queueEl: HTMLElement | null = null;
-  private editsEl: HTMLElement | null = null;
-
-  /** The background transfer queue: up/downloads run here while browsing stays
-   * live. Rebuilt on every panel rebuild so its hooks close over fresh DOM refs. */
-  private queue!: TransferQueue;
-  /** Per-item auto-remove timers for completed transfers (id → timer). */
-  private queueHideTimers = new Map<number, ReturnType<typeof setTimeout>>();
-
-  /** `sftp_progress` event subscription (live while the panel exists). */
-  private unlistenProgress: UnlistenFn | null = null;
-  private unlistenEditChanged: UnlistenFn | null = null;
+  /** The docked panel; without it (a page that lacks it) the panel is inert:
+   * every public method returns at once. */
+  private readonly root = document.querySelector<HTMLElement>(".sftp-panel");
+  /** The panel's controls, built by `init` (and rebuilt on a language change). */
+  private els!: PanelElements;
+  private readonly session = new PanelSession();
+  private readonly history = new DirHistory();
+  private readonly clipboard = new MoveClipboard();
+  private readonly feedback = new PanelFeedback({
+    notifyError: (error) => this.options.onError?.(error),
+    notifySuccess: (message) => this.options.onSuccess?.(message),
+    resync: () => void this.resyncConnection(),
+  });
+  private readonly controls = new PanelControls(() => this.els, this.session, this.history);
+  // An inert panel never applies its layout, so its stand-in root never shows.
+  private readonly shell = new PanelShell(this.root ?? document.createElement("aside"), document.querySelector<HTMLElement>(".sftp-splitter"), {
+    onResize: () => this.notifyLayout(),
+    onCommit: () => this.persist(),
+  });
+  private readonly picker = new DevicePicker(() => this.els, this.session);
+  private readonly queue = new QueueController({
+    els: () => this.els,
+    feedback: this.feedback,
+    onLanded: (deviceId, dir) => this.browser.refreshIfShowing(deviceId, dir),
+  });
   /** Files open in an external editor (edit in place). */
-  private edits: EditSessions;
-  /** Settles the queued edit transfers that end without running (cancelled
-   * while queued, or dropped on disconnect); an active one settles through its
-   * own `run`. Keyed by queue item id. */
-  private editTransfers = new Map<number, { deviceId: string; reject: (error: AppError) => void }>();
-  /** Idle-disconnect timer, armed while collapsed + connected. */
-  private idleTimer = new IdleTimer(() => void this.onIdleTimeout());
+  private readonly edits = new EditSessions({
+    runTransfer: (spec) => this.queue.edits.run(spec),
+    confirm: (message) => confirm(message),
+    chooseConflict: chooseEditConflict,
+    onChange: () => this.onEditsChange(),
+    onError: (err) => this.feedback.report(err),
+    onSuccess: (message) => this.feedback.success(message),
+  });
+  private readonly rowActions: EntryRowActions = {
+    isBusy: () => this.controls.isBusy(),
+    onCheck: (index, shift) => this.list.toggleCheck(index, shift),
+    onOpen: (entry) => void (entry.kind === "dir" ? this.openDir(entry.name) : this.transfers.download(entry)),
+    onDownload: (entry) =>
+      void (entry.kind === "dir" ? this.transfers.downloadFolder(entry) : this.transfers.download(entry)),
+    onEdit: (entry) => void this.operations.edit(entry),
+    onRename: (entry) => void this.operations.rename(entry),
+    onPermissions: (entry) => void this.operations.permissions(entry),
+    onDelete: (entry) => void this.operations.delete(entry),
+  };
+  private readonly list: EntryList = new EntryList({
+    els: () => this.els,
+    rowActions: this.rowActions,
+    canPaste: () => this.clipboard.canPasteInto(this.session.activeDeviceId, this.browser.cwd()),
+  });
+  private readonly bookmarks: PanelBookmarks = new PanelBookmarks({
+    els: () => this.els,
+    session: this.session,
+    feedback: this.feedback,
+    cwd: () => this.browser.cwd(),
+  });
+  private readonly browser: DirectoryBrowser = new DirectoryBrowser({
+    els: () => this.els,
+    session: this.session,
+    controls: this.controls,
+    history: this.history,
+    list: this.list,
+    feedback: this.feedback,
+    onListed: () => this.bookmarks.render(),
+  });
+  private readonly transfers = new TransferActions({
+    feedback: this.feedback,
+    enqueue: (spec) => this.queue.enqueue(spec),
+    place: () => this.browser.place(),
+    isAt: (place) => this.browser.isAt(place),
+    clearHover: () => this.list.clearHover(),
+  });
+  private readonly operations = new EntryOperations({
+    browser: this.browser,
+    feedback: this.feedback,
+    edits: this.edits,
+    clearHover: () => this.list.clearHover(),
+  });
+  private readonly bulk = new BulkActions({
+    session: this.session,
+    browser: this.browser,
+    list: this.list,
+    controls: this.controls,
+    feedback: this.feedback,
+    transfers: this.transfers,
+    clipboard: this.clipboard,
+  });
+  private readonly connection: PanelConnection = new PanelConnection({
+    session: this.session,
+    controls: this.controls,
+    history: this.history,
+    feedback: this.feedback,
+    unsyncedEdits: (deviceId) => this.edits.unsyncedCount(deviceId),
+    onConnected: (deviceId, startDir) => this.onConnected(deviceId, startDir),
+    onReleased: (deviceId) => this.releaseDevice(deviceId),
+    showDisconnected: () => this.browser.showDisconnected(),
+    syncPicker: () => this.picker.sync(),
+    clearIdle: () => this.idle.clear(),
+    persist: () => this.persist(),
+  });
+  private readonly idle: IdleDisconnect = new IdleDisconnect({
+    session: this.session,
+    controls: this.controls,
+    timeoutMinutes: () => this.options.getIdleDisconnectMins?.() ?? 0,
+    hasEdits: (deviceId) => this.edits.hasEdits(deviceId),
+    disconnect: () => this.connection.disconnectActive(),
+    showDisconnected: () => this.browser.showDisconnected(),
+  });
 
-  /** The device whose connection the panel is currently showing (null when not
-   * connected). */
-  private activeDeviceId: string | null = null;
-  /** The device chosen in the picker (may be selected but not yet connected, or
-   * remembered across an idle/explicit disconnect for a one-click reconnect). */
-  private selectedDeviceId: string | null = null;
-  /** True after an idle-timeout disconnect, so the disconnected state can say so. */
-  private idleDisconnected = false;
-  private layout = new PanelLayout(remToPx(DEFAULT_PANEL_REM));
+  /** Backend event subscriptions (`sftp_progress`, `sftp_edit_changed`), live
+   * while the panel exists. */
+  private subscriptions: Promise<UnlistenFn>[] = [];
 
-  /** The directory currently listed. */
-  private cwd = "/";
-  /** The full listing from the backend, before the filter/sort view is applied. */
-  private allEntries: SftpEntry[] = [];
-  /** The entries currently rendered (filtered + sorted view of `allEntries`) —
-   * mirrors DOM order for select-all + shift-range + kind lookup. */
-  private currentEntries: SftpEntry[] = [];
-  /** Active sort column + direction (folders always stay grouped on top). */
-  private sort: SortState = DEFAULT_SORT;
-  /** Live name filter for the current directory (cleared on navigation). */
-  private filterText = "";
-  /** The connected device's saved bookmark paths (loaded on connect). */
-  private bookmarks: string[] = [];
-  /** The checked entries; cleared on navigation. */
-  private selection = new EntrySelection();
-  private moveClipboard = new MoveClipboard();
-  private history = new DirHistory();
-  /** True while a connect/list/transfer is in flight (disables the toolbar). */
-  private busy = false;
-  /** True while `sftpConnect` is in flight (the connect toggle is inert). */
-  private connecting = false;
-  /** A connect that resolves after the user closed/disconnected is stale. */
-  private connectAttempts = new LatestAttempt();
-
-  /** The splitter lives outside the panel's replaced innerHTML, so its listener
-   * survives a `buildPanel()` rebuild — wire it exactly once. */
-  private splitterWired = false;
-  /** Re-syncs the splitter's ARIA width values (set once wired). */
-  private syncSplitterAria = (): void => {};
+  private readonly clickActions = new Map<string, (target: Element) => void>([
+    ["hide", () => void this.hide()],
+    ["collapse", () => this.setCollapsed(true)],
+    ["expand", () => this.setCollapsed(false)],
+    ["conn-toggle", () => this.connection.toggle()],
+    ["copy-path", () => void this.browser.copyPath()],
+    ["back", () => this.whenIdle(() => this.browser.goBack())],
+    ["forward", () => this.whenIdle(() => this.browser.goForward())],
+    ["up", () => this.whenIdle(() => this.browser.goUp())],
+    ["refresh", () => this.whenIdle(() => this.browser.reload())],
+    ["upload", () => this.whenIdle(() => this.transfers.upload())],
+    ["upload-dir", () => this.whenIdle(() => this.transfers.uploadFolder())],
+    ["mkdir", () => this.whenIdle(() => this.operations.mkdir())],
+    ["sort", (target) => withSortKey(target, (key) => this.browser.setSort(key))],
+    ["bookmark-toggle", () => this.whenIdle(() => this.bookmarks.toggle())],
+    ["bookmark-go", (target) => withPath(target, (path) => this.whenIdle(() => this.browser.goTo(path)))],
+    ["bookmark-del", (target) => withPath(target, (path) => void this.bookmarks.remove(path))],
+    ["tx-cancel", (target) => withTransferId(target, (id) => this.queue.cancel(id))],
+    ["tx-dismiss", (target) => withTransferId(target, (id) => this.queue.dismiss(id))],
+    ["tx-clear", () => this.queue.clearFinished()],
+    ["select-all", () => this.list.toggleAll()],
+    ["bulk-download", () => this.whenIdle(() => this.bulk.download())],
+    ["bulk-cut", () => this.bulk.cut()],
+    ["bulk-paste", () => this.whenIdle(() => this.bulk.paste())],
+    ["bulk-delete", () => this.whenIdle(() => this.bulk.delete())],
+    ["bulk-clear", () => this.list.clearSelection()],
+  ]);
 
   constructor(private readonly options: SftpPanelOptions = {}) {
-    this.panel = document.querySelector<HTMLElement>(".sftp-panel");
-    this.splitter = document.querySelector<HTMLElement>(".sftp-splitter");
-    this.queue = new TransferQueue({
-      cancelActive: (deviceId) => void this.cancelActiveTransfer(deviceId),
-      onChange: () => this.renderQueue(),
-      onProgress: (item) => this.updateQueueRowProgress(item),
-      onComplete: (item, ctx) => this.onTransferComplete(item, ctx),
-    });
-    this.edits = new EditSessions({
-      runTransfer: (spec) => this.runEditTransfer(spec),
-      confirm: (message) => confirm(message),
-      chooseConflict: chooseEditConflict,
-      onChange: () => this.onEditsChange(),
-      onError: (err) => this.reportError(err),
-      onSuccess: (message) => this.options.onSuccess?.(message),
-    });
+    if (this.root) this.listen(this.root);
   }
 
   async init(): Promise<void> {
-    this.buildPanel();
-    void onSftpEditChanged((editId) => void this.edits.handleChange(editId)).then((un) => {
-      this.unlistenEditChanged = un;
-    });
-    this.devices = (await this.listDevicesOrNull()) ?? [];
-    this.refreshDeviceSelect();
+    if (!this.root) return;
+    this.build(this.root);
+    this.picker.setDevices((await this.listDevicesOrNull()) ?? []);
     this.applyInitialState();
-  }
-
-  /**
-   * Restore the persisted panel state (open/collapsed/width + preselected
-   * device). Never connects — a restored device is only preselected, so a
-   * restart doesn't silently re-authenticate; the disconnected state offers a
-   * one-click Reconnect.
-   */
-  private applyInitialState(): void {
-    const s = this.options.initialState;
-    if (!s) return;
-    const known = s.deviceId && browsableDevices(this.devices).some((d) => d.id === s.deviceId);
-    this.selectedDeviceId = known ? s.deviceId : null;
-    if (!this.layout.restore(s, { min: remToPx(MIN_PANEL_REM), max: remToPx(MAX_PANEL_REM) })) return;
-    this.applyOpenState();
-    this.syncDeviceSelect();
-    this.renderDisconnectedState();
-    this.options.onLayoutChange?.();
   }
 
   /** The persisted panel state, or `undefined` until the panel has been opened
    * (so the workspace file stays clean until the feature is used). */
   layoutState(): SftpPanelState | undefined {
-    return this.layout.persisted(this.activeDeviceId ?? this.selectedDeviceId ?? null);
-  }
-
-  /** Notify the caller that persisted state changed (debounced save). */
-  private persist(): void {
-    this.options.onPersist?.();
+    return this.shell.layout.persisted(this.session.shownDeviceId());
   }
 
   /** Re-fetch devices and refresh the picker (device CRUD happened), and the
    * connected device's bookmarks (config reload). */
   async refresh(): Promise<void> {
+    if (this.root) await this.reloadDevices();
+  }
+
+  private async reloadDevices(): Promise<void> {
     // Unreadable list: keep what we have rather than take the connected
     // device for deleted.
     const devices = await this.listDevicesOrNull();
     if (devices) await this.applyDevices(devices);
     // Another instance may have changed its bookmarks.
-    if (this.activeDeviceId) await this.loadBookmarks(this.activeDeviceId);
+    const deviceId = this.session.activeDeviceId;
+    if (deviceId) await this.bookmarks.load(deviceId);
   }
 
-  private async applyDevices(devices: Device[]): Promise<void> {
-    this.devices = devices;
-    this.refreshDeviceSelect();
-    // The active device may have been deleted out from under us.
-    if (this.activeDeviceId && !devices.some((d) => d.id === this.activeDeviceId)) {
-      await this.handleDisconnect();
-    }
-  }
-
-  /**
-   * Drop to the disconnected state if the backend no longer holds this panel's
-   * connection — e.g. an update install closed every session and then failed.
-   * A failed lookup keeps the current state.
-   */
+  /** Drop to the disconnected state if the backend no longer holds this
+   * panel's connection. A failed lookup keeps the current state. */
   async resyncConnection(): Promise<void> {
-    const deviceId = this.activeDeviceId;
-    if (!deviceId) return;
-    const live = await sftpConnectedDevices().catch(() => [deviceId]);
-    // The user may have switched devices while the lookup was in flight.
-    if (this.activeDeviceId !== deviceId) return;
-    if (!live.includes(deviceId)) await this.handleDisconnect();
+    if (this.root) await this.connection.resync();
   }
 
   /**
@@ -306,31 +271,113 @@ export class SftpPanel {
    * language change is initiated from the settings dialog.
    */
   retranslate(): void {
-    if (!this.activeDeviceId) {
-      this.unlistenProgress?.();
-      this.unlistenProgress = null;
-      this.buildPanel();
-      this.refreshDeviceSelect();
-      if (this.layout.isOpen()) this.applyOpenState();
-    }
+    const root = this.rebuildableRoot();
+    if (!root) return;
+    this.build(root);
+    this.picker.render();
+    if (this.shell.layout.isOpen()) this.applyOpenState();
   }
 
   /** Stop listening for progress events + clear timers (tests; the app keeps the
    * panel for its lifetime). */
   dispose(): void {
-    this.unlistenProgress?.();
-    this.unlistenProgress = null;
-    this.unlistenEditChanged?.();
-    this.unlistenEditChanged = null;
-    this.clearQueueHideTimers();
-    this.idleTimer.clear();
+    const subscriptions = this.subscriptions;
+    this.subscriptions = [];
+    for (const subscription of subscriptions) void subscription.then((unlisten) => unlisten());
+    this.queue.dispose();
+    this.idle.clear();
   }
 
-  /** Surface an operation's error, then check whether it failed because the
-   * connection itself is gone (server closed it, network dropped). */
-  private reportError(err: unknown): void {
-    this.options.onError?.(err as AppError);
-    void this.resyncConnection();
+  /** Whether the panel is currently shown (open, expanded or collapsed). */
+  isOpen(): boolean {
+    return this.shell.layout.isOpen();
+  }
+
+  /** Show the panel (expanded). Does not connect — the picker's disconnected
+   * state offers a Connect button. */
+  open(): void {
+    if (!this.root) return;
+    this.shell.layout.show();
+    this.session.clearIdleDisconnected();
+    this.applyOpenState();
+    if (!this.session.isConnected()) this.browser.showDisconnected();
+    this.notifyLayout();
+    this.persist();
+  }
+
+  /** Open the panel and connect to a specific device (sidebar "Browse"). */
+  openWith(deviceId: string): void {
+    if (!this.root) return;
+    this.open();
+    void this.connection.select(deviceId);
+  }
+
+  /** Toggle the panel from the header button: open when hidden, fully close
+   * (disconnecting) when shown. */
+  toggle(): void {
+    if (!this.root) return;
+    if (this.shell.layout.isOpen()) void this.hide();
+    else this.open();
+  }
+
+  /** Re-arm the idle timer if the setting changed while collapsed + connected. */
+  onIdleSettingChange(): void {
+    if (this.shell.layout.isCollapsed() && this.session.isConnected()) this.idle.arm();
+  }
+
+  /** Once per panel: the root and these events outlive every markup rebuild. */
+  private listen(root: HTMLElement): void {
+    wireActionClicks(root, (action, target) => this.clickActions.get(action)?.(target));
+    this.subscriptions = [
+      onSftpEditChanged((editId) => void this.edits.handleChange(editId)),
+      // Live transfer progress (throttled events from the backend) → active item.
+      onSftpProgress((e) => this.queue.applyProgress(e.deviceId, e.transferred, e.total)),
+    ];
+  }
+
+  /** The root to rebuild in a new locale; none while connected (tearing down
+   * a live browse would be surprising) or on an inert panel. */
+  private rebuildableRoot(): HTMLElement | null {
+    return this.session.isConnected() ? null : this.root;
+  }
+
+  private build(root: HTMLElement): void {
+    this.els = buildPanelElements(root);
+    this.queue.render();
+    this.renderEdits();
+    wireControlEvents(this.els, {
+      onPathEnter: (path) => this.whenIdle(() => this.browser.goToPath(path)),
+      onPathEscape: () => this.browser.syncPathInput(),
+      onDeviceChange: (deviceId) => void this.connection.select(deviceId),
+      onFilter: (text) => this.browser.setFilter(text),
+    });
+    this.shell.wireSplitter();
+    this.controls.updateConnToggle();
+  }
+
+
+  /**
+   * Restore the persisted panel state (open/collapsed/width + preselected
+   * device). Never connects — a restored device is only preselected, so a
+   * restart doesn't silently re-authenticate; the disconnected state offers a
+   * one-click Reconnect.
+   */
+  private applyInitialState(): void {
+    const saved = this.options.initialState;
+    if (!saved) return;
+    this.session.pickDevice(this.picker.knownBrowsable(saved.deviceId));
+    if (!this.shell.restore(saved)) return;
+    this.applyOpenState();
+    this.picker.sync();
+    this.browser.showDisconnected();
+    this.notifyLayout();
+  }
+
+  private async applyDevices(devices: Device[]): Promise<void> {
+    this.picker.setDevices(devices);
+    // The active device may have been deleted out from under us.
+    const deviceId = this.session.activeDeviceId;
+    if (deviceId && !this.picker.hasDevice(deviceId)) await this.connection.disconnect();
   }
 
   /** The saved devices, or `null` (reported) when they can't be read. */
@@ -338,1408 +385,92 @@ export class SftpPanel {
     try {
       return await listDevices();
     } catch (err) {
-      this.options.onError?.(err as AppError);
+      this.feedback.notify(err);
       return null;
     }
   }
 
-  /* ----- panel shell ------------------------------------------------------ */
-
-  private buildPanel(): void {
-    const panel = this.panel;
-    if (!panel) return;
-    panel.innerHTML = sftpPanelMarkup();
-
-    this.deviceSelectEl = panel.querySelector(".sftp-device-select");
-    this.connDotEl = panel.querySelector(".sftp-conn-dot");
-    this.connToggleEl = panel.querySelector(".sftp-conn-toggle");
-    this.pathEl = panel.querySelector(".sftp-path");
-    this.listEl = panel.querySelector(".sftp-entries");
-    this.filterEl = panel.querySelector(".sftp-filter");
-    this.bookmarksEl = panel.querySelector(".sftp-bookmarks");
-    this.bulkBarEl = panel.querySelector(".sftp-bulkbar");
-    this.selectAllEl = panel.querySelector('[data-action="select-all"]');
-    this.selCountEl = panel.querySelector(".sftp-sel-count");
-    this.pasteBtnEl = panel.querySelector(".sftp-bulk-paste");
-    this.statusEl = panel.querySelector(".sftp-status");
-    this.queueEl = panel.querySelector(".sftp-queue");
-    this.editsEl = panel.querySelector(".sftp-edits");
-    this.renderQueue();
-    this.renderEdits();
-
-    this.pathEl?.addEventListener("keydown", (e) => {
-      const ev = e as KeyboardEvent;
-      if (ev.key === "Enter") {
-        ev.preventDefault();
-        if (!this.busy) void this.goToPath(this.pathEl?.value ?? "");
-      } else if (ev.key === "Escape") {
-        ev.stopPropagation();
-        this.syncPathInput();
-        this.pathEl?.blur();
-      }
-    });
-
-    this.deviceSelectEl?.addEventListener("change", () => {
-      const id = this.deviceSelectEl?.value ?? "";
-      if (id) void this.selectDevice(id);
-    });
-
-    // Live directory filter — reorders the current listing without a round trip.
-    this.filterEl?.addEventListener("input", () => {
-      this.filterText = this.filterEl?.value ?? "";
-      // A changed filter changes the visible set, so drop the stale selection.
-      this.selection.clear();
-      this.applyView();
-    });
-
-    panel.addEventListener("click", (e) => this.onPanelClick(e.target));
-
-    this.wireSplitter();
-    this.updateConnDot();
-
-    // Live transfer progress (throttled events from the backend) → active item.
-    void onSftpProgress((e) => this.queue.applyProgress(e.deviceId, e.transferred, e.total)).then(
-      (un) => {
-        this.unlistenProgress = un;
-      },
-    );
-  }
-
-  /** Run the clicked control's action. `Element`, not `HTMLElement`: a click
-   * on a button's inline SVG targets an `SVGElement`. */
-  private onPanelClick(target: EventTarget | null): void {
-    if (!(target instanceof Element)) return;
-    const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
-    if (action) this.clickActions.get(action)?.(target);
-  }
-
   /** Run `action` unless a connect/list/transfer is in flight. */
   private whenIdle(action: () => unknown): void {
-    if (!this.busy) void action();
+    if (!this.controls.isBusy()) void action();
   }
 
-  private readonly clickActions = new Map<string, (target: Element) => void>([
-    ["hide", () => void this.hide()],
-    ["collapse", () => this.setCollapsed(true)],
-    ["expand", () => this.setCollapsed(false)],
-    ["conn-toggle", () => this.handleConnToggle()],
-    ["copy-path", () => void this.handleCopyPath()],
-    ["back", () => this.whenIdle(() => this.goBack())],
-    ["forward", () => this.whenIdle(() => this.goForward())],
-    ["up", () => this.whenIdle(() => this.goUp())],
-    ["refresh", () => this.whenIdle(() => this.loadDir(this.cwd))],
-    ["upload", () => this.whenIdle(() => this.handleUpload())],
-    ["upload-dir", () => this.whenIdle(() => this.handleUploadFolder())],
-    ["mkdir", () => this.whenIdle(() => this.handleMkdir())],
-    ["sort", (target) => this.onSortClick(target)],
-    ["bookmark-toggle", () => this.whenIdle(() => this.handleBookmarkToggle())],
-    ["bookmark-go", (target) => this.withPath(target, (path) => this.whenIdle(() => this.goTo(path)))],
-    ["bookmark-del", (target) => this.withPath(target, (path) => void this.handleBookmarkRemove(path))],
-    ["tx-cancel", (target) => this.withTransferId(target, (id) => this.queue.cancel(id))],
-    ["tx-dismiss", (target) => this.withTransferId(target, (id) => this.dismissQueueItem(id))],
-    ["tx-clear", () => this.clearFinishedTransfers()],
-    ["select-all", () => this.toggleSelectAll()],
-    ["bulk-download", () => this.whenIdle(() => this.handleBulkDownload())],
-    ["bulk-cut", () => this.handleBulkCut()],
-    ["bulk-paste", () => this.whenIdle(() => this.handleBulkPaste())],
-    ["bulk-delete", () => this.whenIdle(() => this.handleBulkDelete())],
-    ["bulk-clear", () => this.clearSelection()],
-  ]);
-
-  private onSortClick(target: Element): void {
-    const key = target.closest<HTMLElement>("[data-sort]")?.dataset.sort;
-    if (key === "name" || key === "size" || key === "modified") this.setSort(key);
-  }
-
-  private withPath(target: Element, action: (path: string) => void): void {
-    const path = target.closest<HTMLElement>("[data-path]")?.dataset.path;
-    if (path) action(path);
-  }
-
-  private withTransferId(target: Element, action: (id: number) => void): void {
-    const id = Number(target.closest<HTMLElement>("[data-tx-id]")?.dataset.txId);
-    if (Number.isFinite(id)) action(id);
-  }
-
-  private dismissQueueItem(id: number): void {
-    const timer = this.queueHideTimers.get(id);
-    if (timer) clearTimeout(timer);
-    this.queueHideTimers.delete(id);
-    this.queue.remove(id);
-  }
-
-  private clearFinishedTransfers(): void {
-    this.clearQueueHideTimers();
-    this.queue.clearFinished();
-  }
-
-  /* ----- open / collapse / hide (panel visibility) ------------------------ */
-
-  /** Whether the panel is currently shown (open, expanded or collapsed). */
-  isOpen(): boolean {
-    return this.layout.isOpen();
-  }
-
-  /** Show the panel (expanded). Does not connect — the picker's disconnected
-   * state offers a Connect button. */
-  open(): void {
-    this.layout.show();
-    this.idleDisconnected = false;
-    this.applyOpenState();
-    if (!this.activeDeviceId) this.renderDisconnectedState();
-    this.options.onLayoutChange?.();
-    this.persist();
-  }
-
-  /** Open the panel and connect to a specific device (sidebar "Browse"). */
-  openWith(deviceId: string): void {
-    this.open();
-    void this.selectDevice(deviceId);
-  }
-
-  /** Toggle the panel from the header button: open when hidden, fully close
-   * (disconnecting) when shown. */
-  toggle(): void {
-    if (this.layout.isOpen()) void this.hide();
-    else this.open();
+  private openDir(name: string): Promise<void> {
+    return this.browser.goTo(joinRemote(this.browser.cwd(), name));
   }
 
   /** Fully close the panel: disconnect the live connection immediately (the
    * "closed" state's rule) and hide the panel + splitter. */
   private async hide(): Promise<void> {
-    if (!(await this.confirmEndEdits())) return;
-    this.layout.hide();
-    this.idleTimer.clear();
+    if (!(await this.connection.confirmEndEdits())) return;
+    this.shell.layout.hide();
+    this.idle.clear();
     this.applyOpenState();
-    this.options.onLayoutChange?.();
+    this.notifyLayout();
     this.persist();
-    await this.disconnectActive();
-    if (this.listEl) this.listEl.replaceChildren();
+    await this.connection.disconnectActive();
+    this.els.list.replaceChildren();
   }
 
   /** Collapse to the rail (keeps the connection, arms the idle timer) or expand
    * back (clears it). A no-op when the panel is hidden. */
   private setCollapsed(collapsed: boolean): void {
-    if (!this.layout.setCollapsed(collapsed)) return;
-    if (collapsed) this.armIdleTimer();
-    else this.handleExpand();
+    if (!this.shell.layout.setCollapsed(collapsed)) return;
+    if (collapsed) this.idle.arm();
+    else this.onExpand();
     this.applyOpenState();
-    this.options.onLayoutChange?.();
+    this.notifyLayout();
     this.persist();
   }
 
   /** Expanding stops the idle countdown and shows why an idle panel is
    * disconnected. */
-  private handleExpand(): void {
-    this.idleTimer.clear();
-    if (this.idleDisconnected && !this.activeDeviceId) this.renderDisconnectedState();
+  private onExpand(): void {
+    this.idle.clear();
+    if (this.session.idleDisconnected && !this.session.isConnected()) this.browser.showDisconnected();
   }
 
-  /** Reflect open/collapsed/width onto the panel + splitter + toggle button. */
   private applyOpenState(): void {
-    const panel = this.panel;
-    if (!panel) return;
-    const { layout } = this;
-    panel.hidden = !layout.isOpen();
-    panel.classList.toggle("sftp-collapsed", layout.isCollapsed());
-    // Clear the inline width while collapsed so the `.sftp-collapsed` rail width
-    // (2.5rem) applies; an inline width would otherwise override it.
-    panel.style.width = layout.isCollapsed() ? "" : `${layout.width()}px`;
-    if (this.splitter) this.splitter.hidden = !layout.isOpen() || layout.isCollapsed();
-    this.syncSplitterAria();
-    this.updateConnDot();
-    const btn = document.querySelector<HTMLButtonElement>("#sftp-btn");
-    btn?.setAttribute("aria-pressed", String(layout.isOpen()));
+    this.shell.apply();
+    this.controls.updateConnToggle();
   }
 
-  /* ----- connection lifecycle -------------------------------------------- */
-
-  /**
-   * Connect the panel to `deviceId`, disconnecting whatever it was showing.
-   * `force` reconnects even when the id equals the (already-selected) device —
-   * used by the Reconnect button after an idle/explicit disconnect.
-   */
-  private async selectDevice(deviceId: string, force = false): Promise<void> {
-    if (!force && deviceId === this.activeDeviceId) return;
-    if (this.activeDeviceId && this.activeDeviceId !== deviceId) {
-      if (!(await this.confirmEndEdits())) {
-        this.syncDeviceSelect(); // put the picker back on the device we kept
-        return;
-      }
-      await this.disconnectActive();
-    }
-    this.selectedDeviceId = deviceId;
-    this.syncDeviceSelect();
-    this.idleDisconnected = false;
-    this.history.reset();
-    this.setStatus(t("sftp.connecting"));
-    const attempt = this.connectAttempts.begin();
-    this.connecting = true;
-    this.setBusy(true);
-    try {
-      // A first-contact host key raises the global host-key dialog; on accept the
-      // connect proceeds and resolves here.
-      const startDir = await sftpConnect(deviceId);
-      if (!this.connectAttempts.isCurrent(attempt)) {
-        this.dropStaleConnection(deviceId);
-        return;
-      }
-      this.activeDeviceId = deviceId;
-      this.updateConnDot();
-      await this.loadBookmarks(deviceId);
-      await this.goTo(startDir);
-    } catch (err) {
-      // A superseded attempt (the user moved on) must not touch the newer one.
-      if (!this.connectAttempts.isCurrent(attempt)) return;
-      this.activeDeviceId = null;
-      this.setStatus("");
-      this.options.onError?.(err as AppError);
-      this.renderDisconnectedState();
-      this.updateConnDot();
-    } finally {
-      if (this.connectAttempts.isCurrent(attempt)) this.finishConnect();
-    }
+  private async onConnected(deviceId: string, startDir: string): Promise<void> {
+    await this.bookmarks.load(deviceId);
+    await this.browser.goTo(startDir);
   }
 
-  /** Settle the panel after the current connect attempt ends either way. */
-  private finishConnect(): void {
-    this.connecting = false;
-    this.setBusy(false);
-    this.updateConnDot();
-    this.persist(); // remember the (now-)selected device
-  }
-
-  /** Close a connection that finished opening after the user moved on (closed
-   * the panel mid-connect), unless it is the one now on screen. */
-  private dropStaleConnection(deviceId: string): void {
-    if (this.activeDeviceId === deviceId) return;
-    void sftpDisconnect(deviceId).catch(() => {});
-  }
-
-  /** Disconnect the live connection (if any) without touching panel visibility.
-   * Idempotent and best-effort. */
-  private async disconnectActive(): Promise<void> {
-    const deviceId = this.activeDeviceId;
-    this.activeDeviceId = null;
-    this.connectAttempts.invalidate(); // a connect still in flight is now stale
-    this.connecting = false;
-    this.setBusy(false); // …and will never clear `busy` itself
-    this.moveClipboard.clear(); // a pending move is tied to this connection
-    this.bookmarks = []; // bookmarks are loaded per active device
-    this.renderBookmarks();
-    this.updateBookmarkButton();
-    if (deviceId) {
-      // Cancel + drop any transfers for this device — the connection is going
-      // away, so nothing more can run against it.
-      this.queue.cancelDevice(deviceId);
-      this.rejectEditTransfers(deviceId);
-      this.edits.closeDevice(deviceId); // the backend ends them with the connection
-      try {
-        await sftpDisconnect(deviceId);
-      } catch {
-        // Best-effort — the connection is torn down backend-side regardless.
-      }
-    }
-  }
-
-  /** The header connect/disconnect toggle: disconnect when connected, otherwise
-   * connect the selected device (the replacement for the old Reconnect button). */
-  private handleConnToggle(): void {
-    if (this.connecting) return;
-    if (this.activeDeviceId) {
-      void this.confirmThenDisconnect();
-    } else if (this.selectedDeviceId) {
-      void this.selectDevice(this.selectedDeviceId, true);
-    }
-  }
-
-  /** The user's Disconnect: ask first when edited files have changes not
-   * uploaded (disconnecting ends the edits). */
-  private async confirmThenDisconnect(): Promise<void> {
-    if (await this.confirmEndEdits()) await this.handleDisconnect();
-  }
-
-  /** Whether closing the active connection may end its edits: true unless some
-   * have saved changes not uploaded and the user declines. */
-  private async confirmEndEdits(): Promise<boolean> {
-    const deviceId = this.activeDeviceId;
-    const count = deviceId ? this.edits.unsyncedCount(deviceId) : 0;
-    return count === 0 || confirm(tp("sftp.edit.disconnectConfirm", count));
-  }
-
-  /** Drop the connection but keep the panel open, showing the disconnected
-   * state (the green toggle then offers connect/reconnect). */
-  private async handleDisconnect(): Promise<void> {
-    this.idleTimer.clear();
-    this.idleDisconnected = false;
-    await this.disconnectActive();
-    this.setStatus("");
-    this.syncPathInput();
-    this.renderDisconnectedState();
-    this.updateConnDot();
-  }
-
-  /* ----- idle timer ------------------------------------------------------- */
-
-  /** Arm the idle-disconnect timer for a collapsed, connected panel (using the
-   * live setting; `0` disables it). */
-  private armIdleTimer(): void {
-    this.idleTimer.clear();
-    // An open edit keeps the connection: its saves still need uploading.
-    if (!this.activeDeviceId || this.edits.hasEdits(this.activeDeviceId)) return;
-    this.idleTimer.arm(this.options.getIdleDisconnectMins?.() ?? 0);
-  }
-
-  /** Re-arm the idle timer if the setting changed while collapsed + connected. */
-  onIdleSettingChange(): void {
-    if (this.layout.isCollapsed() && this.activeDeviceId) this.armIdleTimer();
-  }
-
-  private async onIdleTimeout(): Promise<void> {
-    if (!this.activeDeviceId) return;
-    await this.disconnectActive();
-    this.idleDisconnected = true;
-    this.setStatus(t("sftp.idleDisconnected"));
-    this.renderDisconnectedState();
-    this.updateConnDot();
-  }
-
-  /* ----- navigation + operations ----------------------------------------- */
-
-  /**
-   * List `path` and render it as the current directory; `true` once it shows.
-   * Does NOT touch the Back/Forward history — used for Refresh,
-   * post-operation re-listing, and as the shared worker behind
-   * `goTo`/`goBack`/`goForward`.
-   */
-  private async loadDir(path: string): Promise<boolean> {
-    const deviceId = this.activeDeviceId;
-    if (deviceId === null) return false;
-    // Re-listing the same directory (Refresh, or an auto-refresh after a
-    // transfer) keeps any live filter; navigating to a different directory
-    // starts fresh.
-    const sameDir = path === this.cwd;
-    // A new listing invalidates the selection (names are directory-relative).
-    this.selection.clear();
-    this.setBusy(true);
-    try {
-      const entries = await sftpList(deviceId, path);
-      // Disconnected (or switched device) while the listing was in flight.
-      if (this.activeDeviceId !== deviceId) return false;
-      this.cwd = path;
-      this.allEntries = entries;
-      if (!sameDir) {
-        this.filterText = "";
-        if (this.filterEl) this.filterEl.value = "";
-      }
-      this.syncPathInput();
-      this.applyView(); // renders + sets the count status
-      this.updateBookmarkButton();
-      return true;
-    } catch (err) {
-      if (this.activeDeviceId === deviceId) this.reportError(err);
-      return false;
-    } finally {
-      this.setBusy(false); // also reconciles Back/Forward enabled state
-    }
-  }
-
-  /** Render the filtered + sorted view of `allEntries`, the sort-header
-   * indicators and the visible-count status. */
-  private applyView(): void {
-    const shown = viewEntries(this.allEntries, this.filterText, this.sort);
-    this.renderEntries(shown);
-    this.updateSortHeaders();
-    this.setStatus(tp("sftp.count", shown.length));
-  }
-
-  private setSort(key: SortKey): void {
-    this.sort = nextSort(this.sort, key);
-    this.selection.forgetAnchor();
-    this.applyView();
-  }
-
-  /** Reflect the active sort key + direction on the header buttons (an arrow on
-   * the active one; `aria-sort` for assistive tech). */
-  private updateSortHeaders(): void {
-    this.panel?.querySelectorAll<HTMLButtonElement>('[data-action="sort"]').forEach((btn) => {
-      const active = btn.dataset.sort === this.sort.key;
-      const arrow = active ? (this.sort.dir === "asc" ? " ▲" : " ▼") : "";
-      const label = t(`sftp.sort.${btn.dataset.sort as "name" | "size" | "modified"}`);
-      btn.textContent = label + arrow;
-      btn.classList.toggle("is-active", active);
-      btn.setAttribute("aria-sort", active ? (this.sort.dir === "asc" ? "ascending" : "descending") : "none");
-    });
-  }
-
-  /* ----- bookmarks -------------------------------------------------------- */
-
-  /** Load the connected device's bookmarks and render the chip row. Non-fatal:
-   * a failure just leaves the bar empty (bookmarks are a convenience). */
-  private async loadBookmarks(deviceId: string): Promise<void> {
-    try {
-      this.bookmarks = await sftpBookmarks(deviceId);
-    } catch {
-      this.bookmarks = [];
-    }
-    this.renderBookmarks();
-    this.updateBookmarkButton();
-  }
-
-  /** Render the bookmark chips (hidden when none or not connected). */
-  private renderBookmarks(): void {
-    if (!this.bookmarksEl) return;
-    const paths = this.activeDeviceId === null ? [] : this.bookmarks;
-    renderBookmarks(this.bookmarksEl, paths, this.cwd);
-  }
-
-  /** Swap the toolbar star between add/remove per whether cwd is bookmarked. */
-  private updateBookmarkButton(): void {
-    const btn = this.panel?.querySelector<HTMLElement>(".sftp-bookmark-toggle");
-    if (!btn) return;
-    renderBookmarkToggle(btn, this.activeDeviceId !== null && this.bookmarks.includes(this.cwd));
-    // Keep the chip-row's current-directory highlight in sync.
-    this.renderBookmarks();
-  }
-
-  /** Bookmark (or un-bookmark) the current directory. */
-  private async handleBookmarkToggle(): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    const deviceId = this.activeDeviceId;
-    try {
-      this.bookmarks = this.bookmarks.includes(this.cwd)
-        ? await sftpBookmarkRemove(deviceId, this.cwd)
-        : await sftpBookmarkAdd(deviceId, this.cwd);
-      this.updateBookmarkButton();
-    } catch (err) {
-      this.reportError(err);
-    }
-  }
-
-  /** Remove a bookmark from its chip's × button. */
-  private async handleBookmarkRemove(path: string): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    try {
-      this.bookmarks = await sftpBookmarkRemove(this.activeDeviceId, path);
-      this.updateBookmarkButton();
-    } catch (err) {
-      this.reportError(err);
-    }
-  }
-
-  /* ----- permissions (chmod) --------------------------------------------- */
-
-  /** Open the chmod dialog for an entry and apply the chosen mode. */
-  private async handlePermissions(entry: SftpEntry): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    this.clearHover();
-    const next = await choosePermissions(entry.name, entry.mode ?? 0);
-    if (next === null) return; // cancelled
-    const deviceId = this.activeDeviceId;
-    const path = joinRemote(this.cwd, entry.name);
-    try {
-      await sftpChmod(deviceId, path, next);
-      await this.loadDir(this.cwd);
-      this.options.onSuccess?.(t("sftp.perms.changed", { name: entry.name }));
-    } catch (err) {
-      this.reportError(err);
-    }
-  }
-
-  /**
-   * Navigate to a new directory and, once it shows, record it in history
-   * (dropping any forward entries). Navigating to the current directory only
-   * re-lists it.
-   */
-  private async goTo(path: string): Promise<void> {
-    const isCurrent = this.history.isCurrent(path);
-    if (!(await this.loadDir(path)) || isCurrent) return;
-    this.history.record(path);
-    this.updateNavButtons();
-  }
-
-  /** Reflect the current directory in the editable path input. */
-  private syncPathInput(): void {
-    if (this.pathEl) this.pathEl.value = this.activeDeviceId ? this.cwd : "";
-  }
-
-  /**
-   * Navigate to a path typed into the path input. The path is canonicalized
-   * server-side (resolving `..` and relative paths); if it turns out to be a
-   * file rather than a directory, we open its parent folder instead.
-   */
-  private async goToPath(raw: string): Promise<void> {
-    const deviceId = this.activeDeviceId;
-    const input = raw.trim();
-    if (deviceId === null || input === "") {
-      this.syncPathInput();
-      return;
-    }
-    let target: string;
-    this.setBusy(true);
-    try {
-      const resolved = await sftpRealpath(deviceId, input);
-      try {
-        await sftpList(deviceId, resolved);
-        target = resolved;
-      } catch {
-        // Not a listable directory — treat it as a file and open its parent,
-        // resolving `..` server-side so the displayed path stays clean.
-        target = await sftpRealpath(deviceId, parentOf(resolved));
-      }
-    } catch (err) {
-      this.reportError(err);
-      this.syncPathInput();
-      this.setBusy(false);
-      return;
-    }
-    this.setBusy(false);
-    await this.goTo(target);
-  }
-
-  /** Copy the current directory path to the clipboard. */
-  private async handleCopyPath(): Promise<void> {
-    if (!this.cwd || !this.activeDeviceId) return;
-    try {
-      await navigator.clipboard.writeText(this.cwd);
-      this.options.onSuccess?.(t("sftp.pathCopied"));
-    } catch (err) {
-      this.reportError(err);
-    }
-  }
-
-  /** Step back to the previous directory in history (no-op at the start). */
-  private async goBack(): Promise<void> {
-    await this.revisit(this.history.backTarget(), () => this.history.stepBack());
-  }
-
-  /** Step forward to the next directory in history (no-op at the end). */
-  private async goForward(): Promise<void> {
-    await this.revisit(this.history.forwardTarget(), () => this.history.stepForward());
-  }
-
-  /** List a directory from history, moving the cursor only once it shows. */
-  private async revisit(target: string | undefined, step: () => void): Promise<void> {
-    if (target === undefined || !(await this.loadDir(target))) return;
-    step();
-    this.updateNavButtons();
-  }
-
-  private async goUp(): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    try {
-      // Resolve `<cwd>/..` server-side so symlinked paths go to the real parent.
-      const parent = await sftpRealpath(this.activeDeviceId, parentOf(this.cwd));
-      if (parent !== this.cwd) await this.goTo(parent);
-    } catch (err) {
-      this.reportError(err);
-    }
-  }
-
-  /** Clear the JS hover flag from every row. Called before opening a dialog so
-   * the action buttons don't stay visible while a native dialog (which suppresses
-   * `mouseleave`) is up. */
-  private clearHover(): void {
-    this.listEl
-      ?.querySelectorAll(".sftp-entry.hovering")
-      .forEach((el) => el.classList.remove("hovering"));
-  }
-
-  private async handleDownload(entry: SftpEntry): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    this.clearHover();
-    if (this.refuseUnsafeNames([entry])) return;
-    const local = await pickDownloadSavePath(entry.name);
-    if (local === null) return; // cancelled
-    const deviceId = this.activeDeviceId;
-    const remote = joinRemote(this.cwd, entry.name);
-    this.queue.enqueue({
-      deviceId,
-      direction: "download",
-      isDir: false,
-      name: entry.name,
-      run: () => sftpDownload(deviceId, remote, local),
-      successToast: t("sftp.downloadedToast", { name: entry.name }),
-    });
-  }
-
-  /** Downloads a folder tree, then reports any entries it had to skip (one
-   * odd entry doesn't stop the rest). */
-  private async downloadFolder(
-    deviceId: string,
-    remote: string,
-    target: string,
-    policy: ConflictPolicy,
-  ): Promise<void> {
-    const skipped = await sftpDownloadDir(deviceId, remote, target, policy);
-    if (skipped.length === 0) return;
-    const name = remote.split("/").pop() ?? remote;
-    const message = tp("sftp.download.skipped", skipped.length, { name, items: skippedSummary(skipped) });
-    this.options.onError?.({ code: "Sftp", message });
-  }
-
-  /** Uploads a folder tree, then reports any entries it had to skip. */
-  private async uploadFolder(
-    deviceId: string,
-    localDir: string,
-    target: string,
-    policy: ConflictPolicy,
-  ): Promise<void> {
-    const skipped = await sftpUploadDir(deviceId, localDir, target, policy);
-    if (skipped.length === 0) return;
-    const name = target.split("/").pop() ?? target;
-    const message = tp("sftp.upload.skipped", skipped.length, { name, items: skippedSummary(skipped) });
-    this.options.onError?.({ code: "Sftp", message });
-  }
-
-  /** Reports the first entry whose name can't be a local file name (see
-   * `isLocalFileName`); true when the download must not go ahead. */
-  private refuseUnsafeNames(entries: SftpEntry[]): boolean {
-    const unsafe = entries.find((entry) => !isLocalFileName(entry.name));
-    if (!unsafe) return false;
-    const message = t("sftp.download.unsafeName", { name: unsafe.name });
-    this.options.onError?.({ code: "Validation", message });
-    return true;
-  }
-
-  /** Open a remote file in the external editor (edit in place). */
-  private async handleEdit(entry: SftpEntry): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    this.clearHover();
-    const remote = joinRemote(this.cwd, entry.name);
-    await this.edits.open(this.activeDeviceId, remote, entry.name);
-  }
-
-  /** Run an edit's download/upload through the transfer queue, settling with
-   * its result. A failure is reported by the queue (`onTransferComplete`). */
-  private runEditTransfer<T>(spec: EditTransferSpec<T>): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const id = this.queue.enqueue({
-        deviceId: spec.deviceId,
-        direction: spec.direction,
-        isDir: false,
-        name: spec.name,
-        cancellable: spec.cancellable,
-        run: () => spec.run().then(resolve, (err: unknown) => {
-          reject(err);
-          throw err;
-        }),
-      });
-      this.editTransfers.set(id, { deviceId: spec.deviceId, reject });
-    });
+  /** Drop what belonged to the closing connection. */
+  private releaseDevice(deviceId: string | null): void {
+    this.clipboard.clear(); // a pending move is tied to this connection
+    this.bookmarks.clear();
+    if (!deviceId) return;
+    this.queue.cancelDevice(deviceId); // nothing more can run against it
+    this.edits.closeDevice(deviceId); // the backend ends them with the connection
   }
 
   private onEditsChange(): void {
     this.renderEdits();
     // The last edit ending lets a collapsed panel idle out again (and a new
     // one stops the countdown).
-    if (this.layout.isCollapsed()) this.armIdleTimer();
+    if (this.shell.layout.isCollapsed()) this.idle.arm();
   }
 
   private renderEdits(): void {
-    if (!this.editsEl) return;
-    renderEditList(this.editsEl, this.edits.entries(), {
+    renderEditList(this.els.edits, this.edits.entries(), {
       onReopen: (editId) => void this.edits.relaunch(editId),
       onStop: (editId) => void this.edits.stop(editId),
     });
   }
 
-  private async handleUpload(): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    const local = await pickUploadOpenPath();
-    if (local === null) return; // cancelled
-    const deviceId = this.activeDeviceId;
-    const dir = this.cwd;
-    const name = await basename(local);
-    const remote = joinRemote(dir, name);
-    this.queue.enqueue({
-      deviceId,
-      direction: "upload",
-      isDir: false,
-      name,
-      run: () => this.uploadFile(deviceId, local, remote, name),
-      successToast: t("sftp.uploadedToast", { name }),
-      refreshDir: dir,
-    });
+  private notifyLayout(): void {
+    this.options.onLayoutChange?.();
   }
 
-  /** Recursively download a folder into a chosen local directory, resolving a
-   * name clash with a per-operation conflict policy. */
-  private async handleDownloadFolder(entry: SftpEntry): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    this.clearHover();
-    if (this.refuseUnsafeNames([entry])) return;
-    const destParent = await pickDownloadDirPath();
-    if (destParent === null) return; // cancelled
-    const deviceId = this.activeDeviceId;
-    const remote = joinRemote(this.cwd, entry.name);
-    const target = await join(destParent, entry.name);
-    const policy = await this.resolvePolicy(
-      await sftpLocalExists(target),
-      t("sftp.conflict.message", { name: entry.name }),
-    );
-    if (policy === null) return; // cancelled the conflict dialog
-    this.queue.enqueue({
-      deviceId,
-      direction: "download",
-      isDir: true,
-      name: entry.name,
-      run: () => this.downloadFolder(deviceId, remote, target, policy),
-      successToast: t("sftp.downloadedFolderToast", { name: entry.name }),
-    });
+  /** Notify the caller that persisted state changed (debounced save). */
+  private persist(): void {
+    this.options.onPersist?.();
   }
-
-  /** Recursively upload a chosen local folder into the current directory. */
-  private async handleUploadFolder(): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    const localDir = await pickUploadDirPath();
-    if (localDir === null) return; // cancelled
-    const deviceId = this.activeDeviceId;
-    const dir = this.cwd;
-    const name = await basename(localDir);
-    const target = joinRemote(dir, name);
-    const policy = await this.resolvePolicy(
-      await sftpExists(deviceId, target),
-      t("sftp.conflict.message", { name }),
-    );
-    if (policy === null) return;
-    this.queue.enqueue({
-      deviceId,
-      direction: "upload",
-      isDir: true,
-      name,
-      run: () => this.uploadFolder(deviceId, localDir, target, policy),
-      successToast: t("sftp.uploadedFolderToast", { name }),
-      refreshDir: dir,
-    });
-  }
-
-  /**
-   * Resolve the conflict policy for a transfer: `"overwrite"` when there is no
-   * clash, otherwise the user's choice from the conflict dialog (or `null` if
-   * they cancel). One choice applies to the whole operation.
-   */
-  private async resolvePolicy(conflict: boolean, message: string): Promise<ConflictPolicy | null> {
-    if (!conflict) return "overwrite";
-    return chooseConflict(message);
-  }
-
-  /** Uploads one file, choosing where when its turn comes, not when it was
-   * picked: a transfer ahead in the queue may create a file of that name
-   * meanwhile. Skipping or cancelling the conflict dialog ends the item as a
-   * quiet cancel. */
-  private async uploadFile(deviceId: string, local: string, remote: string, name: string): Promise<void> {
-    const target = await this.uploadTarget(deviceId, remote, name);
-    if (target === null) throw { code: "Cancelled", message: "" } satisfies AppError;
-    await sftpUpload(deviceId, local, target);
-  }
-
-  /** Where a single-file upload goes: `remote` itself, or — when a file of
-   * that name is already there — what the conflict dialog picks (`null` to
-   * upload nothing). */
-  private async uploadTarget(deviceId: string, remote: string, name: string): Promise<string | null> {
-    const exists = await sftpExists(deviceId, remote);
-    const policy = await this.resolvePolicy(exists, t("sftp.conflict.message", { name }));
-    if (policy === "rename") return this.freshRemoteName(deviceId, remote, name);
-    return policy === "overwrite" ? remote : null;
-  }
-
-  /** A free `<path> (N)` on the server (`path` itself is taken). */
-  private async freshRemoteName(deviceId: string, path: string, name: string): Promise<string> {
-    const free = await findFreeName(path, (candidate) => sftpExists(deviceId, candidate));
-    if (free !== null) return free;
-    throw { code: "Sftp", message: t("sftp.upload.noFreeName", { name }) } satisfies AppError;
-  }
-
-  /** `path`, or a free `<path> (N)` when it exists locally (the per-file
-   * rename policy in a bulk download). */
-  private async freshLocalName(path: string, name: string): Promise<string> {
-    if (!(await sftpLocalExists(path))) return path;
-    const free = await findFreeName(path, sftpLocalExists);
-    if (free !== null) return free;
-    throw { code: "Sftp", message: t("sftp.download.noFreeName", { name }) } satisfies AppError;
-  }
-
-  /**
-   * Queue hook: an item reached a terminal state. A success surfaces its toast
-   * (and re-lists the directory if an upload landed in the one on screen), then
-   * auto-clears the row after a moment; a real failure surfaces through `onError`
-   * and the row stays until dismissed; a user cancel is quiet.
-   */
-  private onTransferComplete(
-    item: TransferItem,
-    ctx: { successToast?: string; refreshDir?: string },
-  ): void {
-    this.settleEditTransfer(item);
-    if (item.state === "done") {
-      if (ctx.successToast) this.options.onSuccess?.(ctx.successToast);
-      // Reflect a new upload if we're still showing the directory it landed in.
-      if (
-        ctx.refreshDir !== undefined &&
-        this.activeDeviceId === item.deviceId &&
-        this.cwd === ctx.refreshDir &&
-        !this.busy
-      ) {
-        void this.loadDir(this.cwd);
-      }
-      this.scheduleQueueItemHide(item.id);
-    } else if (item.state === "failed" && item.error) {
-      this.reportError(item.error);
-    }
-    // "cancelled": quiet — the row stays until dismissed/cleared.
-  }
-
-  /** Reject an edit transfer the queue ended without running it to success
-   * (cancelled while queued), so the edit doesn't wait on it forever. */
-  private settleEditTransfer(item: TransferItem): void {
-    const pending = this.editTransfers.get(item.id);
-    this.editTransfers.delete(item.id);
-    if (item.state === "done") return;
-    pending?.reject(item.error ?? cancelledError());
-  }
-
-  /** Settle a device's edit transfers that `queue.cancelDevice` dropped
-   * without completing them. */
-  private rejectEditTransfers(deviceId: string): void {
-    for (const [id, pending] of this.editTransfers) {
-      if (pending.deviceId !== deviceId) continue;
-      this.editTransfers.delete(id);
-      pending.reject(cancelledError());
-    }
-  }
-
-  /** Queue hook: ask the backend to cancel the in-flight transfer for a device. */
-  private async cancelActiveTransfer(deviceId: string): Promise<void> {
-    try {
-      await sftpCancelTransfer(deviceId);
-    } catch (err) {
-      this.reportError(err);
-    }
-  }
-
-  /** Auto-remove a completed transfer row after a short delay. */
-  private scheduleQueueItemHide(id: number): void {
-    const existing = this.queueHideTimers.get(id);
-    if (existing) clearTimeout(existing);
-    this.queueHideTimers.set(
-      id,
-      setTimeout(() => {
-        this.queueHideTimers.delete(id);
-        this.queue.remove(id);
-      }, 3000),
-    );
-  }
-
-  private clearQueueHideTimers(): void {
-    for (const timer of this.queueHideTimers.values()) clearTimeout(timer);
-    this.queueHideTimers.clear();
-  }
-
-  private async handleMkdir(): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    const name = await prompt(t("sftp.mkdir.title"), t("sftp.mkdir.placeholder"));
-    if (name === null || name.trim() === "") return;
-    try {
-      await sftpMkdir(this.activeDeviceId, joinRemote(this.cwd, name.trim()));
-      await this.loadDir(this.cwd);
-    } catch (err) {
-      this.reportError(err);
-    }
-  }
-
-  private async handleRename(entry: SftpEntry): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    this.clearHover();
-    const next = await prompt(t("sftp.rename.title"), t("sftp.rename.placeholder"), entry.name);
-    if (next === null || next.trim() === "" || next.trim() === entry.name) return;
-    try {
-      await sftpRename(
-        this.activeDeviceId,
-        joinRemote(this.cwd, entry.name),
-        joinRemote(this.cwd, next.trim()),
-      );
-      await this.loadDir(this.cwd);
-    } catch (err) {
-      this.reportError(err);
-    }
-  }
-
-  private async handleDelete(entry: SftpEntry): Promise<void> {
-    if (this.activeDeviceId === null) return;
-    this.clearHover();
-    const isDir = entry.kind === "dir";
-    const confirmed = await confirm(
-      isDir
-        ? t("sftp.delete.messageDir", { name: entry.name })
-        : t("sftp.delete.message", { name: entry.name }),
-      { title: t("sftp.delete.title"), confirmLabel: t("common.delete"), danger: true },
-    );
-    if (!confirmed) return;
-    try {
-      await this.removeEntry(this.activeDeviceId, this.cwd, entry);
-      await this.loadDir(this.cwd);
-    } catch (err) {
-      this.reportError(err);
-    }
-  }
-
-  /* ----- device picker + disconnected state ------------------------------ */
-
-  /** Rebuild the device `<select>` options from the current browsable devices,
-   * preserving the current selection when it still exists. */
-  private refreshDeviceSelect(): void {
-    const select = this.deviceSelectEl;
-    if (!select) return;
-    const devices = browsableDevices(this.devices);
-    select.replaceChildren();
-
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = t("sftp.selectDevice");
-    select.appendChild(placeholder);
-
-    for (const device of devices) {
-      const opt = document.createElement("option");
-      opt.value = device.id;
-      opt.textContent = device.name;
-      select.appendChild(opt);
-    }
-    this.syncDeviceSelect();
-  }
-
-  /** Point the picker at the connected/selected device (falls back to the
-   * placeholder). */
-  private syncDeviceSelect(): void {
-    if (this.deviceSelectEl) {
-      this.deviceSelectEl.value = this.activeDeviceId ?? this.selectedDeviceId ?? "";
-    }
-  }
-
-  /** Render the entry area for a not-connected panel: a Connect/Reconnect button
-   * when a device is selected, or a prompt to pick one otherwise. */
-  private renderDisconnectedState(): void {
-    if (!this.listEl) return;
-    this.selection.clear();
-    this.currentEntries = [];
-    if (this.bulkBarEl) this.bulkBarEl.hidden = true;
-    this.listEl.replaceChildren();
-    this.syncPathInput();
-
-    const wrap = document.createElement("div");
-    wrap.className = "sftp-disconnected";
-
-    const msg = document.createElement("p");
-    msg.className = "sftp-empty";
-    msg.textContent = this.idleDisconnected
-      ? t("sftp.idleDisconnected")
-      : this.selectedDeviceId
-        ? t("sftp.notConnected")
-        : t("sftp.pickDevice");
-    wrap.appendChild(msg);
-    this.listEl.appendChild(wrap);
-  }
-
-  /* ----- multi-select + bulk operations ---------------------------------- */
-
-  /** Toggle one row's checkbox; with `shift`, select the range from the last
-   * toggled row (inclusive) to this one. */
-  private onCheckToggle(index: number, shift: boolean): void {
-    this.selection.toggle(this.currentEntries, index, shift);
-    this.syncSelectionDom();
-  }
-
-  /** Select every entry when not all are selected, else clear (the header box). */
-  private toggleSelectAll(): void {
-    this.selection.toggleAll(this.currentEntries);
-    this.syncSelectionDom();
-  }
-
-  private clearSelection(): void {
-    this.selection.clear();
-    this.syncSelectionDom();
-  }
-
-  /** Push the selection state onto the row checkboxes + the bulk bar. */
-  private syncSelectionDom(): void {
-    this.listEl
-      ?.querySelectorAll<HTMLElement>(".sftp-entry")
-      .forEach((row, i) => {
-        const check = row.querySelector<HTMLInputElement>(".sftp-entry-check");
-        if (check) check.checked = this.selection.has(this.currentEntries[i]?.name ?? "");
-      });
-    this.updateBulkBar();
-  }
-
-  /** Reflect selection count + clipboard onto the bulk bar (count, enabled
-   * actions, Paste visibility). */
-  private updateBulkBar(): void {
-    const n = this.selection.size;
-    if (this.selCountEl) {
-      this.selCountEl.textContent = n > 0 ? tp("sftp.selected", n) : t("sftp.selectAll");
-    }
-    if (this.selectAllEl) {
-      this.selectAllEl.checked = this.selection.allSelected(this.currentEntries);
-      this.selectAllEl.indeterminate = n > 0 && n < this.currentEntries.length;
-    }
-    this.bulkBarEl
-      ?.querySelectorAll<HTMLButtonElement>('[data-action^="bulk-"]:not(.sftp-bulk-paste)')
-      .forEach((b) => {
-        b.disabled = n === 0;
-      });
-    const canPaste = this.moveClipboard.canPasteInto(this.activeDeviceId, this.cwd);
-    if (this.pasteBtnEl) {
-      this.pasteBtnEl.hidden = !canPaste;
-      this.pasteBtnEl.disabled = !canPaste;
-    }
-  }
-
-  /** The selected entries, resolved against the current listing. */
-  private selectedEntries(): SftpEntry[] {
-    return this.selection.selectedIn(this.currentEntries);
-  }
-
-  /** Download every selected entry into one chosen local folder — files
-   * directly, folders recursively — under a single conflict policy. */
-  private async handleBulkDownload(): Promise<void> {
-    const selection = this.getDownloadableSelection();
-    if (!selection) return;
-    const dest = await pickDownloadDirPath();
-    if (dest !== null && this.isConnectedTo(selection.deviceId)) await this.downloadInto(selection, dest);
-  }
-
-  /** The selection, or `null` when there is none, not connected, or a name
-   * can't be stored locally (reported). */
-  private getDownloadableSelection(): BulkSelection | null {
-    const selection = this.captureBulkSelection();
-    if (!selection) return null;
-    this.clearHover();
-    return this.refuseUnsafeNames(selection.entries) ? null : selection;
-  }
-
-  /** The selected entries with the device and directory they belong to,
-   * captured before a dialog: the connection may change while it is open. */
-  private captureBulkSelection(): BulkSelection | null {
-    const entries = this.selectedEntries();
-    if (this.activeDeviceId === null || entries.length === 0) return null;
-    return { deviceId: this.activeDeviceId, dir: this.cwd, entries };
-  }
-
-  private isConnectedTo(deviceId: string): boolean {
-    return this.activeDeviceId === deviceId;
-  }
-
-  /**
-   * Queue each entry as its own background item; they drain one at a time
-   * while browsing stays live. The conflict policy is asked once for the
-   * batch; skip/rename are resolved per file when it runs. Bulk items are
-   * quiet (no per-item toast): the queue list is the feedback.
-   */
-  private async downloadInto({ deviceId, dir, entries }: BulkSelection, dest: string): Promise<void> {
-    const { targets, conflict } = await resolveLocalTargets(entries, dest);
-    const policy = await this.resolveBulkPolicy(deviceId, conflict, entries);
-    if (policy === null) return;
-    for (const { entry, target } of targets) {
-      this.enqueueBulkDownload(deviceId, joinRemote(dir, entry.name), entry, target, policy);
-    }
-    this.clearSelection();
-  }
-
-  /** The batch's conflict policy, or `null` when cancelled or when another
-   * connection took over while the conflict dialog was open. */
-  private async resolveBulkPolicy(
-    deviceId: string,
-    conflict: boolean,
-    entries: SftpEntry[],
-  ): Promise<ConflictPolicy | null> {
-    const policy = await this.resolvePolicy(conflict, getBulkConflictMessage(entries));
-    return this.isConnectedTo(deviceId) ? policy : null;
-  }
-
-  private enqueueBulkDownload(
-    deviceId: string,
-    remote: string,
-    entry: SftpEntry,
-    target: string,
-    policy: ConflictPolicy,
-  ): void {
-    const isDir = entry.kind === "dir";
-    this.queue.enqueue({
-      deviceId,
-      direction: "download",
-      isDir,
-      name: entry.name,
-      run: isDir
-        ? () => this.downloadFolder(deviceId, remote, target, policy)
-        : () => this.downloadFileTo(deviceId, remote, target, entry.name, policy),
-    });
-  }
-
-  private async downloadFileTo(
-    deviceId: string,
-    remote: string,
-    target: string,
-    name: string,
-    policy: ConflictPolicy,
-  ): Promise<void> {
-    const local = await this.bulkFileDestination(target, name, policy);
-    if (local !== null) await sftpDownload(deviceId, remote, local);
-  }
-
-  /** Where one file of a bulk download goes, or `null` to skip it. */
-  private async bulkFileDestination(target: string, name: string, policy: ConflictPolicy): Promise<string | null> {
-    if (policy === "rename") return this.freshLocalName(target, name);
-    return (await shouldSkipExisting(target, policy)) ? null : target;
-  }
-
-  /** "Cut": record the selection for a later Paste, then clear it. */
-  private handleBulkCut(): void {
-    if (this.activeDeviceId === null || this.selection.size === 0) return;
-    const names = this.selection.names();
-    this.moveClipboard.cut({ deviceId: this.activeDeviceId, dir: this.cwd, names });
-    this.setStatus(tp("sftp.cutNotice", names.length));
-    this.clearSelection(); // also refreshes the bar (Paste now shown after navigating)
-  }
-
-  /** "Paste": move each cut entry into the current directory (server-side
-   * rename). Same-connection only; conflicts surface per item. */
-  private async handleBulkPaste(): Promise<void> {
-    const clip = this.moveClipboard.pending();
-    if (clip === null || clip.deviceId !== this.activeDeviceId) return;
-    if (clip.dir === this.cwd) {
-      this.moveClipboard.clear();
-      this.updateBulkBar();
-      return;
-    }
-    const dir = this.cwd;
-    const steps = planMoves(clip, dir, new Set(this.currentEntries.map((e) => e.name)));
-    this.setBusy(true);
-    let result: BulkResult = { done: 0, firstError: null };
-    try {
-      result = await runEach(steps, (step) => runMoveStep(clip.deviceId, step));
-    } finally {
-      this.moveClipboard.clear();
-      await this.loadDir(dir); // reflect the moved entries; also setBusy(false)
-      this.finishBulk(tp("sftp.moved", result.done), result);
-    }
-  }
-
-  /** Delete every selected entry (folders recursively) after one confirmation. */
-  private async handleBulkDelete(): Promise<void> {
-    const selection = this.captureBulkSelection();
-    if (!selection) return;
-    const confirmed = await confirm(tp("sftp.deleteConfirm", selection.entries.length), {
-      title: t("sftp.delete.title"),
-      confirmLabel: t("common.delete"),
-      danger: true,
-    });
-    if (confirmed && this.isConnectedTo(selection.deviceId)) await this.deleteEntries(selection);
-  }
-
-  /** Hold `busy` for the whole loop, so the listing can't change under it. */
-  private async deleteEntries({ deviceId, dir, entries }: BulkSelection): Promise<void> {
-    this.clearHover();
-    this.setBusy(true);
-    const result = await runEach(entries, (entry) => this.removeEntry(deviceId, dir, entry));
-    await this.loadDir(dir); // re-lists + clears `busy`
-    this.finishBulk(tp("sftp.deleted", result.done), result);
-  }
-
-  /** Remove one entry; a folder goes recursively. */
-  private removeEntry(deviceId: string, dir: string, entry: SftpEntry): Promise<void> {
-    const isDir = entry.kind === "dir";
-    return sftpRemove(deviceId, joinRemote(dir, entry.name), isDir, isDir);
-  }
-
-  /** Shared bulk-op epilogue: a success status/toast, or a partial-failure
-   * status plus the first error surfaced through `onError`. */
-  private finishBulk(successMsg: string, result: BulkResult): void {
-    const outcome = getBulkOutcome(result);
-    if (outcome === "partial") {
-      this.setStatus(t("sftp.bulk.partial"));
-      this.reportError(result.firstError);
-      return;
-    }
-    if (outcome === "success") {
-      this.setStatus(successMsg);
-      this.options.onSuccess?.(successMsg);
-    }
-  }
-
-  /* ----- entry rendering -------------------------------------------------- */
-
-  private renderEntries(entries: SftpEntry[]): void {
-    if (!this.listEl) return;
-    this.currentEntries = entries;
-    this.listEl.replaceChildren();
-    if (this.bulkBarEl) this.bulkBarEl.hidden = false;
-
-    if (entries.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "sftp-empty";
-      empty.textContent = t("sftp.emptyDir");
-      this.listEl.appendChild(empty);
-      this.updateBulkBar();
-      return;
-    }
-
-    entries.forEach((entry, index) => {
-      const checked = this.selection.has(entry.name);
-      this.listEl?.appendChild(renderEntryRow(entry, index, checked, this.rowActions));
-    });
-    this.updateBulkBar();
-  }
-
-  private readonly rowActions: EntryRowActions = {
-    isBusy: () => this.busy,
-    onCheck: (index, shift) => this.onCheckToggle(index, shift),
-    onOpen: (entry) =>
-      void (entry.kind === "dir" ? this.goTo(joinRemote(this.cwd, entry.name)) : this.handleDownload(entry)),
-    onDownload: (entry) =>
-      void (entry.kind === "dir" ? this.handleDownloadFolder(entry) : this.handleDownload(entry)),
-    onEdit: (entry) => void this.handleEdit(entry),
-    onRename: (entry) => void this.handleRename(entry),
-    onPermissions: (entry) => void this.handlePermissions(entry),
-    onDelete: (entry) => void this.handleDelete(entry),
-  };
-
-  /* ----- splitter (resize) ------------------------------------------------ */
-
-  private wireSplitter(): void {
-    const splitter = this.splitter;
-    if (!splitter || this.splitterWired) return;
-    this.splitterWired = true;
-    this.syncSplitterAria = wireSplitter(splitter, {
-      side: "end",
-      // The rendered width: CSS `max-width` can show the panel narrower than
-      // the stored width, and a drag must start from what the user sees.
-      currentWidth: () => this.panel?.getBoundingClientRect().width || this.layout.width(),
-      bounds: () => this.widthBounds(),
-      defaultWidth: () => remToPx(DEFAULT_PANEL_REM),
-      onResize: (width) => {
-        this.layout.resize(width);
-        if (this.panel) this.panel.style.width = `${width}px`;
-        this.options.onLayoutChange?.();
-      },
-      onCommit: () => this.persist(), // save once per drag / key step, not per move
-    });
-  }
-
-  /** `[MIN_PANEL_REM, workspace − splitter − MIN_GRID_REM]`: the grid keeps its floor. */
-  private widthBounds(): WidthBounds {
-    const row = this.panel?.parentElement?.getBoundingClientRect().width ?? 0;
-    const handle = this.splitter?.getBoundingClientRect().width ?? 0;
-    return {
-      min: remToPx(MIN_PANEL_REM),
-      max: row - handle - remToPx(MIN_GRID_REM),
-    };
-  }
-
-  /* ----- small view helpers ---------------------------------------------- */
-
-  private setStatus(text: string): void {
-    if (this.statusEl) this.statusEl.textContent = text;
-  }
-
-  /** Reflect connection state onto the indicator dot and the connect/disconnect
-   * toggle (red + Disconnect when connected, green + Connect when not). */
-  private updateConnDot(): void {
-    const connected = this.activeDeviceId !== null;
-    this.connDotEl?.classList.toggle("connected", connected);
-    const btn = this.connToggleEl;
-    if (btn) {
-      btn.classList.toggle("is-connected", connected);
-      btn.classList.toggle("is-disconnected", !connected);
-      // Mid-connect, or disconnected with no device chosen yet → inert.
-      btn.disabled = this.connecting || (!connected && !this.selectedDeviceId);
-      btn.innerHTML = connected ? disconnectIcon : connectIcon;
-      const label = connected ? t("sftp.disconnect") : t("sftp.connect");
-      btn.title = label;
-      btn.setAttribute("aria-label", label);
-    }
-    this.syncControls();
-  }
-
-  private setBusy(busy: boolean): void {
-    this.busy = busy;
-    this.syncControls();
-  }
-
-  /** Enable the browsing controls (toolbar, path, filter, sort) only when
-   * connected and idle; the device picker only needs idle. */
-  private syncControls(): void {
-    const off = this.busy || this.activeDeviceId === null;
-    this.panel
-      ?.querySelectorAll<HTMLButtonElement>('.sftp-toolbar .btn, [data-action="sort"]')
-      .forEach((b) => {
-        b.disabled = off;
-      });
-    if (this.pathEl) this.pathEl.readOnly = off;
-    if (this.filterEl) this.filterEl.disabled = off;
-    if (this.deviceSelectEl) this.deviceSelectEl.disabled = this.busy;
-    if (!off) this.updateNavButtons();
-  }
-
-  /** Enable/disable Back and Forward per the history cursor (idle state only). */
-  private updateNavButtons(): void {
-    const back = this.panel?.querySelector<HTMLButtonElement>('[data-action="back"]');
-    const forward = this.panel?.querySelector<HTMLButtonElement>('[data-action="forward"]');
-    if (back) back.disabled = !this.history.canGoBack();
-    if (forward) forward.disabled = !this.history.canGoForward();
-  }
-
-  /* ----- transfer queue rendering ---------------------------------------- */
-
-  /** Rebuild the transfer list; called on every queue change and after a
-   * panel rebuild. */
-  private renderQueue(): void {
-    if (this.queueEl) queueView.renderQueue(this.queueEl, this.queue.items());
-  }
-
-  /** A progress tick: update the row in place, or re-render if it isn't there. */
-  private updateQueueRowProgress(item: TransferItem): void {
-    if (this.queueEl && !queueView.updateQueueRowProgress(this.queueEl, item)) this.renderQueue();
-  }
-}
-
-/** Selected entries and where they were listed. */
-interface BulkSelection {
-  deviceId: string;
-  dir: string;
-  entries: SftpEntry[];
-}
-
-/** The error an edit's transfer settles with when it ends without running. */
-function cancelledError(): AppError {
-  return { code: "Cancelled", message: t("sftp.transferCancelled") };
-}
-
-/** Each entry's local download path, and whether any of them exists. */
-async function resolveLocalTargets(
-  entries: SftpEntry[],
-  dest: string,
-): Promise<{ targets: { entry: SftpEntry; target: string }[]; conflict: boolean }> {
-  const targets: { entry: SftpEntry; target: string }[] = [];
-  let conflict = false;
-  for (const entry of entries) {
-    const target = await join(dest, entry.name);
-    targets.push({ entry, target });
-    conflict ||= await sftpLocalExists(target);
-  }
-  return { targets, conflict };
-}
-
-function getBulkConflictMessage(entries: SftpEntry[]): string {
-  if (entries.length !== 1) return t("sftp.conflict.messageMany");
-  return t("sftp.conflict.message", { name: entries[0]?.name ?? "" });
-}
-
-async function shouldSkipExisting(target: string, policy: ConflictPolicy): Promise<boolean> {
-  return policy === "skip" && (await sftpLocalExists(target));
-}
-
-async function runMoveStep(deviceId: string, step: MoveStep): Promise<void> {
-  if ("error" in step) throw step.error;
-  await sftpRename(deviceId, step.from, step.to);
 }
 
 /** Constructs and initializes the Files (SFTP) panel. */
