@@ -221,9 +221,6 @@ fn command_for(program: &str, args: &[String]) -> Command {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    for var in crate::local_shell::tls_vars_not_inherited() {
-        cmd.env_remove(var);
-    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -342,21 +339,6 @@ mod tests {
         assert!(argv[2].contains("xdg-mime query default text/plain"));
         // The path is the script's `$1`, never part of the script itself.
         assert_eq!(argv[3..], ["sh", "/e/$(x) a.exe"]);
-    }
-
-    /// Like a local shell, an editor doesn't inherit the TLS vars the app
-    /// itself set (see `local_shell::preset_tls_env`).
-    #[test]
-    fn the_editor_does_not_inherit_the_apps_tls_vars() {
-        let cmd = command_for("code", &[]);
-        let removed: Vec<_> = cmd
-            .get_envs()
-            .filter(|(_, value)| value.is_none())
-            .map(|(key, _)| key.to_string_lossy().into_owned())
-            .collect();
-        for var in crate::local_shell::tls_vars_not_inherited() {
-            assert!(removed.iter().any(|r| r == var), "{var} is inherited");
-        }
     }
 
     #[test]

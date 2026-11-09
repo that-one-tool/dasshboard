@@ -24,7 +24,6 @@ use tauri_plugin_window_state::AppHandleExt;
 use crate::atomic_file;
 use crate::error::AppError;
 use crate::flatpak;
-use crate::local_shell;
 use crate::state::AppState;
 use crate::wayland;
 
@@ -200,10 +199,6 @@ pub async fn check<R: Runtime>(
         .map_err(update_error)?
         .check()
         .await;
-    // On Linux the check sets SSL_CERT_FILE/DIR process-wide where none could be
-    // preset; drop them again so nothing spawned later (the restart after an
-    // update, the opener) inherits Debian's paths.
-    local_shell::drop_updater_tls_env();
     let found = result.map_err(update_error)?;
     let info = found.as_ref().map(|update| UpdateInfo {
         version: update.version.clone(),

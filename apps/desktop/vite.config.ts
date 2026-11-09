@@ -28,6 +28,10 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  build: {
+    // Oldest webviews we support: WebView2, macOS 11 WebKit, Ubuntu 22.04's WebKitGTK 2.36.
+    target: ["es2021", "chrome105", "safari15"],
+  },
   test: {
     coverage: {
       provider: "v8",

@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -162,119 +162,6 @@ fn home_dir() -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
-/// TLS trust-store overrides `tauri-plugin-updater` sets process-wide on Linux
-/// during an update check (when unset). Its paths are Debian's; on Fedora/RHEL
-/// the file doesn't exist, so OpenSSL-based tools in a shell that inherited
-/// them fail certificate checks. A shell keeps them only if the app started
-/// with them.
-const UPDATER_TLS_VARS: [&str; 2] = ["SSL_CERT_FILE", "SSL_CERT_DIR"];
-
-/// Where distributions keep the trust store for each of
-/// [`UPDATER_TLS_VARS`]; the first one that exists is used.
-const CA_BUNDLES: [&str; 5] = [
-    "/etc/ssl/certs/ca-certificates.crt", // Debian, Ubuntu, Arch
-    "/etc/pki/tls/certs/ca-bundle.crt",   // Fedora, RHEL
-    "/etc/ssl/ca-bundle.pem",             // openSUSE
-    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", // CentOS
-    "/etc/ssl/cert.pem",                  // Alpine
-];
-const CA_DIRS: [&str; 2] = ["/etc/ssl/certs", "/etc/pki/tls/certs"];
-
-static TLS_VARS_AT_STARTUP: OnceLock<Vec<&'static str>> = OnceLock::new();
-static TLS_VARS_PRESET: OnceLock<Vec<&'static str>> = OnceLock::new();
-
-/// Records which [`UPDATER_TLS_VARS`] the app started with. Called first thing
-/// in `run`, before any update check can set them.
-pub fn record_startup_env() {
-    TLS_VARS_AT_STARTUP.get_or_init(present_tls_vars);
-}
-
-/// Sets the [`UPDATER_TLS_VARS`] the app didn't start with to this system's
-/// own trust store, so the updater (which sets Debian's paths when they are
-/// unset) never changes the environment while other threads read it, and
-/// what inherits them (the restart after an update, xdg-open) gets working
-/// paths. Linux only, like the updater's change; call first thing in `run`,
-/// after [`record_startup_env`] and before any thread exists.
-pub fn preset_tls_env() {
-    if !cfg!(target_os = "linux") {
-        return;
-    }
-    let presets = tls_presets(&tls_vars_not_inherited(), |path| {
-        std::path::Path::new(path).exists()
-    });
-    for (var, path) in &presets {
-        std::env::set_var(var, path);
-    }
-    let _ = TLS_VARS_PRESET.set(presets.into_iter().map(|(var, _)| var).collect());
-}
-
-/// Removes the [`UPDATER_TLS_VARS`] an update check set — only possible where
-/// no trust store was found to preset — right after the check.
-pub fn drop_updater_tls_env() {
-    let startup = TLS_VARS_AT_STARTUP.get_or_init(present_tls_vars);
-    let preset = TLS_VARS_PRESET.get().map(Vec::as_slice).unwrap_or_default();
-    for var in updater_set_vars(startup, preset, |var| std::env::var_os(var).is_some()) {
-        std::env::remove_var(var);
-    }
-}
-
-/// The [`UPDATER_TLS_VARS`] a child process must not inherit: those the app
-/// didn't start with (preset, or set by the updater).
-pub fn tls_vars_not_inherited() -> Vec<&'static str> {
-    vars_to_scrub(TLS_VARS_AT_STARTUP.get_or_init(present_tls_vars))
-}
-
-fn tls_presets(
-    missing: &[&'static str],
-    exists: impl Fn(&str) -> bool,
-) -> Vec<(&'static str, &'static str)> {
-    missing
-        .iter()
-        .filter_map(|&var| {
-            let candidates: &[&'static str] = if var == "SSL_CERT_FILE" {
-                &CA_BUNDLES
-            } else {
-                &CA_DIRS
-            };
-            candidates
-                .iter()
-                .find(|path| exists(path))
-                .map(|&path| (var, path))
-        })
-        .collect()
-}
-
-fn updater_set_vars(
-    at_startup: &[&str],
-    preset: &[&str],
-    is_set: impl Fn(&str) -> bool,
-) -> Vec<&'static str> {
-    vars_to_scrub(at_startup)
-        .into_iter()
-        .filter(|var| !preset.contains(var) && is_set(var))
-        .collect()
-}
-
-fn present_tls_vars() -> Vec<&'static str> {
-    UPDATER_TLS_VARS
-        .into_iter()
-        .filter(|var| std::env::var_os(var).is_some())
-        .collect()
-}
-
-fn vars_to_scrub(present_at_startup: &[&str]) -> Vec<&'static str> {
-    UPDATER_TLS_VARS
-        .into_iter()
-        .filter(|var| !present_at_startup.contains(var))
-        .collect()
-}
-
-fn scrub_env(cmd: &mut CommandBuilder, vars: &[&str]) {
-    for var in vars {
-        cmd.env_remove(var);
-    }
-}
-
 fn build_command(params: &LocalShellParams) -> CommandBuilder {
     if flatpak::is_sandboxed() {
         return host_command(&resolve_program(&params.shell), resolve_cwd(&params.cwd));
@@ -304,15 +191,13 @@ fn host_command(program: &str, cwd: Option<String>) -> CommandBuilder {
 
 /// The shell as a direct child: the resolved program, the resolved startup
 /// directory (when known), `TERM=xterm-256color` so full-screen programs behave
-/// (matching the SSH session's `TERM`), and the app's own environment minus the
-/// updater's TLS overrides.
+/// (matching the SSH session's `TERM`), and the app's own environment.
 fn native_command(params: &LocalShellParams) -> CommandBuilder {
     let mut cmd = CommandBuilder::new(resolve_program(&params.shell));
     if let Some(dir) = resolve_cwd(&params.cwd) {
         cmd.cwd(dir);
     }
     cmd.env("TERM", "xterm-256color");
-    scrub_env(&mut cmd, &tls_vars_not_inherited());
     if cfg!(target_os = "macos") {
         apply_macos_login_env(&mut cmd, is_default_shell(&params.shell));
     }
@@ -786,60 +671,6 @@ mod tests {
         fn on_auth_prompt(&self, _payload: crate::ssh::prompts::AuthPromptPayload) {
             unreachable!("local shell sessions never prompt for authentication");
         }
-    }
-
-    #[test]
-    fn scrubs_only_the_tls_vars_absent_at_startup() {
-        assert_eq!(vars_to_scrub(&[]), vec!["SSL_CERT_FILE", "SSL_CERT_DIR"]);
-        assert_eq!(vars_to_scrub(&["SSL_CERT_FILE"]), vec!["SSL_CERT_DIR"]);
-        assert!(vars_to_scrub(&["SSL_CERT_FILE", "SSL_CERT_DIR"]).is_empty());
-    }
-
-    /// The updater sets Debian paths when the vars are unset; presetting this
-    /// system's real ones keeps it from touching the environment at all.
-    #[test]
-    fn missing_tls_vars_are_preset_to_the_first_existing_trust_store() {
-        let fedora = |path: &str| path.starts_with("/etc/pki/tls/");
-        assert_eq!(
-            tls_presets(&["SSL_CERT_FILE", "SSL_CERT_DIR"], fedora),
-            vec![
-                ("SSL_CERT_FILE", "/etc/pki/tls/certs/ca-bundle.crt"),
-                ("SSL_CERT_DIR", "/etc/pki/tls/certs"),
-            ]
-        );
-        let debian = |path: &str| path.starts_with("/etc/ssl/certs");
-        assert_eq!(
-            tls_presets(&["SSL_CERT_DIR"], debian),
-            vec![("SSL_CERT_DIR", "/etc/ssl/certs")]
-        );
-    }
-
-    #[test]
-    fn a_tls_var_without_a_trust_store_is_not_preset() {
-        assert!(tls_presets(&["SSL_CERT_FILE", "SSL_CERT_DIR"], |_| false).is_empty());
-    }
-
-    /// After a check only what the updater itself set is removed: never a
-    /// var the app started with or preset, never one that isn't set.
-    #[test]
-    fn only_the_vars_the_updater_set_are_removed_after_a_check() {
-        let set_now = |var: &str| var == "SSL_CERT_FILE";
-        assert_eq!(updater_set_vars(&[], &[], set_now), vec!["SSL_CERT_FILE"]);
-        assert!(updater_set_vars(&[], &["SSL_CERT_FILE"], set_now).is_empty());
-        assert!(updater_set_vars(&["SSL_CERT_FILE"], &[], set_now).is_empty());
-        assert!(updater_set_vars(&[], &[], |_| false).is_empty());
-    }
-
-    #[test]
-    fn scrub_removes_the_updater_tls_vars_from_the_shell_env() {
-        let mut cmd = CommandBuilder::new("sh");
-        cmd.env("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt");
-        cmd.env("SSL_CERT_DIR", "/etc/ssl/certs");
-
-        scrub_env(&mut cmd, &["SSL_CERT_DIR"]);
-
-        assert!(cmd.get_env("SSL_CERT_FILE").is_some());
-        assert!(cmd.get_env("SSL_CERT_DIR").is_none());
     }
 
     #[test]
