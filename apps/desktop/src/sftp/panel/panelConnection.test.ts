@@ -34,6 +34,7 @@ function setup(unsynced = 0) {
     onConnected: vi.fn(async () => {}),
     onReleased: vi.fn(),
     showDisconnected: vi.fn(),
+    showConnecting: vi.fn(),
     syncPicker: vi.fn(),
     clearIdle: vi.fn(),
     persist: vi.fn(),
@@ -69,6 +70,18 @@ describe("PanelConnection", () => {
     expect(deps.controls.isBusy()).toBe(false);
     expect(deps.persist).toHaveBeenCalled();
     expect(els.connToggle.classList.contains("is-connected")).toBe(true);
+  });
+
+  it("shows the connecting state while the connect is in flight", async () => {
+    const pending = deferred<string>();
+    vi.mocked(sftpConnect).mockReturnValueOnce(pending.promise);
+    const { deps, connection } = setup();
+    const selecting = connection.select("a");
+    await vi.waitFor(() => expect(deps.showConnecting).toHaveBeenCalledWith("a"));
+    expect(deps.onConnected).not.toHaveBeenCalled();
+    pending.resolve("/home/j");
+    await selecting;
+    expect(deps.showConnecting).toHaveBeenCalledOnce();
   });
 
   it("select does nothing for the device already shown", async () => {

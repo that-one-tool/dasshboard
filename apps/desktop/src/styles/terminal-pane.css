@@ -235,6 +235,13 @@
 	animation: spin 0.8s linear infinite;
 }
 
+/* Slowed, not stopped: a still spinner looks frozen. */
+@media (prefers-reduced-motion: reduce) {
+	.overlay-spinner {
+		animation-duration: 3s;
+	}
+}
+
 @keyframes spin {
 	to {
 		transform: rotate(360deg);

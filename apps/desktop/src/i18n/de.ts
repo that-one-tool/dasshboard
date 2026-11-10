@@ -430,6 +430,8 @@ export const de: Messages = {
 	"sftp.nav.mkdir": "Einen Ordner erstellen",
 	"sftp.cancelTransfer": "Übertragung abbrechen",
 	"sftp.connecting": "Verbindung wird hergestellt…",
+	"sftp.connectingTo": "Verbindung zu {name} wird hergestellt…",
+	"sftp.startDirFailed": "Der Startordner konnte nicht geöffnet werden. Oben einen Pfad eingeben.",
 	"sftp.emptyDir": "Leeres Verzeichnis.",
 	"sftp.count.one": "{count} Element",
 	"sftp.count.other": "{count} Elemente",

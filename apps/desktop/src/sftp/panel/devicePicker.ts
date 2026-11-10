@@ -36,6 +36,11 @@ export class DevicePicker {
     return known ? deviceId : null;
   }
 
+  /** The name of `deviceId`, else the id itself (a device deleted meanwhile). */
+  nameOf(deviceId: string): string {
+    return this.devices.find((device) => device.id === deviceId)?.name ?? deviceId;
+  }
+
   /** Rebuild the options from the browsable devices, keeping the selection
    * when it still exists. */
   render(): void {

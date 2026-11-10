@@ -428,6 +428,8 @@ export const zh: Messages = {
 	"sftp.nav.mkdir": "新建文件夹",
 	"sftp.cancelTransfer": "取消传输",
 	"sftp.connecting": "正在连接…",
+	"sftp.connectingTo": "正在连接 {name}…",
+	"sftp.startDirFailed": "无法打开起始文件夹。请在上方输入路径。",
 	"sftp.emptyDir": "空目录。",
 	"sftp.count.one": "{count} 项",
 	"sftp.count.other": "{count} 项",

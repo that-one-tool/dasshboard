@@ -26,6 +26,8 @@ export interface ConnectionDeps {
   /** The connection is going away: drop what belonged to it (`null`: none). */
   onReleased: (deviceId: string | null) => void;
   showDisconnected: () => void;
+  /** A connect to `deviceId` is in flight. */
+  showConnecting: (deviceId: string) => void;
   syncPicker: () => void;
   clearIdle: () => void;
   persist: () => void;
@@ -158,6 +160,7 @@ export class PanelConnection {
     this.deps.session.clearIdleDisconnected();
     this.deps.history.reset();
     this.deps.controls.setStatus(t("sftp.connecting"));
+    this.deps.showConnecting(deviceId);
   }
 
   private async openIfCurrent(attempt: number, deviceId: string, startDir: string): Promise<void> {

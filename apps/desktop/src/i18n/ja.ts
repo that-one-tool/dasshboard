@@ -429,6 +429,8 @@ export const ja: Messages = {
 	"sftp.nav.mkdir": "フォルダーを作成",
 	"sftp.cancelTransfer": "転送をキャンセル",
 	"sftp.connecting": "接続中…",
+	"sftp.connectingTo": "{name} に接続中…",
+	"sftp.startDirFailed": "開始フォルダーを開けませんでした。上にパスを入力してください。",
 	"sftp.emptyDir": "空のディレクトリです。",
 	"sftp.count.one": "{count} 件",
 	"sftp.count.other": "{count} 件",

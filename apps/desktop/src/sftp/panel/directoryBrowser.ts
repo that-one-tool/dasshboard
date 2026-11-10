@@ -180,6 +180,12 @@ export class DirectoryBrowser {
     this.syncPathInput();
   }
 
+  /** Render the entry area while connecting to the device named `deviceName`. */
+  showConnecting(deviceName: string): void {
+    this.deps.list.renderConnecting(t("sftp.connectingTo", { name: deviceName }));
+    this.syncPathInput();
+  }
+
   private show(deviceId: string, path: string, sameDir: boolean, entries: SftpEntry[]): boolean {
     // Disconnected (or switched device) while the listing was in flight.
     if (!this.deps.session.isConnectedTo(deviceId)) return false;
@@ -193,8 +199,17 @@ export class DirectoryBrowser {
   }
 
   private failListing(deviceId: string, err: unknown): false {
-    if (this.deps.session.isConnectedTo(deviceId)) this.deps.feedback.report(err);
+    if (!this.deps.session.isConnectedTo(deviceId)) return false;
+    if (this.deps.list.isConnecting()) this.showStartDirFailed();
+    this.deps.feedback.report(err);
     return false;
+  }
+
+  /** Connected, but the start directory can't be listed: the path input
+   * still works. */
+  private showStartDirFailed(): void {
+    this.deps.list.renderMessage(t("sftp.startDirFailed"));
+    this.deps.controls.setStatus("");
   }
 
   private clearFilter(): void {

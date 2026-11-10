@@ -42,11 +42,29 @@ export class EntryList {
 
   /** The entry area of a not-connected panel: just `message`. */
   renderDisconnected(message: string): void {
+    this.renderNotice(disconnectedNotice(message));
+  }
+
+  private renderNotice(notice: HTMLElement): void {
     const { list, bulkBar } = this.deps.els();
     this.selection.clear();
     this.entries = [];
     bulkBar.hidden = true;
-    list.replaceChildren(disconnectedNotice(message));
+    list.replaceChildren(notice);
+  }
+
+  /** The entry area while a connect is in flight: a spinner and `message`. */
+  renderConnecting(message: string): void {
+    this.renderNotice(connectingNotice(message));
+  }
+
+  isConnecting(): boolean {
+    return this.deps.els().list.querySelector(".sftp-connecting") !== null;
+  }
+
+  /** The entry area with just `message`, no rows. */
+  renderMessage(message: string): void {
+    this.renderNotice(emptyNotice(message));
   }
 
   /** Toggle one row's checkbox; with `shift`, select the range from the last
@@ -130,6 +148,16 @@ function emptyNotice(message: string): HTMLElement {
   empty.className = "sftp-empty";
   empty.textContent = message;
   return empty;
+}
+
+function connectingNotice(message: string): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "sftp-connecting";
+  const spinner = document.createElement("span");
+  spinner.className = "sftp-spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  wrap.append(spinner, emptyNotice(message));
+  return wrap;
 }
 
 function disconnectedNotice(message: string): HTMLElement {

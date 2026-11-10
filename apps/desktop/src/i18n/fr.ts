@@ -429,6 +429,8 @@ export const fr: Messages = {
 	"sftp.nav.mkdir": "Créer un dossier",
 	"sftp.cancelTransfer": "Annuler le transfert",
 	"sftp.connecting": "Connexion…",
+	"sftp.connectingTo": "Connexion à {name}…",
+	"sftp.startDirFailed": "Impossible d'ouvrir le dossier de départ. Saisissez un chemin ci-dessus.",
 	"sftp.emptyDir": "Répertoire vide.",
 	"sftp.count.one": "{count} élément",
 	"sftp.count.other": "{count} éléments",

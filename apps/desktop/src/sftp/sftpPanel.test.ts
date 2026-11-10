@@ -1105,6 +1105,53 @@ describe("SftpPanel", () => {
     expect(sftpDownloadDir).toHaveBeenCalledWith("a", "/home/j/sub", "C:/dest/sub", "overwrite");
   });
 
+  describe("while connecting", () => {
+    function holdConnect(): { resolve: (dir: string) => void; reject: (err: unknown) => void } {
+      const held = { resolve: (_dir: string) => {}, reject: (_err: unknown) => {} };
+      vi.mocked(sftpConnect).mockReturnValueOnce(
+        new Promise((resolve, reject) => Object.assign(held, { resolve, reject })),
+      );
+      return held;
+    }
+
+    it("names the device in the connecting notice, then lists", async () => {
+      const held = holdConnect();
+      await setup();
+      activePanel.openWith("a");
+      await flush();
+      expect(q(".sftp-connecting .sftp-empty").textContent).toBe(t("sftp.connectingTo", { name: "Alpha" }));
+      held.resolve("/home/j");
+      await flush();
+      expect(document.querySelector(".sftp-connecting")).toBeNull();
+      expect(document.querySelectorAll(".sftp-entry")).toHaveLength(2);
+    });
+
+    it("a failed connect replaces the notice with the disconnected state", async () => {
+      const held = holdConnect();
+      await setup();
+      activePanel.openWith("a");
+      await flush();
+      held.reject({ code: "SshConnect", message: "refused" });
+      await flush();
+      expect(document.querySelector(".sftp-connecting")).toBeNull();
+      expect(q(".sftp-disconnected .sftp-empty").textContent).toBe(t("sftp.notConnected"));
+    });
+
+    it("closing the panel mid-connect drops the notice and the late connection", async () => {
+      const held = holdConnect();
+      await setup();
+      activePanel.openWith("a");
+      await flush();
+      q<HTMLButtonElement>('.sftp-panel [data-action="hide"]').click();
+      await flush();
+      expect(document.querySelector(".sftp-connecting")).toBeNull();
+      held.resolve("/home/j");
+      await flush();
+      expect(sftpDisconnect).toHaveBeenCalledWith("a");
+      expect(document.querySelector(".sftp-connecting")).toBeNull();
+    });
+  });
+
   describe("after a language change (panel rebuilt)", () => {
     it("select-all still selects every row (one click, one toggle)", async () => {
       const panel = await setup();
@@ -1114,6 +1161,20 @@ describe("SftpPanel", () => {
       q<HTMLButtonElement>('[data-action="select-all"]').click();
 
       expect(checks().every((c) => c.checked)).toBe(true);
+    });
+
+    it("keeps the connecting notice when the language changes mid-connect", async () => {
+      let resolveConnect!: (dir: string) => void;
+      vi.mocked(sftpConnect).mockReturnValueOnce(new Promise((resolve) => (resolveConnect = resolve)));
+      const panel = await setup();
+      activePanel.openWith("a");
+      await flush();
+      panel.retranslate();
+
+      expect(q(".sftp-connecting .sftp-empty").textContent).toBe(t("sftp.connectingTo", { name: "Alpha" }));
+      expect(q(".sftp-status").textContent).toBe(t("sftp.connecting"));
+      resolveConnect("/home/j");
+      await flush();
     });
 
     it("Connect starts a single connection", async () => {

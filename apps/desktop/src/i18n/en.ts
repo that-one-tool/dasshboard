@@ -435,6 +435,8 @@ export const en = {
 	"sftp.nav.mkdir": "Create a folder",
 	"sftp.cancelTransfer": "Cancel transfer",
 	"sftp.connecting": "Connecting…",
+	"sftp.connectingTo": "Connecting to {name}…",
+	"sftp.startDirFailed": "Could not open the start folder. Type a path above.",
 	"sftp.emptyDir": "Empty directory.",
 	"sftp.count.one": "{count} item",
 	"sftp.count.other": "{count} items",

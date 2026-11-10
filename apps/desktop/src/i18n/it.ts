@@ -428,6 +428,8 @@ export const it: Messages = {
 	"sftp.nav.mkdir": "Crea una cartella",
 	"sftp.cancelTransfer": "Annulla il trasferimento",
 	"sftp.connecting": "Connessione in corso…",
+	"sftp.connectingTo": "Connessione a {name} in corso…",
+	"sftp.startDirFailed": "Impossibile aprire la cartella iniziale. Digita un percorso sopra.",
 	"sftp.emptyDir": "Cartella vuota.",
 	"sftp.count.one": "{count} elemento",
 	"sftp.count.other": "{count} elementi",

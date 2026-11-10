@@ -28,6 +28,7 @@ import {
   type Device,
   type SftpPanelState,
 } from "../ipc";
+import { t } from "../i18n";
 import { confirm, chooseEditConflict } from "../ui/confirm";
 import { EditSessions } from "./editSessions";
 import { renderEditList } from "./editList";
@@ -181,6 +182,7 @@ export class SftpPanel {
     onConnected: (deviceId, startDir) => this.onConnected(deviceId, startDir),
     onReleased: (deviceId) => this.releaseDevice(deviceId),
     showDisconnected: () => this.browser.showDisconnected(),
+    showConnecting: (deviceId) => this.browser.showConnecting(this.picker.nameOf(deviceId)),
     syncPicker: () => this.picker.sync(),
     clearIdle: () => this.idle.clear(),
     persist: () => this.persist(),
@@ -276,6 +278,15 @@ export class SftpPanel {
     this.build(root);
     this.picker.render();
     if (this.shell.layout.isOpen()) this.applyOpenState();
+    this.redrawConnecting();
+  }
+
+  /** The rebuild emptied the entry area and status of a connect in flight. */
+  private redrawConnecting(): void {
+    const deviceId = this.session.selectedDeviceId;
+    if (!this.session.connecting || !deviceId) return;
+    this.controls.setStatus(t("sftp.connecting"));
+    this.browser.showConnecting(this.picker.nameOf(deviceId));
   }
 
   /** Stop listening for progress events + clear timers (tests; the app keeps the

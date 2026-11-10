@@ -34,6 +34,13 @@ describe("DevicePicker", () => {
     expect(els.deviceSelect.value).toBe("");
   });
 
+  it("nameOf gives the device name, else the id", () => {
+    const { picker } = setup();
+    picker.setDevices([ssh("a", "Alpha")]);
+    expect(picker.nameOf("a")).toBe("Alpha");
+    expect(picker.nameOf("gone")).toBe("gone");
+  });
+
   it("points at the connected device, else the picked one", () => {
     const { els, session, picker } = setup();
     picker.setDevices([ssh("a", "Alpha"), ssh("b", "Beta")]);

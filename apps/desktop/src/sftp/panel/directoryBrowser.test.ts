@@ -260,6 +260,46 @@ describe("DirectoryBrowser", () => {
     expect(writeText).toHaveBeenCalledTimes(2);
   });
 
+  it("showConnecting names the device and empties the path", () => {
+    const { els, session, browser } = setup();
+    session.markDisconnected();
+    browser.showConnecting("Alpha");
+    expect(els.list.querySelector(".sftp-connecting .sftp-empty")?.textContent).toBe(t("sftp.connectingTo", { name: "Alpha" }));
+    expect(els.path.value).toBe("");
+  });
+
+  it("a failed first listing says so and clears the connecting status", async () => {
+    vi.mocked(sftpList).mockRejectedValueOnce({ code: "Sftp", message: "denied" });
+    const { els, controls, hooks, browser } = setup();
+    browser.showConnecting("Alpha");
+    controls.setStatus(t("sftp.connecting"));
+    await browser.goTo("/root");
+    expect(hooks.notifyError).toHaveBeenCalled();
+    expect(els.list.querySelector(".sftp-connecting")).toBeNull();
+    expect(els.list.querySelector(".sftp-empty")?.textContent).toBe(t("sftp.startDirFailed"));
+    expect(els.status.textContent).toBe("");
+  });
+
+  it("a failed later listing keeps the rows shown", async () => {
+    const { els, browser } = setup();
+    await browser.goTo("/home");
+    vi.mocked(sftpList).mockRejectedValueOnce({ code: "Sftp", message: "denied" });
+    await browser.goTo("/root");
+    expect(names(els)).toEqual(["a.txt", "b.txt"]);
+  });
+
+  it("a stale failed listing keeps a newer connect's notice", async () => {
+    let rejectList!: (err: unknown) => void;
+    vi.mocked(sftpList).mockReturnValueOnce(new Promise((_resolve, reject) => (rejectList = reject)));
+    const { els, session, browser } = setup();
+    const going = browser.goTo("/root");
+    session.markDisconnected();
+    browser.showConnecting("Beta");
+    rejectList({ code: "Sftp", message: "closed" });
+    await going;
+    expect(els.list.querySelector(".sftp-connecting")).not.toBeNull();
+  });
+
   it("showDisconnected says why per state, and empties the path", () => {
     const { els, session, browser } = setup();
     session.markDisconnected();

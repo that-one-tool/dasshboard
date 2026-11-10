@@ -111,6 +111,40 @@ describe("EntryList", () => {
     expect(list.selection.size).toBe(0);
   });
 
+  it("renderConnecting shows a spinner and the message instead of the rows", () => {
+    const { els, list } = setup();
+    list.render(entries);
+    list.toggleCheck(0, false);
+    list.renderConnecting("Connecting to Alpha…");
+    expect(els.list.querySelector(".sftp-connecting .sftp-spinner")).not.toBeNull();
+    expect(els.list.querySelector("[role]")).toBeNull();
+    expect(list.isConnecting()).toBe(true);
+    expect(els.list.querySelector(".sftp-connecting .sftp-empty")?.textContent).toBe("Connecting to Alpha…");
+    expect(els.bulkBar.hidden).toBe(true);
+    expect(list.names()).toEqual([]);
+    expect(list.selection.size).toBe(0);
+  });
+
+  it("isConnecting is false once rows or another notice replace it", () => {
+    const { list } = setup();
+    expect(list.isConnecting()).toBe(false);
+    list.renderConnecting("Connecting…");
+    list.render(entries);
+    expect(list.isConnecting()).toBe(false);
+    list.renderConnecting("Connecting…");
+    list.renderMessage("Could not open");
+    expect(list.isConnecting()).toBe(false);
+  });
+
+  it("renderMessage shows only the message", () => {
+    const { els, list } = setup();
+    list.render(entries);
+    list.renderMessage("Could not open");
+    expect(els.list.querySelector(".sftp-empty")?.textContent).toBe("Could not open");
+    expect(els.list.querySelectorAll(".sftp-entry")).toHaveLength(0);
+    expect(els.bulkBar.hidden).toBe(true);
+  });
+
   it("clears the hover flag from every row", () => {
     const { els, list } = setup();
     list.render(entries);
