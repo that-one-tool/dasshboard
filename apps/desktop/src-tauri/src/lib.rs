@@ -95,6 +95,7 @@ pub(crate) fn app_version() -> String {
 pub fn run() {
     // Before GTK starts and before any thread exists.
     wayland::disable_nvidia_explicit_sync();
+    wayland::set_app_id();
     let builder = tauri::Builder::default();
     // Tauri installs its default menu bar on macOS only; ours drops Cmd+W.
     let builder = if cfg!(target_os = "macos") {

@@ -170,6 +170,11 @@ window-state plugin restores a physical size before the window is on a screen,
 so on a scaled screen the window doubled every launch, until GDK's buffer size
 overflowed and the app segfaulted. Maximized and fullscreen are still remembered.
 
+The window's app_id (and X11 WM_CLASS) is the `.desktop` file name: the Flatpak
+id in the sandbox, else `DaSSHboard` (the bundler names the `.deb`/`.rpm` file
+after `productName`; `src-tauri/linux/app.desktop` is its template). KDE takes
+the window icon from that file; a mismatch shows the generic Wayland icon.
+
 macOS builds are ad-hoc signed (`bundle.macOS.signingIdentity: "-"`), not
 Developer ID signed or notarized, so Gatekeeper blocks the first launch of a
 downloaded copy; the root README tells users how to clear it. An ad-hoc

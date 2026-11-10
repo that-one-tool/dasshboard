@@ -1,5 +1,5 @@
 //! Linux Wayland quirks the app works around: which window state survives a
-//! restart, and NVIDIA's explicit sync.
+//! restart, NVIDIA's explicit sync, and the window's app_id.
 
 use tauri_plugin_window_state::StateFlags;
 
@@ -48,6 +48,29 @@ pub fn disable_nvidia_explicit_sync() {
     }
 }
 
+/// The tauri bundler names the .deb/.rpm desktop file after `productName`.
+#[cfg(any(target_os = "linux", test))]
+const BUNDLED_DESKTOP_ENTRY_ID: &str = "DaSSHboard";
+
+/// Wayland compositors (KWin) find the window icon through the desktop file
+/// named after the window's app_id, which GTK takes from the program name
+/// (else the binary name, `dasshboard`, which matches no desktop file). Must
+/// run before GTK starts. Also sets the X11 WM_CLASS.
+pub fn set_app_id() {
+    #[cfg(target_os = "linux")]
+    gio::glib::set_prgname(Some(desktop_entry_id(
+        crate::flatpak::is_sandboxed(),
+        std::env::var("FLATPAK_ID").ok(),
+    )));
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn desktop_entry_id(sandboxed: bool, flatpak_id: Option<String>) -> String {
+    flatpak_id
+        .filter(|id| sandboxed && !id.is_empty())
+        .unwrap_or_else(|| BUNDLED_DESKTOP_ENTRY_ID.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +97,35 @@ mod tests {
         assert!(!is_wayland_session(Some("wayland-0"), Some("x11")));
         assert!(!is_wayland_session(Some("wayland-0"), Some("x11,wayland")));
         assert!(is_wayland_session(None, Some("wayland,x11")));
+    }
+
+    #[test]
+    fn inside_flatpak_the_app_id_is_the_flatpak_id() {
+        assert_eq!(
+            desktop_entry_id(true, Some("io.github.that_one_tool.DaSSHboard".into())),
+            "io.github.that_one_tool.DaSSHboard"
+        );
+    }
+
+    #[test]
+    fn elsewhere_the_app_id_is_the_bundled_desktop_file_name() {
+        assert_eq!(desktop_entry_id(true, None), "DaSSHboard");
+        assert_eq!(desktop_entry_id(true, Some(String::new())), "DaSSHboard");
+    }
+
+    #[test]
+    fn a_flatpak_id_leaked_outside_the_sandbox_is_ignored() {
+        assert_eq!(
+            desktop_entry_id(false, Some("leaked.App".into())),
+            "DaSSHboard"
+        );
+    }
+
+    #[test]
+    fn the_bundled_desktop_file_is_named_after_the_product_name() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(config["productName"], BUNDLED_DESKTOP_ENTRY_ID);
     }
 
     #[cfg(target_os = "linux")]
