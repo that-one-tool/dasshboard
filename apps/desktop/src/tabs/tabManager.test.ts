@@ -715,6 +715,7 @@ describe("TabManager review fixes (1-5)", () => {
       tm.setLinkedProfileId(tm.activeGrid(), "p1"); // schedules a debounced save
       tm.flushPersist();
       expect(persist).toHaveBeenCalledTimes(1); // fired without waiting the debounce
+      await vi.advanceTimersByTimeAsync(0); // that save settles
 
       tm.setLinkedProfileId(tm.activeGrid(), "p2");
       window.dispatchEvent(new Event("beforeunload"));

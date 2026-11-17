@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("../ipc", () => ({
+  logToBackend: vi.fn(),
   listDevices: vi.fn(async () => h.devices),
   listTunnels: vi.fn(async () => []),
   startTunnel: vi.fn(async (_deviceId: string, tunnelId: string) => tunnelId),

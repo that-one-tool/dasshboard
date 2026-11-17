@@ -11,12 +11,12 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
 use crate::atomic_file;
 use crate::error::AppError;
+use crate::store_cell::StoreCell;
 
 const BOOKMARKS_FILE: &str = "sftp_bookmarks.json";
 const CURRENT_VERSION: u32 = 1;
@@ -35,7 +35,7 @@ struct BookmarksFile {
 
 pub struct BookmarkStore {
     dir: PathBuf,
-    state: Mutex<Bookmarks>,
+    state: StoreCell<Bookmarks>,
 }
 
 impl BookmarkStore {
@@ -50,7 +50,7 @@ impl BookmarkStore {
         );
         Self {
             dir,
-            state: Mutex::new(state),
+            state: StoreCell::new(state),
         }
     }
 
@@ -58,6 +58,7 @@ impl BookmarkStore {
     /// saved show up here, and this instance's next save keeps them. An
     /// unreadable file keeps the current map.
     pub fn reload(&self) {
+        let turn = self.state.begin_write();
         let reread = atomic_file::reread_recovering::<BookmarksFile, _>(
             &self.dir,
             BOOKMARKS_FILE,
@@ -65,15 +66,14 @@ impl BookmarkStore {
             Bookmarks::new,
         );
         if let Some(state) = reread {
-            *atomic_file::lock(&self.state) = state;
+            turn.commit(state);
         }
     }
 
     /// The bookmarked paths for a device, in saved order (empty if none).
     pub fn list(&self, device_id: &str) -> Vec<String> {
-        atomic_file::lock(&self.state)
-            .get(device_id)
-            .cloned()
+        self.state
+            .read(|bookmarks| bookmarks.get(device_id).cloned())
             .unwrap_or_default()
     }
 
@@ -101,8 +101,8 @@ impl BookmarkStore {
         device_id: &str,
         edit: impl FnOnce(&mut Vec<String>),
     ) -> Result<Vec<String>, AppError> {
-        let mut guard = atomic_file::lock(&self.state);
-        let mut next = guard.clone();
+        let turn = self.state.begin_write();
+        let mut next = turn.current();
         {
             let paths = next.entry(device_id.to_string()).or_default();
             edit(paths);
@@ -112,7 +112,7 @@ impl BookmarkStore {
         }
         self.persist(&next)?;
         let result = next.get(device_id).cloned().unwrap_or_default();
-        *guard = next;
+        turn.commit(next);
         Ok(result)
     }
 

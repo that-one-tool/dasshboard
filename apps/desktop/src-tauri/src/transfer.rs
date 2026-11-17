@@ -355,6 +355,7 @@ pub(crate) fn import_devices_impl(
 ) -> Result<u32, AppError> {
     let contents = fs::read_to_string(path)?;
     let devices = parse_devices_import(&contents)?;
+    let _edits = state.device_store.hold_edits();
     let saved = state.device_store.list();
     if risks_of(&devices, &saved) != confirmed {
         return Err(AppError::Validation(
@@ -431,7 +432,7 @@ fn drop_orphaned_secret(state: &AppState, id: &str) {
         return;
     }
     if let Err(err) = state.secret_store.delete(id) {
-        eprintln!("[DaSSHboard] import: could not clear a stale secret ({err})");
+        crate::app_log::warn(format!("import: could not clear a stale secret ({err})"));
     }
 }
 

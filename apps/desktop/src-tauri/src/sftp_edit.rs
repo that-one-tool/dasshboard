@@ -464,7 +464,7 @@ fn create_private_dir(dir: &Path) -> Result<(), AppError> {
 fn remove_logged(dir: &Path) {
     match std::fs::remove_dir_all(dir) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            eprintln!("[DaSSHboard] could not delete the edit copy {dir:?}: {e}");
+            crate::app_log::warn(format!("could not delete the edit copy {dir:?}: {e}"));
         }
         _ => {}
     }

@@ -5,7 +5,7 @@
 //! dir) so tests can point it at a temp dir (SPEC.md §10).
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::atomic_file;
 use crate::device::Device;
 use crate::error::AppError;
+use crate::store_cell::StoreCell;
 
 const DEVICES_FILE: &str = "devices.json";
 const CURRENT_VERSION: u32 = 1;
@@ -26,7 +27,8 @@ struct DevicesFile {
 
 pub struct DeviceStore {
     dir: PathBuf,
-    devices: Mutex<Vec<Device>>,
+    devices: StoreCell<Vec<Device>>,
+    edits: Mutex<()>,
 }
 
 impl DeviceStore {
@@ -44,7 +46,8 @@ impl DeviceStore {
         let devices = Self::read_from_disk(&dir).unwrap_or_default();
         DeviceStore {
             dir,
-            devices: Mutex::new(devices),
+            devices: StoreCell::new(devices),
+            edits: Mutex::new(()),
         }
     }
 
@@ -56,8 +59,9 @@ impl DeviceStore {
     /// empty list and a corrupt file is backed up and treated as empty; an
     /// unreadable one keeps the current list.
     pub fn reload(&self) {
+        let turn = self.devices.begin_write();
         if let Some(devices) = Self::read_from_disk(&self.dir) {
-            *self.lock_devices() = devices;
+            turn.commit(devices);
         }
     }
 
@@ -76,7 +80,13 @@ impl DeviceStore {
     /// All devices, never including secret material (there is none in this
     /// struct to begin with — see `crate::secret`).
     pub fn list(&self) -> Vec<Device> {
-        self.lock_devices().clone()
+        self.devices.get()
+    }
+
+    /// Holds off other multi-step device edits (keychain plus stores) until
+    /// dropped, so two of them can't interleave.
+    pub fn hold_edits(&self) -> MutexGuard<'_, ()> {
+        atomic_file::lock(&self.edits)
     }
 
     /// Upserts by `id`: an empty/blank `id` creates a new device with a
@@ -89,35 +99,31 @@ impl DeviceStore {
         }
         device.validate()?;
 
-        // Persist-then-commit: build the new list in a local `candidate` and
-        // only swap it into the guarded state once `persist()` has actually
-        // succeeded, so a write failure never leaves memory diverged from
-        // disk (the guard stays untouched on error).
-        let mut guard = self.lock_devices();
-        let mut candidate = guard.clone();
+        // Persist-then-commit: the new list becomes current only once stored,
+        // so a write failure never leaves memory diverged from disk.
+        let turn = self.devices.begin_write();
+        let mut candidate = turn.current();
         match candidate.iter_mut().find(|d| d.id == device.id) {
             Some(existing) => *existing = device.clone(),
             None => candidate.push(device.clone()),
         }
         self.persist(&candidate)?;
-        *guard = candidate;
+        turn.commit(candidate);
         Ok(device)
     }
 
     /// Removes the device with the given id. Returns `AppError::NotFound`
     /// if no device with that id exists.
     pub fn delete(&self, id: &str) -> Result<(), AppError> {
-        let mut guard = self.lock_devices();
-        let index = guard
+        let turn = self.devices.begin_write();
+        let mut candidate = turn.current();
+        let index = candidate
             .iter()
             .position(|d| d.id == id)
             .ok_or_else(|| AppError::NotFound(format!("device '{id}' not found")))?;
-        // Persist-then-commit (see `upsert`): mutate a local copy, persist
-        // it, then swap it in only on success.
-        let mut candidate = guard.clone();
         candidate.remove(index);
         self.persist(&candidate)?;
-        *guard = candidate;
+        turn.commit(candidate);
         Ok(())
     }
 
@@ -126,8 +132,8 @@ impl DeviceStore {
     /// longer exists. Only writes `devices.json` if something actually changed.
     /// Mirrors `ProfileStore::clear_device`, called from the same delete cleanup.
     pub fn clear_proxy_jump(&self, jump_id: &str) -> Result<(), AppError> {
-        let mut guard = self.lock_devices();
-        let mut candidate = guard.clone();
+        let turn = self.devices.begin_write();
+        let mut candidate = turn.current();
         let mut changed = false;
         for device in candidate.iter_mut() {
             if device.clear_proxy_jump_to(jump_id) {
@@ -138,12 +144,8 @@ impl DeviceStore {
             return Ok(());
         }
         self.persist(&candidate)?;
-        *guard = candidate;
+        turn.commit(candidate);
         Ok(())
-    }
-
-    fn lock_devices(&self) -> std::sync::MutexGuard<'_, Vec<Device>> {
-        atomic_file::lock(&self.devices)
     }
 
     /// Atomically persists the device list (see [`atomic_file::write_json`]).

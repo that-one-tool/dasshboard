@@ -387,6 +387,7 @@ async fn run_session(
     let _owner = handler.take_owner_token();
     let x11 = handler.x11_request();
     let mut pty_size = (params.cols, params.rows);
+    let stop_seen = stop.clone();
     let (handle, jump) = tokio::select! {
         biased;
         // If a disconnect arrives during the handshake, abort: dropping the
@@ -419,8 +420,29 @@ async fn run_session(
         },
     )
     .await;
+    let label = format!("shell {}:{}", params.host, params.port);
+    crate::app_log::info(format!(
+        "{label}: {}",
+        shell_end(&status, *stop_seen.borrow())
+    ));
     close_connection(&handle, jump.as_ref()).await;
     status
+}
+
+/// Why a shell ended, for the log.
+fn shell_end(status: &Result<SessionStatus, AppError>, by_user: bool) -> String {
+    if by_user {
+        return "closed by the user".to_string();
+    }
+    unrequested_shell_end(status)
+}
+
+fn unrequested_shell_end(status: &Result<SessionStatus, AppError>) -> String {
+    match status {
+        Ok(SessionStatus::Exited) => "the shell exited".to_string(),
+        Ok(_) => "the shell's channel or connection ended".to_string(),
+        Err(err) => format!("the shell failed: {err}"),
+    }
 }
 
 /// X11 problems are written into the terminal, as `ssh` prints them there.
@@ -566,13 +588,15 @@ impl SessionManager {
             },
         );
 
-        let handler = self.build_handler(
-            params.host.clone(),
-            params.port,
-            Arc::clone(&sink),
-            params.keepalive,
-            params.forward_agent,
-        );
+        let handler = self
+            .build_handler(
+                params.host.clone(),
+                params.port,
+                Arc::clone(&sink),
+                params.keepalive,
+                params.forward_agent,
+            )
+            .with_purpose("shell");
         let handler = with_x11(handler, params.x11.take(), Arc::clone(&sink));
         let manager = Arc::clone(self);
         let connect_timeout = self.connect_timeout;
@@ -607,6 +631,8 @@ impl SessionManager {
     /// Send keystrokes to a session. Unknown/closed session ⇒ silently ignored.
     pub async fn write_stdin(&self, session_id: &str, data: Vec<u8>) {
         if let Some(control) = self.control_of(session_id) {
+            // Waits for room however long it takes: input given up on would
+            // reach the shell with keys missing.
             let _ = control.send(SessionControl::Write(data)).await;
         }
     }
@@ -674,8 +700,9 @@ impl SessionManager {
         jump: Option<JumpHop>,
         sink: Arc<dyn SessionSink>,
     ) -> Result<(), AppError> {
-        let handler =
-            self.build_handler(host.clone(), port, sink, KeepaliveConfig::disabled(), false);
+        let handler = self
+            .build_handler(host.clone(), port, sink, KeepaliveConfig::disabled(), false)
+            .with_purpose("connection test");
         let target = Endpoint {
             host: &host,
             port,
@@ -703,6 +730,19 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shell_end_says_who_or_what_ended_it() {
+        let lost = Ok(SessionStatus::Disconnected);
+        assert_eq!(shell_end(&lost, true), "closed by the user");
+        assert_eq!(
+            shell_end(&Ok(SessionStatus::Exited), false),
+            "the shell exited"
+        );
+        assert!(shell_end(&lost, false).contains("ended"));
+        let failed = Err(AppError::SshChannel("PTY request failed".into()));
+        assert!(shell_end(&failed, false).contains("PTY request failed"));
+    }
 
     #[tokio::test]
     async fn a_resize_during_the_handshake_sets_the_pty_size() {

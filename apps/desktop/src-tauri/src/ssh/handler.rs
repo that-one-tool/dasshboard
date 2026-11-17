@@ -1,15 +1,18 @@
 //! The russh client handler every SSH connection uses: host-key TOFU, agent
 //! and X11 forwarding, remote-forward routing, and rejecting channels never asked for.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
 use russh::client;
 use russh::keys::ssh_key::{HashAlg, PublicKey};
+use russh::keys::PublicKeyOrCertificate;
 use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use uuid::Uuid;
 
+use super::conn_log::{log_disconnect, log_host_key_decision, log_host_key_verdict};
 use super::deadline::{ConnectDeadline, DeadlinePause};
 use super::interactive_auth::{PromptAsker, AUTH_PROMPT_QUEUE_TIMEOUT};
 use super::params::{JumpHop, KeepaliveConfig};
@@ -46,6 +49,8 @@ pub(crate) struct SshHandler {
     prompts: Arc<ConnectPrompts>,
     host: String,
     port: u16,
+    /// What the connection is for (shell, SFTP…), naming it in the log.
+    purpose: Cow<'static, str>,
     prompt_timeout: Duration,
     /// Keepalive applied to this connection's `client::Config` (read in
     /// `establish_over_stream` before the handler is moved into `connect_stream`).
@@ -104,6 +109,7 @@ impl SshHandler {
             prompts,
             host,
             port,
+            purpose: Cow::Borrowed("SSH"),
             prompt_timeout,
             keepalive,
             forward_agent: false,
@@ -121,6 +127,17 @@ impl SshHandler {
     pub(crate) fn with_agent_forwarding(mut self, forward_agent: bool) -> Self {
         self.forward_agent = forward_agent;
         self
+    }
+
+    /// Name the connection's use in the log.
+    pub(crate) fn with_purpose(mut self, purpose: &'static str) -> Self {
+        self.purpose = Cow::Borrowed(purpose);
+        self
+    }
+
+    /// How log lines name this connection, e.g. `SFTP example.com:22`.
+    pub(super) fn log_label(&self) -> String {
+        format!("{} {}:{}", self.purpose, self.host, self.port)
     }
 
     /// Hold `deadline` still while this connection waits on the user.
@@ -148,6 +165,18 @@ impl SshHandler {
     /// The `x11-req` to send on the shell channel, when forwarding X11.
     pub(crate) fn x11_request(&self) -> Option<X11Request> {
         self.x11.as_ref().map(|x11| x11.request())
+    }
+
+    /// With forwarding off there are no permits to give; with it on, the cap
+    /// bounds concurrent agent channels. `try_acquire` never blocks the
+    /// session loop.
+    fn agent_permit(&self) -> Option<OwnedSemaphorePermit> {
+        if !self.forward_agent {
+            return None;
+        }
+        Arc::clone(&self.agent_channel_limit)
+            .try_acquire_owned()
+            .ok()
     }
 
     /// A slot for one more X11 channel; when all are taken, the user is
@@ -183,6 +212,7 @@ impl SshHandler {
         );
         SshHandler {
             deadline: self.deadline.clone(),
+            purpose: Cow::Owned(format!("{} jump host", self.purpose)),
             ..handler
         }
     }
@@ -259,9 +289,22 @@ impl SshHandler {
         };
         match tokio::task::spawn_blocking(move || known_hosts.trust(&host, port, entry)).await {
             Ok(Ok(())) => {}
-            Ok(Err(err)) => eprintln!("[DaSSHboard] failed to persist trusted host key: {err}"),
-            Err(join_err) => eprintln!("[DaSSHboard] host-key persist task failed: {join_err}"),
+            Ok(Err(err)) => {
+                crate::app_log::error(format!("failed to persist trusted host key: {err}"))
+            }
+            Err(join_err) => {
+                crate::app_log::error(format!("host-key persist task failed: {join_err}"))
+            }
         }
+    }
+}
+
+/// The bare host key, which TOFU trusts. A certificate has none to trust: we
+/// never advertise certificate algorithms, so one is a misbehaving server.
+fn plain_host_key(server_key: &PublicKeyOrCertificate) -> Option<&PublicKey> {
+    match server_key {
+        PublicKeyOrCertificate::PublicKey { key, .. } => Some(key),
+        PublicKeyOrCertificate::Certificate(_) => None,
     }
 }
 
@@ -270,14 +313,18 @@ impl client::Handler for SshHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &PublicKey,
+        server_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        let Some(server_public_key) = plain_host_key(server_key) else {
+            return Ok(false);
+        };
         let fingerprint = server_public_key.fingerprint(HashAlg::Sha256).to_string();
         let key_type = server_public_key.algorithm().to_string();
 
         let verdict = self
             .known_hosts
             .verdict(&self.host, self.port, &fingerprint);
+        log_host_key_verdict(&self.log_label(), &key_type, &verdict);
         if verdict == Verdict::Known {
             return Ok(true);
         }
@@ -285,6 +332,7 @@ impl client::Handler for SshHandler {
         let accepted = self
             .await_host_key_decision(&key_type, &fingerprint, verdict)
             .await;
+        log_host_key_decision(&self.log_label(), accepted);
 
         if accepted {
             self.persist_trusted_key(key_type, fingerprint).await;
@@ -295,43 +343,39 @@ impl client::Handler for SshHandler {
         Ok(accepted)
     }
 
+    /// Logs why the connection ended, then keeps russh's default outcome.
+    async fn disconnected(
+        &mut self,
+        reason: client::DisconnectReason<Self::Error>,
+    ) -> Result<(), Self::Error> {
+        log_disconnect(&self.log_label(), &reason);
+        match reason {
+            client::DisconnectReason::ReceivedDisconnect(_) => Ok(()),
+            client::DisconnectReason::Error(err) => Err(err),
+        }
+    }
+
     /// The server opened an `auth-agent@openssh.com` channel (a program on the
     /// remote wants to use our keys). When agent forwarding is enabled for this
     /// session, accept it and relay it verbatim to the local SSH agent on a
-    /// detached task; otherwise reject it. russh only opens these at all when we
-    /// requested forwarding on the session channel (see `run_shell`), so the
-    /// `else` is a defensive guard.
+    /// detached task; otherwise reject it (dropping `reply`). russh only opens
+    /// these at all when we requested forwarding on the session channel (see
+    /// `run_shell`), so the reject is a defensive guard.
     async fn server_channel_open_agent_forward(
         &mut self,
         channel: russh::Channel<client::Msg>,
         reply: client::ChannelOpenHandle,
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {
-        // Acquire a per-session permit first: with forwarding off there are no
-        // permits to give (capacity is only meaningful when we forward), and even
-        // with it on the cap bounds concurrent agent channels. `try_acquire`
-        // never blocks the handler's event loop. The permit is moved into the
-        // proxy task and released when it ends.
-        let permit = if self.forward_agent {
-            self.agent_channel_limit.clone().try_acquire_owned().ok()
-        } else {
-            None
+        let Some(permit) = self.agent_permit() else {
+            drop(reply);
+            return Ok(());
         };
-        match permit {
-            Some(permit) => {
-                reply.accept().await;
-                let stream = channel.into_stream();
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    crate::agent::proxy_agent_channel(stream).await;
-                });
-            }
-            None => {
-                reply
-                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
-                    .await;
-            }
-        }
+        tokio::spawn(async move {
+            let _permit = permit;
+            reply.accept().await;
+            crate::agent::proxy_agent_channel(channel.into_stream()).await;
+        });
         Ok(())
     }
 
@@ -369,11 +413,10 @@ impl client::Handler for SshHandler {
             drop(reply);
             return Ok(());
         };
-        reply.accept().await;
-        let stream = channel.into_stream();
         tokio::spawn(async move {
             let _permit = permit;
-            x11.serve(stream).await;
+            reply.accept().await;
+            x11.serve(channel.into_stream()).await;
         });
         Ok(())
     }
@@ -455,6 +498,29 @@ mod tests {
     }
 
     #[test]
+    fn the_log_label_names_the_purpose_and_address() {
+        assert_eq!(handler().log_label(), "SSH host:22");
+        assert_eq!(handler().with_purpose("SFTP").log_label(), "SFTP host:22");
+    }
+
+    #[test]
+    fn a_jump_host_is_named_as_such_in_the_log() {
+        let jump = JumpHop {
+            host: "bastion".to_string(),
+            port: 2222,
+            username: "u".to_string(),
+            creds: crate::ssh::params::AuthCredentials::Agent {
+                fingerprint: "SHA256:x".to_string(),
+            },
+        };
+        let label = handler()
+            .with_purpose("shell")
+            .for_jump_host(&jump)
+            .log_label();
+        assert_eq!(label, "shell jump host bastion:2222");
+    }
+
+    #[test]
     fn a_new_handler_never_forwards_the_agent() {
         assert!(!handler().forward_agent);
     }
@@ -463,5 +529,38 @@ mod tests {
     fn agent_forwarding_is_on_only_when_asked() {
         assert!(handler().with_agent_forwarding(true).forward_agent);
         assert!(!handler().with_agent_forwarding(false).forward_agent);
+    }
+
+    #[test]
+    fn no_agent_channel_is_served_with_forwarding_off() {
+        assert!(handler().agent_permit().is_none());
+    }
+
+    #[test]
+    fn agent_channels_are_served_up_to_the_cap() {
+        let handler = handler().with_agent_forwarding(true);
+        let held: Vec<_> = (0..MAX_AGENT_CHANNELS)
+            .filter_map(|_| handler.agent_permit())
+            .collect();
+        assert_eq!(held.len(), MAX_AGENT_CHANNELS);
+        assert!(handler.agent_permit().is_none());
+    }
+
+    const HOST_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+
+    #[test]
+    fn a_bare_host_key_is_checked_by_tofu() {
+        let key = PublicKey::from_openssh(HOST_KEY).unwrap();
+        let offered = PublicKeyOrCertificate::from(key.clone());
+        assert_eq!(plain_host_key(&offered), Some(&key));
+    }
+
+    const HOST_CERT: &str = "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAAICDhrqWGy8coDgHxuqZuv42bUrabG8mL9f+NcFBblxV9AAAAIOxLWoPHpcV5MO+sU2Se8UV1rW9XHTi7dR/YemcPPK8aAAAAAAAAAAAAAAACAAAABHRlc3QAAAAIAAAABGhvc3QAAAAAAAAAAP//////////AAAAAAAAAAAAAAAAAAAAMwAAAAtzc2gtZWQyNTUxOQAAACBTKm8iWhy3N5wFcMp/eI+wacwkgGzqNwMS6mA9hoK6XwAAAFMAAAALc3NoLWVkMjU1MTkAAABAGRp2L2eT+L8l2wfrnEx2yYBabHXTtdnxmneeCuIM7uwdW6yhcUbv8cSHYsP4nph2NYPDQJuP20kAk0AISAWuBA==";
+
+    #[test]
+    fn a_host_certificate_is_never_trusted() {
+        let cert = russh::keys::Certificate::from_openssh(HOST_CERT).unwrap();
+        assert!(plain_host_key(&PublicKeyOrCertificate::from(cert)).is_none());
     }
 }

@@ -21,7 +21,10 @@ Vite + vanilla TypeScript (no framework), xterm.js. Vitest + happy-dom.
 - `terminal/` — terminal pane. Its parts live in `pane/`: overlay, reconnect,
   paste, host-key and auth-prompt dialogs, search bar, links, save output,
   output recording. `inputQueue` and `outputReader` keep input and output in
-  order.
+  order. A send late past 10 s stalls `inputQueue` (chip: Not responding; keys
+  wait and go out in order if it answers); one that fails or hangs past 30 s
+  stops input for good (chip asks to reconnect; later keys are dropped, a new
+  session gets a new queue). `timeout` (`withTimeout`) bounds a read.
 - `devices/` — device editor, validation, port-forward editor, import risks.
   `deviceManager` only wires its parts in `manager/`; `form/` reads, fills and
   builds the device dialog's form.
@@ -33,7 +36,8 @@ Vite + vanilla TypeScript (no framework), xterm.js. Vitest + happy-dom.
 - `profiles/` — saved workspaces.
 - `commandLibrary/` — Commands card and editor. A command goes to the focused
   pane, or to all connected panes during broadcast.
-- `settings/` — settings dialog, theme toggle, known-hosts dialog.
+- `settings/` — settings dialog, theme toggle, known-hosts dialog,
+  `logsPanel` (Logs tab, the backend's diagnostic log).
 - `tray/` — sends translated tray labels to the backend.
 - `updates/` — update check and install, About dialog badge.
 - `layout/` — resizable sidebar and its collapsed bar.
@@ -52,7 +56,9 @@ Vite + vanilla TypeScript (no framework), xterm.js. Vitest + happy-dom.
 ## Backend mirrors
 
 - `ipc/` — typed `invoke` wrappers, one module per domain. Import them from the
-  `ipc/index.ts` barrel. Each payload type equals its Rust `serde` struct
+  `ipc/index.ts` barrel. `frontendLog` puts frontend lines in the backend's
+  diagnostic log (`logToBackend`, throttled `warnThrottled`); never terminal
+  data. Each payload type equals its Rust `serde` struct
   (camelCase).
 - Device validation and settings clamps mirror backend rules. Change both sides
   together.

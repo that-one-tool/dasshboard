@@ -9,12 +9,14 @@
 
 pub mod app;
 pub mod auth_prompts;
+mod blocking;
 mod client_ids;
 pub mod command_library;
 pub mod config;
 mod device_access;
 pub mod devices;
 pub mod host_keys;
+pub mod logs;
 pub mod profiles;
 pub mod recording;
 pub mod sessions;

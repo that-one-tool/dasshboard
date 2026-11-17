@@ -1,7 +1,7 @@
 //! SSH-agent identity enumeration (spike prototype for hardware-token auth).
 //!
 //! Unlike `agent.rs` — which forwards an agent channel as a *verbatim byte copy*
-//! for `ssh -A` — this module speaks the agent protocol itself, via russh-keys'
+//! for `ssh -A` — this module speaks the agent protocol itself, via russh's
 //! `AgentClient`, to answer one question: **which public keys does the local
 //! agent hold?** — and to hand a live connection to the auth path
 //! (`connect_agent_for_auth` → `ssh/establish.rs` → `authenticate_publickey_with`): the

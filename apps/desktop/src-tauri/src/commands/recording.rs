@@ -4,8 +4,9 @@
 use std::path::Path;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter};
 
+use super::blocking::run_with_state;
 use crate::error::AppError;
 use crate::session_recording::Recorders;
 
@@ -34,12 +35,15 @@ fn failed_payload(session_id: &str, err: &AppError) -> RecordingFailedPayload {
 /// Record session `session_id`'s output into `path` (chosen in the native
 /// save dialog), replacing the file.
 #[tauri::command]
-pub fn start_recording(
-    recorders: State<'_, Recorders>,
+pub async fn start_recording(
+    app: AppHandle,
     session_id: String,
     path: String,
 ) -> Result<(), AppError> {
-    start_recording_impl(&recorders, &session_id, &path)
+    run_with_state(app, move |recorders: &Recorders| {
+        start_recording_impl(recorders, &session_id, &path)
+    })
+    .await
 }
 
 fn start_recording_impl(
@@ -55,8 +59,12 @@ fn start_recording_impl(
 
 /// Stop recording session `session_id`. Unknown session ⇒ no-op.
 #[tauri::command]
-pub fn stop_recording(recorders: State<'_, Recorders>, session_id: String) {
-    stop_recording_impl(&recorders, &session_id);
+pub async fn stop_recording(app: AppHandle, session_id: String) -> Result<(), AppError> {
+    run_with_state(app, move |recorders: &Recorders| {
+        stop_recording_impl(recorders, &session_id);
+        Ok(())
+    })
+    .await
 }
 
 fn stop_recording_impl(recorders: &Recorders, session_id: &str) {

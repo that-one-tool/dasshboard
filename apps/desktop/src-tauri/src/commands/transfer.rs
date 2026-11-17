@@ -3,51 +3,67 @@
 
 use std::path::Path;
 
-use tauri::State;
+use tauri::AppHandle;
 
+use super::blocking::run_with_state;
 use crate::error::AppError;
 use crate::state::AppState;
 use crate::transfer::DeviceRisks;
 
 /// Export all devices to `path` (never includes secrets — `Device` has none).
 #[tauri::command]
-pub fn export_devices(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
-    crate::transfer::export_devices_impl(&state, Path::new(&path))
+pub async fn export_devices(app: AppHandle, path: String) -> Result<u32, AppError> {
+    run_with_state(app, move |state: &AppState| {
+        crate::transfer::export_devices_impl(state, Path::new(&path))
+    })
+    .await
 }
 
 /// Validate the devices file at `path` and list the devices whose settings
 /// would act on this machine, for the user to confirm before importing.
 #[tauri::command]
-pub fn preview_devices_import(
-    state: State<'_, AppState>,
+pub async fn preview_devices_import(
+    app: AppHandle,
     path: String,
 ) -> Result<Vec<DeviceRisks>, AppError> {
-    crate::transfer::preview_devices_import_impl(&state, Path::new(&path))
+    run_with_state(app, move |state: &AppState| {
+        crate::transfer::preview_devices_import_impl(state, Path::new(&path))
+    })
+    .await
 }
 
 /// Import devices from `path`: validate every item, then upsert by id
 /// (all-or-nothing). `confirmed_risks` is what the user agreed to from
 /// [`preview_devices_import`]; a file that no longer matches it is refused.
 #[tauri::command]
-pub fn import_devices(
-    state: State<'_, AppState>,
+pub async fn import_devices(
+    app: AppHandle,
     path: String,
     confirmed_risks: Vec<DeviceRisks>,
 ) -> Result<u32, AppError> {
-    crate::transfer::import_devices_impl(&state, Path::new(&path), &confirmed_risks)
+    run_with_state(app, move |state: &AppState| {
+        crate::transfer::import_devices_impl(state, Path::new(&path), &confirmed_risks)
+    })
+    .await
 }
 
 /// Export all profiles to `path` (excludes `defaultProfileId`).
 #[tauri::command]
-pub fn export_profiles(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
-    crate::transfer::export_profiles_impl(&state, Path::new(&path))
+pub async fn export_profiles(app: AppHandle, path: String) -> Result<u32, AppError> {
+    run_with_state(app, move |state: &AppState| {
+        crate::transfer::export_profiles_impl(state, Path::new(&path))
+    })
+    .await
 }
 
 /// Import profiles from `path`: validate every item, then upsert by id. Leaves
 /// `defaultProfileId` untouched.
 #[tauri::command]
-pub fn import_profiles(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
-    crate::transfer::import_profiles_impl(&state, Path::new(&path))
+pub async fn import_profiles(app: AppHandle, path: String) -> Result<u32, AppError> {
+    run_with_state(app, move |state: &AppState| {
+        crate::transfer::import_profiles_impl(state, Path::new(&path))
+    })
+    .await
 }
 
 /// Import SSH devices from an OpenSSH client config at `path` (typically
@@ -55,11 +71,14 @@ pub fn import_profiles(state: State<'_, AppState>, path: String) -> Result<u32, 
 /// device; hosts that don't validate or duplicate an existing one are skipped,
 /// never fatal. Returns the imported/skipped counts (see `ssh_config/`).
 #[tauri::command]
-pub fn import_ssh_config(
-    state: State<'_, AppState>,
+pub async fn import_ssh_config(
+    app: AppHandle,
     path: String,
 ) -> Result<crate::ssh_config::SshImportSummary, AppError> {
-    crate::ssh_config::import_ssh_config_impl(&state, Path::new(&path))
+    run_with_state(app, move |state: &AppState| {
+        crate::ssh_config::import_ssh_config_impl(state, Path::new(&path))
+    })
+    .await
 }
 
 /// Export every SSH device to an OpenSSH client config at `path` (the reverse of
@@ -68,21 +87,30 @@ pub fn import_ssh_config(
 /// password lives only in the keyring, so an exported host with password auth
 /// simply carries no credential line.
 #[tauri::command]
-pub fn export_ssh_config(
-    state: State<'_, AppState>,
+pub async fn export_ssh_config(
+    app: AppHandle,
     path: String,
 ) -> Result<crate::ssh_config::SshExportSummary, AppError> {
-    crate::ssh_config::export_ssh_config_impl(&state, Path::new(&path))
+    run_with_state(app, move |state: &AppState| {
+        crate::ssh_config::export_ssh_config_impl(state, Path::new(&path))
+    })
+    .await
 }
 
 /// Export the command library to `path`. Returns the count written.
 #[tauri::command]
-pub fn export_commands(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
-    crate::transfer::export_commands_impl(&state, Path::new(&path))
+pub async fn export_commands(app: AppHandle, path: String) -> Result<u32, AppError> {
+    run_with_state(app, move |state: &AppState| {
+        crate::transfer::export_commands_impl(state, Path::new(&path))
+    })
+    .await
 }
 
 /// Import commands from `path`: validate every item, then upsert by id.
 #[tauri::command]
-pub fn import_commands(state: State<'_, AppState>, path: String) -> Result<u32, AppError> {
-    crate::transfer::import_commands_impl(&state, Path::new(&path))
+pub async fn import_commands(app: AppHandle, path: String) -> Result<u32, AppError> {
+    run_with_state(app, move |state: &AppState| {
+        crate::transfer::import_commands_impl(state, Path::new(&path))
+    })
+    .await
 }

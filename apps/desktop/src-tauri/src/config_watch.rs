@@ -69,7 +69,9 @@ pub fn spawn(app: AppHandle, config_dir: PathBuf) {
 
 fn run(app: AppHandle, config_dir: PathBuf) {
     if let Err(err) = std::fs::create_dir_all(&config_dir) {
-        eprintln!("[DaSSHboard] config watcher: could not create {config_dir:?} ({err}); automatic reload disabled");
+        crate::app_log::warn(format!(
+            "config watcher: could not create {config_dir:?} ({err}); automatic reload disabled"
+        ));
         return;
     }
 
@@ -84,12 +86,16 @@ fn run(app: AppHandle, config_dir: PathBuf) {
     }) {
         Ok(w) => w,
         Err(err) => {
-            eprintln!("[DaSSHboard] config watcher init failed ({err}); automatic reload disabled");
+            crate::app_log::warn(format!(
+                "config watcher init failed ({err}); automatic reload disabled"
+            ));
             return;
         }
     };
     if let Err(err) = watcher.watch(&config_dir, RecursiveMode::NonRecursive) {
-        eprintln!("[DaSSHboard] config watcher could not watch {config_dir:?} ({err}); automatic reload disabled");
+        crate::app_log::warn(format!(
+            "config watcher could not watch {config_dir:?} ({err}); automatic reload disabled"
+        ));
         return;
     }
 

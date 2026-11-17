@@ -1,7 +1,8 @@
 //! Saved layouts. Profiles hold only device ids, never secrets.
 
-use tauri::State;
+use tauri::{AppHandle, State};
 
+use super::blocking::run_with_state;
 use crate::error::AppError;
 use crate::profile::Profile;
 use crate::profile_store::ProfileList;
@@ -32,23 +33,32 @@ pub fn list_profiles(state: State<'_, AppState>) -> Result<ProfileList, AppError
 
 /// Upserts a profile by `profile.id` (empty id ⇒ create with a new UUID).
 #[tauri::command]
-pub fn save_profile(state: State<'_, AppState>, profile: Profile) -> Result<Profile, AppError> {
-    save_profile_impl(&state, profile)
+pub async fn save_profile(app: AppHandle, profile: Profile) -> Result<Profile, AppError> {
+    run_with_state(app, move |state: &AppState| {
+        save_profile_impl(state, profile)
+    })
+    .await
 }
 
 /// Deletes a profile; clears `defaultProfileId` if it pointed at it (SPEC.md §5).
 #[tauri::command]
-pub fn delete_profile(state: State<'_, AppState>, profile_id: String) -> Result<(), AppError> {
-    delete_profile_impl(&state, &profile_id)
+pub async fn delete_profile(app: AppHandle, profile_id: String) -> Result<(), AppError> {
+    run_with_state(app, move |state: &AppState| {
+        delete_profile_impl(state, &profile_id)
+    })
+    .await
 }
 
 /// Sets or clears (`null`) the default profile loaded on app start (SPEC.md §5).
 #[tauri::command]
-pub fn set_default_profile(
-    state: State<'_, AppState>,
+pub async fn set_default_profile(
+    app: AppHandle,
     profile_id: Option<String>,
 ) -> Result<(), AppError> {
-    set_default_profile_impl(&state, profile_id)
+    run_with_state(app, move |state: &AppState| {
+        set_default_profile_impl(state, profile_id)
+    })
+    .await
 }
 
 #[cfg(test)]

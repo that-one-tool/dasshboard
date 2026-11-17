@@ -70,8 +70,8 @@
 	padding-bottom: 1rem;
 }
 
-/* Both tab panels share one grid cell, so the body is always as tall as the
- * tallest tab and switching tabs never resizes the dialog. The inactive panel
+/* All tab panels share one grid cell, so the body is always as tall as the
+ * tallest tab and switching tabs never resizes the dialog. An inactive panel
  * keeps its space but is invisible (which also takes it out of the tab order
  * and the accessibility tree). */
 .settings-panel {
@@ -173,4 +173,65 @@
 /* A hint that flags a problem (e.g. no local SSH agent detected). */
 .form-hint-warn {
 	color: var(--warn);
+}
+
+/* Logs tab: a hint, its buttons, then the lines in a monospace list that
+ * scrolls on its own (newest at the bottom), sized so the dialog doesn't grow
+ * past the other tabs. */
+.settings-logs {
+	padding: 1rem 1rem 0;
+}
+
+.settings-logs .form-hint {
+	margin: 0 0 0.5rem;
+}
+
+.logs-actions {
+	display: flex;
+	gap: 0.5rem;
+	margin-bottom: 0.5rem;
+}
+
+.logs-list {
+	height: min(40vh, 16rem);
+	margin: 0;
+	padding: 0.5rem;
+	overflow: auto;
+	list-style: none;
+	background-color: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	font-family: var(--mono-font);
+	font-size: 0.75rem;
+	line-height: 1.45;
+	user-select: text;
+}
+
+.logs-list:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+.logs-entry {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.logs-time {
+	color: var(--text-muted);
+}
+
+.logs-level {
+	display: inline-block;
+	min-width: 3.5rem;
+	margin: 0 0.5rem;
+	color: var(--text-secondary);
+}
+
+.logs-warn .logs-level {
+	color: var(--warn-text);
+}
+
+.logs-error .logs-level {
+	color: var(--danger-text);
 }

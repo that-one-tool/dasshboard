@@ -56,8 +56,9 @@ export interface TabManagerOptions {
   /** Shared per-grid options, passed to every tab's `Grid`; its change and
    * connection events reach the listeners registered on the manager. */
   grid: Omit<GridOptions, "onChange" | "onConnectionChange">;
-  /** Persists the serialized workspace (debounced by the manager). */
-  persist?: (state: WorkspaceState) => void;
+  /** Persists the serialized workspace (debounced by the manager; the next
+   * save waits for the returned promise). */
+  persist?: (state: WorkspaceState) => Promise<void> | void;
   /**
    * The app-action buttons (reload / trusted-hosts / settings / help), mounted
    * into the right side of the tab-strip row so the app has no separate header.

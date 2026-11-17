@@ -233,6 +233,7 @@ impl SftpManager {
             self.prompt_timeout,
             params.keepalive,
         )
+        .with_purpose("SFTP")
     }
 
     /// Close and forget a device's SFTP connection. Idempotent: an unknown

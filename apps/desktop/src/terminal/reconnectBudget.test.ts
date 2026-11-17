@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+const { logMock } = vi.hoisted(() => ({ logMock: vi.fn() }));
+vi.mock("../ipc", async (original) => ({ ...(await original<object>()), logToBackend: logMock }));
+
 import { ReconnectBudget } from "./reconnectBudget";
 import { MAX_RECONNECT_ATTEMPTS } from "./reconnect";
 
@@ -27,6 +31,19 @@ describe("ReconnectBudget", () => {
     expect(retry).toHaveBeenCalledOnce();
     vi.advanceTimersByTime(1);
     expect(retry).toHaveBeenCalledTimes(2);
+  });
+
+  it("logs each scheduled attempt under its label", () => {
+    logMock.mockReset();
+    const labelled = new ReconnectBudget(retry, () => "shell web-1");
+    labelled.schedule(true);
+    expect(logMock).toHaveBeenCalledWith("info", "shell web-1: reconnect attempt 1 in 2000 ms");
+  });
+
+  it("logs nothing without a label", () => {
+    logMock.mockReset();
+    budget.schedule(true);
+    expect(logMock).not.toHaveBeenCalled();
   });
 
   it("is in progress from the first scheduled attempt until reset", () => {

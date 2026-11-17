@@ -97,7 +97,7 @@ function createTabs(paneRoot: HTMLElement, settings: SettingsController): TabMan
 	const tabs = new TabManager(paneRoot, {
 		grid: { onError: showError, getTerminalSettings: () => settings.terminalSettings() },
 		// Per-instance UI state — plain save, not routed through the config watcher.
-		persist: (state) => void saveWorkspaceState(state).catch(showAppError),
+		persist: (state) => saveWorkspaceState(state).catch(showAppError),
 		// The app-action buttons move into the tab-strip row (no separate header).
 		headerActions: document.querySelector<HTMLElement>(".header-actions"),
 	});

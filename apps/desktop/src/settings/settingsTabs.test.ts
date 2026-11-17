@@ -62,6 +62,15 @@ describe("wireSettingsTabs", () => {
 		expectSelected("connections", "general");
 	});
 
+	it("tells the listener which tab was selected, by click or key", () => {
+		const root = markup();
+		const selected: string[] = [];
+		wireSettingsTabs(root, (name) => selected.push(name));
+		tab("connections").click();
+		tab("connections").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+		expect(selected).toEqual(["connections", "general"]);
+	});
+
 	it("ignores other keys", () => {
 		tab("general").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		expectSelected("general", "connections");

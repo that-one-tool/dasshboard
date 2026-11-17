@@ -9,7 +9,6 @@
 //! so tests can point it at a temp dir (SPEC.md §10).
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -17,6 +16,7 @@ use uuid::Uuid;
 use crate::atomic_file;
 use crate::error::AppError;
 use crate::profile::Profile;
+use crate::store_cell::StoreCell;
 
 const PROFILES_FILE: &str = "profiles.json";
 /// 2 = multi-tab profiles (`tabs`); version-1 profiles (one top-level `grid` +
@@ -44,7 +44,7 @@ pub struct ProfileList {
     pub migrated_from_v1: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ProfilesState {
     default_profile_id: Option<String>,
     profiles: Vec<Profile>,
@@ -53,7 +53,7 @@ struct ProfilesState {
 
 pub struct ProfileStore {
     dir: PathBuf,
-    state: Mutex<ProfilesState>,
+    state: StoreCell<ProfilesState>,
 }
 
 impl ProfileStore {
@@ -72,12 +72,12 @@ impl ProfileStore {
         let state = Self::read_from_disk(&dir).unwrap_or_default();
         if state.migrated_from_v1 {
             if let Err(err) = write_file(&dir, &state) {
-                eprintln!("[DaSSHboard] failed to convert {PROFILES_FILE}: {err}");
+                crate::app_log::error(format!("failed to convert {PROFILES_FILE}: {err}"));
             }
         }
         ProfileStore {
             dir,
-            state: Mutex::new(state),
+            state: StoreCell::new(state),
         }
     }
 
@@ -87,8 +87,9 @@ impl ProfileStore {
     /// recovery semantics as [`load`](Self::load), except an unreadable file
     /// keeps the current state.
     pub fn reload(&self) {
+        let turn = self.state.begin_write();
         if let Some(state) = Self::read_from_disk(&self.dir) {
-            *self.lock_state() = state;
+            turn.commit(state);
         }
     }
 
@@ -110,12 +111,11 @@ impl ProfileStore {
 
     /// All profiles plus the current default id (SPEC.md §5 `list_profiles`).
     pub fn list(&self) -> ProfileList {
-        let state = self.lock_state();
-        ProfileList {
+        self.state.read(|state| ProfileList {
             default_profile_id: state.default_profile_id.clone(),
             profiles: state.profiles.clone(),
             migrated_from_v1: state.migrated_from_v1,
-        }
+        })
     }
 
     /// Upserts by `id`: an empty/blank `id` creates a new profile with a
@@ -130,21 +130,22 @@ impl ProfileStore {
         profile.validate()?;
 
         // Persist-then-commit (mirrors `DeviceStore::upsert`): mutate a local
-        // copy of the profile list, persist it, and only swap it into the
-        // guarded state once `persist()` succeeds.
-        let mut guard = self.lock_state();
-        let mut profiles = guard.profiles.clone();
+        // copy of the profile list, persist it, and only make it current
+        // once `persist()` succeeds.
+        let turn = self.state.begin_write();
+        let current = turn.current();
+        let mut profiles = current.profiles.clone();
         match profiles.iter_mut().find(|p| p.id == profile.id) {
             Some(existing) => *existing = profile.clone(),
             None => profiles.push(profile.clone()),
         }
         let candidate = ProfilesState {
-            default_profile_id: guard.default_profile_id.clone(),
+            default_profile_id: current.default_profile_id.clone(),
             profiles,
             migrated_from_v1: false,
         };
         self.persist(&candidate)?;
-        *guard = candidate;
+        turn.commit(candidate);
         Ok(profile)
     }
 
@@ -153,20 +154,21 @@ impl ProfileStore {
     /// default, `defaultProfileId` is cleared to `null` (SPEC.md §5) so it
     /// never dangles.
     pub fn delete(&self, id: &str) -> Result<(), AppError> {
-        let mut guard = self.lock_state();
-        let index = guard
+        let turn = self.state.begin_write();
+        let current = turn.current();
+        let index = current
             .profiles
             .iter()
             .position(|p| p.id == id)
             .ok_or_else(|| AppError::NotFound(format!("profile '{id}' not found")))?;
 
         // Persist-then-commit (see `upsert`).
-        let mut profiles = guard.profiles.clone();
+        let mut profiles = current.profiles.clone();
         profiles.remove(index);
-        let default_profile_id = if guard.default_profile_id.as_deref() == Some(id) {
+        let default_profile_id = if current.default_profile_id.as_deref() == Some(id) {
             None
         } else {
-            guard.default_profile_id.clone()
+            current.default_profile_id.clone()
         };
         let candidate = ProfilesState {
             default_profile_id,
@@ -174,7 +176,7 @@ impl ProfileStore {
             migrated_from_v1: false,
         };
         self.persist(&candidate)?;
-        *guard = candidate;
+        turn.commit(candidate);
         Ok(())
     }
 
@@ -185,20 +187,21 @@ impl ProfileStore {
     /// the default at it, so there's no legitimate case for setting a
     /// default to an id that doesn't exist yet.
     pub fn set_default(&self, profile_id: Option<String>) -> Result<(), AppError> {
-        let mut guard = self.lock_state();
+        let turn = self.state.begin_write();
+        let current = turn.current();
         if let Some(id) = &profile_id {
-            if !guard.profiles.iter().any(|p| &p.id == id) {
+            if !current.profiles.iter().any(|p| &p.id == id) {
                 return Err(AppError::NotFound(format!("profile '{id}' not found")));
             }
         }
         // Persist-then-commit (see `upsert`).
         let candidate = ProfilesState {
             default_profile_id: profile_id,
-            profiles: guard.profiles.clone(),
+            profiles: current.profiles.clone(),
             migrated_from_v1: false,
         };
         self.persist(&candidate)?;
-        *guard = candidate;
+        turn.commit(candidate);
         Ok(())
     }
 
@@ -208,8 +211,9 @@ impl ProfileStore {
     /// so deleting a device that no profile references doesn't rewrite
     /// `profiles.json` (or create it) needlessly.
     pub fn clear_device(&self, device_id: &str) -> Result<(), AppError> {
-        let mut guard = self.lock_state();
-        let mut profiles = guard.profiles.clone();
+        let turn = self.state.begin_write();
+        let current = turn.current();
+        let mut profiles = current.profiles.clone();
         let mut changed = false;
         let panes = profiles
             .iter_mut()
@@ -224,18 +228,14 @@ impl ProfileStore {
         if changed {
             // Persist-then-commit (see `upsert`).
             let candidate = ProfilesState {
-                default_profile_id: guard.default_profile_id.clone(),
+                default_profile_id: current.default_profile_id.clone(),
                 profiles,
                 migrated_from_v1: false,
             };
             self.persist(&candidate)?;
-            *guard = candidate;
+            turn.commit(candidate);
         }
         Ok(())
-    }
-
-    fn lock_state(&self) -> std::sync::MutexGuard<'_, ProfilesState> {
-        atomic_file::lock(&self.state)
     }
 
     fn persist(&self, state: &ProfilesState) -> Result<(), AppError> {

@@ -162,7 +162,7 @@ pub fn set_enabled<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> bool {
     match set_visible(app, &mut inner, enabled) {
         Ok(()) => enabled,
         Err(err) => {
-            eprintln!("[DaSSHboard] tray icon unavailable: {err}");
+            crate::app_log::warn(format!("tray icon unavailable: {err}"));
             false
         }
     }
@@ -226,7 +226,7 @@ pub fn set_labels<R: Runtime>(app: &AppHandle<R>, labels: TrayLabels) {
     let mut inner = tray.lock();
     if let Some(menu) = &inner.menu {
         if let Err(err) = menu.apply_labels(&labels) {
-            eprintln!("[DaSSHboard] failed to update tray labels: {err}");
+            crate::app_log::warn(format!("failed to update tray labels: {err}"));
         }
     }
     inner.labels = labels;

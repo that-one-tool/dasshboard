@@ -80,7 +80,7 @@ pub fn backup_corrupt(path: &Path) {
         .unwrap_or("config");
     let backup_path = path.with_file_name(format!("{name}.corrupt-{timestamp}"));
     if let Err(err) = fs::rename(path, &backup_path) {
-        eprintln!("[DaSSHboard] failed to back up corrupt {name}: {err}");
+        crate::app_log::error(format!("failed to back up corrupt {name}: {err}"));
     }
 }
 
@@ -152,7 +152,9 @@ where
         Ok(Some(contents)) => Some(parse_or_backup(&path, file_name, &contents)),
         Ok(None) => Some(ReadOutcome::Missing),
         Err(err) => {
-            eprintln!("[DaSSHboard] could not read {file_name} ({err}); leaving it untouched");
+            crate::app_log::error(format!(
+                "could not read {file_name} ({err}); leaving it untouched"
+            ));
             None
         }
     }
@@ -188,9 +190,9 @@ where
     match serde_json::from_str::<D>(contents) {
         Ok(parsed) => ReadOutcome::Parsed(parsed),
         Err(err) => {
-            eprintln!(
-                "[DaSSHboard] {file_name} is corrupt ({err}); backing it up and starting fresh"
-            );
+            crate::app_log::error(format!(
+                "{file_name} is corrupt ({err}); backing it up and starting fresh"
+            ));
             backup_corrupt(path);
             ReadOutcome::Corrupt
         }

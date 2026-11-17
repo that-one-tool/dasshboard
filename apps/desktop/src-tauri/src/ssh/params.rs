@@ -31,6 +31,16 @@ impl KeepaliveConfig {
         }
     }
 
+    /// How long sent data may stay unacknowledged before the kernel drops
+    /// the socket (TCP_USER_TIMEOUT). russh gives up once `max + 1`
+    /// intervals pass with nothing from the server, so this matches it: a
+    /// link that recovers within the user's keepalive budget survives.
+    pub fn dead_peer_timeout(&self) -> Option<Duration> {
+        let rounds = u32::try_from(self.max.saturating_add(1)).unwrap_or(u32::MAX);
+        self.interval
+            .map(|interval| interval.saturating_mul(rounds))
+    }
+
     /// Keepalive off — used where liveness doesn't matter (e.g. the one-shot
     /// `test_connection`).
     pub fn disabled() -> Self {
@@ -178,5 +188,17 @@ mod tests {
             "a passphrase is no password"
         );
         assert!(agent().saved_password().is_none());
+    }
+
+    #[test]
+    fn a_dead_peer_is_given_up_on_no_sooner_than_by_the_keepalive() {
+        let keepalive = KeepaliveConfig::from_secs(15, 3);
+        assert_eq!(keepalive.dead_peer_timeout(), Some(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn without_keepalive_there_is_no_dead_peer_timeout() {
+        let keepalive = KeepaliveConfig::from_secs(0, 3);
+        assert_eq!(keepalive.dead_peer_timeout(), None);
     }
 }

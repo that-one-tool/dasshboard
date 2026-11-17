@@ -31,11 +31,12 @@ import {
 } from "../ipc";
 import { overlayForStatus } from "./overlay";
 import { isTerminalReply } from "./terminalReplies";
-import { SerialQueue } from "./inputQueue";
+import { InputQueue, type InputHealth } from "./inputQueue";
 import { OutputReader } from "./outputReader";
 import { DEFAULT_TERMINAL_SETTINGS } from "./terminalSettings";
 import { errorCodeOf } from "./reconnect";
 import { ReconnectBudget } from "./reconnectBudget";
+import { logInputHealth, logReadTimeout, shellLabel } from "./pane/paneLog";
 import { isPasteShortcut } from "./paste";
 import { linkHandlers } from "./links";
 import { TerminalSearchBar, isFindShortcut } from "./searchBar";
@@ -88,14 +89,29 @@ export interface TerminalPaneOptions {
 }
 
 type PaneStatus = SessionStatus | "idle";
+/** What the chip shows: the status, or a connected session whose input is late
+ * (`not-responding`) or stopped for good (`input-lost`). */
+type ShownStatus = PaneStatus | "not-responding" | "input-lost";
 
-const STATUS_LABEL_KEYS: Record<PaneStatus, MessageKey> = {
+const STATUS_LABEL_KEYS: Record<ShownStatus, MessageKey> = {
+  "not-responding": "pane.status.notResponding",
+  "input-lost": "pane.status.inputLost",
   idle: "pane.status.idle",
   connecting: "pane.status.connecting",
   connected: "pane.status.connected",
   disconnected: "pane.status.disconnected",
   exited: "pane.status.exited",
   error: "pane.status.error",
+};
+
+const STATUS_HINT_KEYS: Partial<Record<ShownStatus, MessageKey>> = {
+  "not-responding": "pane.status.notRespondingHint",
+  "input-lost": "pane.status.inputLostHint",
+};
+
+const INPUT_HEALTH_STATUS: Partial<Record<InputHealth, ShownStatus>> = {
+  stalled: "not-responding",
+  lost: "input-lost",
 };
 
 export class TerminalPane {
@@ -112,7 +128,8 @@ export class TerminalPane {
   private readonly searchBar: TerminalSearchBar;
   private readonly clipboard: PaneClipboard;
   private readonly recording: PaneRecording;
-  private readonly input = new SerialQueue();
+  private input = this.makeInputQueue();
+  private inputHealth: InputHealth = "ok";
   /** Pulls the current session's output into the terminal. */
   private output: OutputReader | null = null;
   /** The pane's own keys inside the terminal, each with what it does. */
@@ -139,7 +156,10 @@ export class TerminalPane {
   // Auto-reconnect (Phase 5). `userInitiated` marks a disconnect the user (or a
   // grid teardown) asked for, so it is NOT treated as an unexpected drop.
   private userInitiated = false;
-  private readonly reconnect = new ReconnectBudget(() => void this.startSession(true));
+  private readonly reconnect = new ReconnectBudget(
+    () => void this.startSession(true),
+    () => shellLabel(this.assignedDeviceName()),
+  );
   /** Set by `dispose()`: a connect resolving afterwards must close its session. */
   private disposed = false;
   // Kept so `retranslate()` can relabel the header status chip.
@@ -290,10 +310,32 @@ export class TerminalPane {
 
   private renderStatus(): void {
     const chip = requireEl<HTMLElement>(this.root, ".pane-status");
-    chip.className = `pane-status pane-status-${this.paneStatus}`;
-    const label = t(STATUS_LABEL_KEYS[this.paneStatus]);
+    const shown = this.shownStatus();
+    chip.className = `pane-status pane-status-${shown}`;
+    const label = t(STATUS_LABEL_KEYS[shown]);
     requireEl<HTMLElement>(chip, ".pane-status-label").textContent = label;
-    chip.title = label;
+    const hintKey = STATUS_HINT_KEYS[shown];
+    chip.title = hintKey ? t(hintKey) : label;
+  }
+
+  private shownStatus(): ShownStatus {
+    const inputStatus = INPUT_HEALTH_STATUS[this.inputHealth];
+    return inputStatus && this.paneStatus === "connected" ? inputStatus : this.paneStatus;
+  }
+
+  /** A queue per terminal: a send stuck in an old session can't hold up the
+   * next one's input. */
+  private makeInputQueue(): InputQueue {
+    const queue = new InputQueue((health) => {
+      if (queue === this.input) this.showInputHealth(health);
+    });
+    return queue;
+  }
+
+  private showInputHealth(health: InputHealth): void {
+    logInputHealth(this.assignedDeviceName(), health);
+    this.inputHealth = health;
+    this.renderStatus();
   }
 
   private async startSession(fromReconnect = false): Promise<void> {
@@ -376,6 +418,9 @@ export class TerminalPane {
   }
 
   private wireTerminalInput(terminal: Terminal): void {
+    this.input = this.makeInputQueue();
+    this.inputHealth = "ok";
+    this.renderStatus();
     terminal.onData((data) => this.onTypedData(data));
     // Mouse reports that aren't UTF-8 (the legacy encoding): never mirrored.
     terminal.onBinary((data) => this.onTypedBinary(data));
@@ -465,6 +510,7 @@ export class TerminalPane {
     const output = new OutputReader({
       read: (from) => readOutput(sessionId, from),
       write: (bytes) => this.writeOutput(terminal, bytes),
+      onReadTimeout: (unanswered) => logReadTimeout(this.assignedDeviceName(), unanswered),
     });
     this.output = output;
     void output.run();

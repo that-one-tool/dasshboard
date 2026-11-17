@@ -19,6 +19,7 @@ import {
 import { DEFAULT_TERMINAL_SETTINGS } from "../terminal/terminalSettings";
 import { renderThemeToggle } from "./themeToggle";
 import { wireSettingsTabs } from "./settingsTabs";
+import { LogsPanel, logsPanelHtml, logsTabHtml } from "./logsPanel";
 import {
   FONT_SIZE,
   KEEPALIVE_COUNT,
@@ -71,6 +72,7 @@ export class SettingsController {
   private readonly sftpListeners: ((settings: SftpSettings) => void)[] = [];
   private onError: (message: string) => void;
   private settings: Settings = FALLBACK_SETTINGS;
+  private saving: Promise<void> = Promise.resolve();
 
   constructor(options: SettingsControllerOptions) {
     this.onError = options.onError;
@@ -125,21 +127,35 @@ export class SettingsController {
    * sync): another running instance may have changed the font/theme, so adopt
    * whatever is now on disk. Deliberately does NOT persist — it only reflects
    * disk truth — so it can never clobber another instance's just-saved value.
+   * It takes its turn with the saves: read during one, disk could still hold
+   * the value before it.
    */
-  async reloadFromDisk(): Promise<void> {
+  reloadFromDisk(): Promise<void> {
+    this.saving = this.saving.then(() => this.reloadNow());
+    return this.saving;
+  }
+
+  private async reloadNow(): Promise<void> {
+    const before = this.settings;
     try {
       const fresh = await getSettings();
-      this.settings = fresh;
-      this.applyAppTheme(fresh.terminal.theme);
-      this.applyTerminalSettings(fresh.terminal);
-      this.notifySftpSettings(fresh.sftp);
-      // Another instance may have changed the language; adopt it. `setLocale`
-      // is a no-op when unchanged, and otherwise notifies the locale listeners
-      // (wired in `main.ts`) to re-render every view.
-      setLocale(resolveLocale(fresh.language));
+      // A change made meanwhile wins: its save, queued behind, persists it.
+      if (this.settings !== before) return;
+      this.adoptFromDisk(fresh);
     } catch (err) {
       this.onError(getErrorMessage(err));
     }
+  }
+
+  private adoptFromDisk(fresh: Settings): void {
+    this.settings = fresh;
+    this.applyAppTheme(fresh.terminal.theme);
+    this.applyTerminalSettings(fresh.terminal);
+    this.notifySftpSettings(fresh.sftp);
+    // Another instance may have changed the language; adopt it. `setLocale`
+    // is a no-op when unchanged, and otherwise notifies the locale listeners
+    // (wired in `main.ts`) to re-render every view.
+    setLocale(resolveLocale(fresh.language));
   }
 
   /** Current terminal appearance — read by panes when they create a terminal. */
@@ -223,11 +239,21 @@ export class SettingsController {
     await this.save();
   }
 
-  private async save(): Promise<void> {
+  /** Saves one at a time, in order, each sending the settings current when
+   * it starts, so an older save can't land after a newer one. */
+  private save(): Promise<void> {
+    this.saving = this.saving.then(() => this.saveNow());
+    return this.saving;
+  }
+
+  private async saveNow(): Promise<void> {
+    const sent = this.settings;
     try {
       // The backend sanitizes (clamps font size, defaults empty family) and
-      // returns the stored value — adopt it so the UI reflects reality.
-      this.settings = await saveSettings(this.settings);
+      // returns the stored value — adopt it so the UI reflects reality, unless
+      // a newer change came in meanwhile (its own save follows).
+      const stored = await saveSettings(sent);
+      if (this.settings === sent) this.settings = stored;
     } catch (err) {
       this.onError(getErrorMessage(err));
     }
@@ -275,6 +301,14 @@ export class SettingsController {
     if (wanted && !box.checked) this.onError(t("settings.tray.unavailable"));
   }
 
+  /** The Logs tab reloads its lines each time it is opened. */
+  private wireTabs(root: HTMLElement): void {
+    const logs = new LogsPanel(root, { onError: this.onError });
+    wireSettingsTabs(root, (tab) => {
+      if (tab === "logs") void logs.refresh();
+    });
+  }
+
   /* ---------------------------------------------------------------------- */
 
   private openDialog(): void {
@@ -308,6 +342,7 @@ export class SettingsController {
           <button type="button" class="settings-tab" role="tab" id="settings-tab-connections"
             data-tab="connections" aria-controls="settings-panel-connections" aria-selected="false"
             data-i18n="settings.tab.connections" tabindex="-1">${t("settings.tab.connections")}</button>
+          ${logsTabHtml()}
         </div>
         <div class="settings-body">
           <div class="settings-panel" role="tabpanel" id="settings-panel-general"
@@ -371,6 +406,7 @@ export class SettingsController {
               <small class="form-hint" data-i18n="settings.sftp.editor.hint">${t("settings.sftp.editor.hint")}</small>
             </label>
           </div>
+          ${logsPanelHtml()}
         </div>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" data-action="close" data-i18n="common.close">${t("common.close")}</button>
@@ -454,7 +490,7 @@ export class SettingsController {
 
     this.wireUpdateCheckbox(root);
     this.wireTrayCheckbox(root);
-    wireSettingsTabs(root);
+    this.wireTabs(root);
 
     // Re-translate the open dialog the moment the language changes (its
     // strings carry `data-i18n` keys), rather than only on the next open.

@@ -45,6 +45,8 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock("../ipc", () => ({
+  logToBackend: vi.fn(),
+  warnThrottled: vi.fn(),
   listDevices: vi.fn(async () => [h.device]),
   connect: vi.fn(async () => h.sessionId),
   disconnect: vi.fn(async () => {}),
@@ -95,10 +97,12 @@ import {
   connect,
   disconnect,
   listDevices,
+  logToBackend,
   readOutput,
   resizePty,
   saveTextFile,
   startRecording,
+  warnThrottled,
   writeStdin,
 } from "../ipc";
 import type { Device, ErrorCode, OutputChunk } from "../ipc";
@@ -1750,4 +1754,136 @@ describe("TerminalPane terminal keys, links and copy-on-select", () => {
     await nextTask();
     expect(writeText).not.toHaveBeenCalled();
   });
+});
+
+describe("TerminalPane input that stops getting through", () => {
+  beforeEach(() => {
+    h.statusHandler = null;
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    vi.mocked(writeStdin).mockReset().mockResolvedValue(undefined);
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  async function connectedPane(): Promise<{ chip: HTMLElement; pane: TerminalPane }> {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root);
+    await pane.init();
+    pane.assignDevice(h.device.id);
+    await (pane as unknown as { startSession(): Promise<void> }).startSession();
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    return { chip: q<HTMLElement>(root, ".pane-status"), pane };
+  }
+
+  const sent = (): unknown[] => vi.mocked(writeStdin).mock.calls.map((call) => call[1]);
+  const label = (chip: HTMLElement): string | null => q<HTMLElement>(chip, ".pane-status-label").textContent;
+
+  it("shows Not responding while a send hangs, then delivers the keys typed meanwhile, in order", async () => {
+    const { chip, pane } = await connectedPane();
+    vi.useFakeTimers();
+    let finish = (): void => {};
+    vi.mocked(writeStdin).mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
+
+    pane.sendInput("a");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chip.classList.contains("pane-status-not-responding")).toBe(true);
+    expect(label(chip)).toBe("Not responding");
+    expect(chip.title).not.toMatch(/[Rr]econnect/);
+    pane.sendInput("b");
+
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    pane.sendInput("c");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent()).toEqual(["a", "b", "c"]);
+    expect(label(chip)).toBe("Connected");
+  });
+
+  it("asks to reconnect after a send failed, and sends no later key", async () => {
+    const { chip, pane } = await connectedPane();
+    vi.mocked(writeStdin).mockRejectedValueOnce(new Error("ipc failed"));
+
+    pane.sendInput("a");
+    await flush();
+    pane.sendInput("b");
+    await flush();
+
+    expect(sent()).toEqual(["a"]);
+    expect(chip.classList.contains("pane-status-input-lost")).toBe(true);
+    expect(label(chip)).toBe("Not responding: reconnect");
+    expect(chip.title).toMatch(/[Rr]econnect/);
+  });
+
+  it("asks to reconnect when a send stays unanswered for 30 s", async () => {
+    const { chip, pane } = await connectedPane();
+    vi.useFakeTimers();
+    vi.mocked(writeStdin).mockImplementationOnce(() => new Promise<void>(() => {}));
+
+    pane.sendInput("a");
+    pane.sendInput("b");
+    await vi.advanceTimersByTimeAsync(30_000);
+    pane.sendInput("c");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sent()).toEqual(["a"]);
+    expect(label(chip)).toBe("Not responding: reconnect");
+  });
+
+  it("puts an input stall in the diagnostic log, named by device", async () => {
+    const { pane } = await connectedPane();
+    vi.useFakeTimers();
+    vi.mocked(writeStdin).mockImplementationOnce(() => new Promise<void>(() => {}));
+
+    pane.sendInput("a");
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(warnThrottled).toHaveBeenCalledWith(
+      "input stall NAS",
+      expect.stringMatching(/^shell NAS: input not responding/),
+    );
+  });
+
+  it("puts lost input in the diagnostic log, named by device", async () => {
+    const { pane } = await connectedPane();
+    vi.mocked(writeStdin).mockRejectedValueOnce(new Error("ipc failed"));
+
+    pane.sendInput("a");
+    await flush();
+
+    expect(logToBackend).toHaveBeenCalledWith("warn", "shell NAS: input stopped: reconnect");
+  });
+
+  it("shows the session's own status once it ends", async () => {
+    const { chip, pane } = await connectedPane();
+    vi.mocked(writeStdin).mockRejectedValueOnce(new Error("ipc failed"));
+    pane.sendInput("a");
+    await flush();
+
+    h.statusHandler?.({ sessionId: h.sessionId, status: "disconnected" });
+
+    expect(label(chip)).toBe("Disconnected");
+  });
+
+  it("starts a new session with input getting through", async () => {
+    const { chip, pane } = await connectedPane();
+    vi.mocked(writeStdin).mockImplementationOnce(() => new Promise<void>(() => {}));
+    vi.useFakeTimers();
+    pane.sendInput("a");
+    await vi.advanceTimersByTimeAsync(30_000);
+    vi.useRealTimers();
+    expect(label(chip)).toBe("Not responding: reconnect");
+
+    await (pane as unknown as { startSession(): Promise<void> }).startSession();
+    await flush();
+    expect(label(chip)).not.toMatch(/Not responding/);
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    pane.sendInput("b");
+    await flush();
+
+    expect(sent()).toEqual(["a", "b"]);
+    expect(label(chip)).toBe("Connected");
+  });
+
 });

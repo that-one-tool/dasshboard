@@ -3,13 +3,13 @@
 //! atomic-write + corrupt-recovery plumbing.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::atomic_file;
 use crate::error::AppError;
+use crate::store_cell::StoreCell;
 
 const COMMANDS_FILE: &str = "commands.json";
 const CURRENT_VERSION: u32 = 1;
@@ -86,7 +86,7 @@ struct CommandsFile {
 
 pub struct CommandStore {
     dir: PathBuf,
-    state: Mutex<Vec<SavedCommand>>,
+    state: StoreCell<Vec<SavedCommand>>,
 }
 
 impl CommandStore {
@@ -100,13 +100,14 @@ impl CommandStore {
         );
         Self {
             dir,
-            state: Mutex::new(state),
+            state: StoreCell::new(state),
         }
     }
 
     /// Re-reads the file, so commands another running instance saved show up
     /// here and survive this instance's next save.
     pub fn reload(&self) {
+        let turn = self.state.begin_write();
         let reread = atomic_file::reread_recovering::<CommandsFile, _>(
             &self.dir,
             COMMANDS_FILE,
@@ -114,12 +115,12 @@ impl CommandStore {
             Vec::new,
         );
         if let Some(state) = reread {
-            *atomic_file::lock(&self.state) = state;
+            turn.commit(state);
         }
     }
 
     pub fn list(&self) -> Vec<SavedCommand> {
-        atomic_file::lock(&self.state).clone()
+        self.state.get()
     }
 
     /// An empty id creates the command with a fresh UUID; a known id replaces
@@ -165,15 +166,15 @@ impl CommandStore {
         &self,
         edit: impl FnOnce(&mut Vec<SavedCommand>) -> Result<(), AppError>,
     ) -> Result<(), AppError> {
-        let mut guard = atomic_file::lock(&self.state);
-        let mut next = guard.clone();
+        let turn = self.state.begin_write();
+        let mut next = turn.current();
         edit(&mut next)?;
         let file = CommandsFile {
             version: CURRENT_VERSION,
             commands: next,
         };
         atomic_file::write_json(&self.dir, COMMANDS_FILE, &file)?;
-        *guard = file.commands;
+        turn.commit(file.commands);
         Ok(())
     }
 }

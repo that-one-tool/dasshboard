@@ -23,11 +23,13 @@ use tokio::sync::Notify;
 /// comes faster than the terminal parses it is not lost any earlier than it
 /// was with the push channel.
 pub(crate) const OUTPUT_LIMIT: usize = 50_000_000;
-/// The most one read returns.
-pub(crate) const MAX_READ: usize = 256 * 1024;
+/// The most one read returns. Small, because in Tauri's postMessage IPC
+/// fallback a binary reply travels as a JSON array of numbers in one `eval`.
+pub(crate) const MAX_READ: usize = 64 * 1024;
 /// How long a read waits for output before returning empty, so a reader whose
-/// session is gone without a word never waits forever.
-pub(crate) const READ_WAIT: Duration = Duration::from_secs(15);
+/// session is gone without a word never waits forever. Short, so idle reads
+/// don't hold the webview's IPC connections that keystrokes and SFTP need.
+pub(crate) const READ_WAIT: Duration = Duration::from_secs(2);
 
 /// What one read returns: `bytes` from offset `start` on (`start` is past the
 /// requested offset only when unread output was dropped), and `end` once the

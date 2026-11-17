@@ -10,6 +10,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use super::auth_prompts::{emit_auth_prompt, emit_auth_prompt_closed};
+use super::blocking::run_with_state;
 use super::device_access::{find_device, keepalive_config, resolve_credentials, resolve_jump_hop};
 use super::host_keys::{emit_host_key_prompt_closed, HOST_KEY_PROMPT_EVENT};
 use crate::device::{Connection, Device};
@@ -401,21 +402,27 @@ pub fn sftp_bookmarks(
 
 /// Add a remote path to a device's bookmarks (idempotent). Returns the updated list.
 #[tauri::command]
-pub fn sftp_bookmark_add(
-    state: State<'_, AppState>,
+pub async fn sftp_bookmark_add(
+    app: AppHandle,
     device_id: String,
     path: String,
 ) -> Result<Vec<String>, AppError> {
-    state.bookmark_store.add(&device_id, &path)
+    run_with_state(app, move |state: &AppState| {
+        state.bookmark_store.add(&device_id, &path)
+    })
+    .await
 }
 
 /// Remove a remote path from a device's bookmarks (no-op if absent). Returns the
 /// updated list.
 #[tauri::command]
-pub fn sftp_bookmark_remove(
-    state: State<'_, AppState>,
+pub async fn sftp_bookmark_remove(
+    app: AppHandle,
     device_id: String,
     path: String,
 ) -> Result<Vec<String>, AppError> {
-    state.bookmark_store.remove(&device_id, &path)
+    run_with_state(app, move |state: &AppState| {
+        state.bookmark_store.remove(&device_id, &path)
+    })
+    .await
 }

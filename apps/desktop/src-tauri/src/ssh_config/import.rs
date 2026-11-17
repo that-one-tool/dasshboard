@@ -50,6 +50,7 @@ fn import_hosts(
     default_user: Option<&str>,
     home: Option<&str>,
 ) -> Result<SshImportSummary, AppError> {
+    let _edits = state.device_store.hold_edits();
     let mut book = ImportBook::seeded(&state.device_store.list(), default_user);
     book.remember_aliases(&hosts, home);
     let total = hosts.len();

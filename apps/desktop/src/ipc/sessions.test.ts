@@ -281,3 +281,47 @@ describe("host-key answer echo suppression", () => {
 		expect(isLocalConfigWriteRecent()).toBe(true);
 	});
 });
+
+describe("slow input/output calls", () => {
+	/** Resolves `invoke` with `value` after `ms` of fake time, and returns
+	 * whatever was logged as slow. */
+	async function callTaking<T>(ms: number, value: unknown, call: () => Promise<T>): Promise<unknown[][]> {
+		vi.useFakeTimers();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		invokeMock.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(value), ms)));
+		const done = call();
+		await vi.advanceTimersByTimeAsync(ms);
+		await done;
+		const calls = warn.mock.calls;
+		warn.mockRestore();
+		vi.useRealTimers();
+		return calls;
+	}
+
+	const idleChunk = (): ArrayBuffer => new Uint8Array(9).buffer;
+
+	it("warns about a write_stdin taking over 2 s, naming the session and duration", async () => {
+		const warned = await callTaking(2_500, undefined, () => writeStdin("sess-1", "x"));
+		expect(warned).toHaveLength(1);
+		expect(String(warned[0]?.[0])).toMatch(/write_stdin.*sess-1.*2500 ms/);
+	});
+
+	it("also puts a slow call in the diagnostic log", async () => {
+		await callTaking(2_500, undefined, () => writeStdin("sess-log", "secret keys"));
+		const logged = invokeMock.mock.calls.find((call) => call[0] === "log_frontend");
+		expect(logged?.[1]).toEqual({ level: "warn", message: "write_stdin for session sess-log took 2500 ms" });
+	});
+
+	it("stays quiet about a quick write_stdin", async () => {
+		expect(await callTaking(100, undefined, () => writeStdinBinary("sess-1", "x"))).toHaveLength(0);
+	});
+
+	it("doesn't count read_output's own 2 s wait as slow", async () => {
+		expect(await callTaking(3_500, idleChunk(), () => readOutput("sess-1", 0))).toHaveLength(0);
+	});
+
+	it("warns about a read_output taking 2 s past its wait", async () => {
+		const warned = await callTaking(4_500, idleChunk(), () => readOutput("sess-1", 0));
+		expect(String(warned[0]?.[0])).toMatch(/read_output.*sess-1.*4500 ms/);
+	});
+});

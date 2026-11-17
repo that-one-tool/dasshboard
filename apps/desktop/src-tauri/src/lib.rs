@@ -3,6 +3,7 @@
 
 mod agent;
 mod agent_ident;
+mod app_log;
 mod app_menu;
 mod atomic_file;
 mod bookmark_store;
@@ -26,6 +27,7 @@ mod socks;
 mod ssh_config;
 mod state;
 mod store;
+mod store_cell;
 mod transfer;
 mod tray;
 mod updater;
@@ -282,6 +284,9 @@ pub fn run() {
             commands::app::install_update,
             commands::app::set_tray_labels,
             commands::app::live_session_count,
+            commands::logs::get_logs,
+            commands::logs::clear_logs,
+            commands::logs::log_frontend,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

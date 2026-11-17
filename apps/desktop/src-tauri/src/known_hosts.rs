@@ -23,13 +23,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::atomic_file::{self, ReadOutcome};
 use crate::error::AppError;
+use crate::store_cell::StoreCell;
 
 const KNOWN_HOSTS_FILE: &str = "known_hosts.json";
 const CURRENT_VERSION: u32 = 1;
@@ -68,7 +68,7 @@ struct KnownHostsFile {
 /// The trust map, plus when a damaged file was replaced (unix seconds) if the
 /// user hasn't dismissed that yet. The map started empty then, so every host
 /// in it was trusted since.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct TrustState {
     hosts: HashMap<String, KnownHost>,
     reset_at: Option<u64>,
@@ -124,7 +124,7 @@ pub fn verdict_for(stored: Option<&KnownHost>, presented_fingerprint: &str) -> V
 
 pub struct KnownHostsStore {
     dir: PathBuf,
-    state: Mutex<TrustState>,
+    state: StoreCell<TrustState>,
 }
 
 impl KnownHostsStore {
@@ -138,7 +138,7 @@ impl KnownHostsStore {
         let state = Self::read_from_disk(&dir).unwrap_or_else(TrustState::unreadable);
         KnownHostsStore {
             dir,
-            state: Mutex::new(state),
+            state: StoreCell::new(state),
         }
     }
 
@@ -149,8 +149,9 @@ impl KnownHostsStore {
     /// [`load`](Self::load): a corrupt file is backed up and replaced by a
     /// reset one; an unreadable one keeps the current state.
     pub fn reload(&self) {
+        let turn = self.state.begin_write();
         if let Some(state) = Self::read_from_disk(&self.dir) {
-            *self.lock_state() = state;
+            turn.commit(state);
         }
     }
 
@@ -178,68 +179,78 @@ impl KnownHostsStore {
             ..TrustState::default()
         };
         if let Err(err) = write_state(dir, &state) {
-            eprintln!("[DaSSHboard] could not record the trusted hosts reset: {err}");
+            crate::app_log::error(format!("could not record the trusted hosts reset: {err}"));
         }
         state
     }
 
     /// Returns the [`Verdict`] for a presented host key without mutating the
-    /// store. Locks only briefly and never across an `.await`.
+    /// store. Locks only briefly, never waits for a write, and never holds a
+    /// lock across an `.await`.
     pub fn verdict(&self, host: &str, port: u16, presented_fingerprint: &str) -> Verdict {
         let key = host_key(host, port);
-        let state = self.lock_state();
-        match verdict_for(state.hosts.get(&key), presented_fingerprint) {
-            Verdict::Unknown if state.may_miss_hosts() => Verdict::Unverifiable,
-            verdict => verdict,
-        }
+        self.state.read(
+            |state| match verdict_for(state.hosts.get(&key), presented_fingerprint) {
+                Verdict::Unknown if state.may_miss_hosts() => Verdict::Unverifiable,
+                verdict => verdict,
+            },
+        )
     }
 
     /// When the trusted hosts were reset after a damaged file (unix seconds),
     /// unless the user dismissed it.
     pub fn reset_at(&self) -> Option<u64> {
-        self.lock_state().reset_at
+        self.state.read(|state| state.reset_at)
     }
 
     /// The user acknowledged the reset: hosts without a record are plain
     /// first contacts again.
     pub fn dismiss_reset(&self) -> Result<(), AppError> {
-        let mut state = self.lock_state();
-        let Some(reset_at) = state.reset_at.take() else {
+        let turn = self.state.begin_write();
+        let mut state = turn.current();
+        if state.reset_at.take().is_none() {
             return Ok(());
-        };
-        self.persist(&state)
-            .inspect_err(|_| state.reset_at = Some(reset_at))
+        }
+        self.persist(&state)?;
+        turn.commit(state);
+        Ok(())
     }
 
     /// Records (TOFU) or overwrites (accepted key change) the host key for
-    /// `host:port`, persisting the whole store atomically.
+    /// `host:port`, persisting the whole store atomically. Trusted for this
+    /// run even when the write fails, and from before the write, so a connect
+    /// meanwhile isn't asked again.
     pub fn trust(&self, host: &str, port: u16, entry: KnownHost) -> Result<(), AppError> {
-        let mut state = self.lock_state();
+        let turn = self.state.begin_write();
+        let mut state = turn.current();
         self.ensure_loaded(&mut state)?;
         state.hosts.insert(host_key(host, port), entry);
+        turn.publish(state.clone());
         self.persist(&state)
     }
 
     /// Test/introspection helper: the stored record for a host, if any.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn get(&self, host: &str, port: u16) -> Option<KnownHost> {
-        self.lock_state().hosts.get(&host_key(host, port)).cloned()
+        self.state
+            .read(|state| state.hosts.get(&host_key(host, port)).cloned())
     }
 
     /// Snapshot of every trusted host for the management UI, sorted by `id`
     /// (`host:port`) so the list has a stable order across calls. Locks only
     /// to clone the map out; never across I/O.
     pub fn list(&self) -> Vec<KnownHostEntry> {
-        let mut entries: Vec<KnownHostEntry> = self
-            .lock_state()
-            .hosts
-            .iter()
-            .map(|(id, host)| KnownHostEntry {
-                id: id.clone(),
-                key_type: host.key_type.clone(),
-                fingerprint: host.fingerprint.clone(),
-            })
-            .collect();
+        let mut entries: Vec<KnownHostEntry> = self.state.read(|state| {
+            state
+                .hosts
+                .iter()
+                .map(|(id, host)| KnownHostEntry {
+                    id: id.clone(),
+                    key_type: host.key_type.clone(),
+                    fingerprint: host.fingerprint.clone(),
+                })
+                .collect()
+        });
         entries.sort_by(|a, b| a.id.cmp(&b.id));
         entries
     }
@@ -250,13 +261,17 @@ impl KnownHostsStore {
     /// the user clicked simply no longer exists) rather than an error. The
     /// store is only rewritten when something changed.
     pub fn forget(&self, id: &str) -> Result<bool, AppError> {
-        let mut state = self.lock_state();
+        let turn = self.state.begin_write();
+        let mut state = turn.current();
         self.ensure_loaded(&mut state)?;
-        if state.hosts.remove(id).is_none() {
-            return Ok(false);
-        }
-        self.persist(&state)?;
-        Ok(true)
+        let removed = state.hosts.remove(id).is_some();
+        let persisted = if removed {
+            self.persist(&state)
+        } else {
+            Ok(())
+        };
+        turn.commit(state);
+        persisted.map(|()| removed)
     }
 
     /// Read a file that was unreadable at launch before changing it, so a
@@ -271,13 +286,9 @@ impl KnownHostsStore {
         Ok(())
     }
 
-    fn lock_state(&self) -> std::sync::MutexGuard<'_, TrustState> {
-        atomic_file::lock(&self.state)
-    }
-
     /// Atomically persists the trust state (see [`atomic_file::write_json`]).
-    /// Callers hold the lock while writing, so two writes can't land out of
-    /// order and drop the newer one from disk.
+    /// Callers hold their write turn while writing, so two writes can't land
+    /// out of order and drop the newer one from disk.
     fn persist(&self, state: &TrustState) -> Result<(), AppError> {
         write_state(&self.dir, state)
     }

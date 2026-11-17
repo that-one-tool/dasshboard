@@ -9,12 +9,12 @@
 //! tests can point it at a temp dir.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
 use crate::atomic_file;
 use crate::error::AppError;
+use crate::store_cell::StoreCell;
 use crate::workspace::WorkspaceState;
 
 const WORKSPACE_FILE: &str = "workspace_state.json";
@@ -31,7 +31,7 @@ struct WorkspaceFile {
 
 pub struct WorkspaceStore {
     dir: PathBuf,
-    state: Mutex<WorkspaceState>,
+    state: StoreCell<WorkspaceState>,
 }
 
 impl WorkspaceStore {
@@ -43,7 +43,7 @@ impl WorkspaceStore {
         let state = Self::read_from_disk(&dir);
         WorkspaceStore {
             dir,
-            state: Mutex::new(state),
+            state: StoreCell::new(state),
         }
     }
 
@@ -58,7 +58,7 @@ impl WorkspaceStore {
 
     /// The current saved workspace (empty when nothing has been persisted).
     pub fn get(&self) -> WorkspaceState {
-        atomic_file::lock(&self.state).clone()
+        self.state.get()
     }
 
     /// Replaces the whole saved workspace. Validates before touching disk, then
@@ -67,9 +67,9 @@ impl WorkspaceStore {
     /// diverges memory from disk.
     pub fn save(&self, state: WorkspaceState) -> Result<(), AppError> {
         state.validate()?;
-        let mut guard = atomic_file::lock(&self.state);
+        let turn = self.state.begin_write();
         self.persist(&state)?;
-        *guard = state;
+        turn.commit(state);
         Ok(())
     }
 

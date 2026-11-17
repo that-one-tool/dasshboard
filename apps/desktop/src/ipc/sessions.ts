@@ -1,6 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Device } from "./devices";
 import type { ErrorCode } from "./errors";
+import { warnThrottled } from "./frontendLog";
 import { invokeChecked, markLocalConfigWrite } from "./invoke";
 
 /* ============================================================================
@@ -83,6 +84,21 @@ export interface OutputChunk {
 /** Bytes before the data in `read_output`'s reply: the start offset (u64,
  * big-endian) and the end flag. */
 const OUTPUT_HEADER = 9;
+/** A call this long hints at a stalled IPC, worth a warning. */
+const SLOW_CALL_MS = 2_000;
+/** How long `read_output` itself waits for output (the backend's `READ_WAIT`). */
+const READ_WAIT_MS = 2_000;
+
+/** `call`, with a warning (console and diagnostic log) when it takes over `slowMs`. */
+async function warnIfSlow<T>(command: string, sessionId: string, call: Promise<T>, slowMs = SLOW_CALL_MS): Promise<T> {
+  const started = Date.now();
+  try {
+    return await call;
+  } finally {
+    const elapsed = Date.now() - started;
+    if (elapsed > slowMs) warnThrottled(`slow ${command} ${sessionId}`, `${command} for session ${sessionId} took ${elapsed} ms`);
+  }
+}
 
 /**
  * A session's output after offset `from` (acknowledging everything before it),
@@ -90,7 +106,8 @@ const OUTPUT_HEADER = 9;
  * bytes, so a failed read is simply retried.
  */
 export async function readOutput(sessionId: string, from: number): Promise<OutputChunk> {
-  const reply = asBuffer(await invokeChecked<ArrayBuffer | number[]>("read_output", { sessionId, from }));
+  const call = invokeChecked<ArrayBuffer | number[]>("read_output", { sessionId, from });
+  const reply = asBuffer(await warnIfSlow("read_output", sessionId, call, READ_WAIT_MS + SLOW_CALL_MS));
   const view = new DataView(reply);
   return {
     start: Number(view.getBigUint64(0)),
@@ -111,13 +128,13 @@ export async function writeStdin(
   sessionId: string,
   data: string,
 ): Promise<void> {
-  await invokeChecked<void>("write_stdin", { sessionId, data });
+  await warnIfSlow("write_stdin", sessionId, invokeChecked<void>("write_stdin", { sessionId, data }));
 }
 
 /** Writes xterm's binary input (one byte per character, e.g. legacy mouse
  * reports) to a session as those bytes, not as UTF-8 text. */
 export async function writeStdinBinary(sessionId: string, data: string): Promise<void> {
-  await invokeChecked<void>("write_stdin", { sessionId, data, binary: true });
+  await warnIfSlow("write_stdin", sessionId, invokeChecked<void>("write_stdin", { sessionId, data, binary: true }));
 }
 
 /** Resizes a session's PTY (SPEC §5). */

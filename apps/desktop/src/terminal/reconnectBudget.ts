@@ -4,7 +4,7 @@
  * terminal panes (one each) and the Tunnels panel (one per device).
  */
 
-import type { ErrorCode } from "../ipc";
+import { logToBackend, type ErrorCode } from "../ipc";
 import {
   canReconnect,
   countKeyringFailure,
@@ -17,7 +17,11 @@ export class ReconnectBudget {
   private keyringFailures = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly retry: () => void) {}
+  /** `label` names the connection in the diagnostic log (no label: not logged). */
+  constructor(
+    private readonly retry: () => void,
+    private readonly label?: () => string,
+  ) {}
 
   get attempts(): number {
     return this.attemptCount;
@@ -39,11 +43,18 @@ export class ReconnectBudget {
     }
     this.attemptCount += 1;
     this.clearTimer();
+    const delayMs = reconnectDelayMs(this.attemptCount);
+    this.logAttempt(delayMs);
     this.timer = setTimeout(() => {
       this.timer = null;
       this.retry();
-    }, reconnectDelayMs(this.attemptCount));
+    }, delayMs);
     return true;
+  }
+
+  private logAttempt(delayMs: number): void {
+    if (!this.label) return;
+    logToBackend("info", `${this.label()}: reconnect attempt ${this.attemptCount} in ${delayMs} ms`);
   }
 
   /** Back up, or the user took over: cancel any pending retry and give the

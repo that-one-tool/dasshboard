@@ -80,7 +80,9 @@ the layout module by module.
 
 - **A backend command**: add the handler in its `commands/<domain>.rs`, register it in
   `lib.rs`, add a typed wrapper in its `ipc/<domain>.ts`, and keep the payload types in sync
-  on both sides.
+  on both sides. A command that writes files, uses the keychain or starts a process is
+  `async` and runs that work through `commands/blocking.rs`: a sync command runs on the
+  main thread, which on Linux carries every IPC reply.
 - **UI text**: add the key to `i18n/en.ts` (the source of truth, which also types
   the keys), then translate it in the other seven locale files.
 

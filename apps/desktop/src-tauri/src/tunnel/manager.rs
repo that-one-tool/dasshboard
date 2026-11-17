@@ -245,6 +245,7 @@ impl TunnelManager {
             params.keepalive,
         )
         .with_remote_routes(Arc::clone(routes))
+        .with_purpose("tunnel")
     }
 
     fn timeouts(&self) -> TunnelTimeouts {

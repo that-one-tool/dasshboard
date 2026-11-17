@@ -13,6 +13,7 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 use zeroize::Zeroizing;
 
+use super::conn_log::{log_auth_attempt, timed_connect};
 use super::deadline::ConnectDeadline;
 use super::handler::SshHandler;
 use super::interactive_auth::{finish_authentication, KbdTransport};
@@ -70,17 +71,17 @@ async fn establish(
     handler: SshHandler,
     connect_timeout: Duration,
 ) -> Result<client::Handle<SshHandler>, AppError> {
-    let stream = connect_tcp(host, port, connect_timeout).await?;
+    let dead_peer_timeout = handler.keepalive.dead_peer_timeout();
+    let stream = connect_tcp(host, port, connect_timeout, dead_peer_timeout).await?;
     establish_over_stream(stream, username, creds, handler).await
 }
 
-/// Reach `host:port` within `connect_timeout`. Nagle is turned off (as
-/// OpenSSH does): with it, each keystroke waits for the previous one's ACK,
-/// a full round trip on a slow link.
+/// Reach `host:port` within `connect_timeout`.
 async fn connect_tcp(
     host: &str,
     port: u16,
     connect_timeout: Duration,
+    dead_peer_timeout: Option<Duration>,
 ) -> Result<TcpStream, AppError> {
     let stream = match timeout(connect_timeout, TcpStream::connect((host, port))).await {
         Err(_) => {
@@ -95,10 +96,32 @@ async fn connect_tcp(
         }
         Ok(Ok(stream)) => stream,
     };
-    // Best-effort: a socket that refuses it still works, only slower.
-    let _ = stream.set_nodelay(true);
+    tune_ssh_socket(&stream, dead_peer_timeout);
     Ok(stream)
 }
+
+/// Nagle is turned off (as OpenSSH does): with it, each keystroke waits for
+/// the previous one's ACK, a full round trip on a slow link. Best-effort: a
+/// socket that refuses an option still works.
+fn tune_ssh_socket(stream: &TcpStream, dead_peer_timeout: Option<Duration>) {
+    let _ = stream.set_nodelay(true);
+    set_dead_peer_timeout(stream, dead_peer_timeout);
+}
+
+/// Drops a half-open link with data in flight (after sleep or a network
+/// change) instead of the kernel's ~15 min of retries, but never before the
+/// SSH keepalive would. `None` (keepalive off) leaves the kernel default.
+#[cfg(target_os = "linux")]
+fn set_dead_peer_timeout(stream: &TcpStream, timeout: Option<Duration>) {
+    let Some(timeout) = timeout else {
+        return;
+    };
+    let _ = socket2::SockRef::from(stream).set_tcp_user_timeout(Some(timeout));
+}
+
+/// Not set on macOS/Windows; SSH keepalive covers them.
+#[cfg(not(target_os = "linux"))]
+fn set_dead_peer_timeout(_stream: &TcpStream, _timeout: Option<Duration>) {}
 
 /// The transport-agnostic half of [`establish`]: run the SSH version exchange,
 /// key exchange and authentication over an already-connected byte stream, then
@@ -128,11 +151,13 @@ where
     });
 
     let asker = handler.auth_asker(username);
+    let label = handler.log_label();
     let mut handle = client::connect_stream(config, stream, handler)
         .await
         .map_err(map_connect_err)?;
 
     let first = authenticate_configured(&mut handle, username, creds).await?;
+    log_auth_attempt(&label, creds.method_kind(), &first);
     finish_authentication(
         &mut handle,
         username,
@@ -387,8 +412,34 @@ where
 /// share. Returns the authenticated target handle plus, for a jumped
 /// connection, the jump connection — which the caller [`close_jump`]s only
 /// once done with the target, since closing it ends the direct-tcpip channel
-/// the target rides on.
+/// the target rides on. Logs the attempt and its outcome with its duration.
 pub(crate) async fn establish_target(
+    target: Endpoint<'_>,
+    jump: Option<&JumpHop>,
+    target_handler: SshHandler,
+    connect_timeout: Duration,
+    overall_timeout: Duration,
+) -> Result<(client::Handle<SshHandler>, Option<JumpConnection>), AppError> {
+    let label = connect_label(target_handler.log_label(), jump);
+    let work = establish_target_untimed(
+        target,
+        jump,
+        target_handler,
+        connect_timeout,
+        overall_timeout,
+    );
+    timed_connect(&label, work).await
+}
+
+/// `shell example.com:22`, plus ` via bastion:22` for a jumped connection.
+fn connect_label(label: String, jump: Option<&JumpHop>) -> String {
+    match jump {
+        Some(jump) => format!("{label} via {}:{}", jump.host, jump.port),
+        None => label,
+    }
+}
+
+async fn establish_target_untimed(
     target: Endpoint<'_>,
     jump: Option<&JumpHop>,
     target_handler: SshHandler,
@@ -446,6 +497,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_jumped_connect_names_its_jump_host() {
+        let jump = JumpHop {
+            host: "bastion".to_string(),
+            port: 2222,
+            username: "u".to_string(),
+            creds: AuthCredentials::Agent {
+                fingerprint: "SHA256:x".to_string(),
+            },
+        };
+        assert_eq!(connect_label("shell h:22".into(), None), "shell h:22");
+        assert_eq!(
+            connect_label("shell h:22".into(), Some(&jump)),
+            "shell h:22 via bastion:2222"
+        );
+    }
+
+    #[test]
     fn the_overall_deadline_adds_up_connect_prompt_and_handshake() {
         let second = Duration::from_secs(1);
         let overall = overall_establish_timeout(second, 10 * second, 100 * second);
@@ -479,18 +547,39 @@ mod tests {
 
     #[tokio::test]
     async fn the_ssh_socket_sends_small_writes_without_delay() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        let stream = connect_tcp("127.0.0.1", port, Duration::from_secs(5))
-            .await
-            .expect("connects");
+        let stream = connect_to_listener(None).await;
 
         assert!(
             stream.nodelay().unwrap(),
             "Nagle must be off for keystrokes"
         );
+    }
+
+    async fn connect_to_listener(dead_peer_timeout: Option<Duration>) -> TcpStream {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        connect_tcp("127.0.0.1", port, Duration::from_secs(5), dead_peer_timeout)
+            .await
+            .expect("connects")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_ssh_socket_gives_up_on_a_silent_peer_with_the_keepalive() {
+        let stream = connect_to_listener(Some(Duration::from_secs(60))).await;
+
+        let user_timeout = socket2::SockRef::from(&stream).tcp_user_timeout();
+        assert_eq!(user_timeout.unwrap(), Some(Duration::from_secs(60)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_ssh_socket_keeps_the_kernel_timeout_without_keepalive() {
+        let stream = connect_to_listener(None).await;
+
+        let user_timeout = socket2::SockRef::from(&stream).tcp_user_timeout();
+        assert_eq!(user_timeout.unwrap(), None);
     }
 }

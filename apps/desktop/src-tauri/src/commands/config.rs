@@ -2,10 +2,15 @@
 
 use tauri::{AppHandle, Manager, State};
 
+use super::blocking::run_with_state;
 use crate::error::AppError;
 use crate::settings::Settings;
 use crate::state::AppState;
 use crate::workspace::WorkspaceState;
+
+/// Settings saves and reloads take turns, so the tray always shows what the
+/// last of them stored.
+static SETTINGS_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn get_settings_impl(state: &AppState) -> Settings {
     state.settings_store.get()
@@ -52,14 +57,42 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, AppError> {
 /// and returns the stored value (SPEC.md §5). Shows or hides the tray icon to
 /// match the close-to-tray setting.
 #[tauri::command]
-pub fn save_settings(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    mut settings: Settings,
-) -> Result<Settings, AppError> {
+pub async fn save_settings(app: AppHandle, mut settings: Settings) -> Result<Settings, AppError> {
+    let _turn = SETTINGS_TURN.lock().await;
+    let shown_before = stored_close_to_tray(&app);
     // Stored as off when the tray can't be built, so the checkbox reflects it.
-    settings.tray.close_to_tray = crate::tray::set_enabled(&app, settings.tray.close_to_tray);
-    save_settings_impl(&state, settings)
+    settings.tray.close_to_tray =
+        set_tray_on_main_thread(&app, settings.tray.close_to_tray).await?;
+    let saved = run_with_state(app.clone(), move |state: &AppState| {
+        save_settings_impl(state, settings)
+    })
+    .await;
+    if saved.is_err() {
+        let _ = set_tray_on_main_thread(&app, shown_before).await;
+    }
+    saved
+}
+
+fn stored_close_to_tray(app: &AppHandle) -> bool {
+    app.state::<AppState>()
+        .settings_store
+        .get()
+        .tray
+        .close_to_tray
+}
+
+/// Shows or hides the tray icon (only ever touched on the main thread), and
+/// whether it is shown now.
+async fn set_tray_on_main_thread(app: &AppHandle, enabled: bool) -> Result<bool, AppError> {
+    let (shown_tx, shown_rx) = tokio::sync::oneshot::channel();
+    let tray_app = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = shown_tx.send(crate::tray::set_enabled(&tray_app, enabled));
+    })
+    .map_err(|e| AppError::Io(format!("tray update failed: {e}")))?;
+    shown_rx
+        .await
+        .map_err(|e| AppError::Io(format!("tray update failed: {e}")))
 }
 
 /// The saved open-tabs workspace (Tabs milestone, Phase 3). Empty `tabs` means
@@ -74,11 +107,14 @@ pub fn get_workspace_state(state: State<'_, AppState>) -> Result<WorkspaceState,
 /// `workspace_state.json` is deliberately excluded from the config watcher, so
 /// this write never triggers a multi-instance reload.
 #[tauri::command]
-pub fn save_workspace_state(
-    state: State<'_, AppState>,
+pub async fn save_workspace_state(
+    app: AppHandle,
     workspace: WorkspaceState,
 ) -> Result<(), AppError> {
-    save_workspace_state_impl(&state, workspace)
+    run_with_state(app, move |state: &AppState| {
+        save_workspace_state_impl(state, workspace)
+    })
+    .await
 }
 
 /// Reloads every persisted config file from disk into memory (multi-instance
@@ -88,26 +124,16 @@ pub fn save_workspace_state(
 /// retry a locked file with short sleeps, which must not freeze the UI.
 #[tauri::command]
 pub async fn reload_config(app: AppHandle) -> Result<(), AppError> {
-    let reload_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        reload_config_impl(&reload_app.state::<AppState>())
+    let _turn = SETTINGS_TURN.lock().await;
+    run_with_state(app.clone(), |state: &AppState| {
+        reload_config_impl(state);
+        Ok(())
     })
-    .await
-    .map_err(|e| AppError::Io(format!("reload task failed: {e}")))?;
+    .await?;
     // Another instance may have toggled close-to-tray. Only reflected, never
     // written back, so a reload can't clobber the other instance's setting.
-    // The tray is only ever touched on the main thread.
-    let close_to_tray = app
-        .state::<AppState>()
-        .settings_store
-        .get()
-        .tray
-        .close_to_tray;
-    let tray_app = app.clone();
-    app.run_on_main_thread(move || {
-        crate::tray::set_enabled(&tray_app, close_to_tray);
-    })
-    .map_err(|e| AppError::Io(format!("tray update failed: {e}")))
+    set_tray_on_main_thread(&app, stored_close_to_tray(&app)).await?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -108,14 +108,13 @@ where
     let mut agent = match connect_agent().await {
         Ok(agent) => agent,
         Err(err) => {
-            eprintln!("[DaSSHboard] agent forwarding: {err}");
+            crate::app_log::warn(format!("agent forwarding: {err}"));
             return;
         }
     };
     let mut channel_stream = channel_stream;
     if let Err(err) = tokio::io::copy_bidirectional(&mut channel_stream, &mut agent).await {
-        // A reset when either end finishes is normal; log at a low key.
-        eprintln!("[DaSSHboard] agent forwarding channel ended: {err}");
+        crate::app_log::channel_ended("agent forwarding", &err);
     }
 }
 

@@ -182,7 +182,7 @@ impl X11Forward {
         S: AsyncRead + AsyncWrite + Unpin,
     {
         if let Err(err) = self.try_serve(channel).await {
-            eprintln!("[DaSSHboard] X11 forwarding channel ended: {err}");
+            crate::app_log::channel_ended("X11 forwarding", &err);
         }
     }
 

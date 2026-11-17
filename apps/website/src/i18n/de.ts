@@ -59,7 +59,7 @@ export const de: SiteMessages = {
 			},
 			{
 				title: "Für den Alltag gemacht",
-				body: "Automatische Wiederverbindung mit Backoff, Keepalives, Befehle beim Verbinden, Eingabe-Broadcast, Suchen und Speichern des Terminalverlaufs, Aufzeichnung einer Sitzung in eine Logdatei, klickbare Links, Dunkel/Hell-Umschalter mit einem Klick und eine Oberfläche in {languageCount} Sprachen.",
+				body: "Automatische Wiederverbindung mit Backoff, Keepalives, Befehle beim Verbinden, Eingabe-Broadcast, Suchen und Speichern des Terminalverlaufs, Aufzeichnung einer Sitzung in eine Logdatei, ein Verbindungsprotokoll für Fehlerberichte, klickbare Links, Dunkel/Hell-Umschalter mit einem Klick und eine Oberfläche in {languageCount} Sprachen.",
 			},
 		],
 	},

@@ -5,12 +5,12 @@
 //! missing or corrupt file, like the device/profile stores.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
 use crate::atomic_file;
 use crate::error::AppError;
+use crate::store_cell::StoreCell;
 
 const SETTINGS_FILE: &str = "settings.json";
 const CURRENT_VERSION: u32 = 1;
@@ -245,7 +245,7 @@ impl Settings {
 
 pub struct SettingsStore {
     dir: PathBuf,
-    settings: Mutex<Settings>,
+    settings: StoreCell<Settings>,
 }
 
 impl SettingsStore {
@@ -256,7 +256,7 @@ impl SettingsStore {
         let settings = Self::read_from_disk(&dir).unwrap_or_default();
         SettingsStore {
             dir,
-            settings: Mutex::new(settings),
+            settings: StoreCell::new(settings),
         }
     }
 
@@ -267,8 +267,9 @@ impl SettingsStore {
     /// is backed up and defaults are used; an unreadable one keeps the current
     /// settings.
     pub fn reload(&self) {
+        let turn = self.settings.begin_write();
         if let Some(settings) = Self::read_from_disk(&self.dir) {
-            *self.lock() = settings;
+            turn.commit(settings);
         }
     }
 
@@ -288,25 +289,18 @@ impl SettingsStore {
 
     /// The current settings (SPEC.md §5 `get_settings`).
     pub fn get(&self) -> Settings {
-        self.lock().clone()
+        self.settings.get()
     }
 
     /// Replace the settings wholesale, sanitizing first, and persist atomically
     /// (SPEC.md §5 `save_settings`). Returns the stored (sanitized) settings.
     pub fn save(&self, settings: Settings) -> Result<Settings, AppError> {
-        // Persist-then-commit (mirrors `DeviceStore::upsert`): hold the guard
-        // across `persist` and only swap the value in once the write succeeds,
-        // so a failed write never diverges memory from disk AND two concurrent
-        // saves can't commit to memory in the opposite order they hit the disk.
+        // Persist-then-commit (mirrors `DeviceStore::upsert`).
         let sanitized = settings.sanitized();
-        let mut guard = self.lock();
+        let turn = self.settings.begin_write();
         self.persist(&sanitized)?;
-        *guard = sanitized.clone();
+        turn.commit(sanitized.clone());
         Ok(sanitized)
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Settings> {
-        atomic_file::lock(&self.settings)
     }
 
     /// Atomically persists the settings (see [`atomic_file::write_json`]).

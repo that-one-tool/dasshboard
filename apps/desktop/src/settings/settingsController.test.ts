@@ -17,6 +17,8 @@ import type { Settings, TerminalSettings } from "../ipc";
 vi.mock("../ipc", () => ({
   getSettings: vi.fn(),
   saveSettings: vi.fn(),
+  getLogs: vi.fn(async () => [{ timeMs: 0, level: "warn", message: "tunnel h:22: connection lost" }]),
+  clearLogs: vi.fn(),
 }));
 
 import { SettingsController } from "./settingsController";
@@ -110,6 +112,19 @@ describe("SettingsController.init", () => {
     expect(document.querySelector(".settings-dialog")).toBeNull();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
     expect(document.querySelector(".settings-dialog")).not.toBeNull();
+  });
+
+  it("loads the logs when the Logs tab is opened", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings());
+    const controller = makeController(vi.fn(), vi.fn());
+    await controller.init();
+    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
+
+    document.querySelector<HTMLButtonElement>('[data-tab="logs"]')?.click();
+    await flush();
+
+    expect(document.querySelector('[data-panel="logs"]')?.hasAttribute("hidden")).toBe(false);
+    expect(document.querySelector(".logs-message")?.textContent).toBe("tunnel h:22: connection lost");
   });
 
   it("names the dialog by its title and links the update checkbox to its hint", async () => {
@@ -671,5 +686,79 @@ describe("the system language entry", () => {
   it("is in English when the app doesn't ship the OS language", async () => {
     await openWithOsLanguages(["ko-KR"]);
     expect(systemOption()?.textContent).toBe("System default");
+  });
+});
+
+describe("SettingsController concurrent saves", () => {
+  it("sends one save at a time, the later one with every change, and keeps the newest choice", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings({ lastProfileId: null }));
+    const replies: Array<() => void> = [];
+    vi.mocked(saveSettings).mockImplementation(
+      (s: Settings) => new Promise<Settings>((resolve) => replies.push(() => resolve(s))),
+    );
+    const controller = makeController(fakeGrid().applyTerminalSettings, vi.fn());
+    await controller.init();
+
+    const first = controller.persistLastProfileId("profile-1");
+    const second = controller.persistLastProfileId("profile-2");
+    await flush();
+    expect(saveSettings).toHaveBeenCalledTimes(1);
+
+    replies[0]?.();
+    await flush();
+    expect(controller.lastProfileId()).toBe("profile-2");
+    expect(saveSettings).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(saveSettings).mock.calls[1]?.[0].lastProfileId).toBe("profile-2");
+    replies[1]?.();
+    await Promise.all([first, second]);
+    expect(controller.lastProfileId()).toBe("profile-2");
+  });
+});
+
+describe("SettingsController reload during a save", () => {
+  it("reads disk only after the save in flight, so the saved choice stays", async () => {
+    let disk = settings({ lastProfileId: null });
+    vi.mocked(getSettings).mockImplementation(async () => disk);
+    let reply = (): void => {};
+    vi.mocked(saveSettings).mockImplementation(
+      (s: Settings) =>
+        new Promise<Settings>((resolve) => {
+          reply = () => {
+            disk = s;
+            resolve(s);
+          };
+        }),
+    );
+    const controller = makeController(fakeGrid().applyTerminalSettings, vi.fn());
+    await controller.init();
+
+    const saving = controller.persistLastProfileId("profile-1");
+    await flush();
+    const reloading = controller.reloadFromDisk();
+    await flush();
+    reply();
+    await Promise.all([saving, reloading]);
+
+    expect(controller.lastProfileId()).toBe("profile-1");
+  });
+
+  it("keeps a change made while the reload reads disk", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settings({ lastProfileId: null }));
+    vi.mocked(saveSettings).mockImplementation(async (s: Settings) => s);
+    const controller = makeController(fakeGrid().applyTerminalSettings, vi.fn());
+    await controller.init();
+    let read = (): void => {};
+    vi.mocked(getSettings).mockImplementation(
+      () => new Promise<Settings>((resolve) => (read = () => resolve(settings({ lastProfileId: null })))),
+    );
+
+    const reloading = controller.reloadFromDisk();
+    await flush();
+    const saving = controller.persistLastProfileId("profile-2");
+    read();
+    await Promise.all([reloading, saving]);
+
+    expect(controller.lastProfileId()).toBe("profile-2");
+    expect(vi.mocked(saveSettings).mock.lastCall?.[0].lastProfileId).toBe("profile-2");
   });
 });

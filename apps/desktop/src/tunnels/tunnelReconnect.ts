@@ -37,7 +37,10 @@ export class TunnelReconnects {
   private budgetOf(deviceId: string): ReconnectBudget {
     let budget = this.budgets.get(deviceId);
     if (!budget) {
-      budget = new ReconnectBudget(() => this.retry(deviceId));
+      budget = new ReconnectBudget(
+        () => this.retry(deviceId),
+        () => `tunnel of device ${deviceId}`,
+      );
       this.budgets.set(deviceId, budget);
     }
     return budget;

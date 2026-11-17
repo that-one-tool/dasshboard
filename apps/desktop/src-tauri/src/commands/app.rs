@@ -2,6 +2,7 @@
 
 use tauri::{AppHandle, State};
 
+use super::blocking::run_blocking;
 use crate::error::AppError;
 use crate::state::AppState;
 use crate::updater::{self, PendingUpdate, UpdateInfo};
@@ -59,9 +60,8 @@ pub fn ping() -> String {
 
 /// Write a terminal's saved output to `path`, chosen in the native save dialog.
 #[tauri::command]
-pub fn save_text_file(path: String, contents: String) -> Result<(), AppError> {
-    std::fs::write(path, contents)?;
-    Ok(())
+pub async fn save_text_file(path: String, contents: String) -> Result<(), AppError> {
+    run_blocking(move || Ok(std::fs::write(path, contents)?)).await
 }
 
 /// Whether a local SSH agent looks reachable, for the device editor's

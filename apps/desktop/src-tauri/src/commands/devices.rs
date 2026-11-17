@@ -1,10 +1,11 @@
 //! Device CRUD: the keyring write comes first, so a failed secret write never
 //! leaves a device on disk claiming credentials it has no secret for.
 
-use tauri::State;
+use tauri::{AppHandle, State};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
+use super::blocking::run_with_state;
 use crate::device::Device;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -62,6 +63,10 @@ pub(super) fn save_device_impl(
         secret.zeroize();
     }
 
+    // Held across the keychain calls too: an unlock prompt there holds off
+    // other device edits until answered (reads don't wait), but the keychain
+    // and the store can't end up out of step.
+    let _edits = state.device_store.hold_edits();
     // Capture the previously-stored secret "slot" (SSH auth method, or "serial")
     // if this is an edit of an existing device, before anything below changes
     // it, so we can tell whether the slot is changing.
@@ -88,6 +93,7 @@ pub(super) fn save_device_impl(
 }
 
 fn delete_device_impl(state: &AppState, device_id: &str) -> Result<(), AppError> {
+    let _edits = state.device_store.hold_edits();
     // If the device itself doesn't exist, `delete` returns `NotFound` via
     // `?` and we never reach the cleanup below.
     state.device_store.delete(device_id)?;
@@ -105,12 +111,11 @@ fn delete_device_impl(state: &AppState, device_id: &str) -> Result<(), AppError>
     let device_ref_res = state.device_store.clear_proxy_jump(device_id);
     // B4: `secret_res?` below returns first on a double failure, which would
     // otherwise silently discard the other errors. Log any that won't be
-    // returned so a multi-failure cleanup isn't invisible (matches the non-fatal
-    // `eprintln!` pattern used elsewhere in the stores).
+    // returned so a multi-failure cleanup isn't invisible.
     if secret_res.is_err() || profile_res.is_err() || device_ref_res.is_err() {
-        eprintln!(
-            "[DaSSHboard] delete_device({device_id}) cleanup: keyring={secret_res:?}, profiles={profile_res:?}, proxyJump refs={device_ref_res:?} (only the first error is returned to the caller)"
-        );
+        crate::app_log::error(format!(
+            "delete_device({device_id}) cleanup: keyring={secret_res:?}, profiles={profile_res:?}, proxyJump refs={device_ref_res:?} (only the first error is returned to the caller)"
+        ));
     }
     secret_res?;
     profile_res?;
@@ -131,19 +136,25 @@ pub fn list_devices(state: State<'_, AppState>) -> Result<Vec<Device>, AppError>
 /// auth method changed in this save, in which case the now-stale secret is
 /// deleted so no orphaned password/passphrase remains (SPEC.md §4/§5).
 #[tauri::command]
-pub fn save_device(
-    state: State<'_, AppState>,
+pub async fn save_device(
+    app: AppHandle,
     device: Device,
     secret: Option<String>,
 ) -> Result<Device, AppError> {
-    save_device_impl(&state, device, secret)
+    run_with_state(app, move |state: &AppState| {
+        save_device_impl(state, device, secret)
+    })
+    .await
 }
 
 /// Deletes the device, its keyring entry (if any), and nulls it out of any
 /// profile pane that referenced it (SPEC.md §5, PLAN.md Phase 4 task 4).
 #[tauri::command]
-pub fn delete_device(state: State<'_, AppState>, device_id: String) -> Result<(), AppError> {
-    delete_device_impl(&state, &device_id)
+pub async fn delete_device(app: AppHandle, device_id: String) -> Result<(), AppError> {
+    run_with_state(app, move |state: &AppState| {
+        delete_device_impl(state, &device_id)
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -386,8 +397,8 @@ mod tests {
         // Regression coverage for B4: even when both cleanups are attempted,
         // the caller must still see the (first) keyring error rather than it
         // being swallowed. The profile-cleanup error being dropped in that
-        // case is a deliberate, logged trade-off (see the `eprintln!` in
-        // `delete_device_impl`), not something a test can assert on stderr,
+        // case is a deliberate, logged trade-off (see the log line in
+        // `delete_device_impl`), not something this test asserts on,
         // so this test only pins the still-returned error.
         let dir = tempdir().unwrap();
         let secret_store = Arc::new(FailingSecretStore::new());
@@ -442,5 +453,41 @@ mod tests {
             cleaned.tabs[0].panes[0].device_id, None,
             "the deleted device must be nulled out of the profile pane"
         );
+    }
+
+    /// Runs `edit` on another thread while a device edit is under way, and
+    /// whether it finished before that edit ended.
+    fn finishes_during_another_edit(edit: impl FnOnce(&AppState) + Send + 'static) -> bool {
+        let dir = tempdir().unwrap();
+        let state = Arc::new(test_state(dir.path()));
+        save_device_impl(&state, sample_device(), None).unwrap();
+        let held = state.device_store.hold_edits();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let editor_state = Arc::clone(&state);
+        let editor = std::thread::spawn(move || {
+            edit(&editor_state);
+            done_tx.send(()).unwrap();
+        });
+        let finished = done_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_ok();
+        drop(held);
+        editor.join().unwrap();
+        finished
+    }
+
+    #[test]
+    fn a_device_save_waits_for_the_device_edit_under_way() {
+        assert!(!finishes_during_another_edit(|state| {
+            save_device_impl(state, sample_device(), Some("pw".to_string())).unwrap();
+        }));
+    }
+
+    #[test]
+    fn a_device_delete_waits_for_the_device_edit_under_way() {
+        assert!(!finishes_during_another_edit(|state| {
+            let id = state.device_store.list()[0].id.clone();
+            delete_device_impl(state, &id).unwrap();
+        }));
     }
 }

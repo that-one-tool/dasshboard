@@ -91,7 +91,9 @@
 }
 .pane-status-disconnected,
 .pane-status-exited,
-.pane-status-error {
+.pane-status-error,
+.pane-status-not-responding,
+.pane-status-input-lost {
 	--chip-bg: var(--danger-soft);
 	--chip-fg: var(--danger-text);
 	--chip-dot: var(--danger);

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use super::blocking::run_with_state;
 use super::sftp::sftp_progress_emitter;
 use crate::editor;
 use crate::error::AppError;
@@ -86,8 +87,8 @@ pub async fn sftp_editable_size(
 
 /// Open an already-downloaded edit in the editor again (it was closed).
 #[tauri::command]
-pub fn sftp_edit_launch(state: State<'_, AppState>, edit_id: String) -> Result<(), AppError> {
-    launch_editor(&state, &edit_id)
+pub async fn sftp_edit_launch(app: AppHandle, edit_id: String) -> Result<(), AppError> {
+    run_with_state(app, move |state: &AppState| launch_editor(state, &edit_id)).await
 }
 
 /// Whether a saved edit needs uploading, and whether the remote changed too.
@@ -138,7 +139,10 @@ pub async fn sftp_edit_discard(
 
 /// Stop an edit: no more uploads, and its local copy is deleted.
 #[tauri::command]
-pub fn sftp_edit_close(state: State<'_, AppState>, edit_id: String) -> Result<(), AppError> {
-    state.edit_manager.close(&edit_id);
-    Ok(())
+pub async fn sftp_edit_close(app: AppHandle, edit_id: String) -> Result<(), AppError> {
+    run_with_state(app, move |state: &AppState| {
+        state.edit_manager.close(&edit_id);
+        Ok(())
+    })
+    .await
 }
