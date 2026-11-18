@@ -19,7 +19,6 @@ import {
 import { DEFAULT_TERMINAL_SETTINGS } from "../terminal/terminalSettings";
 import { renderThemeToggle } from "./themeToggle";
 import { wireSettingsTabs } from "./settingsTabs";
-import { LogsPanel, logsPanelHtml, logsTabHtml } from "./logsPanel";
 import {
   FONT_SIZE,
   KEEPALIVE_COUNT,
@@ -301,14 +300,6 @@ export class SettingsController {
     if (wanted && !box.checked) this.onError(t("settings.tray.unavailable"));
   }
 
-  /** The Logs tab reloads its lines each time it is opened. */
-  private wireTabs(root: HTMLElement): void {
-    const logs = new LogsPanel(root, { onError: this.onError });
-    wireSettingsTabs(root, (tab) => {
-      if (tab === "logs") void logs.refresh();
-    });
-  }
-
   /* ---------------------------------------------------------------------- */
 
   private openDialog(): void {
@@ -342,7 +333,6 @@ export class SettingsController {
           <button type="button" class="settings-tab" role="tab" id="settings-tab-connections"
             data-tab="connections" aria-controls="settings-panel-connections" aria-selected="false"
             data-i18n="settings.tab.connections" tabindex="-1">${t("settings.tab.connections")}</button>
-          ${logsTabHtml()}
         </div>
         <div class="settings-body">
           <div class="settings-panel" role="tabpanel" id="settings-panel-general"
@@ -406,7 +396,6 @@ export class SettingsController {
               <small class="form-hint" data-i18n="settings.sftp.editor.hint">${t("settings.sftp.editor.hint")}</small>
             </label>
           </div>
-          ${logsPanelHtml()}
         </div>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" data-action="close" data-i18n="common.close">${t("common.close")}</button>
@@ -490,7 +479,7 @@ export class SettingsController {
 
     this.wireUpdateCheckbox(root);
     this.wireTrayCheckbox(root);
-    this.wireTabs(root);
+    wireSettingsTabs(root);
 
     // Re-translate the open dialog the moment the language changes (its
     // strings carry `data-i18n` keys), rather than only on the next open.

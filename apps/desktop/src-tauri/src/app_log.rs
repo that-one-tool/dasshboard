@@ -1,4 +1,4 @@
-//! The app's diagnostic log, shown in Settings > Logs: the last lines kept in
+//! The app's diagnostic log, shown in the Logs dialog: the last lines kept in
 //! memory, each also echoed to stderr. Never log secrets or terminal data.
 
 use std::collections::VecDeque;

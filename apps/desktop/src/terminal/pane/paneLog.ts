@@ -1,4 +1,4 @@
-/** A pane's lines in the diagnostic log (Settings > Logs). Never terminal data. */
+/** A pane's lines in the diagnostic log (Logs dialog). Never terminal data. */
 
 import { logToBackend, warnThrottled } from "../../ipc";
 import type { InputHealth } from "../inputQueue";

@@ -1,4 +1,4 @@
-//! The diagnostic log (Settings > Logs): read, clear, and lines from the frontend.
+//! The diagnostic log (Logs dialog): read, clear, and lines from the frontend.
 
 use crate::app_log::{self, LogEntry, LogLevel};
 

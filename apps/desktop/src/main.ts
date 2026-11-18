@@ -24,8 +24,9 @@ import { initSidebarResize } from "./layout/sidebarResize";
 import { initSidebarRail, type SidebarRail } from "./layout/sidebarRail";
 import { initTrayLabels } from "./tray/trayLabels";
 import { openKnownHostsDialog } from "./settings/knownHostsDialog";
+import { openLogsDialog } from "./settings/logsDialog";
 import { showToast } from "./ui/toast";
-import { helpIcon, reloadIcon, lockIcon, gearIcon, filesIcon } from "./ui/icons";
+import { helpIcon, reloadIcon, lockIcon, gearIcon, filesIcon, logsIcon } from "./ui/icons";
 import { applyDomTranslations, onLocaleChange, t } from "./i18n";
 import { refreshDevicesAll, reloadConfigAll, retranslateAll, type LiveView } from "./app/liveViews";
 
@@ -37,6 +38,7 @@ function initHeaderIcons(): void {
 		["#reload-btn", reloadIcon],
 		["#trusted-hosts-btn", lockIcon],
 		["#sftp-btn", filesIcon],
+		["#logs-btn", logsIcon],
 		["#settings-btn", gearIcon],
 		["#help-btn", helpIcon],
 	];
@@ -85,6 +87,7 @@ function initChrome(): void {
 	void document.fonts?.load('16px "Symbols Nerd Font Mono"').catch(() => {});
 	initHeaderIcons();
 	wireClick("#trusted-hosts-btn", () => openKnownHostsDialog({ onError: showError }));
+	wireClick("#logs-btn", () => void openLogsDialog({ onError: showError }));
 	// Reacts to `host_key_prompt` from any source (a live connect or Test connection).
 	initHostKeyDialog();
 	// Reacts to `auth_prompt`: a server asking for a 2FA code or the like.

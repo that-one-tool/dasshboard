@@ -1,7 +1,7 @@
 import { invokeChecked } from "./invoke";
 
 /* ----------------------------------------------------------------------------
- * Diagnostic log (backend `app_log.rs`, Settings > Logs)
+ * Diagnostic log (backend `app_log.rs`, Logs dialog)
  * -------------------------------------------------------------------------- */
 
 export type LogLevel = "info" | "warn" | "error";

@@ -1,0 +1,63 @@
+/* ============================================================================
+ * Logs dialog
+ * ============================================================================ */
+
+/* A hint, its buttons, then the lines in a monospace list that scrolls on its
+ * own (newest at the bottom). */
+.logs-panel {
+	padding: 1rem 1rem 0;
+}
+
+.logs-panel .form-hint {
+	margin: 0 0 0.5rem;
+}
+
+.logs-actions {
+	display: flex;
+	gap: 0.5rem;
+	margin-bottom: 0.5rem;
+}
+
+.logs-list {
+	height: min(60vh, 28rem);
+	margin: 0;
+	padding: 0.5rem;
+	overflow: auto;
+	list-style: none;
+	background-color: var(--surface-0);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	font-family: var(--mono-font);
+	font-size: 0.75rem;
+	line-height: 1.45;
+	user-select: text;
+}
+
+.logs-list:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+.logs-entry {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.logs-time {
+	color: var(--text-muted);
+}
+
+.logs-level {
+	display: inline-block;
+	min-width: 3.5rem;
+	margin: 0 0.5rem;
+	color: var(--text-secondary);
+}
+
+.logs-warn .logs-level {
+	color: var(--warn-text);
+}
+
+.logs-error .logs-level {
+	color: var(--danger-text);
+}

@@ -53,6 +53,9 @@ export const gearIcon = `<svg viewBox="0 0 24 24" class="icon icon-lg" fill="non
 /** Open folder — "Files (SFTP)" panel toggle. */
 export const filesIcon = `<svg viewBox="0 0 24 24" class="icon icon-lg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`;
 
+/** Scroll with text — "connection logs". */
+export const logsIcon = `<svg viewBox="0 0 24 24" class="icon icon-lg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/></svg>`;
+
 /* ----------------------------------------------------------------------------
  * List, toolbar and panel icons (16px).
  * -------------------------------------------------------------------------- */

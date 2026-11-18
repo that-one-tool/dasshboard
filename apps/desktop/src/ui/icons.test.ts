@@ -16,6 +16,7 @@ const HEADER_ICONS = new Set([
   "lockIcon",
   "gearIcon",
   "filesIcon",
+  "logsIcon",
   "sunIcon",
   "moonIcon",
 ]);

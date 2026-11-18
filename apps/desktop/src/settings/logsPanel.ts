@@ -1,7 +1,7 @@
 /**
- * The Settings dialog's Logs tab: the backend's diagnostic log (connection
- * events, slow calls, stalls), newest at the bottom, with Refresh, Copy and
- * Clear. Messages are set as text, never HTML: some come from servers.
+ * The Logs dialog's panel: the backend's diagnostic log (connection events,
+ * slow calls, stalls), newest at the bottom, with Refresh, Copy and Clear.
+ * Messages are set as text, never HTML: some come from servers.
  */
 
 import { clearLogs, getLogs, type LogEntry } from "../ipc";
@@ -14,23 +14,16 @@ export interface LogsPanelOptions {
   onError: (message: string) => void;
 }
 
-export function logsTabHtml(): string {
-  return `<button type="button" class="settings-tab" role="tab" id="settings-tab-logs"
-    data-tab="logs" aria-controls="settings-panel-logs" aria-selected="false"
-    data-i18n="settings.tab.logs" tabindex="-1">${t("settings.tab.logs")}</button>`;
-}
-
 export function logsPanelHtml(): string {
-  return `<div class="settings-panel settings-logs" role="tabpanel" id="settings-panel-logs"
-    data-panel="logs" aria-labelledby="settings-tab-logs" hidden>
-    <p class="form-hint" data-i18n="settings.logs.hint">${t("settings.logs.hint")}</p>
+  return `<div class="logs-panel">
+    <p class="form-hint" data-i18n="logs.hint">${t("logs.hint")}</p>
     <div class="logs-actions">
-      ${actionButton("logs-refresh", "settings.logs.refresh")}
-      ${actionButton("logs-copy", "settings.logs.copy")}
-      ${actionButton("logs-clear", "settings.logs.clear")}
+      ${actionButton("logs-refresh", "logs.refresh")}
+      ${actionButton("logs-copy", "logs.copy")}
+      ${actionButton("logs-clear", "logs.clear")}
     </div>
-    <ol class="logs-list" tabindex="0" data-i18n-aria="settings.logs.aria" aria-label="${t("settings.logs.aria")}"></ol>
-    <p class="logs-empty form-hint" data-i18n="settings.logs.empty" hidden>${t("settings.logs.empty")}</p>
+    <ol class="logs-list" tabindex="0" data-i18n-aria="logs.aria" aria-label="${t("logs.aria")}"></ol>
+    <p class="logs-empty form-hint" data-i18n="logs.empty" hidden>${t("logs.empty")}</p>
   </div>`;
 }
 
@@ -80,7 +73,7 @@ export class LogsPanel {
       const entries = await getLogs();
       this.render(entries);
       await navigator.clipboard.writeText(logsAsText(entries));
-      showToast(t("settings.logs.copied"), "success");
+      showToast(t("logs.copied"), "success");
     });
   }
 

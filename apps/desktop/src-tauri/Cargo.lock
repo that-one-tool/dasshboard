@@ -1037,7 +1037,7 @@ dependencies = [
 
 [[package]]
 name = "dasshboard"
-version = "1.40.8"
+version = "1.40.9"
 dependencies = [
  "aws-lc-rs",
  "filedescriptor",

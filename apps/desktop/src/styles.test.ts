@@ -28,6 +28,7 @@ const EXPECTED_ORDER = [
 	"settings",
 	"about",
 	"known-hosts",
+	"logs",
 	"port-forwards",
 	"tunnels",
 	"selects",

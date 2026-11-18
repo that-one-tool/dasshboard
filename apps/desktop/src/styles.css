@@ -20,6 +20,7 @@
 @import "./styles/settings.css";
 @import "./styles/about.css";
 @import "./styles/known-hosts.css";
+@import "./styles/logs.css";
 @import "./styles/port-forwards.css";
 @import "./styles/tunnels.css";
 @import "./styles/selects.css";

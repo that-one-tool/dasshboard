@@ -2,18 +2,12 @@
  * Tab switching for the Settings dialog (WAI-ARIA tabs pattern). Tabs are
  * `[role="tab"][data-tab]` buttons; each shows the `[data-panel]` of the same
  * name. A click or the Left/Right arrow keys (wrapping) select a tab; only the
- * selected tab sits in the Tab order (roving tabindex). `onSelect` hears the
- * selected tab's name (e.g. to refresh what its panel shows).
+ * selected tab sits in the Tab order (roving tabindex).
  */
 
-type OnSelect = (name: string) => void;
-
-export function wireSettingsTabs(root: HTMLElement, onSelect: OnSelect = () => {}): void {
+export function wireSettingsTabs(root: HTMLElement): void {
 	const tabs = [...root.querySelectorAll<HTMLElement>('[role="tab"]')];
-	const selectAt = (index: number): void => {
-		select(root, tabs, index);
-		onSelect(tabs[index]?.dataset.tab ?? "");
-	};
+	const selectAt = (index: number): void => select(root, tabs, index);
 	tabs.forEach((tab, index) => {
 		tab.addEventListener("click", () => selectAt(index));
 		tab.addEventListener("keydown", (e) => onArrow(e, tabs, index, selectAt));

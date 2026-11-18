@@ -17,8 +17,6 @@ import type { Settings, TerminalSettings } from "../ipc";
 vi.mock("../ipc", () => ({
   getSettings: vi.fn(),
   saveSettings: vi.fn(),
-  getLogs: vi.fn(async () => [{ timeMs: 0, level: "warn", message: "tunnel h:22: connection lost" }]),
-  clearLogs: vi.fn(),
 }));
 
 import { SettingsController } from "./settingsController";
@@ -112,19 +110,6 @@ describe("SettingsController.init", () => {
     expect(document.querySelector(".settings-dialog")).toBeNull();
     document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
     expect(document.querySelector(".settings-dialog")).not.toBeNull();
-  });
-
-  it("loads the logs when the Logs tab is opened", async () => {
-    vi.mocked(getSettings).mockResolvedValue(settings());
-    const controller = makeController(vi.fn(), vi.fn());
-    await controller.init();
-    document.querySelector<HTMLButtonElement>("#settings-btn")?.click();
-
-    document.querySelector<HTMLButtonElement>('[data-tab="logs"]')?.click();
-    await flush();
-
-    expect(document.querySelector('[data-panel="logs"]')?.hasAttribute("hidden")).toBe(false);
-    expect(document.querySelector(".logs-message")?.textContent).toBe("tunnel h:22: connection lost");
   });
 
   it("names the dialog by its title and links the update checkbox to its hint", async () => {

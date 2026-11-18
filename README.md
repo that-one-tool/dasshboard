@@ -44,9 +44,9 @@
   with connections still live.
 - **Dark & light themes** with a one-click toggle in the top bar, configurable
   terminal font and scrollback.
-- **Connection logs** — Settings > Logs lists connects, drops and their causes,
-  slow requests and stalls since launch, to copy into a bug report (never
-  passwords or terminal content).
+- **Connection logs** — the top bar's Logs button lists connects, drops and
+  their causes, slow requests and stalls since launch, to copy into a bug
+  report (never passwords or terminal content).
 - **8 languages** — English, French, Spanish, German, Italian, Portuguese, Chinese, Japanese.
 - **Signed updates** — check from About (or opt in to a check at startup), then
   Install & restart on Windows, macOS and the Linux AppImage.

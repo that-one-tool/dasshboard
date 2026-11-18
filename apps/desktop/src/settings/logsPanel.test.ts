@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  *
- * The Settings dialog's Logs tab: lists the backend's log lines (time, level,
+ * The Logs dialog's panel: lists the backend's log lines (time, level,
  * message), newest at the bottom, with Refresh, Copy and Clear.
  */
 
@@ -15,7 +15,7 @@ vi.mock("../ipc", () => ({
 const showToastMock = vi.hoisted(() => vi.fn());
 vi.mock("../ui/toast", () => ({ showToast: showToastMock }));
 
-import { LogsPanel, clockTime, logsPanelHtml, logsTabHtml, logsAsText } from "./logsPanel";
+import { LogsPanel, clockTime, logsPanelHtml, logsAsText } from "./logsPanel";
 import { clearLogs, getLogs } from "../ipc";
 
 const at = (h: number, m: number, s: number, ms: number): number => new Date(2026, 0, 2, h, m, s, ms).getTime();
@@ -42,17 +42,10 @@ beforeEach(() => {
   writeText.mockClear();
   showToastMock.mockClear();
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-  document.body.innerHTML = `<div id="root">${logsTabHtml()}${logsPanelHtml()}</div>`;
+  document.body.innerHTML = `<div id="root">${logsPanelHtml()}</div>`;
   root = document.querySelector<HTMLElement>("#root") as HTMLElement;
   onError = vi.fn<(message: string) => void>();
   panel = new LogsPanel(root, { onError });
-});
-
-describe("logs markup", () => {
-  it("has a Logs tab controlling its hidden panel", () => {
-    expect(q('[role="tab"]').dataset.tab).toBe("logs");
-    expect(q('[data-panel="logs"]').hidden).toBe(true);
-  });
 });
 
 describe("clockTime", () => {

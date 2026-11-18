@@ -37,7 +37,7 @@ Vite + vanilla TypeScript (no framework), xterm.js. Vitest + happy-dom.
 - `commandLibrary/` — Commands card and editor. A command goes to the focused
   pane, or to all connected panes during broadcast.
 - `settings/` — settings dialog, theme toggle, known-hosts dialog,
-  `logsPanel` (Logs tab, the backend's diagnostic log).
+  `logsDialog` (header button; `logsPanel` lists the backend's diagnostic log).
 - `tray/` — sends translated tray labels to the backend.
 - `updates/` — update check and install, About dialog badge.
 - `layout/` — resizable sidebar and its collapsed bar.
