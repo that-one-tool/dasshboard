@@ -1,17 +1,7 @@
-//! Serial/COM session core — the serial analogue of `session.rs`'s
-//! `SessionManager`. It **reuses** the Tauri-free [`SessionSink`] +
-//! [`SessionStatus`] seam (no parallel event system): a serial session emits
-//! Connecting → Connected → Disconnected/Error over the same sink an SSH
-//! session does, so the frontend pane treats both identically.
-//!
-//! ## Locking & anti-deadlock design (mirrors `SessionManager`)
-//!
-//! - The session map is a plain `std::sync::Mutex<HashMap<..>>`, locked only to
-//!   insert/remove/clone-out an mpsc `Sender`; the guard is **never held across
-//!   an `.await`**.
-//! - One `tokio` task per session; the task removes its own map entry on exit,
-//!   for every terminal reason (open failure, EOF, read/write error,
-//!   disconnect). Cleanup has a single owner.
+//! Serial/COM Sessions: `spawn_session` runs one in the `SessionRegistry`
+//! (`session_registry.rs`); it opens the port, reports Connected, and pumps
+//! bytes both ways until EOF, an error or a disconnect; it keeps reading while
+//! a write is stalled (flow control).
 //!
 //! ## Testability without hardware (the reviewer's focus)
 //!
@@ -22,9 +12,7 @@
 //! the `to_*` helpers) is pure and unit-tested directly. No test opens a
 //! physical port.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, watch};
@@ -32,19 +20,15 @@ use tokio_serial::SerialPortBuilderExt;
 
 use crate::device::{FlowControl, Parity};
 use crate::error::AppError;
+use crate::session_registry::{NewSession, RunnerControls, SessionRegistry};
 use crate::session_sink::{SessionSink, SessionStatus};
 
-/// Bound on the per-session control channel — same rationale as the SSH
-/// session's: keeps it from being unbounded; keyboard-rate input never
-/// realistically backs it up.
-const CONTROL_CHANNEL_CAPACITY: usize = 256;
 /// Read buffer for the port→terminal pump. 4 KiB covers a burst of serial
 /// output between reads without oversizing each copy.
 const READ_BUFFER_SIZE: usize = 4096;
 
-/// The connection-shaped params for a serial session (mirrors
-/// `session::ConnectParams`). Built by the `connect` command from a
-/// `Connection::Serial` device.
+/// The connection-shaped params for a serial session. Built by the `connect`
+/// command from a `Connection::Serial` device.
 pub struct SerialParams {
     pub port_name: String,
     pub baud_rate: u32,
@@ -55,22 +39,6 @@ pub struct SerialParams {
     /// Optional commands to send once the port is open (the device's connect
     /// snippet). Sent verbatim (each line terminated with `\r`); `None` ⇒ nothing.
     pub connect_snippet: Option<String>,
-}
-
-/// Control messages to a serial session task. There is no resize: a serial line
-/// has no window size, so the manager's `resize_pty` is a no-op that sends
-/// nothing.
-enum SerialControl {
-    Write(Vec<u8>),
-}
-
-/// Per-session handle. Dropping every clone of `control` makes the task's
-/// `recv()` return `None`, which it treats as a disconnect.
-struct SerialHandle {
-    control: mpsc::Sender<SerialControl>,
-    /// Set by `disconnect`. Out of band, so a disconnect never waits behind a
-    /// write that flow control is holding up.
-    stop: watch::Sender<bool>,
 }
 
 /// Map our framing params onto a `tokio_serial` port builder. Pure (no I/O);
@@ -132,262 +100,124 @@ fn open_port(params: &SerialParams) -> Result<tokio_serial::SerialStream, AppErr
     })
 }
 
-/// Pump bytes both ways between the port and the sink until EOF, a disconnect,
-/// or an I/O error. Generic over the stream so tests can substitute an
-/// in-memory duplex pipe for a real `SerialStream`.
-async fn run_pump<S>(
-    mut stream: S,
+/// Start a serial Session in `registry`.
+pub fn spawn_session(registry: &Arc<SessionRegistry>, session: NewSession, params: SerialParams) {
+    registry.spawn(session, |controls, sink| {
+        run_session(params, sink, controls)
+    });
+}
+
+/// The full lifecycle of one serial session: open the port (reporting Connected
+/// on success), then pump until it ends. Any clean end is `Disconnected`; `Err`
+/// is a failure that should surface as `session_status: error`. A serial line
+/// has no window size, so resizes are ignored.
+async fn run_session(
+    params: SerialParams,
     sink: Arc<dyn SessionSink>,
-    mut control_rx: mpsc::Receiver<SerialControl>,
+    controls: RunnerControls,
+) -> Result<SessionStatus, AppError> {
+    let RunnerControls {
+        input, mut stop, ..
+    } = controls;
+    let mut stream = open_port(&params)?;
+    sink.on_status(SessionStatus::Connected, None);
+    // Best-effort: a failed snippet neither hides Connected nor ends the session.
+    if let Some(bytes) = crate::device::connect_snippet_bytes(params.connect_snippet.as_deref()) {
+        write_until_stop(&mut stream, &bytes, &mut stop).await;
+    }
+    run_pump(stream, sink, input, stop).await?;
+    Ok(SessionStatus::Disconnected)
+}
+
+/// Pump bytes both ways between the port and the sink until EOF, a disconnect,
+/// a failed write or an I/O error. Generic over the stream so tests can
+/// substitute an in-memory duplex pipe for a real `SerialStream`.
+///
+/// Reads and writes run side by side: under flow control a write waits for as
+/// long as the device isn't ready, and the device's output must keep flowing
+/// meanwhile. A disconnect cuts both short.
+async fn run_pump<S>(
+    stream: S,
+    sink: Arc<dyn SessionSink>,
+    input: mpsc::Receiver<Vec<u8>>,
     mut stop: watch::Receiver<bool>,
 ) -> Result<(), AppError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let mut buf = [0u8; READ_BUFFER_SIZE];
-    loop {
-        let ctrl = tokio::select! {
-            read = stream.read(&mut buf) => {
-                let count = read.map_err(|e| AppError::Io(format!("serial read failed: {e}")))?;
-                if count == 0 {
-                    break; // EOF — the port was closed on the other end.
-                }
-                sink.on_data(&buf[..count]);
-                continue;
-            }
-            ctrl = control_rx.recv() => ctrl,
-            _ = stop.wait_for(|requested| *requested) => break,
-        };
-        if !apply_control_until_stop(ctrl, &mut stream, &mut stop).await {
-            break;
-        }
+    let (reader, writer) = tokio::io::split(stream);
+    tokio::select! {
+        read = forward_output(reader, sink.as_ref()) => read,
+        () = write_input(writer, input) => Ok(()),
+        _ = stop.wait_for(|requested| *requested) => Ok(()),
     }
-    Ok(())
 }
 
-/// [`apply_control`], cut short by a disconnect: under flow control a write
-/// waits for as long as the device isn't ready, possibly forever.
-async fn apply_control_until_stop<S>(
-    ctrl: Option<SerialControl>,
-    stream: &mut S,
-    stop: &mut watch::Receiver<bool>,
-) -> bool
+/// Port → sink until EOF (the port closed on the other end) or a read error.
+async fn forward_output(
+    mut reader: impl AsyncRead + Unpin,
+    sink: &dyn SessionSink,
+) -> Result<(), AppError> {
+    let mut buf = [0u8; READ_BUFFER_SIZE];
+    loop {
+        let count = reader
+            .read(&mut buf)
+            .await
+            .map_err(|e| AppError::Io(format!("serial read failed: {e}")))?;
+        if count == 0 {
+            return Ok(());
+        }
+        sink.on_data(&buf[..count]);
+    }
+}
+
+/// Input → port until the input closes or a write fails; a failed write ends
+/// the session cleanly (Disconnected), like a failed SSH `channel.data`.
+async fn write_input(mut writer: impl AsyncWrite + Unpin, mut input: mpsc::Receiver<Vec<u8>>) {
+    while let Some(bytes) = input.recv().await {
+        if !write_bytes(&mut writer, &bytes).await {
+            return;
+        }
+    }
+}
+
+/// [`write_bytes`], cut short by a disconnect.
+async fn write_until_stop<S>(stream: &mut S, bytes: &[u8], stop: &mut watch::Receiver<bool>)
 where
     S: AsyncWrite + Unpin,
 {
     tokio::select! {
-        keep_going = apply_control(ctrl, stream) => keep_going,
-        _ = stop.wait_for(|requested| *requested) => false,
+        _ = write_bytes(stream, bytes) => {}
+        _ = stop.wait_for(|requested| *requested) => {}
     }
 }
 
-/// Apply one control message. Returns whether the pump loop should keep running.
-/// A write failure ends the session cleanly (Disconnected), mirroring the SSH
-/// path's treatment of a failed `channel.data`; the manager dropping the
-/// handle (`None`) also stops it.
-async fn apply_control<S>(ctrl: Option<SerialControl>, stream: &mut S) -> bool
-where
-    S: AsyncWrite + Unpin,
-{
-    match ctrl {
-        Some(SerialControl::Write(bytes)) => {
-            if stream.write_all(&bytes).await.is_err() {
-                return false;
-            }
-            // Flush so keystrokes reach the device promptly rather than sitting
-            // in an OS write buffer.
-            let _ = stream.flush().await;
-            true
-        }
-        None => false,
+/// Whether the write went through.
+async fn write_bytes(writer: &mut (impl AsyncWrite + Unpin), bytes: &[u8]) -> bool {
+    if writer.write_all(bytes).await.is_err() {
+        return false;
     }
+    // Flush so keystrokes reach the device promptly rather than sitting in an
+    // OS write buffer.
+    let _ = writer.flush().await;
+    true
 }
 
-/// The full lifecycle of one serial session: open the port (reporting Connected
-/// on success), then pump until it ends. Returns `Ok(())` for any clean end and
-/// `Err` for a failure that should surface as `session_status: error`.
-async fn run_session(
-    params: SerialParams,
-    sink: Arc<dyn SessionSink>,
-    control_rx: mpsc::Receiver<SerialControl>,
-    mut stop: watch::Receiver<bool>,
-) -> Result<(), AppError> {
-    let mut stream = open_port(&params)?;
-    sink.on_status(SessionStatus::Connected, None);
-    // Connect snippet: send the device's saved commands once the port is open.
-    // Best-effort — a failed write is not a reason to skip reporting Connected
-    // above, nor to end the session.
-    if let Some(bytes) = crate::device::connect_snippet_bytes(params.connect_snippet.as_deref()) {
-        let snippet = Some(SerialControl::Write(bytes));
-        let _ = apply_control_until_stop(snippet, &mut stream, &mut stop).await;
-    }
-    run_pump(stream, sink, control_rx, stop).await
-}
-
-/// Owns all live serial sessions. Lives in Tauri managed state behind an `Arc`
-/// (see `AppState`), alongside the SSH `SessionManager`.
-pub struct SerialSessionManager {
-    sessions: Mutex<HashMap<String, SerialHandle>>,
-}
-
-impl Default for SerialSessionManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SerialSessionManager {
-    pub fn new() -> Self {
-        SerialSessionManager {
-            sessions: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Whether this manager owns `session_id` (see `SessionManager::owns`).
-    pub fn owns(&self, session_id: &str) -> bool {
-        self.lock_sessions().contains_key(session_id)
-    }
-
-    fn lock_sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, SerialHandle>> {
-        self.sessions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// Number of live serial sessions. Used by the app-close handler alongside
-    /// the SSH count to decide whether a graceful teardown is needed.
-    pub fn session_count(&self) -> usize {
-        self.lock_sessions().len()
-    }
-
-    /// Clone out a session's control `Sender` (lock held only for the clone,
-    /// never across the subsequent await).
-    fn control_of(&self, session_id: &str) -> Option<mpsc::Sender<SerialControl>> {
-        self.lock_sessions()
-            .get(session_id)
-            .map(|h| h.control.clone())
-    }
-
-    /// Spawn a live serial session. Inserts the handle synchronously (so the map
-    /// reflects the session the instant this returns) and drives the rest on a
-    /// tokio task that removes its own entry on exit.
-    pub fn spawn_session(
-        self: &Arc<Self>,
-        session_id: String,
-        params: SerialParams,
-        sink: Arc<dyn SessionSink>,
-    ) {
-        let (control_tx, control_rx) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
-        let (stop_tx, stop_rx) = watch::channel(false);
-        self.lock_sessions().insert(
-            session_id.clone(),
-            SerialHandle {
-                control: control_tx,
-                stop: stop_tx,
-            },
-        );
-
-        let manager = Arc::clone(self);
-        tokio::spawn(async move {
-            sink.on_status(SessionStatus::Connecting, None);
-
-            let result = run_session(params, Arc::clone(&sink), control_rx, stop_rx).await;
-            match result {
-                Ok(()) => sink.on_status(SessionStatus::Disconnected, None),
-                // AppError messages are always secret-free (serial has none).
-                Err(err) => sink.on_error(&err),
-            }
-
-            // Single owner of cleanup: the task removes its own entry for every
-            // terminal reason (open fail, EOF, error, disconnect).
-            manager.lock_sessions().remove(&session_id);
-        });
-    }
-
-    /// Send bytes to a session's port. Unknown/closed session ⇒ ignored.
-    pub async fn write_stdin(&self, session_id: &str, data: Vec<u8>) {
-        if let Some(control) = self.control_of(session_id) {
-            let _ = control.send(SerialControl::Write(data)).await;
-        }
-    }
-
-    /// Resize is meaningless for a serial line (no window size) — a no-op,
-    /// present so the command layer can route uniformly.
-    pub fn resize_pty(&self, _session_id: &str, _cols: u32, _rows: u32) {}
-
-    /// Request a graceful disconnect. Idempotent: an unknown `session_id` is a
-    /// no-op. The task performs the actual map removal when it exits.
-    pub async fn disconnect(&self, session_id: &str) {
-        if let Some(handle) = self.lock_sessions().get(session_id) {
-            handle.stop.send_replace(true);
-        }
-    }
-
-    /// Gracefully disconnect every live serial session and wait (briefly) for
-    /// the tasks to tear down, mirroring `SessionManager::disconnect_all` so app
-    /// close ends serial sessions cleanly too.
-    pub async fn disconnect_all(&self) {
-        let ids: Vec<String> = self.lock_sessions().keys().cloned().collect();
-        for id in &ids {
-            self.disconnect(id).await;
-        }
-        for _ in 0..50 {
-            if self.session_count() == 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }
-
-    /// Open + immediately close the port, no pump (the serial analogue of SSH
-    /// `test_connection`). There is no auth or host key, so success is simply
-    /// "the port opened". The stream is dropped at scope end, closing the port.
-    pub async fn test_connection(&self, params: SerialParams) -> Result<(), AppError> {
-        let _stream = open_port(&params)?;
-        Ok(())
-    }
+/// Open + immediately close the port, no pump (the serial analogue of SSH
+/// `test_connection`). There is no auth or host key, so success is simply
+/// "the port opened". The stream is dropped at scope end, closing the port.
+pub async fn test_connection(params: SerialParams) -> Result<(), AppError> {
+    let _stream = open_port(&params)?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex as StdMutex;
+    use crate::session_registry::open_channels;
+    use crate::session_sink::testing::RecordingSink;
+    use std::time::Duration;
     use tokio::io::duplex;
-
-    /// Test sink that records streamed bytes and status transitions. Mirrors the
-    /// role of the SSH stack's test sink but is local to the serial tests.
-    #[derive(Default)]
-    struct RecordingSink {
-        data: StdMutex<Vec<u8>>,
-        statuses: StdMutex<Vec<SessionStatus>>,
-    }
-
-    impl RecordingSink {
-        fn data(&self) -> Vec<u8> {
-            self.data.lock().unwrap().clone()
-        }
-        fn statuses(&self) -> Vec<SessionStatus> {
-            self.statuses.lock().unwrap().clone()
-        }
-    }
-
-    impl SessionSink for RecordingSink {
-        fn on_data(&self, bytes: &[u8]) {
-            self.data.lock().unwrap().extend_from_slice(bytes);
-        }
-        fn on_status(&self, status: SessionStatus, _message: Option<String>) {
-            self.statuses.lock().unwrap().push(status);
-        }
-    }
-
-    impl crate::ssh::prompts::ConnectPrompter for RecordingSink {
-        fn on_host_key_prompt(&self, _payload: crate::ssh::prompts::HostKeyPromptPayload) {
-            unreachable!("serial sessions never prompt for a host key");
-        }
-        fn on_auth_prompt(&self, _payload: crate::ssh::prompts::AuthPromptPayload) {
-            unreachable!("serial sessions never prompt for authentication");
-        }
-    }
 
     fn serial_params() -> SerialParams {
         SerialParams {
@@ -469,10 +299,7 @@ mod tests {
         let (stop_tx, stop_rx) = watch::channel(false);
         let pump = tokio::spawn(run_pump(port, sink, control_rx, stop_rx));
 
-        control_tx
-            .send(SerialControl::Write(b"AT\r\n".to_vec()))
-            .await
-            .unwrap();
+        control_tx.send(b"AT\r\n".to_vec()).await.unwrap();
 
         // The "device" reads exactly what was written.
         let mut got = [0u8; 4];
@@ -480,6 +307,41 @@ mod tests {
         assert_eq!(&got, b"AT\r\n");
 
         stop_tx.send_replace(true);
+        pump.await.unwrap().unwrap();
+    }
+
+    /// Under flow control a write can wait as long as the device isn't ready;
+    /// the device's output must keep reaching the terminal meanwhile.
+    #[tokio::test]
+    async fn pump_keeps_reading_during_a_stalled_write() {
+        let (port, mut peer) = duplex(4);
+        let sink = Arc::new(RecordingSink::default());
+        let (control_tx, control_rx) = mpsc::channel(4);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let sink_for_task = Arc::clone(&sink) as Arc<dyn SessionSink>;
+        let pump = tokio::spawn(run_pump(port, sink_for_task, control_rx, stop_rx));
+        control_tx.send(vec![b'x'; 64]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        peer.write_all(b"hi").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert_eq!(sink.data(), b"hi");
+        stop_tx.send_replace(true);
+        pump.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn pump_ends_when_a_write_fails() {
+        let (port, peer) = duplex(64);
+        let sink = Arc::new(RecordingSink::default()) as Arc<dyn SessionSink>;
+        let (control_tx, control_rx) = mpsc::channel(4);
+        let (_stop_tx, stop_rx) = watch::channel(false);
+        let pump = tokio::spawn(run_pump(port, sink, control_rx, stop_rx));
+        drop(peer);
+
+        let _ = control_tx.send(b"x".to_vec()).await;
+
         pump.await.unwrap().unwrap();
     }
 
@@ -506,10 +368,7 @@ mod tests {
         let (control_tx, control_rx) = mpsc::channel(4);
         let (stop_tx, stop_rx) = watch::channel(false);
         let pump = tokio::spawn(run_pump(port, sink, control_rx, stop_rx));
-        control_tx
-            .send(SerialControl::Write(vec![b'x'; 64]))
-            .await
-            .unwrap();
+        control_tx.send(vec![b'x'; 64]).await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         stop_tx.send_replace(true);
@@ -544,15 +403,9 @@ mod tests {
             ..serial_params()
         };
         let sink = Arc::new(RecordingSink::default());
-        let (_tx, rx) = mpsc::channel(4);
-        let (_stop_tx, stop_rx) = watch::channel(false);
-        let result = run_session(
-            params,
-            Arc::clone(&sink) as Arc<dyn SessionSink>,
-            rx,
-            stop_rx,
-        )
-        .await;
+        let (_handle, controls) = open_channels();
+        let sink_for_run = Arc::clone(&sink) as Arc<dyn SessionSink>;
+        let result = run_session(params, sink_for_run, controls).await;
 
         assert!(result.is_err(), "opening a missing port must fail");
         assert!(
@@ -563,19 +416,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_connection_errors_on_a_missing_port() {
-        let manager = SerialSessionManager::new();
         let params = SerialParams {
             port_name: "___no_such_serial_port___".to_string(),
             ..serial_params()
         };
-        assert!(manager.test_connection(params).await.is_err());
-    }
-
-    #[test]
-    fn a_fresh_manager_tracks_no_sessions() {
-        // Nothing is live until a session is spawned — the command layer routes
-        // any id this manager does not track back to the SSH manager.
-        let manager = SerialSessionManager::new();
-        assert_eq!(manager.session_count(), 0);
+        assert!(test_connection(params).await.is_err());
     }
 }

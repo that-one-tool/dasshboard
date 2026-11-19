@@ -21,31 +21,6 @@ use super::params::{AuthCredentials, Endpoint, JumpHop};
 use crate::error::AppError;
 use crate::relay::{bridge_until_either_ends, Pace};
 
-/// Default connect (TCP + handshake reachability) timeout — SPEC.md §6.
-pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// Default host-key trust-prompt timeout — SPEC.md §6 (reject on elapse).
-pub const DEFAULT_PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long closing a jump host waits for the target riding it to get its
-/// own disconnect through first.
-const TARGET_CLOSE_GRACE: Duration = Duration::from_millis(250);
-
-/// Default slack budgeted for the SSH version exchange/KEX and the
-/// authentication exchange, on top of whatever `DEFAULT_CONNECT_TIMEOUT` and
-/// `DEFAULT_PROMPT_TIMEOUT` already cover (B3). Together they form the
-/// overall `establish` deadline — see `overall_establish_timeout`.
-pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Overall deadline for one establish (B3), both hops of a jumped one
-/// included. Time spent on a prompt doesn't count (see `ConnectDeadline`);
-/// the prompt allowance is kept as slack for slow links.
-pub(crate) fn overall_establish_timeout(
-    connect: Duration,
-    prompt: Duration,
-    handshake: Duration,
-) -> Duration {
-    connect + prompt + handshake
-}
-
 /// Maps a russh handshake/transport error to the right `AppError` code.
 fn map_connect_err(err: russh::Error) -> AppError {
     match err {
@@ -328,7 +303,7 @@ fn annotate_jump_error(err: AppError, host: &str, port: u16) -> AppError {
 /// Connect to the target through a single jump host (`ProxyJump`): authenticate
 /// to the jump host, ask it to open a direct-tcpip channel to the target, then
 /// run the target's SSH handshake over that channel as a byte stream. Returns
-/// the target handle and the jump connection, to [`close_jump`] once the
+/// the target handle and the jump connection, to `close_connection` once the
 /// target is done (closing it ends the channel the target rides on). Only the
 /// TCP connect to the jump host is bounded here (by `connect_timeout`); the
 /// caller wraps this whole function in the single overall deadline (see
@@ -381,10 +356,10 @@ async fn connect_through_jump(
 }
 
 /// A jump host's connection, which must outlive the target riding it.
-pub(crate) struct JumpConnection {
-    handle: client::Handle<SshHandler>,
+pub(super) struct JumpConnection {
+    pub(super) handle: client::Handle<SshHandler>,
     /// Closed once the target's last bytes went out on the jump channel.
-    target_done: watch::Receiver<()>,
+    pub(super) target_done: watch::Receiver<()>,
 }
 
 /// The jump channel as the target connection's stream, read ahead into an
@@ -410,10 +385,10 @@ where
 /// Establish a connection to `target`, either directly or through a single
 /// jump host (`ProxyJump`) — the one connect path shells, tunnels and SFTP
 /// share. Returns the authenticated target handle plus, for a jumped
-/// connection, the jump connection — which the caller [`close_jump`]s only
-/// once done with the target, since closing it ends the direct-tcpip channel
+/// connection, the jump connection — which the caller closes (`close_connection`)
+/// only once done with the target, since closing it ends the direct-tcpip channel
 /// the target rides on. Logs the attempt and its outcome with its duration.
-pub(crate) async fn establish_target(
+pub(super) async fn establish_target(
     target: Endpoint<'_>,
     jump: Option<&JumpHop>,
     target_handler: SshHandler,
@@ -477,21 +452,6 @@ async fn establish_target_untimed(
     }
 }
 
-/// Close the jump host's connection (if any) once the target riding on it has
-/// been disconnected, after letting the target's disconnect through (within
-/// `TARGET_CLOSE_GRACE`). Best-effort, like every other teardown.
-pub(crate) async fn close_jump(jump: Option<&JumpConnection>) {
-    let Some(jump) = jump else {
-        return;
-    };
-    let mut target_done = jump.target_done.clone();
-    let _ = timeout(TARGET_CLOSE_GRACE, target_done.changed()).await;
-    let _ = jump
-        .handle
-        .disconnect(russh::Disconnect::ByApplication, "", "")
-        .await;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,13 +471,6 @@ mod tests {
             connect_label("shell h:22".into(), Some(&jump)),
             "shell h:22 via bastion:2222"
         );
-    }
-
-    #[test]
-    fn the_overall_deadline_adds_up_connect_prompt_and_handshake() {
-        let second = Duration::from_secs(1);
-        let overall = overall_establish_timeout(second, 10 * second, 100 * second);
-        assert_eq!(overall, 111 * second);
     }
 
     #[tokio::test]

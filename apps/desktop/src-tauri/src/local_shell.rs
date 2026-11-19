@@ -1,9 +1,6 @@
-//! Local shell session core — the local-terminal analogue of `session.rs`'s
-//! `SessionManager` and `serial.rs`'s `SerialSessionManager`. It **reuses** the
-//! Tauri-free [`SessionSink`] + [`SessionStatus`] seam (no parallel event
-//! system): a local shell emits Connecting → Connected → Disconnected/Error over
-//! the same sink an SSH or serial session does, so the frontend pane treats all
-//! three identically.
+//! Local shell Sessions: `spawn_session` runs one in the `SessionRegistry`
+//! (`session_registry.rs`) like a serial one; it opens a PTY, spawns the
+//! shell, reports Connected, and ends when the shell exits or on a disconnect.
 //!
 //! ## PTY, threads & the async bridge
 //!
@@ -17,18 +14,18 @@
 //! - a **writer thread** drains an mpsc of keystroke chunks into the PTY;
 //! - a **reaper thread** owns the child: it reports its exit on a `done`
 //!   channel, or kills it when the session ends (see `spawn_reaper`);
-//! - the **control task** (tokio) owns the master (for `resize`), applies
-//!   control messages, and ends the session when the child exits or a
+//! - the **runner** (tokio) owns the master (for `resize`), applies
+//!   writes and resizes, and ends the session when the child exits or a
 //!   disconnect is requested.
 //!
 //! There are **no secrets** here (like serial), and auto-reconnect does not apply
-//! — a shell exiting is a normal end, surfaced as `Disconnected`.
+//! — a shell exiting is a normal end, surfaced as `Exited` (code 0) or
+//! `Disconnected`.
 
-use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -36,11 +33,9 @@ use tokio::sync::mpsc;
 
 use crate::error::AppError;
 use crate::flatpak;
+use crate::session_registry::{NewSession, Resizes, RunnerControls, SessionRegistry};
 use crate::session_sink::{SessionSink, SessionStatus};
 
-/// Bound on the per-session control channel — same rationale as the SSH/serial
-/// sessions': keeps it from being unbounded; keyboard-rate input never backs up.
-const CONTROL_CHANNEL_CAPACITY: usize = 256;
 /// Read buffer for the PTY→terminal pump. 4 KiB covers a burst of shell output
 /// between reads without oversizing each copy (matches the serial pump).
 const READ_BUFFER_SIZE: usize = 4096;
@@ -63,26 +58,12 @@ pub struct LocalShellParams {
     pub cwd: Option<String>,
     /// Initial terminal size; the frontend follows up with `resize_pty` as the
     /// pane is laid out.
-    pub cols: u16,
-    pub rows: u16,
+    pub cols: u32,
+    pub rows: u32,
     /// Optional commands to type into the shell once it is ready (the device's
     /// connect snippet). Sent verbatim (each line terminated with `\r`); `None` ⇒
     /// nothing is sent.
     pub connect_snippet: Option<String>,
-}
-
-/// Control messages to a local shell session task.
-enum ShellControl {
-    Write(Vec<u8>),
-    Resize { cols: u16, rows: u16 },
-    Disconnect,
-}
-
-/// Per-session handle: just the control `Sender`. Dropping every clone (the
-/// manager forgetting the session) makes the task's `recv()` return `None`,
-/// which it treats as a disconnect.
-struct ShellHandle {
-    control: mpsc::Sender<ShellControl>,
 }
 
 /// The blocking handles produced by opening a PTY and spawning the shell into
@@ -228,12 +209,7 @@ fn is_default_shell(shell: &Option<String>) -> bool {
 fn open_shell(params: &LocalShellParams) -> Result<OpenedShell, AppError> {
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize {
-            rows: params.rows.max(1),
-            cols: params.cols.max(1),
-            pixel_width: 0,
-            pixel_height: 0,
-        })
+        .openpty(pty_size(params.cols, params.rows))
         .map_err(|e| AppError::Io(format!("could not open a pseudo-terminal: {e}")))?;
 
     let child = pair
@@ -264,56 +240,95 @@ fn open_shell(params: &LocalShellParams) -> Result<OpenedShell, AppError> {
     })
 }
 
-/// The full lifecycle of one local shell session: open the PTY + spawn the shell
-/// (reporting Connected on success), pump bytes both ways via dedicated threads,
-/// and end when the shell exits or a disconnect is requested. Returns the final
-/// status for a clean end (`Exited` when the shell ended on its own with exit
-/// code 0, `Disconnected` when asked to or on any other end) and `Err` for a failure that should surface as
-/// `session_status: error`.
+/// A terminal size a PTY takes: clamped to `u16`, at least 1×1.
+fn pty_size(cols: u32, rows: u32) -> PtySize {
+    let clamp = |cells: u32| u16::try_from(cells).unwrap_or(u16::MAX).max(1);
+    PtySize {
+        rows: clamp(rows),
+        cols: clamp(cols),
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+/// Start a local shell Session in `registry`.
+pub fn spawn_session(
+    registry: &Arc<SessionRegistry>,
+    session: NewSession,
+    params: LocalShellParams,
+) {
+    registry.spawn(session, |controls, sink| {
+        run_session(params, sink, controls)
+    });
+}
+
+/// The full lifecycle of one local shell session: open the PTY + spawn the
+/// shell (reporting Connected on success), pump bytes both ways via dedicated
+/// threads, and end when the shell exits or a disconnect is requested. Returns
+/// the final status for a clean end (`Exited` when the shell ended on its own
+/// with exit code 0 or the PTY writer is gone, `Disconnected` when asked to or
+/// on any other end) and
+/// `Err` for a failure that should surface as `session_status: error`.
 async fn run_session(
     params: LocalShellParams,
     sink: Arc<dyn SessionSink>,
-    mut control_rx: mpsc::Receiver<ShellControl>,
+    mut controls: RunnerControls,
 ) -> Result<SessionStatus, AppError> {
-    // Capture the connect snippet before `params` moves into the blocking open.
-    let connect_snippet = params.connect_snippet.clone();
-    // Opening the PTY and spawning are blocking; do them off the async runtime.
-    let opened = tokio::task::spawn_blocking(move || open_shell(&params))
-        .await
-        .map_err(|e| AppError::Io(format!("shell spawn task failed: {e}")))??;
-
+    let snippet = crate::device::connect_snippet_bytes(params.connect_snippet.as_deref());
+    let opened = open_shell_off_runtime(params).await?;
     sink.on_status(SessionStatus::Connected, None);
+    let mut shell = LiveShell::start(opened, sink);
+    // Best-effort: if the writer is already gone, the next write ends the
+    // session.
+    if let Some(bytes) = snippet {
+        let _ = shell.write_tx.send(bytes);
+    }
+    let status = pump_controls(&mut controls, &mut shell).await;
+    shell.close();
+    Ok(status)
+}
 
-    let OpenedShell {
-        mut master,
-        reader,
-        writer,
-        child,
-    } = opened;
-    let reader_done = spawn_output_pump(reader, Arc::clone(&sink));
-    let write_tx = spawn_writer(writer);
+/// Opening the PTY and spawning are blocking; they run off the async runtime.
+async fn open_shell_off_runtime(params: LocalShellParams) -> Result<OpenedShell, AppError> {
+    tokio::task::spawn_blocking(move || open_shell(&params))
+        .await
+        .map_err(|e| AppError::Io(format!("shell spawn task failed: {e}")))?
+}
 
-    // Connect snippet: type the device's saved commands into the fresh shell via
-    // the writer thread. Best-effort — if the writer is already gone the send
-    // fails harmlessly and the loop below will end the session on the next write.
-    if let Some(bytes) = crate::device::connect_snippet_bytes(connect_snippet.as_deref()) {
-        let _ = write_tx.send(bytes);
+/// A running shell: the runner's ends of its threads, and the master (for
+/// resizes).
+struct LiveShell {
+    master: Box<dyn MasterPty + Send>,
+    write_tx: std::sync::mpsc::Sender<Vec<u8>>,
+    /// The shell's exit code, once it exits on its own.
+    done_rx: mpsc::Receiver<Option<u32>>,
+    kill_tx: std::sync::mpsc::Sender<()>,
+    reader_done: Arc<AtomicBool>,
+}
+
+impl LiveShell {
+    fn start(opened: OpenedShell, sink: Arc<dyn SessionSink>) -> Self {
+        let (kill_tx, kill_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel(1);
+        spawn_reaper(opened.child, kill_rx, done_tx);
+        LiveShell {
+            master: opened.master,
+            write_tx: spawn_writer(opened.writer),
+            done_rx,
+            kill_tx,
+            reader_done: spawn_output_pump(opened.reader, sink),
+        }
     }
 
-    let (kill_tx, kill_rx) = std::sync::mpsc::channel::<()>();
-    let (done_tx, mut done_rx) = mpsc::channel::<Option<u32>>(1);
-    spawn_reaper(child, kill_rx, done_tx);
-
-    let status = pump_controls(&mut control_rx, &mut done_rx, &write_tx, master.as_mut()).await;
-
-    // Teardown: have the reaper kill the child (a no-op if it already exited),
-    // end the writer thread by dropping its sender, and drop the master so the
-    // PTY closes and the reader thread returns.
-    drop(kill_tx);
-    reader_done.store(true, Ordering::Relaxed);
-    drop(write_tx);
-    drop(master);
-    Ok(status)
+    /// Have the reaper kill the child (a no-op if it already exited), end the
+    /// writer thread by dropping its sender, and drop the master so the PTY
+    /// closes and the reader thread returns.
+    fn close(self) {
+        drop(self.kill_tx);
+        self.reader_done.store(true, Ordering::Relaxed);
+        drop(self.write_tx);
+        drop(self.master);
+    }
 }
 
 /// Start the reader thread (see [`pump_output`]); setting the returned flag
@@ -341,48 +356,63 @@ fn spawn_writer(mut writer: Box<dyn Write + Send>) -> std::sync::mpsc::Sender<Ve
     write_tx
 }
 
-/// Apply controls until one ends the session or the shell exits on its own;
-/// returns the final status.
-async fn pump_controls(
-    control_rx: &mut mpsc::Receiver<ShellControl>,
-    done_rx: &mut mpsc::Receiver<Option<u32>>,
+/// Run until the shell exits on its own, a disconnect, or the input ends it;
+/// returns the final status. Biased, so a disconnect wins over input still
+/// queued.
+async fn pump_controls(controls: &mut RunnerControls, shell: &mut LiveShell) -> SessionStatus {
+    let RunnerControls {
+        input,
+        resizes,
+        stop,
+    } = controls;
+    tokio::select! {
+        biased;
+        _ = stop.wait_for(|stopped| *stopped) => SessionStatus::Disconnected,
+        exit_code = shell.done_rx.recv() => SessionStatus::for_shell_exit(exit_code.flatten()),
+        status = apply_controls(input, resizes, &shell.write_tx, shell.master.as_mut()) => status,
+    }
+}
+
+/// Apply writes and resizes until a write ends the session.
+async fn apply_controls(
+    input: &mut mpsc::Receiver<Vec<u8>>,
+    resizes: &mut Resizes,
     write_tx: &std::sync::mpsc::Sender<Vec<u8>>,
     master: &mut (dyn MasterPty + Send),
 ) -> SessionStatus {
     loop {
-        let end = tokio::select! {
-            ctrl = control_rx.recv() => apply_control(ctrl, write_tx, &*master),
-            // The shell process ended on its own.
-            exit_code = done_rx.recv() => Some(SessionStatus::for_shell_exit(exit_code.flatten())),
-        };
-        if let Some(status) = end {
+        if let Some(status) = apply_next_control(input, resizes, write_tx, master).await {
             return status;
         }
     }
 }
 
-/// Apply one control; `Some` with the final status when it ends the session.
-fn apply_control(
-    ctrl: Option<ShellControl>,
+/// Apply the next write or resize; `Some` with the final status when it ends
+/// the session.
+async fn apply_next_control(
+    input: &mut mpsc::Receiver<Vec<u8>>,
+    resizes: &mut Resizes,
     write_tx: &std::sync::mpsc::Sender<Vec<u8>>,
-    master: &(dyn MasterPty + Send),
+    master: &mut (dyn MasterPty + Send),
 ) -> Option<SessionStatus> {
-    match ctrl {
-        // Writer thread gone ⇒ PTY is dead; end the session.
-        Some(ShellControl::Write(bytes)) => {
-            write_tx.send(bytes).err().map(|_| SessionStatus::Exited)
-        }
-        Some(ShellControl::Resize { cols, rows }) => {
-            let _ = master.resize(PtySize {
-                rows: rows.max(1),
-                cols: cols.max(1),
-                pixel_width: 0,
-                pixel_height: 0,
-            });
+    tokio::select! {
+        bytes = input.recv() => write_input(bytes, write_tx),
+        (cols, rows) = resizes.next() => {
+            let _ = master.resize(pty_size(cols, rows));
             None
         }
-        // Explicit disconnect, or the manager dropped the handle.
-        Some(ShellControl::Disconnect) | None => Some(SessionStatus::Disconnected),
+    }
+}
+
+fn write_input(
+    bytes: Option<Vec<u8>>,
+    write_tx: &std::sync::mpsc::Sender<Vec<u8>>,
+) -> Option<SessionStatus> {
+    match bytes {
+        // Writer thread gone ⇒ PTY is dead; end the session.
+        Some(bytes) => write_tx.send(bytes).err().map(|_| SessionStatus::Exited),
+        // The input closed: the session is gone.
+        None => Some(SessionStatus::Disconnected),
     }
 }
 
@@ -510,167 +540,96 @@ impl PtyReader {
     }
 }
 
-/// Owns all live local shell sessions. Lives in Tauri managed state behind an
-/// `Arc` (see `AppState`), alongside the SSH and serial managers.
-pub struct LocalShellManager {
-    sessions: Mutex<HashMap<String, ShellHandle>>,
-}
-
-impl Default for LocalShellManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl LocalShellManager {
-    pub fn new() -> Self {
-        LocalShellManager {
-            sessions: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn lock_sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, ShellHandle>> {
-        self.sessions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// Number of live local shell sessions. Used by the app-close handler
-    /// alongside the SSH/serial counts to decide whether a graceful teardown is
-    /// needed.
-    pub fn session_count(&self) -> usize {
-        self.lock_sessions().len()
-    }
-
-    /// Whether this manager owns `session_id`, so the command layer can route
-    /// write/resize/disconnect to the right manager by ownership.
-    pub fn owns(&self, session_id: &str) -> bool {
-        self.lock_sessions().contains_key(session_id)
-    }
-
-    /// Clone out a session's control `Sender` (lock held only for the clone,
-    /// never across the subsequent await).
-    fn control_of(&self, session_id: &str) -> Option<mpsc::Sender<ShellControl>> {
-        self.lock_sessions()
-            .get(session_id)
-            .map(|h| h.control.clone())
-    }
-
-    /// Spawn a live local shell session. Inserts the handle synchronously (so the
-    /// map reflects the session the instant this returns) and drives the rest on
-    /// a tokio task that removes its own entry on exit.
-    pub fn spawn_session(
-        self: &Arc<Self>,
-        session_id: String,
-        params: LocalShellParams,
-        sink: Arc<dyn SessionSink>,
-    ) {
-        let (control_tx, control_rx) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
-        self.lock_sessions().insert(
-            session_id.clone(),
-            ShellHandle {
-                control: control_tx,
-            },
-        );
-
-        let manager = Arc::clone(self);
-        tokio::spawn(async move {
-            sink.on_status(SessionStatus::Connecting, None);
-
-            let result = run_session(params, Arc::clone(&sink), control_rx).await;
-            match result {
-                Ok(status) => sink.on_status(status, None),
-                // AppError messages are always secret-free (local shells have none).
-                Err(err) => sink.on_error(&err),
-            }
-
-            // Single owner of cleanup: the task removes its own entry for every
-            // terminal reason (spawn fail, shell exit, error, disconnect).
-            manager.lock_sessions().remove(&session_id);
-        });
-    }
-
-    /// Send bytes to a session's shell. Unknown/closed session ⇒ ignored.
-    pub async fn write_stdin(&self, session_id: &str, data: Vec<u8>) {
-        if let Some(control) = self.control_of(session_id) {
-            let _ = control.send(ShellControl::Write(data)).await;
-        }
-    }
-
-    /// Resize a session's PTY. Unknown/closed session ⇒ ignored.
-    pub async fn resize_pty(&self, session_id: &str, cols: u32, rows: u32) {
-        if let Some(control) = self.control_of(session_id) {
-            let _ = control
-                .send(ShellControl::Resize {
-                    cols: cols.min(u16::MAX as u32) as u16,
-                    rows: rows.min(u16::MAX as u32) as u16,
-                })
-                .await;
-        }
-    }
-
-    /// Request a graceful disconnect. Idempotent: an unknown `session_id` is a
-    /// no-op. The task performs the actual map removal when it exits.
-    pub async fn disconnect(&self, session_id: &str) {
-        if let Some(control) = self.control_of(session_id) {
-            let _ = control.send(ShellControl::Disconnect).await;
-        }
-    }
-
-    /// Gracefully disconnect every live local shell session and wait (briefly)
-    /// for the tasks to tear down, mirroring the SSH/serial managers so app close
-    /// ends local shells cleanly too.
-    pub async fn disconnect_all(&self) {
-        let ids: Vec<String> = self.lock_sessions().keys().cloned().collect();
-        for id in &ids {
-            self.disconnect(id).await;
-        }
-        for _ in 0..50 {
-            if self.session_count() == 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex as StdMutex;
+    use crate::session_registry::{open_channels, SessionRegistry};
+    use crate::session_sink::testing::RecordingSink;
 
-    /// Test sink that records streamed bytes and status transitions.
-    #[derive(Default)]
-    struct RecordingSink {
-        data: StdMutex<Vec<u8>>,
-        statuses: StdMutex<Vec<SessionStatus>>,
+    fn spawn_shell(registry: &Arc<SessionRegistry>, shell: &str, sink: &Arc<RecordingSink>) {
+        let params = LocalShellParams {
+            shell: Some(shell.to_string()),
+            cwd: None,
+            cols: 80,
+            rows: 24,
+            connect_snippet: None,
+        };
+        let session = NewSession {
+            id: "ls1".to_string(),
+            sink: Arc::clone(sink) as Arc<dyn SessionSink>,
+        };
+        spawn_session(registry, session, params);
     }
 
-    impl RecordingSink {
-        fn text(&self) -> String {
-            String::from_utf8_lossy(&self.data.lock().unwrap()).into_owned()
-        }
-        fn statuses(&self) -> Vec<SessionStatus> {
-            self.statuses.lock().unwrap().clone()
-        }
+    /// A shell around a bare PTY, with no threads: writes fail as if the
+    /// writer thread were gone. The shell runs while the returned sender lives.
+    #[cfg(unix)]
+    fn detached_shell() -> (LiveShell, mpsc::Sender<Option<u32>>) {
+        let pair = native_pty_system().openpty(pty_size(80, 24)).unwrap();
+        let (write_tx, _) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel(1);
+        let (kill_tx, _) = std::sync::mpsc::channel();
+        let shell = LiveShell {
+            master: pair.master,
+            write_tx,
+            done_rx,
+            kill_tx,
+            reader_done: Arc::new(AtomicBool::new(false)),
+        };
+        (shell, done_tx)
     }
 
-    impl SessionSink for RecordingSink {
-        fn on_data(&self, bytes: &[u8]) {
-            self.data.lock().unwrap().extend_from_slice(bytes);
-        }
-        fn on_status(&self, status: SessionStatus, _message: Option<String>) {
-            self.statuses.lock().unwrap().push(status);
-        }
+    #[test]
+    fn a_terminal_size_is_clamped_to_what_a_pty_takes() {
+        let size = pty_size(70_000, 0);
+
+        assert_eq!((size.cols, size.rows), (u16::MAX, 1));
     }
 
-    impl crate::ssh::prompts::ConnectPrompter for RecordingSink {
-        fn on_host_key_prompt(&self, _payload: crate::ssh::prompts::HostKeyPromptPayload) {
-            unreachable!("local shell sessions never prompt for a host key");
-        }
-        fn on_auth_prompt(&self, _payload: crate::ssh::prompts::AuthPromptPayload) {
-            unreachable!("local shell sessions never prompt for authentication");
-        }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_resize_clamps_the_size() {
+        let (mut shell, _done_tx) = detached_shell();
+        let (handle, mut controls) = open_channels();
+        handle.size.send_replace(Some((70_000, 30)));
+
+        let master = shell.master.as_mut();
+        let end = apply_next_control(
+            &mut controls.input,
+            &mut controls.resizes,
+            &shell.write_tx,
+            master,
+        );
+
+        assert_eq!(end.await, None);
+        let size = shell.master.get_size().unwrap();
+        assert_eq!((size.cols, size.rows), (u16::MAX, 30));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_write_to_a_dead_pty_ends_the_session() {
+        let (mut shell, _done_tx) = detached_shell();
+        let (handle, mut controls) = open_channels();
+        handle.input.send(b"x".to_vec()).await.unwrap();
+
+        let status = pump_controls(&mut controls, &mut shell).await;
+
+        assert_eq!(status, SessionStatus::Exited);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_disconnect_ends_the_session_even_with_a_write_queued() {
+        let (mut shell, _done_tx) = detached_shell();
+        let (handle, mut controls) = open_channels();
+        handle.input.send(b"x".to_vec()).await.unwrap();
+        handle.stop.send_replace(true);
+
+        // A write applied first would end the session as Exited.
+        let status = pump_controls(&mut controls, &mut shell).await;
+
+        assert_eq!(status, SessionStatus::Disconnected);
     }
 
     #[test]
@@ -763,12 +722,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_fresh_manager_tracks_no_sessions() {
-        let manager = LocalShellManager::new();
-        assert_eq!(manager.session_count(), 0);
-    }
-
     /// End-to-end: spawn a real shell and confirm the lifecycle + read pump +
     /// teardown. Uses a fast shell per OS (`cmd.exe` / `/bin/sh`). No hardware
     /// needed (unlike serial).
@@ -785,19 +738,9 @@ mod tests {
         } else {
             "/bin/sh".to_string()
         };
-        let manager = Arc::new(LocalShellManager::new());
+        let registry = Arc::new(SessionRegistry::new());
         let sink = Arc::new(RecordingSink::default());
-        manager.spawn_session(
-            "ls1".to_string(),
-            LocalShellParams {
-                shell: Some(shell),
-                cwd: None,
-                cols: 80,
-                rows: 24,
-                connect_snippet: None,
-            },
-            Arc::clone(&sink) as Arc<dyn SessionSink>,
-        );
+        spawn_shell(&registry, &shell, &sink);
 
         // Let the shell come up and emit its initial output (prompt / pty setup).
         let mut got_output = false;
@@ -816,7 +759,7 @@ mod tests {
         // without needing a DSR answer.
         #[cfg(not(windows))]
         {
-            manager
+            registry
                 .write_stdin("ls1", b"echo DASH_MARKER_OK\n".to_vec())
                 .await;
             let mut seen = false;
@@ -834,8 +777,8 @@ mod tests {
             );
         }
 
-        manager.disconnect_all().await;
-        assert_eq!(manager.session_count(), 0);
+        registry.disconnect_all().await;
+        assert_eq!(registry.session_count(), 0);
     }
 
     /// A background job still holding the PTY must not keep the reader thread
@@ -844,20 +787,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_background_job_does_not_keep_the_reader_alive() {
-        let manager = Arc::new(LocalShellManager::new());
+        let registry = Arc::new(SessionRegistry::new());
         let sink = Arc::new(RecordingSink::default());
-        manager.spawn_session(
-            "ls1".to_string(),
-            LocalShellParams {
-                shell: Some("/bin/sh".to_string()),
-                cwd: None,
-                cols: 80,
-                rows: 24,
-                connect_snippet: None,
-            },
-            Arc::clone(&sink) as Arc<dyn SessionSink>,
-        );
-        manager
+        spawn_shell(&registry, "/bin/sh", &sink);
+        registry
             .write_stdin("ls1", b"sleep 5 & disown; echo JOB_STARTED\n".to_vec())
             .await;
         for _ in 0..60 {
@@ -867,7 +800,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
-        manager.disconnect_all().await;
+        registry.disconnect_all().await;
 
         // Only the test's own reference is left once every thread let go.
         for _ in 0..50 {
@@ -887,21 +820,11 @@ mod tests {
         if !std::path::Path::new("/bin/bash").exists() {
             return;
         }
-        let manager = Arc::new(LocalShellManager::new());
+        let registry = Arc::new(SessionRegistry::new());
         let sink = Arc::new(RecordingSink::default());
-        manager.spawn_session(
-            "ls1".to_string(),
-            LocalShellParams {
-                shell: Some("/bin/bash".to_string()),
-                cwd: None,
-                cols: 80,
-                rows: 24,
-                connect_snippet: None,
-            },
-            Arc::clone(&sink) as Arc<dyn SessionSink>,
-        );
+        spawn_shell(&registry, "/bin/bash", &sink);
         // The quotes keep the echoed command line from matching the output.
-        manager
+        registry
             .write_stdin(
                 "ls1",
                 b"trap '' HUP; set -o ignoreeof; echo AR''MED\n".to_vec(),
@@ -915,7 +838,7 @@ mod tests {
         }
         assert!(sink.text().contains("ARMED\r\n"), "got: {:?}", sink.text());
 
-        manager.disconnect_all().await;
+        registry.disconnect_all().await;
 
         for _ in 0..150 {
             if Arc::strong_count(&sink) == 1 {

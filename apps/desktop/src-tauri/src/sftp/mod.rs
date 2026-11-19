@@ -3,7 +3,7 @@
 //! The SFTP analogue of [`crate::session`] / [`crate::tunnel`]: an
 //! [`SftpManager`] owns a `HashMap<device_id, SftpConn>` of live connections and
 //! **reuses `ssh`'s connect + auth + host-key-TOFU path verbatim**, jump
-//! host included (`establish_target`), diverging only after the handshake —
+//! host included (`SshConnector::connect`), diverging only after the handshake —
 //! instead of a PTY/shell (session) or `direct-tcpip` listeners (tunnel), it opens one
 //! `session` channel, requests the `sftp` subsystem, and wraps the channel
 //! stream in a [`russh_sftp`] client [`SftpSession`](russh_sftp::client::SftpSession).
@@ -43,7 +43,7 @@ mod whole_file;
 use serde::Serialize;
 
 use crate::error::AppError;
-use crate::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig};
+use crate::ssh::params::SshTarget;
 
 pub use manager::SftpManager;
 pub(crate) use names::ensure_storable_target;
@@ -89,15 +89,9 @@ pub struct RemoteStamp {
 #[doc(hidden)]
 pub struct SftpParams {
     pub device_id: String,
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub creds: AuthCredentials,
-    /// SSH keepalive resolved from user settings, applied to the SFTP connection.
-    pub keepalive: KeepaliveConfig,
-    /// Optional jump host (`ProxyJump`): the SFTP connection to `host:port`
-    /// rides a direct-tcpip channel over it. `None` ⇒ direct.
-    pub jump: Option<JumpHop>,
+    /// The server, its login, the optional jump host (`ProxyJump`) and the
+    /// keepalive, which applies to the jump hop too.
+    pub target: SshTarget,
 }
 
 /// Map any `russh_sftp` error to a secret-free [`AppError::Sftp`] with context.

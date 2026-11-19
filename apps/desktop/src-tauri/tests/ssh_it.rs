@@ -4,7 +4,7 @@
 //! Docker, no external SSH daemon, no network beyond `127.0.0.1` — so
 //! `cargo test` passes on any machine (SPEC §9's in-process fallback). Each
 //! test spins up its own throwaway server on an ephemeral port and drives the
-//! real client stack (`SessionManager` / `test_connection`), exercising:
+//! real client stack (`spawn_shell` / `test_connection`), exercising:
 //!
 //! - password auth success / wrong password ⇒ `SshAuth`,
 //! - unreachable host ⇒ `SshConnect`,
@@ -26,16 +26,18 @@ use std::time::Duration;
 use russh::keys::{HashAlg, PrivateKey};
 use russh::server::{self, Auth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
 use dasshboard_lib::device::{Forward, ForwardKind};
 use dasshboard_lib::error::AppError;
 use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
-use dasshboard_lib::session::{ConnectParams, SessionManager};
+use dasshboard_lib::session::{spawn_shell, test_connection, ConnectParams};
+use dasshboard_lib::session_registry::{NewSession, SessionRegistry};
 use dasshboard_lib::session_sink::{SessionSink, SessionStatus};
-use dasshboard_lib::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig};
+use dasshboard_lib::ssh::connector::{ConnectTimeouts, SshConnector};
+use dasshboard_lib::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig, SshTarget};
 use dasshboard_lib::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPromptPayload};
 use dasshboard_lib::tunnel::{
     ForwardStatus, TunnelManager, TunnelParams, TunnelSink, TunnelStatus,
@@ -116,6 +118,20 @@ struct TestServer {
     /// When set, a jump host opens an X11 channel back on each `direct-tcpip`
     /// and reports whether the client accepted it.
     jump_x11_probe: Option<mpsc::UnboundedSender<bool>>,
+    /// A jump host that stops reading once it forwarded this many bytes.
+    stall_jump_after: Option<usize>,
+    /// Told each time a stalled server (`stall_reads`, `stall_jump_after`)
+    /// stops reading.
+    frozen: Option<mpsc::UnboundedSender<()>>,
+    /// Told each PTY size the client asks for: on open, then on each resize.
+    pty_sizes: Option<mpsc::UnboundedSender<PtySize>>,
+}
+
+/// A PTY size a client asked the server for, `(cols, rows)`.
+#[derive(Debug, PartialEq)]
+enum PtySize {
+    Opened(u32, u32),
+    Resized(u32, u32),
 }
 
 /// The one-time code a keyboard-interactive test server expects.
@@ -159,6 +175,9 @@ impl TestServer {
             x11_probe: None,
             x11_flood: None,
             jump_x11_probe: None,
+            stall_jump_after: None,
+            frozen: None,
+            pty_sizes: None,
         }
     }
 }
@@ -181,6 +200,10 @@ impl server::Server for TestServer {
             x11_probe: self.x11_probe.clone(),
             x11_flood: self.x11_flood.clone(),
             jump_x11_probe: self.jump_x11_probe.clone(),
+            stall_jump_after: self.stall_jump_after,
+            frozen: self.frozen.clone(),
+            pty_sizes: self.pty_sizes.clone(),
+            jump_bytes: 0,
             x11_cookie: None,
             kbd_answers: 0,
             remote_listeners: HashMap::new(),
@@ -210,6 +233,11 @@ struct TestServerHandler {
     x11_probe: Option<mpsc::UnboundedSender<Option<String>>>,
     x11_flood: Option<(usize, mpsc::UnboundedSender<usize>)>,
     jump_x11_probe: Option<mpsc::UnboundedSender<bool>>,
+    stall_jump_after: Option<usize>,
+    frozen: Option<mpsc::UnboundedSender<()>>,
+    pty_sizes: Option<mpsc::UnboundedSender<PtySize>>,
+    /// Bytes forwarded so far as a jump host.
+    jump_bytes: usize,
     /// The cookie of this connection's `x11-req`, if any.
     x11_cookie: Option<String>,
     /// Keyboard-interactive answers accepted so far on this connection.
@@ -219,6 +247,14 @@ struct TestServerHandler {
     /// The `forwarded-tcpip` channels opened back to the client: their bytes
     /// are bridged to the server-side connection, never echoed.
     forwarded: Arc<Mutex<HashSet<ChannelId>>>,
+}
+
+impl TestServerHandler {
+    fn report_pty_size(&self, size: PtySize) {
+        if let Some(tx) = &self.pty_sizes {
+            let _ = tx.send(size);
+        }
+    }
 }
 
 /// Like OpenSSH, stop listening for a client's remote forwards once it's gone.
@@ -375,6 +411,26 @@ async fn serve_remote_forward(
     }
 }
 
+impl TestServerHandler {
+    async fn stall_jump_once_past_limit(&mut self, received: usize) {
+        let Some(limit) = self.stall_jump_after else {
+            return;
+        };
+        self.jump_bytes += received;
+        if self.jump_bytes > limit {
+            self.freeze().await;
+        }
+    }
+
+    /// Stop reading for good, telling the test so.
+    async fn freeze(&self) {
+        if let Some(frozen) = &self.frozen {
+            let _ = frozen.send(());
+        }
+        std::future::pending::<()>().await;
+    }
+}
+
 impl server::Handler for TestServerHandler {
     type Error = russh::Error;
 
@@ -526,14 +582,28 @@ impl server::Handler for TestServerHandler {
         &mut self,
         channel: ChannelId,
         _term: &str,
-        _cols: u32,
-        _rows: u32,
+        cols: u32,
+        rows: u32,
         _pw: u32,
         _ph: u32,
         _modes: &[(russh::Pty, u32)],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.report_pty_size(PtySize::Opened(cols, rows));
         session.channel_success(channel)?;
+        Ok(())
+    }
+
+    async fn window_change_request(
+        &mut self,
+        _channel: ChannelId,
+        cols: u32,
+        rows: u32,
+        _pw: u32,
+        _ph: u32,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.report_pty_size(PtySize::Resized(cols, rows));
         Ok(())
     }
 
@@ -611,11 +681,12 @@ impl server::Handler for TestServerHandler {
         // echoing them back here would loop the target's SSH handshake into the
         // client's stream and corrupt it. Only the plain (target) server echoes,
         // standing in for a shell's tty.
+        self.stall_jump_once_past_limit(data.len()).await;
         if self.bridge_direct_tcpip || self.forwarded.lock().unwrap().contains(&channel) {
             return Ok(());
         }
         if self.stall_reads {
-            std::future::pending::<()>().await;
+            self.freeze().await;
         }
         // Standing in for a shell's `exit [code]`: end the channel the way
         // OpenSSH does — EOF, then the exit status, then close.
@@ -765,6 +836,17 @@ async fn spawn_stray_channel_server(
     (port, rx)
 }
 
+/// A server reporting each PTY size a client asks for on the returned receiver.
+async fn spawn_pty_size_server() -> (u16, mpsc::UnboundedReceiver<PtySize>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let server = TestServer {
+        pty_sizes: Some(tx),
+        ..TestServer::new(TEST_PASSWORD)
+    };
+    let port = spawn_server(server, server_config(Duration::from_secs(30))).await;
+    (port, rx)
+}
+
 fn server_config(inactivity: Duration) -> server::Config {
     let host_key = PrivateKey::from_openssh(TEST_HOST_KEY).expect("valid test host key");
     server::Config {
@@ -780,9 +862,7 @@ fn server_config(inactivity: Duration) -> server::Config {
 /// Bind an ephemeral local port and run `server` on it until the test process
 /// exits. Returns the chosen port.
 async fn spawn_server(mut server: TestServer, config: server::Config) -> u16 {
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("bind test server");
+    let listener = listen_with_small_receive_buffer();
     let port = listener.local_addr().expect("local addr").port();
 
     tokio::spawn(async move {
@@ -793,6 +873,20 @@ async fn spawn_server(mut server: TestServer, config: server::Config) -> u16 {
     port
 }
 
+/// Bind an ephemeral local port whose accepted sockets keep a fixed, small
+/// receive buffer: autotuning would grow it to tens of MiB, enough to absorb
+/// what a client sends a server that stopped reading.
+fn listen_with_small_receive_buffer() -> TcpListener {
+    let socket = TcpSocket::new_v4().expect("socket");
+    socket
+        .set_recv_buffer_size(64 << 10)
+        .expect("receive buffer");
+    socket
+        .bind(([127, 0, 0, 1], 0).into())
+        .expect("bind test server");
+    socket.listen(128).expect("listen")
+}
+
 /* ------------------------------------------------------------------------- *
  * Test sink: records everything the SSH core surfaces
  * ------------------------------------------------------------------------- */
@@ -800,9 +894,6 @@ async fn spawn_server(mut server: TestServer, config: server::Config) -> u16 {
 struct TestSink {
     data_tx: mpsc::UnboundedSender<Vec<u8>>,
     status_tx: mpsc::UnboundedSender<(SessionStatus, Option<String>)>,
-    prompt_tx: mpsc::UnboundedSender<HostKeyPromptPayload>,
-    prompt_closed_tx: mpsc::UnboundedSender<String>,
-    auth_prompt_tx: mpsc::UnboundedSender<AuthPromptPayload>,
     error_code_tx: mpsc::UnboundedSender<&'static str>,
 }
 
@@ -819,53 +910,75 @@ impl SessionSink for TestSink {
     }
 }
 
-impl ConnectPrompter for TestSink {
+/// Test [`ConnectPrompter`] recording every prompt a connect raises; shells
+/// and tunnels share it.
+struct TestPrompter {
+    host_key_tx: mpsc::UnboundedSender<HostKeyPromptPayload>,
+    closed_tx: mpsc::UnboundedSender<String>,
+    auth_tx: mpsc::UnboundedSender<AuthPromptPayload>,
+}
+
+impl ConnectPrompter for TestPrompter {
     fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
-        let _ = self.prompt_tx.send(payload);
+        let _ = self.host_key_tx.send(payload);
     }
     fn on_host_key_prompt_closed(&self, prompt_id: &str) {
-        let _ = self.prompt_closed_tx.send(prompt_id.to_string());
+        let _ = self.closed_tx.send(prompt_id.to_string());
     }
     fn on_auth_prompt(&self, payload: AuthPromptPayload) {
-        let _ = self.auth_prompt_tx.send(payload);
+        let _ = self.auth_tx.send(payload);
     }
+}
+
+struct PromptChannels {
+    host_key_rx: mpsc::UnboundedReceiver<HostKeyPromptPayload>,
+    /// The id of each host-key prompt the backend stopped waiting on.
+    closed_rx: mpsc::UnboundedReceiver<String>,
+    auth_rx: mpsc::UnboundedReceiver<AuthPromptPayload>,
+}
+
+fn new_prompter() -> (Arc<dyn ConnectPrompter>, PromptChannels) {
+    let (host_key_tx, host_key_rx) = mpsc::unbounded_channel();
+    let (closed_tx, closed_rx) = mpsc::unbounded_channel();
+    let (auth_tx, auth_rx) = mpsc::unbounded_channel();
+    let prompter = TestPrompter {
+        host_key_tx,
+        closed_tx,
+        auth_tx,
+    };
+    let channels = PromptChannels {
+        host_key_rx,
+        closed_rx,
+        auth_rx,
+    };
+    (Arc::new(prompter), channels)
 }
 
 struct SinkChannels {
     data_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     status_rx: mpsc::UnboundedReceiver<(SessionStatus, Option<String>)>,
-    prompt_rx: mpsc::UnboundedReceiver<HostKeyPromptPayload>,
-    prompt_closed_rx: mpsc::UnboundedReceiver<String>,
-    auth_prompt_rx: mpsc::UnboundedReceiver<AuthPromptPayload>,
     error_code_rx: mpsc::UnboundedReceiver<&'static str>,
+    prompts: PromptChannels,
 }
 
-fn new_sink() -> (Arc<dyn SessionSink>, SinkChannels) {
+/// A recording session sink, and the prompter its connect raises prompts on.
+fn new_sink() -> (Arc<dyn SessionSink>, Arc<dyn ConnectPrompter>, SinkChannels) {
     let (data_tx, data_rx) = mpsc::unbounded_channel();
     let (status_tx, status_rx) = mpsc::unbounded_channel();
-    let (prompt_tx, prompt_rx) = mpsc::unbounded_channel();
-    let (prompt_closed_tx, prompt_closed_rx) = mpsc::unbounded_channel();
-    let (auth_prompt_tx, auth_prompt_rx) = mpsc::unbounded_channel();
     let (error_code_tx, error_code_rx) = mpsc::unbounded_channel();
+    let (prompter, prompts) = new_prompter();
     let sink: Arc<dyn SessionSink> = Arc::new(TestSink {
         data_tx,
         status_tx,
-        prompt_tx,
-        prompt_closed_tx,
-        auth_prompt_tx,
         error_code_tx,
     });
-    (
-        sink,
-        SinkChannels {
-            data_rx,
-            status_rx,
-            prompt_rx,
-            prompt_closed_rx,
-            auth_prompt_rx,
-            error_code_rx,
-        },
-    )
+    let channels = SinkChannels {
+        data_rx,
+        status_rx,
+        error_code_rx,
+        prompts,
+    };
+    (sink, prompter, channels)
 }
 
 async fn recv_timeout<T>(rx: &mut mpsc::UnboundedReceiver<T>, dur: Duration) -> Option<T> {
@@ -887,113 +1000,74 @@ async fn await_settled(
     }
 }
 
-fn manager_with(dir: &std::path::Path, prompt_timeout: Duration) -> Arc<SessionManager> {
+/// A connector with a 10 s connect and handshake budget.
+fn connector_with(dir: &std::path::Path, prompt_timeout: Duration) -> Arc<SshConnector> {
+    connector(
+        dir,
+        ConnectTimeouts {
+            connect: Duration::from_secs(10),
+            prompt: prompt_timeout,
+            handshake: Duration::from_secs(10),
+        },
+    )
+}
+
+fn connector(dir: &std::path::Path, timeouts: ConnectTimeouts) -> Arc<SshConnector> {
     let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
-    Arc::new(SessionManager::new(
-        known_hosts,
-        Duration::from_secs(10),
-        prompt_timeout,
-        Duration::from_secs(10),
-    ))
+    Arc::new(SshConnector::new(known_hosts, timeouts))
 }
 
 fn password_creds() -> AuthCredentials {
     AuthCredentials::Password(TEST_PASSWORD.to_string())
 }
 
-/// Spawn a password-auth session against the local test server with the
-/// standard 80x24 PTY. Every integration test uses this same shape, so this
-/// keeps the call sites to just `id` + `sink` (B8: `ConnectParams`).
-fn spawn_pw_session(
-    manager: &Arc<SessionManager>,
-    id: &str,
-    port: u16,
-    sink: Arc<dyn SessionSink>,
-) {
-    spawn_pw_session_with_agent(manager, id, port, sink, false);
-}
-
-/// Like [`spawn_pw_session`], but lets the test set `forward_agent` so the
-/// agent-forwarding accept/reject gate can be exercised end to end.
-fn spawn_pw_session_with_agent(
-    manager: &Arc<SessionManager>,
-    id: &str,
-    port: u16,
-    sink: Arc<dyn SessionSink>,
-    forward_agent: bool,
-) {
-    manager.spawn_session(
-        id.to_string(),
-        ConnectParams {
-            host: "127.0.0.1".to_string(),
-            port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            cols: 80,
-            rows: 24,
-            jump: None,
-            keepalive: KeepaliveConfig::disabled(),
-            forward_agent,
-            connect_snippet: None,
-            x11: None,
-        },
+fn new_session(id: &str, sink: Arc<dyn SessionSink>) -> NewSession {
+    NewSession {
+        id: id.to_string(),
         sink,
-    );
+    }
 }
 
-/// Spawn a password-auth session forwarding X11 to `x11`.
-fn spawn_pw_session_with_x11(
-    manager: &Arc<SessionManager>,
-    port: u16,
-    sink: Arc<dyn SessionSink>,
-    x11: Option<Result<X11Local, String>>,
-) {
-    manager.spawn_session("s1".to_string(), x11_params(port, x11), sink);
+/// The local test server as `TEST_USER` with `creds`, through `jump` if any.
+fn local_target(port: u16, creds: AuthCredentials, jump: Option<JumpHop>) -> SshTarget {
+    SshTarget {
+        host: "127.0.0.1".to_string(),
+        port,
+        username: TEST_USER.to_string(),
+        creds,
+        jump,
+        keepalive: KeepaliveConfig::disabled(),
+    }
+}
+
+/// A password-auth tunnel of `forwards` on the local test server, through
+/// `jump` if any.
+fn tunnel_params(port: u16, forwards: Vec<Forward>, jump: Option<JumpHop>) -> TunnelParams {
+    TunnelParams {
+        device_id: "dev-1".to_string(),
+        target: local_target(port, password_creds(), jump),
+        forwards,
+    }
+}
+
+/// A password-auth shell on the local test server with the standard 80x24
+/// PTY; tests override the one field they exercise.
+fn pw_params(port: u16) -> ConnectParams {
+    ConnectParams {
+        target: local_target(port, password_creds(), None),
+        cols: 80,
+        rows: 24,
+        forward_agent: false,
+        connect_snippet: None,
+        x11: None,
+    }
 }
 
 fn x11_params(port: u16, x11: Option<Result<X11Local, String>>) -> ConnectParams {
     ConnectParams {
-        host: "127.0.0.1".to_string(),
-        port,
-        username: TEST_USER.to_string(),
-        creds: password_creds(),
-        cols: 80,
-        rows: 24,
-        jump: None,
-        keepalive: KeepaliveConfig::disabled(),
-        forward_agent: false,
-        connect_snippet: None,
         x11,
+        ..pw_params(port)
     }
-}
-
-/// Spawn a password-auth session carrying a connect snippet, so the end-to-end
-/// test can observe the snippet being typed into the shell (the echo server
-/// reflects it back on the data channel).
-fn spawn_pw_session_with_snippet(
-    manager: &Arc<SessionManager>,
-    id: &str,
-    port: u16,
-    sink: Arc<dyn SessionSink>,
-    connect_snippet: &str,
-) {
-    manager.spawn_session(
-        id.to_string(),
-        ConnectParams {
-            host: "127.0.0.1".to_string(),
-            port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            cols: 80,
-            rows: 24,
-            jump: None,
-            keepalive: KeepaliveConfig::disabled(),
-            forward_agent: false,
-            connect_snippet: Some(connect_snippet.to_string()),
-            x11: None,
-        },
-        sink,
-    );
 }
 
 /* ------------------------------------------------------------------------- *
@@ -1004,29 +1078,16 @@ fn spawn_pw_session_with_snippet(
 async fn password_auth_succeeds() {
     let dir = tempfile::tempdir().unwrap();
     let port = spawn_test_server(TEST_PASSWORD).await;
-    // Pre-trust the host key ON DISK before the manager loads its store, so
+    // Pre-trust the host key ON DISK before the connector loads its store, so
     // test_connection doesn't block on a host-key prompt.
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
-    let (sink, _chans) = new_sink();
-    let result = manager
-        .test_connection(
-            "127.0.0.1".to_string(),
-            port,
-            TEST_USER.to_string(),
-            password_creds(),
-            None,
-            sink,
-        )
-        .await;
+    let (prompter, _prompts) = new_prompter();
+    let target = local_target(port, password_creds(), None);
+    let result = test_connection(&ssh, target, prompter).await;
 
     assert!(result.is_ok(), "expected auth success, got {result:?}");
-    assert_eq!(
-        manager.session_count(),
-        0,
-        "test_connection leaves no session"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1034,19 +1095,11 @@ async fn wrong_password_is_ssh_auth() {
     let dir = tempfile::tempdir().unwrap();
     let port = spawn_test_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
-    let (sink, _chans) = new_sink();
-    let result = manager
-        .test_connection(
-            "127.0.0.1".to_string(),
-            port,
-            TEST_USER.to_string(),
-            AuthCredentials::Password("wrong".to_string()),
-            None,
-            sink,
-        )
-        .await;
+    let (prompter, _prompts) = new_prompter();
+    let target = local_target(port, AuthCredentials::Password("wrong".to_string()), None);
+    let result = test_connection(&ssh, target, prompter).await;
 
     assert!(
         matches!(result, Err(AppError::SshAuth(_))),
@@ -1058,28 +1111,21 @@ async fn wrong_password_is_ssh_auth() {
 async fn unreachable_host_is_ssh_connect() {
     let dir = tempfile::tempdir().unwrap();
     // Short connect timeout so the test is fast even if the OS is slow to refuse.
-    let known_hosts = Arc::new(KnownHostsStore::load(dir.path().to_path_buf()));
-    let manager = Arc::new(SessionManager::new(
-        known_hosts,
-        Duration::from_secs(3),
-        Duration::from_secs(60),
-        Duration::from_secs(10),
-    ));
+    let ssh = connector(
+        dir.path(),
+        ConnectTimeouts {
+            connect: Duration::from_secs(3),
+            prompt: Duration::from_secs(60),
+            handshake: Duration::from_secs(10),
+        },
+    );
 
     // A port nothing listens on, and no other test is handed.
     let port = free_local_port().await;
 
-    let (sink, _chans) = new_sink();
-    let result = manager
-        .test_connection(
-            "127.0.0.1".to_string(),
-            port,
-            TEST_USER.to_string(),
-            password_creds(),
-            None,
-            sink,
-        )
-        .await;
+    let (prompter, _prompts) = new_prompter();
+    let target = local_target(port, password_creds(), None);
+    let result = test_connection(&ssh, target, prompter).await;
 
     assert!(
         matches!(result, Err(AppError::SshConnect(_))),
@@ -1093,19 +1139,21 @@ async fn unreachable_host_is_ssh_connect() {
 /// timeout-bound — `client::connect_stream` (the SSH version exchange + KEX)
 /// had no deadline, so this scenario hung indefinitely. Uses short
 /// connect/prompt/handshake timeouts so the overall `establish` deadline
-/// (their sum — see `SessionManager::overall_establish_timeout`) is reached
+/// (their sum — see `ConnectTimeouts::overall`) is reached
 /// quickly, and wraps the call in an outer `tokio::time::timeout` as a test
 /// safety net so a regression fails fast instead of hanging the suite.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn peer_accepts_tcp_but_never_speaks_ssh_times_out() {
     let dir = tempfile::tempdir().unwrap();
-    let known_hosts = Arc::new(KnownHostsStore::load(dir.path().to_path_buf()));
-    let manager = Arc::new(SessionManager::new(
-        known_hosts,
-        Duration::from_millis(300),
-        Duration::from_millis(300),
-        Duration::from_millis(300),
-    ));
+    let quick = Duration::from_millis(300);
+    let ssh = connector(
+        dir.path(),
+        ConnectTimeouts {
+            connect: quick,
+            prompt: quick,
+            handshake: quick,
+        },
+    );
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -1118,17 +1166,10 @@ async fn peer_accepts_tcp_but_never_speaks_ssh_times_out() {
         }
     });
 
-    let (sink, _chans) = new_sink();
+    let (prompter, _prompts) = new_prompter();
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        manager.test_connection(
-            "127.0.0.1".to_string(),
-            port,
-            TEST_USER.to_string(),
-            password_creds(),
-            None,
-            sink,
-        ),
+        test_connection(&ssh, local_target(port, password_creds(), None), prompter),
     )
     .await
     .expect("establish must be bounded by an overall deadline, not hang forever");
@@ -1148,15 +1189,50 @@ async fn final_status_after_typing(line: &[u8]) -> SessionStatus {
     let dir = tempfile::tempdir().unwrap();
     let port = spawn_test_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
 
-    manager.write_stdin("s1", line.to_vec()).await;
+    registry.write_stdin("s1", line.to_vec()).await;
     await_settled(&mut chans.status_rx).await.0
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_registry_tracks_an_ssh_session_until_it_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_test_server(TEST_PASSWORD).await;
+    seed_trusted(dir.path(), port);
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let (sink, prompter, mut chans) = new_sink();
+
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
+    let (status, message) = await_settled(&mut chans.status_rx).await;
+    assert_eq!(status, SessionStatus::Connected, "message={message:?}");
+    assert_eq!(registry.session_count(), 1);
+
+    registry.disconnect("s1");
+    assert_eq!(
+        await_settled(&mut chans.status_rx).await.0,
+        SessionStatus::Disconnected
+    );
+    await_session_count(&registry, 0).await;
 }
 
 /// Not `Disconnected`: the frontend must not auto-reconnect a shell the user
@@ -1190,14 +1266,21 @@ async fn output_flooding_back_during_a_write_does_not_freeze_the_session() {
     let dir = tempfile::tempdir().unwrap();
     let port = spawn_flooding_echo_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
 
-    manager.write_stdin("s1", vec![b'x'; PAYLOAD_LEN]).await;
+    registry.write_stdin("s1", vec![b'x'; PAYLOAD_LEN]).await;
 
     let mut received = 0;
     while received < PAYLOAD_LEN {
@@ -1208,8 +1291,8 @@ async fn output_flooding_back_during_a_write_does_not_freeze_the_session() {
     }
     assert_eq!(received, PAYLOAD_LEN, "the echo stalled");
 
-    manager.disconnect("s1").await;
-    await_session_count(&manager, 0).await;
+    registry.disconnect("s1");
+    await_session_count(&registry, 0).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1217,16 +1300,23 @@ async fn echo_through_pty_and_clean_disconnect() {
     let dir = tempfile::tempdir().unwrap();
     let port = spawn_test_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
 
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
-    assert_eq!(manager.session_count(), 1);
+    assert_eq!(registry.session_count(), 1);
 
-    manager.write_stdin("s1", b"hello\n".to_vec()).await;
+    registry.write_stdin("s1", b"hello\n".to_vec()).await;
 
     // Collect echoed bytes until we see our payload (or time out).
     let mut seen = Vec::new();
@@ -1247,22 +1337,81 @@ async fn echo_through_pty_and_clean_disconnect() {
         String::from_utf8_lossy(&seen)
     );
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 
     // The task removes its own map entry on exit; wait for that to settle.
     let (final_status, _) = await_settled(&mut chans.status_rx).await;
     assert_eq!(final_status, SessionStatus::Disconnected);
     for _ in 0..50 {
-        if manager.session_count() == 0 {
+        if registry.session_count() == 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(
-        manager.session_count(),
+        registry.session_count(),
         0,
         "session entry must be cleaned up"
     );
+}
+
+/// A pane resized while its host-key prompt is pending opens its PTY at the
+/// latest size, not the one it asked to connect with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resize_while_connecting_opens_the_pty_at_the_latest_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, mut pty_sizes) = spawn_pty_size_server().await;
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
+    let prompt = recv_timeout(&mut chans.prompts.host_key_rx, Duration::from_secs(10))
+        .await
+        .expect("a host_key_prompt");
+
+    registry.resize_pty("s1", 100, 30);
+    registry.resize_pty("s1", 132, 43);
+    ssh.prompts().respond_host_key(&prompt.prompt_id, true);
+
+    let opened = recv_timeout(&mut pty_sizes, Duration::from_secs(10)).await;
+    assert_eq!(opened, Some(PtySize::Opened(132, 43)));
+    registry.disconnect("s1");
+}
+
+/// A pane resized once its shell is open changes the remote window size.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resize_of_an_open_shell_changes_the_remote_window_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, mut pty_sizes) = spawn_pty_size_server().await;
+    seed_trusted(dir.path(), port);
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
+    let opened = recv_timeout(&mut pty_sizes, Duration::from_secs(10)).await;
+    assert_eq!(opened, Some(PtySize::Opened(80, 24)));
+    assert_eq!(
+        await_settled(&mut chans.status_rx).await.0,
+        SessionStatus::Connected
+    );
+
+    registry.resize_pty("s1", 132, 43);
+
+    let resized = recv_timeout(&mut pty_sizes, Duration::from_secs(10)).await;
+    assert_eq!(resized, Some(PtySize::Resized(132, 43)));
+    registry.disconnect("s1");
 }
 
 /// A device's connect snippet is typed into the shell right after it opens: the
@@ -1274,10 +1423,15 @@ async fn connect_snippet_is_sent_to_the_shell_on_connect() {
     let dir = tempfile::tempdir().unwrap();
     let port = spawn_test_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session_with_snippet(&manager, "s1", port, sink, "uptime\nwhoami");
+    let (sink, prompter, mut chans) = new_sink();
+    let params = ConnectParams {
+        connect_snippet: Some("uptime\nwhoami".to_string()),
+        ..pw_params(port)
+    };
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
 
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
@@ -1307,7 +1461,7 @@ async fn connect_snippet_is_sent_to_the_shell_on_connect() {
         String::from_utf8_lossy(&seen)
     );
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 }
 
 /// Agent forwarding ON: the client must accept the server's
@@ -1320,10 +1474,15 @@ async fn agent_forwarding_enabled_accepts_agent_channel() {
     let dir = tempfile::tempdir().unwrap();
     let (port, mut agent_rx) = spawn_agent_probe_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session_with_agent(&manager, "s1", port, sink, true);
+    let (sink, prompter, mut chans) = new_sink();
+    let params = ConnectParams {
+        forward_agent: true,
+        ..pw_params(port)
+    };
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
 
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
@@ -1335,7 +1494,7 @@ async fn agent_forwarding_enabled_accepts_agent_channel() {
         "with forwarding on, the client must accept the agent channel"
     );
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 }
 
 /// Agent forwarding OFF (the default): the client must REJECT the server's
@@ -1347,10 +1506,15 @@ async fn agent_forwarding_disabled_rejects_agent_channel() {
     let dir = tempfile::tempdir().unwrap();
     let (port, mut agent_rx) = spawn_agent_probe_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session_with_agent(&manager, "s1", port, sink, false);
+    let (sink, prompter, mut chans) = new_sink();
+    let params = ConnectParams {
+        forward_agent: false,
+        ..pw_params(port)
+    };
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
 
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
@@ -1362,7 +1526,7 @@ async fn agent_forwarding_disabled_rejects_agent_channel() {
         "with forwarding off, the client must reject the agent channel"
     );
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 }
 
 async fn spawn_x11_probe_server() -> (u16, mpsc::UnboundedReceiver<Option<String>>) {
@@ -1428,12 +1592,14 @@ async fn x11_untrusted_forwarding_relays_with_a_cookie_the_x_server_generated() 
     let dir = tempfile::tempdir().unwrap();
     let (port, _x11_rx) = spawn_x11_probe_server().await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
     let (x_server, display, xauthority) = x_server_with_cookie(dir.path()).await;
     let local = X11Local::new(&display, Some(xauthority), false).map(Ok);
 
-    let (sink, _chans) = new_sink();
-    spawn_pw_session_with_x11(&manager, port, sink, local);
+    let (sink, prompter, _chans) = new_sink();
+    let params = x11_params(port, local);
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
 
     let mut security_conn = accept_x(&x_server).await;
     let generated = *b"generated cookie";
@@ -1449,7 +1615,7 @@ async fn x11_untrusted_forwarding_relays_with_a_cookie_the_x_server_generated() 
     )
     .await;
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 }
 
 /// Untrusted X11 forwarding on an X server without SECURITY: the channel is
@@ -1460,12 +1626,14 @@ async fn x11_untrusted_failure_is_written_to_the_terminal() {
     let dir = tempfile::tempdir().unwrap();
     let (port, _x11_rx) = spawn_x11_probe_server().await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
     let (x_server, display, xauthority) = x_server_with_cookie(dir.path()).await;
     let local = X11Local::new(&display, Some(xauthority), false).map(Ok);
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session_with_x11(&manager, port, sink, local);
+    let (sink, prompter, mut chans) = new_sink();
+    let params = x11_params(port, local);
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
 
     let mut security_conn = accept_x(&x_server).await;
     security_conn
@@ -1478,7 +1646,7 @@ async fn x11_untrusted_failure_is_written_to_the_terminal() {
     let relayed = tokio::time::timeout(Duration::from_millis(300), x_server.accept()).await;
     assert!(relayed.is_err(), "the channel must not reach the X server");
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 }
 
 /// Trusted X11 forwarding: the client asks for X11 with a fake cookie, and
@@ -1489,15 +1657,17 @@ async fn x11_trusted_forwarding_relays_to_the_local_x_server_with_the_real_cooki
     let dir = tempfile::tempdir().unwrap();
     let (port, mut x11_rx) = spawn_x11_probe_server().await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
     let x_server = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let number = x_server.local_addr().unwrap().port() - 6000;
     let xauthority = dir.path().join("Xauthority");
     std::fs::write(&xauthority, xauthority_with(number, b"real cookie")).unwrap();
     let local = X11Local::new(&format!("127.0.0.1:{number}"), Some(xauthority), true).map(Ok);
 
-    let (sink, _chans) = new_sink();
-    spawn_pw_session_with_x11(&manager, port, sink, local);
+    let (sink, prompter, _chans) = new_sink();
+    let params = x11_params(port, local);
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
 
     let cookie = recv_timeout(&mut x11_rx, Duration::from_secs(5))
         .await
@@ -1513,7 +1683,7 @@ async fn x11_trusted_forwarding_relays_to_the_local_x_server_with_the_real_cooki
     x_conn.read_exact(&mut received).await.unwrap();
     assert_eq!(received, expected);
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 }
 
 /// A `DISPLAY` that can't be used: no `x11-req`, and the terminal says why.
@@ -1522,11 +1692,13 @@ async fn x11_without_a_usable_display_warns_and_sends_no_request() {
     let dir = tempfile::tempdir().unwrap();
     let (port, mut x11_rx) = spawn_x11_probe_server().await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
-    let (sink, mut chans) = new_sink();
+    let (sink, prompter, mut chans) = new_sink();
     let reason = "DISPLAY is not set".to_string();
-    spawn_pw_session_with_x11(&manager, port, sink, Some(Err(reason)));
+    let params = x11_params(port, Some(Err(reason)));
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
 
     let marker = b"X11 forwarding failed: DISPLAY is not set";
     let seen = read_until_marker(&mut chans.data_rx, marker).await;
@@ -1534,7 +1706,7 @@ async fn x11_without_a_usable_display_warns_and_sends_no_request() {
     let cookie = recv_timeout(&mut x11_rx, Duration::from_secs(5)).await;
     assert_eq!(cookie, Some(None));
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 }
 
 /// The client serves at most 32 X11 channels at once; the 33rd is refused
@@ -1549,11 +1721,13 @@ async fn x11_channels_beyond_the_cap_are_refused_with_a_warning() {
     };
     let port = spawn_server(server, server_config(Duration::from_secs(30))).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
     let local = X11Local::new("127.0.0.1:0", None, true).map(Ok);
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session_with_x11(&manager, port, sink, local);
+    let (sink, prompter, mut chans) = new_sink();
+    let params = x11_params(port, local);
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
 
     let accepted = recv_timeout(&mut flood_rx, Duration::from_secs(5)).await;
     assert_eq!(accepted, Some(32));
@@ -1561,7 +1735,7 @@ async fn x11_channels_beyond_the_cap_are_refused_with_a_warning() {
     let seen = read_until_marker(&mut chans.data_rx, marker).await;
     assert!(seen.windows(marker.len()).any(|w| w == marker));
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 }
 
 /// X11 forwarding is for the target only: the jump host's X11 channels are
@@ -1579,14 +1753,15 @@ async fn a_jump_host_cannot_open_x11_channels() {
     let jump_port = spawn_server(jump, server_config(Duration::from_secs(30))).await;
     seed_trusted(dir.path(), target_port);
     seed_trusted(dir.path(), jump_port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
     // A display nothing listens on: the target's X11 channel goes nowhere.
     let display = format!("{}:0", dir.path().join("no-x-server").display());
-    let (sink, _chans) = new_sink();
+    let (sink, prompter, _chans) = new_sink();
     let mut params = x11_params(target_port, X11Local::new(&display, None, true).map(Ok));
-    params.jump = Some(jump_hop(jump_port, TEST_PASSWORD));
-    manager.spawn_session("s1".to_string(), params, sink);
+    params.target.jump = Some(jump_hop(jump_port, TEST_PASSWORD));
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
 
     let cookie = recv_timeout(&mut x11_rx, Duration::from_secs(5)).await;
     assert!(
@@ -1596,7 +1771,7 @@ async fn a_jump_host_cannot_open_x11_channels() {
     let opened = recv_timeout(&mut jump_rx, Duration::from_secs(5)).await;
     assert_eq!(opened, Some(false));
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 }
 
 /// X11 forwarding OFF: no `x11-req` is sent.
@@ -1605,15 +1780,17 @@ async fn x11_forwarding_off_sends_no_request() {
     let dir = tempfile::tempdir().unwrap();
     let (port, mut x11_rx) = spawn_x11_probe_server().await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
-    let (sink, _chans) = new_sink();
-    spawn_pw_session_with_x11(&manager, port, sink, None);
+    let (sink, prompter, _chans) = new_sink();
+    let params = x11_params(port, None);
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
 
     let cookie = recv_timeout(&mut x11_rx, Duration::from_secs(5)).await;
     assert_eq!(cookie, Some(None));
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 }
 
 /// ProxyJump: connect to a target through a jump host and prove the PTY works
@@ -1629,31 +1806,16 @@ async fn connects_to_target_through_a_jump_host() {
     let jump_port = spawn_jump_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), target_port);
     seed_trusted(dir.path(), jump_port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
-    let (sink, mut chans) = new_sink();
-    manager.spawn_session(
-        "s1".to_string(),
-        ConnectParams {
-            host: "127.0.0.1".to_string(),
-            port: target_port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            cols: 80,
-            rows: 24,
-            jump: Some(JumpHop {
-                host: "127.0.0.1".to_string(),
-                port: jump_port,
-                username: TEST_USER.to_string(),
-                creds: password_creds(),
-            }),
-            keepalive: KeepaliveConfig::disabled(),
-            forward_agent: false,
-            connect_snippet: None,
-            x11: None,
-        },
-        sink,
-    );
+    let (sink, prompter, mut chans) = new_sink();
+    let jump = jump_hop(jump_port, TEST_PASSWORD);
+    let params = ConnectParams {
+        target: local_target(target_port, password_creds(), Some(jump)),
+        ..pw_params(target_port)
+    };
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
 
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(
@@ -1662,7 +1824,7 @@ async fn connects_to_target_through_a_jump_host() {
         "expected a connected session through the jump host, message={message:?}"
     );
 
-    manager.write_stdin("s1", b"hello\n".to_vec()).await;
+    registry.write_stdin("s1", b"hello\n".to_vec()).await;
 
     let mut seen = Vec::new();
     for _ in 0..50 {
@@ -1682,17 +1844,17 @@ async fn connects_to_target_through_a_jump_host() {
         String::from_utf8_lossy(&seen)
     );
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
     let (final_status, _) = await_settled(&mut chans.status_rx).await;
     assert_eq!(final_status, SessionStatus::Disconnected);
     for _ in 0..50 {
-        if manager.session_count() == 0 {
+        if registry.session_count() == 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(
-        manager.session_count(),
+        registry.session_count(),
         0,
         "session entry must be cleaned up"
     );
@@ -1708,31 +1870,17 @@ async fn jump_host_auth_failure_is_attributed_to_the_jump_host() {
     let jump_port = spawn_jump_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), target_port);
     seed_trusted(dir.path(), jump_port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
-    let (sink, mut chans) = new_sink();
-    manager.spawn_session(
-        "s1".to_string(),
-        ConnectParams {
-            host: "127.0.0.1".to_string(),
-            port: target_port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(), // target creds are correct
-            cols: 80,
-            rows: 24,
-            jump: Some(JumpHop {
-                host: "127.0.0.1".to_string(),
-                port: jump_port,
-                username: TEST_USER.to_string(),
-                creds: AuthCredentials::Password("wrong-jump-password".to_string()),
-            }),
-            keepalive: KeepaliveConfig::disabled(),
-            forward_agent: false,
-            connect_snippet: None,
-            x11: None,
-        },
-        sink,
-    );
+    let (sink, prompter, mut chans) = new_sink();
+    // The target's credentials are correct.
+    let jump = jump_hop(jump_port, "wrong-jump-password");
+    let params = ConnectParams {
+        target: local_target(target_port, password_creds(), Some(jump)),
+        ..pw_params(target_port)
+    };
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
 
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Error);
@@ -1764,17 +1912,12 @@ async fn test_connection_goes_through_the_jump_host() {
     let jump_port = spawn_jump_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), target_port);
     seed_trusted(dir.path(), jump_port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
     let test = |jump_password: &str| {
-        let (sink, _chans) = new_sink();
-        manager.test_connection(
-            "127.0.0.1".to_string(),
-            target_port,
-            TEST_USER.to_string(),
-            password_creds(),
-            Some(jump_hop(jump_port, jump_password)),
-            sink,
-        )
+        let (prompter, _prompts) = new_prompter();
+        let jump = Some(jump_hop(jump_port, jump_password));
+        let target = local_target(target_port, password_creds(), jump);
+        test_connection(&ssh, target, prompter)
     };
 
     test(TEST_PASSWORD)
@@ -1811,21 +1954,28 @@ fn seed_trusted(dir: &std::path::Path, port: u16) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_key_accept_persists_tofu() {
     let dir = tempfile::tempdir().unwrap();
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
     let port = spawn_test_server(TEST_PASSWORD).await;
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
 
     // First contact ⇒ prompt with changed:false.
-    let prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
+    let prompt = recv_timeout(&mut chans.prompts.host_key_rx, Duration::from_secs(10))
         .await
         .expect("a host_key_prompt");
     assert!(!prompt.changed, "first contact must be changed:false");
     assert!(!prompt.trust_reset);
     assert_eq!(prompt.fingerprint, server_fingerprint());
 
-    manager.respond_host_key(&prompt.prompt_id, true);
+    ssh.prompts().respond_host_key(&prompt.prompt_id, true);
 
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
@@ -1837,22 +1987,29 @@ async fn host_key_accept_persists_tofu() {
         Some(server_fingerprint())
     );
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_key_reject_fails_with_host_key_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
     let port = spawn_test_server(TEST_PASSWORD).await;
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
 
-    let prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
+    let prompt = recv_timeout(&mut chans.prompts.host_key_rx, Duration::from_secs(10))
         .await
         .expect("a host_key_prompt");
-    manager.respond_host_key(&prompt.prompt_id, false);
+    ssh.prompts().respond_host_key(&prompt.prompt_id, false);
 
     let (status, _message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Error);
@@ -1863,12 +2020,12 @@ async fn host_key_reject_fails_with_host_key_rejected() {
     assert!(reloaded.get("127.0.0.1", port).is_none());
     // Session cleaned up.
     for _ in 0..50 {
-        if manager.session_count() == 0 {
+        if registry.session_count() == 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(manager.session_count(), 0);
+    assert_eq!(registry.session_count(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1891,17 +2048,24 @@ async fn changed_host_key_prompts_with_changed_true_and_overwrites_on_accept() {
             )
             .unwrap();
     }
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
 
-    let prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
+    let prompt = recv_timeout(&mut chans.prompts.host_key_rx, Duration::from_secs(10))
         .await
         .expect("a host_key_prompt");
     assert!(prompt.changed, "a mismatch must be changed:true");
 
-    manager.respond_host_key(&prompt.prompt_id, true);
+    ssh.prompts().respond_host_key(&prompt.prompt_id, true);
 
     let (status, _message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected);
@@ -1913,7 +2077,7 @@ async fn changed_host_key_prompts_with_changed_true_and_overwrites_on_accept() {
         Some(server_fingerprint())
     );
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 }
 
 /// After a damaged trust file was reset, a host with no record may be one
@@ -1922,32 +2086,46 @@ async fn changed_host_key_prompts_with_changed_true_and_overwrites_on_accept() {
 async fn a_host_unknown_after_a_trust_reset_prompts_with_trust_reset() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("known_hosts.json"), "{ damaged").unwrap();
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
     let port = spawn_test_server(TEST_PASSWORD).await;
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
 
-    let prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
+    let prompt = recv_timeout(&mut chans.prompts.host_key_rx, Duration::from_secs(10))
         .await
         .expect("a host_key_prompt");
     assert!(prompt.trust_reset);
     assert!(!prompt.changed);
-    manager.respond_host_key(&prompt.prompt_id, false);
+    ssh.prompts().respond_host_key(&prompt.prompt_id, false);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_key_prompt_timeout_rejects() {
     let dir = tempfile::tempdir().unwrap();
     // Inject a very short prompt timeout so we don't wait 60s.
-    let manager = manager_with(dir.path(), Duration::from_millis(200));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_millis(200));
     let port = spawn_test_server(TEST_PASSWORD).await;
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
 
     // A prompt is emitted, but we deliberately never respond.
-    let _prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
+    let _prompt = recv_timeout(&mut chans.prompts.host_key_rx, Duration::from_secs(10))
         .await
         .expect("a host_key_prompt");
 
@@ -1971,30 +2149,23 @@ async fn host_key_prompt_timeout_rejects() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_connection_host_key_reject_is_host_key_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
     let port = spawn_test_server(TEST_PASSWORD).await;
 
-    let (sink, mut chans) = new_sink();
+    let (prompter, mut prompts) = new_prompter();
 
     // `test_connection` blocks on the host-key prompt, so drive it on a task and
     // reject the prompt from here.
-    let mgr = Arc::clone(&manager);
+    let connector = Arc::clone(&ssh);
     let handle = tokio::spawn(async move {
-        mgr.test_connection(
-            "127.0.0.1".to_string(),
-            port,
-            TEST_USER.to_string(),
-            password_creds(),
-            None,
-            sink,
-        )
-        .await
+        let target = local_target(port, password_creds(), None);
+        test_connection(&connector, target, prompter).await
     });
 
-    let prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
+    let prompt = recv_timeout(&mut prompts.host_key_rx, Duration::from_secs(10))
         .await
         .expect("a host_key_prompt");
-    manager.respond_host_key(&prompt.prompt_id, false);
+    ssh.prompts().respond_host_key(&prompt.prompt_id, false);
 
     let result = handle.await.expect("test_connection task joins");
     assert!(
@@ -2014,22 +2185,29 @@ async fn disconnect_all_closes_every_session() {
     let dir = tempfile::tempdir().unwrap();
     let port = spawn_test_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
     let mut kept = Vec::new();
     for i in 0..3 {
-        let (sink, mut chans) = new_sink();
-        spawn_pw_session(&manager, &format!("s{i}"), port, sink);
+        let (sink, prompter, mut chans) = new_sink();
+        spawn_shell(
+            &registry,
+            &ssh,
+            new_session(&format!("s{i}"), sink),
+            pw_params(port),
+            prompter,
+        );
         let (status, message) = await_settled(&mut chans.status_rx).await;
         assert_eq!(status, SessionStatus::Connected, "message={message:?}");
         kept.push(chans); // keep the sink receivers alive for the session's lifetime
     }
-    assert_eq!(manager.session_count(), 3);
+    assert_eq!(registry.session_count(), 3);
 
-    manager.disconnect_all().await;
+    registry.disconnect_all().await;
 
     assert_eq!(
-        manager.session_count(),
+        registry.session_count(),
         0,
         "disconnect_all must gracefully close every session"
     );
@@ -2042,9 +2220,16 @@ async fn channels_the_client_never_asked_for_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let (port, mut probes) = spawn_stray_channel_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
 
@@ -2055,8 +2240,8 @@ async fn channels_the_client_never_asked_for_are_rejected() {
         assert!(!accepted, "a stray {kind} channel was accepted");
     }
 
-    manager.disconnect("s1").await;
-    await_session_count(&manager, 0).await;
+    registry.disconnect("s1");
+    await_session_count(&registry, 0).await;
 }
 
 /// B3: a disconnect must not wait behind writes the server stopped taking. It
@@ -2067,14 +2252,21 @@ async fn disconnect_is_not_stuck_behind_a_stalled_write() {
     let dir = tempfile::tempdir().unwrap();
     let port = spawn_stalled_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
 
     // Far more than the window and the write queue hold.
-    let writer = Arc::clone(&manager);
+    let writer = Arc::clone(&registry);
     tokio::spawn(async move {
         for _ in 0..400 {
             writer.write_stdin("s1", vec![b'x'; 1024]).await;
@@ -2082,12 +2274,10 @@ async fn disconnect_is_not_stuck_behind_a_stalled_write() {
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    tokio::time::timeout(Duration::from_secs(2), manager.disconnect("s1"))
-        .await
-        .expect("disconnect must return despite the stalled write");
+    registry.disconnect("s1");
     let (final_status, _) = await_settled(&mut chans.status_rx).await;
     assert_eq!(final_status, SessionStatus::Disconnected);
-    await_session_count(&manager, 0).await;
+    await_session_count(&registry, 0).await;
 }
 
 /// A disconnect ends the SSH connection with a real SSH disconnect, so the
@@ -2097,14 +2287,21 @@ async fn a_disconnect_closes_the_connection_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let (port, mut errors) = spawn_error_reporting_server(TEST_PASSWORD, false).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
 
-    manager.disconnect("s1").await;
-    await_session_count(&manager, 0).await;
+    registry.disconnect("s1");
+    await_session_count(&registry, 0).await;
 
     let error = recv_timeout(&mut errors, Duration::from_millis(500)).await;
     assert_eq!(error, None, "the server saw the connection drop");
@@ -2119,30 +2316,20 @@ async fn a_disconnect_closes_the_target_and_jump_host_cleanly() {
     let (jump_port, mut jump_errors) = spawn_error_reporting_server(TEST_PASSWORD, true).await;
     seed_trusted(dir.path(), target_port);
     seed_trusted(dir.path(), jump_port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
-    let (sink, mut chans) = new_sink();
-    manager.spawn_session(
-        "s1".to_string(),
-        ConnectParams {
-            host: "127.0.0.1".to_string(),
-            port: target_port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            cols: 80,
-            rows: 24,
-            jump: Some(jump_hop(jump_port, TEST_PASSWORD)),
-            keepalive: KeepaliveConfig::disabled(),
-            forward_agent: false,
-            connect_snippet: None,
-            x11: None,
-        },
-        sink,
-    );
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let (sink, prompter, mut chans) = new_sink();
+    let jump = jump_hop(jump_port, TEST_PASSWORD);
+    let params = ConnectParams {
+        target: local_target(target_port, password_creds(), Some(jump)),
+        ..pw_params(target_port)
+    };
+    spawn_shell(&registry, &ssh, new_session("s1", sink), params, prompter);
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
 
-    manager.disconnect("s1").await;
-    await_session_count(&manager, 0).await;
+    registry.disconnect("s1");
+    await_session_count(&registry, 0).await;
 
     let error = recv_timeout(&mut jump_errors, Duration::from_millis(500)).await;
     assert_eq!(error, None, "the jump host saw the connection drop");
@@ -2164,18 +2351,25 @@ async fn a_disconnect_closes_the_target_and_jump_host_cleanly() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_abandoned_host_key_prompt_is_announced_closed() {
     let dir = tempfile::tempdir().unwrap();
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
     let port = spawn_test_server(TEST_PASSWORD).await;
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
-    let prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
+    let prompt = recv_timeout(&mut chans.prompts.host_key_rx, Duration::from_secs(10))
         .await
         .expect("a host_key_prompt");
 
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 
-    let closed = recv_timeout(&mut chans.prompt_closed_rx, Duration::from_secs(5))
+    let closed = recv_timeout(&mut chans.prompts.closed_rx, Duration::from_secs(5))
         .await
         .expect("a prompt-closed notice");
     assert_eq!(closed, prompt.prompt_id);
@@ -2184,17 +2378,24 @@ async fn an_abandoned_host_key_prompt_is_announced_closed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn disconnect_while_host_key_prompt_pending_cleans_up() {
     let dir = tempfile::tempdir().unwrap();
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
     let port = spawn_test_server(TEST_PASSWORD).await;
 
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
 
     // Wait for the prompt, then disconnect without answering it.
-    let _prompt = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(10))
+    let _prompt = recv_timeout(&mut chans.prompts.host_key_rx, Duration::from_secs(10))
         .await
         .expect("a host_key_prompt");
-    manager.disconnect("s1").await;
+    registry.disconnect("s1");
 
     // The session must settle PROMPTLY — well under the 60 s prompt timeout. If
     // the mid-prompt disconnect path were broken, this would hang for ~60 s and
@@ -2212,13 +2413,13 @@ async fn disconnect_while_host_key_prompt_pending_cleans_up() {
 
     // The RAII PromptGuard + single-owner cleanup free the map entry.
     for _ in 0..50 {
-        if manager.session_count() == 0 {
+        if registry.session_count() == 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(
-        manager.session_count(),
+        registry.session_count(),
         0,
         "disconnect mid-prompt must clean up the session"
     );
@@ -2231,18 +2432,18 @@ async fn disconnect_while_host_key_prompt_pending_cleans_up() {
  * Phase 3 — concurrency: N simultaneous sessions + connect/disconnect churn
  * ------------------------------------------------------------------------- */
 
-/// Poll the manager's `session_count` down to `expected`, giving the
+/// Poll the registry's `session_count` down to `expected`, giving the
 /// self-cleaning session tasks time to remove their own map entries. Fails the
 /// test (via the caller's assert) if it never settles.
-async fn await_session_count(manager: &SessionManager, expected: usize) {
+async fn await_session_count(registry: &SessionRegistry, expected: usize) {
     for _ in 0..250 {
-        if manager.session_count() == expected {
+        if registry.session_count() == expected {
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(
-        manager.session_count(),
+        registry.session_count(),
         expected,
         "session_count never settled to {expected}"
     );
@@ -2278,7 +2479,8 @@ async fn four_concurrent_sessions_route_io_independently() {
     let port = spawn_test_server(TEST_PASSWORD).await;
     // Pre-trust so none of the four blocks on a TOFU prompt.
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
     // Distinct, non-overlapping markers: no marker is a substring of another,
     // so "session i's sink contains marker j (j != i)" is exactly a misroute.
@@ -2292,8 +2494,14 @@ async fn four_concurrent_sessions_route_io_independently() {
     // Spawn all four at once, each with its own independent sink.
     let mut channels = Vec::new();
     for i in 0..4 {
-        let (sink, chans) = new_sink();
-        spawn_pw_session(&manager, &format!("s{i}"), port, sink);
+        let (sink, prompter, chans) = new_sink();
+        spawn_shell(
+            &registry,
+            &ssh,
+            new_session(&format!("s{i}"), sink),
+            pw_params(port),
+            prompter,
+        );
         channels.push(chans);
     }
 
@@ -2307,14 +2515,14 @@ async fn four_concurrent_sessions_route_io_independently() {
         );
     }
     assert_eq!(
-        manager.session_count(),
+        registry.session_count(),
         4,
         "all four sessions must be live at once"
     );
 
     // Drive I/O on ALL of them: write each session its own distinct payload.
     for (i, marker) in markers.iter().enumerate() {
-        manager.write_stdin(&format!("s{i}"), marker.clone()).await;
+        registry.write_stdin(&format!("s{i}"), marker.clone()).await;
     }
 
     // Each session's sink must echo back its OWN marker and none of the others.
@@ -2339,11 +2547,11 @@ async fn four_concurrent_sessions_route_io_independently() {
 
     // Disconnect all and prove every task tears its own entry down.
     for i in 0..4 {
-        manager.disconnect(&format!("s{i}")).await;
+        registry.disconnect(&format!("s{i}"));
     }
-    await_session_count(&manager, 0).await;
+    await_session_count(&registry, 0).await;
     assert_eq!(
-        manager.session_count(),
+        registry.session_count(),
         0,
         "no session may leak after all four disconnect"
     );
@@ -2361,7 +2569,8 @@ async fn connect_disconnect_churn_leaks_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let port = spawn_test_server(TEST_PASSWORD).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
 
     let mut id = 0u32;
     let mut next_id = || {
@@ -2374,23 +2583,35 @@ async fn connect_disconnect_churn_leaks_nothing() {
     // before (or racing) the task's first poll, so `run_session`'s biased
     // `select!` aborts the handshake and the task self-cleans.
     for _ in 0..40 {
-        let (sink, _chans) = new_sink();
+        let (sink, prompter, _chans) = new_sink();
         let sid = next_id();
-        spawn_pw_session(&manager, &sid, port, sink);
-        manager.disconnect(&sid).await;
+        spawn_shell(
+            &registry,
+            &ssh,
+            new_session(&sid, sink),
+            pw_params(port),
+            prompter,
+        );
+        registry.disconnect(&sid);
     }
 
     // Round B — out-of-order churn: spawn a batch all at once, keep the sinks
     // alive, then disconnect them in reverse order (not spawn order).
     let mut batch = Vec::new();
     for _ in 0..12 {
-        let (sink, chans) = new_sink();
+        let (sink, prompter, chans) = new_sink();
         let sid = next_id();
-        spawn_pw_session(&manager, &sid, port, sink);
+        spawn_shell(
+            &registry,
+            &ssh,
+            new_session(&sid, sink),
+            pw_params(port),
+            prompter,
+        );
         batch.push((sid, chans));
     }
     for (sid, _chans) in batch.iter().rev() {
-        manager.disconnect(sid).await;
+        registry.disconnect(sid);
     }
     drop(batch);
 
@@ -2398,9 +2619,15 @@ async fn connect_disconnect_churn_leaks_nothing() {
     // let a few reach Connected, then disconnect them middle-first.
     let mut live = Vec::new();
     for _ in 0..4 {
-        let (sink, mut chans) = new_sink();
+        let (sink, prompter, mut chans) = new_sink();
         let sid = next_id();
-        spawn_pw_session(&manager, &sid, port, sink);
+        spawn_shell(
+            &registry,
+            &ssh,
+            new_session(&sid, sink),
+            pw_params(port),
+            prompter,
+        );
         let (status, message) = await_settled(&mut chans.status_rx).await;
         assert_eq!(
             status,
@@ -2410,13 +2637,13 @@ async fn connect_disconnect_churn_leaks_nothing() {
         live.push(sid);
     }
     for idx in [1usize, 3, 0, 2] {
-        manager.disconnect(&live[idx]).await;
+        registry.disconnect(&live[idx]);
     }
 
     // After all churn, nothing may remain: no leaked task holds a map entry.
-    await_session_count(&manager, 0).await;
+    await_session_count(&registry, 0).await;
     assert_eq!(
-        manager.session_count(),
+        registry.session_count(),
         0,
         "connect/disconnect churn must leave zero live sessions"
     );
@@ -2432,7 +2659,6 @@ struct TestTunnelSink {
     status_tx: mpsc::UnboundedSender<(TunnelStatus, Vec<ForwardStatus>)>,
     message_tx: mpsc::UnboundedSender<Option<String>>,
     code_tx: mpsc::UnboundedSender<&'static str>,
-    prompt_tx: mpsc::UnboundedSender<HostKeyPromptPayload>,
 }
 
 impl TunnelSink for TestTunnelSink {
@@ -2451,43 +2677,37 @@ impl TunnelSink for TestTunnelSink {
     }
 }
 
-impl ConnectPrompter for TestTunnelSink {
-    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
-        let _ = self.prompt_tx.send(payload);
-    }
-    fn on_auth_prompt(&self, _payload: AuthPromptPayload) {}
-}
-
 struct TunnelSinkChannels {
     status_rx: mpsc::UnboundedReceiver<(TunnelStatus, Vec<ForwardStatus>)>,
     /// The message of each status, in the same order as `status_rx`.
     message_rx: mpsc::UnboundedReceiver<Option<String>>,
     /// The `AppError` code of each error the tunnel ended on.
     code_rx: mpsc::UnboundedReceiver<&'static str>,
-    #[allow(dead_code)]
-    prompt_rx: mpsc::UnboundedReceiver<HostKeyPromptPayload>,
+    prompts: PromptChannels,
 }
 
-fn new_tunnel_sink() -> (Arc<dyn TunnelSink>, TunnelSinkChannels) {
+/// A recording tunnel sink, and the prompter its connect raises prompts on.
+fn new_tunnel_sink() -> (
+    Arc<dyn TunnelSink>,
+    Arc<dyn ConnectPrompter>,
+    TunnelSinkChannels,
+) {
     let (status_tx, status_rx) = mpsc::unbounded_channel();
     let (message_tx, message_rx) = mpsc::unbounded_channel();
     let (code_tx, code_rx) = mpsc::unbounded_channel();
-    let (prompt_tx, prompt_rx) = mpsc::unbounded_channel();
+    let (prompter, prompts) = new_prompter();
     let sink: Arc<dyn TunnelSink> = Arc::new(TestTunnelSink {
         status_tx,
         message_tx,
         code_tx,
-        prompt_tx,
     });
-    (
-        sink,
-        TunnelSinkChannels {
-            status_rx,
-            message_rx,
-            code_rx,
-            prompt_rx,
-        },
-    )
+    let channels = TunnelSinkChannels {
+        status_rx,
+        message_rx,
+        code_rx,
+        prompts,
+    };
+    (sink, prompter, channels)
 }
 
 fn tunnel_manager_with(dir: &std::path::Path) -> Arc<TunnelManager> {
@@ -2495,13 +2715,7 @@ fn tunnel_manager_with(dir: &std::path::Path) -> Arc<TunnelManager> {
 }
 
 fn new_tunnel_manager(dir: &std::path::Path) -> TunnelManager {
-    let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
-    TunnelManager::new(
-        known_hosts,
-        Duration::from_secs(10),
-        Duration::from_secs(60),
-        Duration::from_secs(10),
-    )
+    TunnelManager::new(connector_with(dir, Duration::from_secs(60)))
 }
 
 /// Await the `Listening` status (past the initial `Connecting`), returning its
@@ -2551,16 +2765,12 @@ async fn tunnel_reports_a_lost_connection_without_keepalive() {
     let manager = tunnel_manager_with(dir.path());
     let local_port = free_local_port().await;
 
-    let (sink, mut chans) = new_tunnel_sink();
+    let (sink, prompter, mut chans) = new_tunnel_sink();
     manager.spawn_tunnel(
         "t1".to_string(),
-        TunnelParams {
-            device_id: "dev-1".to_string(),
-            host: "127.0.0.1".to_string(),
+        tunnel_params(
             port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            forwards: vec![Forward {
+            vec![Forward {
                 id: "f1".to_string(),
                 name: "echo".to_string(),
                 kind: ForwardKind::Local,
@@ -2569,10 +2779,10 @@ async fn tunnel_reports_a_lost_connection_without_keepalive() {
                 remote_host: "127.0.0.1".to_string(),
                 remote_port: 9,
             }],
-            keepalive: KeepaliveConfig::disabled(),
-            jump: None,
-        },
+            None,
+        ),
         sink,
+        prompter,
     );
     await_listening(&mut chans.status_rx).await;
 
@@ -2593,31 +2803,15 @@ async fn tunnel_forwards_bytes_and_cleans_up() {
     let manager = tunnel_manager_with(dir.path());
 
     let local_port = free_local_port().await;
-    let forward = Forward {
-        id: "f1".to_string(),
-        name: "echo".to_string(),
-        kind: ForwardKind::Local,
-        local_addr: "127.0.0.1".to_string(),
-        local_port,
-        // The echo server ignores the direct-tcpip target, so any host:port works.
-        remote_host: "127.0.0.1".to_string(),
-        remote_port: 9,
-    };
+    // The echo server ignores the direct-tcpip target, so any host:port works.
+    let forward = echo_forward("f1", local_port);
 
-    let (sink, mut chans) = new_tunnel_sink();
+    let (sink, prompter, mut chans) = new_tunnel_sink();
     manager.spawn_tunnel(
         "t1".to_string(),
-        TunnelParams {
-            device_id: "dev-1".to_string(),
-            host: "127.0.0.1".to_string(),
-            port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            forwards: vec![forward],
-            keepalive: KeepaliveConfig::disabled(),
-            jump: None,
-        },
+        tunnel_params(port, vec![forward], None),
         sink,
+        prompter,
     );
 
     // The forward must bind and the tunnel must report Listening.
@@ -2692,26 +2886,20 @@ fn spawn_jumped_tunnel(
     jump_password: &str,
     forward: Forward,
 ) -> TunnelSinkChannels {
-    let (sink, chans) = new_tunnel_sink();
-    manager.spawn_tunnel(
-        "t1".to_string(),
-        TunnelParams {
-            device_id: "dev-1".to_string(),
-            host: "127.0.0.1".to_string(),
-            port: target_port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            forwards: vec![forward],
-            keepalive: KeepaliveConfig::disabled(),
-            jump: Some(JumpHop {
-                host: "127.0.0.1".to_string(),
-                port: jump_port,
-                username: TEST_USER.to_string(),
-                creds: AuthCredentials::Password(jump_password.to_string()),
-            }),
-        },
-        sink,
-    );
+    let jump = jump_hop(jump_port, jump_password);
+    spawn_tunnel_via(manager, target_port, Some(jump), forward)
+}
+
+/// Start a one-forward tunnel "t1" to `target_port`, through `jump` if any.
+fn spawn_tunnel_via(
+    manager: &Arc<TunnelManager>,
+    target_port: u16,
+    jump: Option<JumpHop>,
+    forward: Forward,
+) -> TunnelSinkChannels {
+    let (sink, prompter, chans) = new_tunnel_sink();
+    let params = tunnel_params(target_port, vec![forward], jump);
+    manager.spawn_tunnel("t1".to_string(), params, sink, prompter);
     chans
 }
 
@@ -2967,20 +3155,12 @@ async fn tunnel_adds_and_removes_forwards_while_live() {
     let manager = tunnel_manager_with(dir.path());
     let (first_port, second_port) = (free_local_port().await, free_local_port().await);
 
-    let (sink, mut chans) = new_tunnel_sink();
+    let (sink, prompter, mut chans) = new_tunnel_sink();
     manager.spawn_tunnel(
         "t1".to_string(),
-        TunnelParams {
-            device_id: "dev-1".to_string(),
-            host: "127.0.0.1".to_string(),
-            port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            forwards: vec![echo_forward("f1", first_port)],
-            keepalive: KeepaliveConfig::disabled(),
-            jump: None,
-        },
+        tunnel_params(port, vec![echo_forward("f1", first_port)], None),
         sink,
+        prompter,
     );
     // Even before it has connected, the tunnel reports what it will bind.
     assert_eq!(manager.list()[0].forward_ids, ["f1"]);
@@ -3039,20 +3219,12 @@ async fn start_echo_tunnel_with_backlog(
             .with_stall_timeout(stall),
     );
     let local_port = free_local_port().await;
-    let (sink, mut chans) = new_tunnel_sink();
+    let (sink, prompter, mut chans) = new_tunnel_sink();
     manager.spawn_tunnel(
         "t1".to_string(),
-        TunnelParams {
-            device_id: "dev-1".to_string(),
-            host: "127.0.0.1".to_string(),
-            port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            forwards: vec![echo_forward("f1", local_port)],
-            keepalive: KeepaliveConfig::disabled(),
-            jump: None,
-        },
+        tunnel_params(port, vec![echo_forward("f1", local_port)], None),
         sink,
+        prompter,
     );
     await_listening(&mut chans.status_rx).await;
     (manager, local_port)
@@ -3209,6 +3381,152 @@ async fn a_client_too_far_behind_is_closed_alone() {
     manager.stop_tunnel("t1").await;
 }
 
+/// A server that stopped reading its socket.
+async fn spawn_frozen_server(frozen: mpsc::UnboundedSender<()>) -> u16 {
+    let server = TestServer {
+        stall_reads: true,
+        frozen: Some(frozen),
+        ..TestServer::new(TEST_PASSWORD)
+    };
+    spawn_server(server, wide_window_config()).await
+}
+
+/// A jump host that stops reading once the tunnel's traffic is flowing.
+async fn spawn_frozen_jump_server(frozen: mpsc::UnboundedSender<()>) -> u16 {
+    let jump = TestServer {
+        bridge_direct_tcpip: true,
+        stall_jump_after: Some(1 << 20),
+        frozen: Some(frozen),
+        ..TestServer::new(TEST_PASSWORD)
+    };
+    spawn_server(jump, wide_window_config()).await
+}
+
+/// A window wide enough that a client fills the socket buffers instead of
+/// waiting on a window adjust.
+fn wide_window_config() -> server::Config {
+    server::Config {
+        window_size: 64 << 20,
+        ..server_config(Duration::from_secs(30))
+    }
+}
+
+const FLOOD_CHUNK: usize = 64 << 10;
+
+/// Write to `client` until it fails, counting the bytes it took so far.
+fn spawn_flood(mut client: TcpStream) -> Arc<AtomicUsize> {
+    use tokio::io::AsyncWriteExt;
+
+    let written = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&written);
+    tokio::spawn(async move {
+        let chunk = vec![0u8; FLOOD_CHUNK];
+        while client.write_all(&chunk).await.is_ok() {
+            counter.fetch_add(FLOOD_CHUNK, Ordering::Relaxed);
+        }
+    });
+    written
+}
+
+/// Wait until the server froze and the flood stopped moving: the client's
+/// outbound path is full, so any goodbye has to queue.
+async fn await_backed_up(frozen: &mut mpsc::UnboundedReceiver<()>, written: &AtomicUsize) {
+    let patience = Duration::from_secs(10);
+    recv_timeout(frozen, patience)
+        .await
+        .expect("the server never stopped reading");
+    tokio::time::timeout(patience, await_still(written))
+        .await
+        .expect("the flood never backed up");
+}
+
+/// Return once `counter` stayed put for a while.
+async fn await_still(counter: &AtomicUsize) {
+    let mut last = counter.load(Ordering::Relaxed);
+    loop {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let now = counter.load(Ordering::Relaxed);
+        if now == last {
+            return;
+        }
+        last = now;
+    }
+}
+
+/// Flood a tunnel to `target_port` (through `jump_port` if any) until its
+/// stalled server, told on `frozen`, backs it up; stopping it must still end it.
+async fn assert_stopping_a_backed_up_tunnel_ends_it(
+    dir: &std::path::Path,
+    target_port: u16,
+    jump_port: Option<u16>,
+    mut frozen: mpsc::UnboundedReceiver<()>,
+) {
+    std::iter::once(target_port)
+        .chain(jump_port)
+        .for_each(|port| seed_trusted(dir, port));
+    let manager = tunnel_manager_with(dir);
+    let local_port = free_local_port().await;
+    let jump = jump_port.map(|port| jump_hop(port, TEST_PASSWORD));
+    let mut chans = spawn_tunnel_via(&manager, target_port, jump, echo_forward("f1", local_port));
+    await_listening(&mut chans.status_rx).await;
+    let written = spawn_flood(connect_local(local_port).await);
+    await_backed_up(&mut frozen, &written).await;
+    manager.stop_tunnel("t1").await;
+    let (status, _) = recv_timeout(&mut chans.status_rx, Duration::from_secs(3))
+        .await
+        .expect("the stopped tunnel must end");
+    assert_eq!(status, TunnelStatus::Disconnected);
+    await_no_tunnels(&manager).await;
+}
+
+/// russh's disconnect only queues behind the data the stuck connection could
+/// not send: the tunnel's teardown must not wait on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_a_tunnel_whose_server_stopped_reading_ends_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (frozen_tx, frozen) = mpsc::unbounded_channel();
+    let port = spawn_frozen_server(frozen_tx).await;
+    assert_stopping_a_backed_up_tunnel_ends_it(dir.path(), port, None, frozen).await;
+}
+
+/// A jump host that stopped reading: the target's and the jump host's
+/// goodbyes queue behind the data it won't take. Stopping the tunnel must not
+/// wait on either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_a_tunnel_whose_jump_host_stopped_reading_ends_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let target_port = spawn_server(TestServer::new(TEST_PASSWORD), wide_window_config()).await;
+    let (frozen_tx, frozen) = mpsc::unbounded_channel();
+    let jump_port = Some(spawn_frozen_jump_server(frozen_tx).await);
+    assert_stopping_a_backed_up_tunnel_ends_it(dir.path(), target_port, jump_port, frozen).await;
+}
+
+/// Shells, tunnels and SFTP share one prompt registry: a tunnel's host-key
+/// prompt is answered through the connector.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tunnel_host_key_prompt_is_answered_through_the_connector() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = spawn_test_server(TEST_PASSWORD).await;
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let manager = Arc::new(TunnelManager::new(Arc::clone(&ssh)));
+    let local_port = free_local_port().await;
+    let (sink, prompter, mut chans) = new_tunnel_sink();
+    manager.spawn_tunnel(
+        "t1".to_string(),
+        tunnel_params(port, vec![echo_forward("f1", local_port)], None),
+        sink,
+        prompter,
+    );
+    let prompt = recv_timeout(&mut chans.prompts.host_key_rx, Duration::from_secs(10))
+        .await
+        .expect("a host_key_prompt");
+
+    assert!(ssh.prompts().respond_host_key(&prompt.prompt_id, true));
+
+    await_listening(&mut chans.status_rx).await;
+    manager.stop_tunnel("t1").await;
+}
+
 /// Connect to a tunnel's local port, retrying briefly until its listener accepts.
 async fn connect_local(port: u16) -> TcpStream {
     for _ in 0..50 {
@@ -3250,16 +3568,12 @@ async fn start_dynamic_tunnel() -> DynamicTunnel {
     let manager = tunnel_manager_with(dir.path());
     let local_port = free_local_port().await;
 
-    let (sink, mut chans) = new_tunnel_sink();
+    let (sink, prompter, mut chans) = new_tunnel_sink();
     manager.spawn_tunnel(
         "t1".to_string(),
-        TunnelParams {
-            device_id: "dev-1".to_string(),
-            host: "127.0.0.1".to_string(),
+        tunnel_params(
             port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            forwards: vec![Forward {
+            vec![Forward {
                 id: "f1".to_string(),
                 name: "proxy".to_string(),
                 kind: ForwardKind::Dynamic,
@@ -3268,10 +3582,10 @@ async fn start_dynamic_tunnel() -> DynamicTunnel {
                 remote_host: String::new(),
                 remote_port: 0,
             }],
-            keepalive: KeepaliveConfig::disabled(),
-            jump: None,
-        },
+            None,
+        ),
         sink,
+        prompter,
     );
     let forwards = await_listening(&mut chans.status_rx).await;
     assert!(forwards[0].bound, "the SOCKS port must bind");
@@ -3461,20 +3775,12 @@ async fn tunnel_bind_failure_errors_and_cleans_up() {
         remote_port: 9,
     };
 
-    let (sink, mut chans) = new_tunnel_sink();
+    let (sink, prompter, mut chans) = new_tunnel_sink();
     manager.spawn_tunnel(
         "t1".to_string(),
-        TunnelParams {
-            device_id: "dev-1".to_string(),
-            host: "127.0.0.1".to_string(),
-            port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            forwards: vec![forward],
-            keepalive: KeepaliveConfig::disabled(),
-            jump: None,
-        },
+        tunnel_params(port, vec![forward], None),
         sink,
+        prompter,
     );
 
     // With no forward able to bind, the tunnel settles on Error, not Listening.
@@ -3535,20 +3841,12 @@ struct RemoteTunnel {
 fn start_remote_tunnel(port: u16, dir: tempfile::TempDir, forwards: Vec<Forward>) -> RemoteTunnel {
     seed_trusted(dir.path(), port);
     let manager = tunnel_manager_with(dir.path());
-    let (sink, chans) = new_tunnel_sink();
+    let (sink, prompter, chans) = new_tunnel_sink();
     manager.spawn_tunnel(
         "t1".to_string(),
-        TunnelParams {
-            device_id: "dev-1".to_string(),
-            host: "127.0.0.1".to_string(),
-            port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            forwards,
-            keepalive: KeepaliveConfig::disabled(),
-            jump: None,
-        },
+        tunnel_params(port, forwards, None),
         sink,
+        prompter,
     );
     RemoteTunnel {
         manager,
@@ -3730,9 +4028,16 @@ async fn a_shell_connection_rejects_forwarded_tcpip_channels() {
     let port = spawn_remote_test_server(|s| s.forward_probe = Some(tx)).await;
     let dir = tempfile::tempdir().unwrap();
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_secs(60));
-    let (sink, _chans) = new_sink();
-    spawn_pw_session(&manager, "s1", port, sink);
+    let registry = Arc::new(SessionRegistry::new());
+    let ssh = connector_with(dir.path(), Duration::from_secs(60));
+    let (sink, prompter, _chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("s1", sink),
+        pw_params(port),
+        prompter,
+    );
 
     let accepted = recv_timeout(&mut rx, Duration::from_secs(10))
         .await
@@ -3775,20 +4080,16 @@ async fn remote_forward_works_through_a_jump_host() {
     let manager = tunnel_manager_with(dir.path());
     let (echo_port, server_port) = (spawn_echo_service().await, free_local_port().await);
 
-    let (sink, mut chans) = new_tunnel_sink();
+    let (sink, prompter, mut chans) = new_tunnel_sink();
     manager.spawn_tunnel(
         "t1".to_string(),
-        TunnelParams {
-            device_id: "dev-1".to_string(),
-            host: "127.0.0.1".to_string(),
-            port: target_port,
-            username: TEST_USER.to_string(),
-            creds: password_creds(),
-            forwards: vec![remote_forward("r1", server_port, echo_port)],
-            keepalive: KeepaliveConfig::disabled(),
-            jump: Some(jump_hop(jump_port, TEST_PASSWORD)),
-        },
+        tunnel_params(
+            target_port,
+            vec![remote_forward("r1", server_port, echo_port)],
+            Some(jump_hop(jump_port, TEST_PASSWORD)),
+        ),
         sink,
+        prompter,
     );
     assert!(await_listening(&mut chans.status_rx).await[0].bound);
     let mut stream = connect_local(server_port).await;
@@ -3971,32 +4272,40 @@ async fn spawn_kbd_server(scenario: KbdScenario) -> u16 {
     spawn_server(server, server_config(Duration::from_secs(30))).await
 }
 
-/// A trusted kbd server, its manager, and a password session started on it.
+/// A trusted kbd server, its registry, and a password session started on it.
 async fn start_kbd_session(
     dir: &std::path::Path,
     scenario: KbdScenario,
-) -> (Arc<SessionManager>, SinkChannels) {
+) -> (Arc<SessionRegistry>, Arc<SshConnector>, SinkChannels) {
     let port = spawn_kbd_server(scenario).await;
     seed_trusted(dir, port);
-    let manager = manager_with(dir, Duration::from_secs(10));
-    let (sink, chans) = new_sink();
-    spawn_pw_session(&manager, "k1", port, sink);
-    (manager, chans)
+    let ssh = connector_with(dir, Duration::from_secs(10));
+    let registry = Arc::new(SessionRegistry::new());
+    let (sink, prompter, chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("k1", sink),
+        pw_params(port),
+        prompter,
+    );
+    (registry, ssh, chans)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_saved_password_answers_a_keyboard_interactive_password_question() {
     let dir = tempfile::tempdir().unwrap();
-    let (manager, mut chans) = start_kbd_session(dir.path(), KbdScenario::PasswordThroughKbd).await;
+    let (registry, _ssh, mut chans) =
+        start_kbd_session(dir.path(), KbdScenario::PasswordThroughKbd).await;
 
     let (status, message) = await_settled(&mut chans.status_rx).await;
 
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
     assert!(
-        chans.auth_prompt_rx.try_recv().is_err(),
+        chans.prompts.auth_rx.try_recv().is_err(),
         "the user was asked nothing"
     );
-    manager.disconnect("k1").await;
+    registry.disconnect("k1");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4004,30 +4313,38 @@ async fn an_auth_prompt_waits_in_the_queue_until_it_is_shown() {
     let dir = tempfile::tempdir().unwrap();
     let port = spawn_kbd_server(KbdScenario::PasswordThenCode).await;
     seed_trusted(dir.path(), port);
-    let manager = manager_with(dir.path(), Duration::from_millis(300));
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "k1", port, sink);
-    let prompt = recv_timeout(&mut chans.auth_prompt_rx, Duration::from_secs(10))
+    let ssh = connector_with(dir.path(), Duration::from_millis(300));
+    let registry = Arc::new(SessionRegistry::new());
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("k1", sink),
+        pw_params(port),
+        prompter,
+    );
+    let prompt = recv_timeout(&mut chans.prompts.auth_rx, Duration::from_secs(10))
         .await
         .expect("an auth_prompt");
 
     // Queued behind another prompt for longer than the answer time.
     tokio::time::sleep(Duration::from_millis(600)).await;
-    assert!(manager.mark_auth_shown(&prompt.prompt_id));
+    assert!(ssh.prompts().mark_auth_shown(&prompt.prompt_id));
     let answers = Some(Zeroizing::new(vec![TEST_CODE.to_string()]));
-    assert!(manager.respond_auth(&prompt.prompt_id, answers));
+    assert!(ssh.prompts().respond_auth(&prompt.prompt_id, answers));
 
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
-    manager.disconnect("k1").await;
+    registry.disconnect("k1");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_second_factor_is_asked_of_the_user_and_answered() {
     let dir = tempfile::tempdir().unwrap();
-    let (manager, mut chans) = start_kbd_session(dir.path(), KbdScenario::PasswordThenCode).await;
+    let (registry, ssh, mut chans) =
+        start_kbd_session(dir.path(), KbdScenario::PasswordThenCode).await;
 
-    let prompt = recv_timeout(&mut chans.auth_prompt_rx, Duration::from_secs(10))
+    let prompt = recv_timeout(&mut chans.prompts.auth_rx, Duration::from_secs(10))
         .await
         .expect("an auth_prompt");
     assert_eq!(prompt.username, TEST_USER);
@@ -4035,23 +4352,25 @@ async fn a_second_factor_is_asked_of_the_user_and_answered() {
     assert_eq!(prompt.fields[0].label, CODE_QUESTION);
     assert!(!prompt.fields[0].echo);
     let answers = Some(Zeroizing::new(vec![TEST_CODE.to_string()]));
-    assert!(manager.respond_auth(&prompt.prompt_id, answers));
+    assert!(ssh.prompts().respond_auth(&prompt.prompt_id, answers));
 
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
-    manager.disconnect("k1").await;
+    registry.disconnect("k1");
 }
 
 /// Answer the session's one auth prompt with `answers`, then return the
 /// error code the session ended on.
 async fn auth_error_after_answering(answers: Option<Vec<String>>) -> &'static str {
     let dir = tempfile::tempdir().unwrap();
-    let (manager, mut chans) = start_kbd_session(dir.path(), KbdScenario::PasswordThenCode).await;
-    let prompt = recv_timeout(&mut chans.auth_prompt_rx, Duration::from_secs(10))
+    let (_registry, ssh, mut chans) =
+        start_kbd_session(dir.path(), KbdScenario::PasswordThenCode).await;
+    let prompt = recv_timeout(&mut chans.prompts.auth_rx, Duration::from_secs(10))
         .await
         .expect("an auth_prompt");
 
-    manager.respond_auth(&prompt.prompt_id, answers.map(Zeroizing::new));
+    ssh.prompts()
+        .respond_auth(&prompt.prompt_id, answers.map(Zeroizing::new));
 
     let (status, _) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Error);
@@ -4077,33 +4396,41 @@ async fn time_spent_answering_prompts_does_not_count_toward_the_connect_deadline
     let dir = tempfile::tempdir().unwrap();
     let port = spawn_kbd_server(KbdScenario::PasswordThenCode).await;
     let quick = Duration::from_millis(200);
-    let known_hosts = Arc::new(KnownHostsStore::load(dir.path().to_path_buf()));
     // Overall budget: 200 ms + 1 s + 200 ms; the two answers below take 1.6 s.
-    let manager = Arc::new(SessionManager::new(
-        known_hosts,
-        quick,
-        Duration::from_secs(1),
-        quick,
-    ));
-    let (sink, mut chans) = new_sink();
-    spawn_pw_session(&manager, "k1", port, sink);
+    let ssh = connector(
+        dir.path(),
+        ConnectTimeouts {
+            connect: quick,
+            prompt: Duration::from_secs(1),
+            handshake: quick,
+        },
+    );
+    let registry = Arc::new(SessionRegistry::new());
+    let (sink, prompter, mut chans) = new_sink();
+    spawn_shell(
+        &registry,
+        &ssh,
+        new_session("k1", sink),
+        pw_params(port),
+        prompter,
+    );
     let slow_user = Duration::from_millis(800);
 
-    let host_key = recv_timeout(&mut chans.prompt_rx, Duration::from_secs(5))
+    let host_key = recv_timeout(&mut chans.prompts.host_key_rx, Duration::from_secs(5))
         .await
         .expect("a host_key_prompt");
     tokio::time::sleep(slow_user).await;
-    manager.respond_host_key(&host_key.prompt_id, true);
-    let code = recv_timeout(&mut chans.auth_prompt_rx, Duration::from_secs(5))
+    ssh.prompts().respond_host_key(&host_key.prompt_id, true);
+    let code = recv_timeout(&mut chans.prompts.auth_rx, Duration::from_secs(5))
         .await
         .expect("an auth_prompt");
     tokio::time::sleep(slow_user).await;
-    manager.respond_auth(
+    ssh.prompts().respond_auth(
         &code.prompt_id,
         Some(Zeroizing::new(vec![TEST_CODE.to_string()])),
     );
 
     let (status, message) = await_settled(&mut chans.status_rx).await;
     assert_eq!(status, SessionStatus::Connected, "message={message:?}");
-    manager.disconnect("k1").await;
+    registry.disconnect("k1");
 }

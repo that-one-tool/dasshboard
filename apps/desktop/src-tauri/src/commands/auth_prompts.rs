@@ -1,5 +1,5 @@
-//! Keyboard-interactive prompts (2FA codes, PAM questions): the events every
-//! SSH connection kind's sink raises, and the command answering them.
+//! Keyboard-interactive prompts (2FA codes, PAM questions): the events
+//! `TauriPrompter` raises, and the commands answering them.
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -30,9 +30,8 @@ pub(super) fn emit_auth_prompt_closed(app: &AppHandle, prompt_id: &str) {
     let _ = app.emit(AUTH_PROMPT_CLOSED_EVENT, payload);
 }
 
-/// Answer a pending auth prompt (`answers: null` cancels it). Each manager
-/// owns its prompts, so the first one holding `prompt_id` takes the answer;
-/// unknown/stale ⇒ no-op.
+/// Answer a pending auth prompt (`answers: null` cancels it). Unknown/stale ⇒
+/// no-op.
 #[tauri::command]
 pub fn respond_auth_prompt(
     state: State<'_, AppState>,
@@ -40,20 +39,12 @@ pub fn respond_auth_prompt(
     answers: Option<Vec<String>>,
 ) {
     let answers = answers.map(Zeroizing::new);
-    let _ = state
-        .session_manager
-        .respond_auth(&prompt_id, answers.clone())
-        || state
-            .tunnel_manager
-            .respond_auth(&prompt_id, answers.clone())
-        || state.sftp_manager.respond_auth(&prompt_id, answers);
+    state.ssh.prompts().respond_auth(&prompt_id, answers);
 }
 
 /// The dialog shows an auth prompt (one at a time): its answer time starts
 /// now, not while it waited behind others. Unknown/stale ⇒ no-op.
 #[tauri::command]
 pub fn auth_prompt_shown(state: State<'_, AppState>, prompt_id: String) {
-    let _ = state.session_manager.mark_auth_shown(&prompt_id)
-        || state.tunnel_manager.mark_auth_shown(&prompt_id)
-        || state.sftp_manager.mark_auth_shown(&prompt_id);
+    state.ssh.prompts().mark_auth_shown(&prompt_id);
 }

@@ -9,14 +9,11 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use super::auth_prompts::{emit_auth_prompt, emit_auth_prompt_closed};
 use super::blocking::run_with_state;
-use super::device_access::{find_device, keepalive_config, resolve_credentials, resolve_jump_hop};
-use super::host_keys::{emit_host_key_prompt_closed, HOST_KEY_PROMPT_EVENT};
-use crate::device::{Connection, Device};
+use super::device_access::{find_device, ssh_target_of};
+use super::host_keys::TauriPrompter;
 use crate::error::AppError;
 use crate::sftp::{SftpEntry, SftpParams};
-use crate::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPromptPayload};
 use crate::state::AppState;
 
 /// Event name for streamed SFTP transfer progress (see `sftp_progress_emitter`).
@@ -65,44 +62,6 @@ pub(super) fn sftp_progress_emitter(
     }
 }
 
-/// Production [`ConnectPrompter`] for SFTP: forwards an SFTP handshake's
-/// host-key trust prompt onto the shared `host_key_prompt` event, so the same
-/// dialog a shell/tunnel raises handles it. Carries no secret material.
-struct TauriSftpPrompter {
-    app: AppHandle,
-}
-
-impl ConnectPrompter for TauriSftpPrompter {
-    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
-        let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
-    }
-    fn on_host_key_prompt_closed(&self, prompt_id: &str) {
-        emit_host_key_prompt_closed(&self.app, prompt_id);
-    }
-    fn on_auth_prompt(&self, payload: AuthPromptPayload) {
-        emit_auth_prompt(&self.app, payload);
-    }
-    fn on_auth_prompt_closed(&self, prompt_id: &str) {
-        emit_auth_prompt_closed(&self.app, prompt_id);
-    }
-}
-
-/// The SSH endpoint (host, port, username) of a device, or an error for a serial
-/// device (which has no SFTP). Used by every SFTP command that needs to connect.
-fn ssh_endpoint_of(device: &Device) -> Result<(&str, u16, &str), AppError> {
-    match &device.connection {
-        Connection::Ssh {
-            host,
-            port,
-            username,
-            ..
-        } => Ok((host, *port, username)),
-        _ => Err(AppError::Validation(
-            "only SSH devices support SFTP".to_string(),
-        )),
-    }
-}
-
 /// Open an SFTP connection to a device and return the starting directory (the
 /// server's default/home). Shares the host-key path, so a first-contact connect
 /// can raise a `host_key_prompt` like a live shell. Reconnecting replaces any
@@ -114,27 +73,11 @@ pub async fn sftp_connect(
     device_id: String,
 ) -> Result<String, AppError> {
     let device = find_device(&state, &device_id)?;
-    let (host, port, username) = ssh_endpoint_of(&device)?;
-    let host = host.to_string();
-    let username = username.to_string();
-
-    let creds = resolve_credentials(&state, &device).await?;
-    let jump = resolve_jump_hop(&state, &device).await?;
-    let prompter: Arc<dyn ConnectPrompter> = Arc::new(TauriSftpPrompter { app });
+    let target = ssh_target_of(&state, &device).await?;
+    let prompter = Arc::new(TauriPrompter { app });
     state
         .sftp_manager
-        .connect(
-            SftpParams {
-                device_id,
-                host,
-                port,
-                username,
-                creds,
-                keepalive: keepalive_config(&state),
-                jump,
-            },
-            prompter,
-        )
+        .connect(SftpParams { device_id, target }, prompter)
         .await
 }
 

@@ -4,35 +4,27 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use russh::client;
 use russh_sftp::client::SftpSession;
+use tokio::task::JoinSet;
+use tokio::time::timeout;
 
 use super::{sftp_err, SftpParams};
 use crate::error::AppError;
-use crate::known_hosts::KnownHostsStore;
-use crate::ssh::establish::{
-    close_jump, establish_target, overall_establish_timeout, JumpConnection,
-    DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
-};
+use crate::ssh::connector::{SshConnection, SshConnector};
 use crate::ssh::handler::SshHandler;
-use crate::ssh::params::Endpoint;
-use crate::ssh::prompts::{AuthAnswers, ConnectPrompter, ConnectPrompts};
+use crate::ssh::prompts::ConnectPrompter;
 
-/// A live SFTP connection: the authenticated SSH `Handle` (kept alive only to
-/// hold the transport open — dropping it disconnects), the jump host's handle
-/// the transport rides on (for a jumped connection; same reason), plus the
-/// `SftpSession` speaking the subsystem over one channel.
+/// A live SFTP connection: the SSH connection (kept alive only to hold the
+/// transport open — dropping it disconnects), plus the `SftpSession` speaking
+/// the subsystem over one channel.
 pub(super) struct SftpConn {
-    pub(super) handle: client::Handle<SshHandler>,
-    jump: Option<JumpConnection>,
+    connection: SshConnection,
     pub(super) session: SftpSession,
 }
 
-/// Owns the live SFTP connections and the host-key prompt registry for SFTP
-/// handshakes. Its own `ConnectPrompts` (like the tunnel manager's) is resolved
-/// by the `respond_host_key` command, which fans a reply out to every manager.
+/// Owns the live SFTP connections.
 pub struct SftpManager {
     conns: Mutex<HashMap<String, Arc<SftpConn>>>,
     /// Cancel flags for in-flight transfers, keyed by device id. A transfer
@@ -41,48 +33,16 @@ pub struct SftpManager {
     /// transfer per device runs at a time (the frontend queue drains them
     /// sequentially), so a single flag per device is sufficient.
     transfers: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    prompts: Arc<ConnectPrompts>,
-    known_hosts: Arc<KnownHostsStore>,
-    connect_timeout: Duration,
-    prompt_timeout: Duration,
-    handshake_timeout: Duration,
+    ssh: Arc<SshConnector>,
 }
 
 impl SftpManager {
-    /// Construct with explicit timeouts (tests pass short ones).
-    pub fn new(
-        known_hosts: Arc<KnownHostsStore>,
-        connect_timeout: Duration,
-        prompt_timeout: Duration,
-        handshake_timeout: Duration,
-    ) -> Self {
+    pub fn new(ssh: Arc<SshConnector>) -> Self {
         Self {
             conns: Mutex::new(HashMap::new()),
             transfers: Mutex::new(HashMap::new()),
-            prompts: Arc::new(ConnectPrompts::default()),
-            known_hosts,
-            connect_timeout,
-            prompt_timeout,
-            handshake_timeout,
+            ssh,
         }
-    }
-
-    /// Production constructor with the same SPEC §6 timeouts as a shell session.
-    pub fn with_defaults(known_hosts: Arc<KnownHostsStore>) -> Self {
-        Self::new(
-            known_hosts,
-            DEFAULT_CONNECT_TIMEOUT,
-            DEFAULT_PROMPT_TIMEOUT,
-            DEFAULT_HANDSHAKE_TIMEOUT,
-        )
-    }
-
-    fn overall_establish_timeout(&self) -> Duration {
-        overall_establish_timeout(
-            self.connect_timeout,
-            self.prompt_timeout,
-            self.handshake_timeout,
-        )
     }
 
     fn lock_conns(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<SftpConn>>> {
@@ -117,26 +77,9 @@ impl SftpManager {
     pub fn connected_devices(&self) -> Vec<String> {
         self.lock_conns()
             .iter()
-            .filter(|(_, conn)| !conn.handle.is_closed())
+            .filter(|(_, conn)| !conn.connection.handle().is_closed())
             .map(|(id, _)| id.clone())
             .collect()
-    }
-
-    /// Resolve a pending host-key trust prompt raised by an SFTP handshake.
-    /// Returns whether a prompt with that id was waiting here (so the command
-    /// layer knows which manager owned it).
-    pub fn respond_host_key(&self, prompt_id: &str, accept: bool) -> bool {
-        self.prompts.respond_host_key(prompt_id, accept)
-    }
-
-    /// Resolve a pending keyboard-interactive prompt; `false` if it isn't ours.
-    pub fn respond_auth(&self, prompt_id: &str, answers: AuthAnswers) -> bool {
-        self.prompts.respond_auth(prompt_id, answers)
-    }
-
-    /// The dialog shows an auth prompt; `false` if it isn't ours.
-    pub fn mark_auth_shown(&self, prompt_id: &str) -> bool {
-        self.prompts.mark_auth_shown(prompt_id)
     }
 
     /// Register a fresh cancel flag for a starting transfer on `device_id`,
@@ -188,52 +131,48 @@ impl SftpManager {
         prompter: Arc<dyn ConnectPrompter>,
     ) -> Result<String, AppError> {
         let handler = self.handler_for(&params, prompter);
-        let target = Endpoint {
-            host: &params.host,
-            port: params.port,
-            username: &params.username,
-            creds: &params.creds,
+        let connection = self
+            .ssh
+            .connect(
+                params.target.endpoint(),
+                params.target.jump.as_ref(),
+                handler,
+            )
+            .await?;
+        let opened = self.open_sftp_or_close_connection(&connection, &params);
+        let (session, start_dir) = opened.await?;
+        let conn = SftpConn {
+            connection,
+            session,
         };
-        let (handle, jump) = establish_target(
-            target,
-            params.jump.as_ref(),
-            handler,
-            self.connect_timeout,
-            self.overall_establish_timeout(),
-        )
-        .await?;
-        let session = open_sftp_session(&handle).await?;
-
-        // Resolve the starting directory before storing, so a failure here
-        // surfaces as a connect error rather than a half-open connection.
-        let start_dir = session
-            .canonicalize(".")
-            .await
-            .map_err(|e| sftp_err("could not resolve the home directory", e))?;
-
-        self.lock_conns().insert(
-            params.device_id,
-            Arc::new(SftpConn {
-                handle,
-                jump,
-                session,
-            }),
-        );
+        self.lock_conns().insert(params.device_id, Arc::new(conn));
         Ok(start_dir)
+    }
+
+    /// Open SFTP at the home directory within the handshake budget (the
+    /// establish deadline is spent, and its clock is internal to it); closes
+    /// the connection when that fails.
+    async fn open_sftp_or_close_connection(
+        &self,
+        connection: &SshConnection,
+        params: &SftpParams,
+    ) -> Result<(SftpSession, String), AppError> {
+        let budget = self.ssh.timeouts().handshake;
+        let opened = timeout(budget, open_at_home(connection.handle()))
+            .await
+            .unwrap_or_else(|_| Err(open_timed_out(params)));
+        if opened.is_err() {
+            connection.close().await;
+        }
+        opened
     }
 
     fn handler_for(&self, params: &SftpParams, prompter: Arc<dyn ConnectPrompter>) -> SshHandler {
         // The SFTP file browser never forwards the SSH agent.
-        SshHandler::new(
-            prompter,
-            Arc::clone(&self.known_hosts),
-            Arc::clone(&self.prompts),
-            params.host.clone(),
-            params.port,
-            self.prompt_timeout,
-            params.keepalive,
-        )
-        .with_purpose("SFTP")
+        let target = &params.target;
+        self.ssh
+            .handler(target.host.clone(), target.port, target.keepalive, prompter)
+            .with_purpose("SFTP")
     }
 
     /// Close and forget a device's SFTP connection. Idempotent: an unknown
@@ -247,14 +186,37 @@ impl SftpManager {
         }
     }
 
-    /// Close every connection (app-close cleanup). Drains the map first so the
-    /// lock is never held across an `.await`.
+    /// Close every connection (app-close cleanup), side by side so stuck
+    /// servers hold up quit for one close, not one each. Drains the map first
+    /// so the lock is never held across an `.await`.
     pub async fn disconnect_all(&self) {
         let conns: Vec<Arc<SftpConn>> = self.lock_conns().drain().map(|(_, c)| c).collect();
+        let mut closing = JoinSet::new();
         for conn in conns {
-            close_conn(&conn).await;
+            closing.spawn(async move { close_conn(&conn).await });
         }
+        closing.join_all().await;
     }
+}
+
+/// Open SFTP and resolve the starting directory, so a failure surfaces as a
+/// connect error rather than a half-open connection.
+async fn open_at_home(
+    handle: &client::Handle<SshHandler>,
+) -> Result<(SftpSession, String), AppError> {
+    let session = open_sftp_session(handle).await?;
+    let start_dir = session
+        .canonicalize(".")
+        .await
+        .map_err(|e| sftp_err("could not resolve the home directory", e))?;
+    Ok((session, start_dir))
+}
+
+fn open_timed_out(params: &SftpParams) -> AppError {
+    AppError::SshConnect(format!(
+        "connecting to {}:{} timed out while opening SFTP",
+        params.target.host, params.target.port
+    ))
 }
 
 /// Open one session channel and switch it to the SFTP subsystem.
@@ -274,11 +236,7 @@ async fn open_sftp_session(handle: &client::Handle<SshHandler>) -> Result<SftpSe
 
 async fn close_conn(conn: &SftpConn) {
     let _ = conn.session.close().await;
-    let _ = conn
-        .handle
-        .disconnect(russh::Disconnect::ByApplication, "", "")
-        .await;
-    close_jump(conn.jump.as_ref()).await;
+    conn.connection.close().await;
 }
 
 /// Removes a transfer's cancel flag on drop, so it is cleared no matter how the

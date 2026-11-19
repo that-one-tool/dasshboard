@@ -8,22 +8,20 @@ use serde::Serialize;
 use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use super::auth_prompts::{emit_auth_prompt, emit_auth_prompt_closed};
 use super::client_ids::{client_chosen_id, id_in_use};
-use super::device_access::{
-    find_device, keepalive_config, resolve_credentials, resolve_jump_hop, resolve_test_credentials,
-};
-use super::host_keys::{emit_host_key_prompt_closed, HOST_KEY_PROMPT_EVENT};
+use super::device_access::{find_device, ssh_target_of, test_target_of, SshTarget};
+use super::host_keys::TauriPrompter;
 use super::recording::emit_recording_failed;
 use crate::device::{Connection, Device};
 use crate::error::AppError;
-use crate::local_shell::LocalShellParams;
+use crate::local_shell::{self, LocalShellParams};
 use crate::output_stream::{Chunk, OutputStream, OutputStreams, MAX_READ, READ_WAIT};
-use crate::serial::SerialParams;
-use crate::session::ConnectParams;
+use crate::serial::{self, SerialParams};
+use crate::session::{self, ConnectParams};
 use crate::session_recording::{Recorder, Recorders};
+use crate::session_registry::NewSession;
 use crate::session_sink::{SessionSink, SessionStatus};
-use crate::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPromptPayload};
+use crate::ssh::prompts::ConnectPrompter;
 use crate::state::AppState;
 use crate::x11::X11Local;
 
@@ -47,28 +45,24 @@ struct SessionStatusPayload {
 const ENDED_OUTPUT_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Production [`SessionSink`]: keeps terminal bytes for the frontend to read
-/// (`read_output`) and emits `session_status` / `host_key_prompt` Tauri events.
+/// (`read_output`), records them if asked, and emits `session_status` events.
 /// It carries only the session id and non-secret payloads — never a credential.
 struct TauriSessionSink {
     app: AppHandle,
     session_id: String,
-    /// `Some` for a live session; `None` for `test_connection`, which has no
-    /// shell and streams no data.
-    output: Option<Arc<OutputStream>>,
-    /// `Some` for a live session: where its output is recorded, if anywhere.
-    recorder: Option<Arc<Recorder>>,
+    output: Arc<OutputStream>,
+    recorder: Arc<Recorder>,
 }
 
 impl TauriSessionSink {
     /// The session is over: mark its output ended, and let it go once the
     /// frontend had time to read the rest.
     fn end_output(&self) {
-        let Some(output) = &self.output else { return };
-        output.close();
+        self.output.close();
         let (app, id, output) = (
             self.app.clone(),
             self.session_id.clone(),
-            Arc::clone(output),
+            Arc::clone(&self.output),
         );
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(ENDED_OUTPUT_GRACE).await;
@@ -78,12 +72,9 @@ impl TauriSessionSink {
 
     /// The session is over: close its recording file.
     fn end_recording(&self) {
-        let Some(recorder) = &self.recorder else {
-            return;
-        };
         self.app
             .state::<Recorders>()
-            .remove(&self.session_id, recorder);
+            .remove(&self.session_id, &self.recorder);
     }
 
     fn end(&self) {
@@ -92,10 +83,7 @@ impl TauriSessionSink {
     }
 
     fn record(&self, bytes: &[u8]) {
-        let Some(recorder) = &self.recorder else {
-            return;
-        };
-        if let Err(err) = recorder.record(bytes) {
+        if let Err(err) = self.recorder.record(bytes) {
             emit_recording_failed(&self.app, &self.session_id, &err.into());
         }
     }
@@ -123,9 +111,7 @@ impl TauriSessionSink {
 impl SessionSink for TauriSessionSink {
     fn on_data(&self, bytes: &[u8]) {
         // Verbatim server output (SPEC §3), until the frontend reads it.
-        if let Some(output) = &self.output {
-            output.push(bytes);
-        }
+        self.output.push(bytes);
         self.record(bytes);
     }
 
@@ -143,21 +129,6 @@ impl SessionSink for TauriSessionSink {
             Some(err.to_string()),
             Some(err.code()),
         );
-    }
-}
-
-impl ConnectPrompter for TauriSessionSink {
-    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
-        let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
-    }
-    fn on_host_key_prompt_closed(&self, prompt_id: &str) {
-        emit_host_key_prompt_closed(&self.app, prompt_id);
-    }
-    fn on_auth_prompt(&self, payload: AuthPromptPayload) {
-        emit_auth_prompt(&self.app, payload);
-    }
-    fn on_auth_prompt_closed(&self, prompt_id: &str) {
-        emit_auth_prompt_closed(&self.app, prompt_id);
     }
 }
 
@@ -194,7 +165,7 @@ pub async fn read_output(
 /// Open a live shell session (SPEC §5). Returns the new `sessionId`; the shell
 /// itself is driven on a background task, its output read with `read_output`
 /// and its lifecycle reported as `session_status`. Async so the command runs on
-/// Tauri's tokio runtime, which `spawn_session`'s `tokio::spawn` needs.
+/// Tauri's tokio runtime, which the registry's `tokio::spawn` needs.
 #[tauri::command]
 pub async fn connect(
     app: AppHandle,
@@ -214,13 +185,17 @@ pub async fn connect(
     let output = streams.open(&session_id);
     let recorder = recorders.open(&session_id);
     continue_recording(&app, &session_id, &recorder, record_to);
-    let sink: Arc<dyn SessionSink> = Arc::new(TauriSessionSink {
-        app: app.clone(),
-        session_id: session_id.clone(),
-        output: Some(Arc::clone(&output)),
-        recorder: Some(Arc::clone(&recorder)),
-    });
-    let spawned = spawn_device_session(&state, &session_id, &device, (cols, rows), sink).await;
+    let session = NewSession {
+        id: session_id.clone(),
+        sink: Arc::new(TauriSessionSink {
+            app: app.clone(),
+            session_id: session_id.clone(),
+            output: Arc::clone(&output),
+            recorder: Arc::clone(&recorder),
+        }),
+    };
+    let prompter = Arc::new(TauriPrompter { app: app.clone() });
+    let spawned = spawn_device_session(&state, session, &device, (cols, rows), prompter).await;
     if spawned.is_err() {
         streams.remove(&session_id, &output);
         recorders.remove(&session_id, &recorder);
@@ -242,72 +217,56 @@ fn continue_recording(
     }
 }
 
-/// Start `device`'s session under `session_id`, reporting to `sink`.
+/// Start `device`'s `session`; an SSH connect raises its prompts on
+/// `prompter`.
 async fn spawn_device_session(
     state: &AppState,
-    session_id: &str,
+    session: NewSession,
     device: &Device,
     size: (u32, u32),
-    sink: Arc<dyn SessionSink>,
+    prompter: Arc<dyn ConnectPrompter>,
 ) -> Result<(), AppError> {
-    let session_id = session_id.to_string();
     match &device.connection {
-        Connection::Ssh {
-            host,
-            port,
-            username,
-            ..
-        } => {
-            let params = ssh_params_of(state, device, (host, *port, username), size).await?;
-            state
-                .session_manager
-                .spawn_session(session_id, params, sink);
-        }
+        Connection::Ssh { .. } => spawn_ssh_shell(state, session, device, size, prompter).await?,
         Connection::Serial { .. } => {
-            state.serial_manager.spawn_session(
-                session_id,
-                serial_params_of(&device.connection, device.connect_snippet()),
-                sink,
-            );
+            let params = serial_params_of(&device.connection, device.connect_snippet());
+            serial::spawn_session(&state.sessions, session, params);
         }
         Connection::LocalShell { shell, cwd } => {
             let params = local_shell_params_of(device, shell, cwd, size);
-            state
-                .local_shell_manager
-                .spawn_session(session_id, params, sink);
+            local_shell::spawn_session(&state.sessions, session, params);
         }
     }
     Ok(())
 }
 
-/// An SSH device's connect parameters, its credentials resolved.
-async fn ssh_params_of(
+/// The SSH device's target is resolved first, so a missing secret or jump
+/// host fails the connect.
+async fn spawn_ssh_shell(
     state: &AppState,
+    session: NewSession,
     device: &Device,
-    (host, port, username): (&str, u16, &str),
-    (cols, rows): (u32, u32),
-) -> Result<ConnectParams, AppError> {
-    let creds = resolve_credentials(state, device).await?;
-    // Resolve the optional jump host (ProxyJump) up front, so a
-    // misconfigured jump surfaces as a connect error rather than a
-    // half-open session.
-    let jump = resolve_jump_hop(state, device).await?;
-    Ok(ConnectParams {
-        host: host.to_string(),
-        port,
-        username: username.to_string(),
-        creds,
+    size: (u32, u32),
+    prompter: Arc<dyn ConnectPrompter>,
+) -> Result<(), AppError> {
+    let params = ssh_params_of(ssh_target_of(state, device).await?, device, size);
+    session::spawn_shell(&state.sessions, &state.ssh, session, params, prompter);
+    Ok(())
+}
+
+/// An SSH device's shell parameters, from its resolved target.
+fn ssh_params_of(target: SshTarget, device: &Device, (cols, rows): (u32, u32)) -> ConnectParams {
+    ConnectParams {
+        target,
         cols,
         rows,
-        jump,
-        keepalive: keepalive_config(state),
         forward_agent: device.forward_agent_enabled(),
         connect_snippet: device.connect_snippet().map(str::to_string),
         x11: device.x11_mode().trusted().map(X11Local::from_env),
-    })
+    }
 }
 
-/// A local-shell device's parameters; the terminal size is clamped to `u16`.
+/// A local-shell device's parameters.
 fn local_shell_params_of(
     device: &Device,
     shell: &Option<String>,
@@ -317,8 +276,8 @@ fn local_shell_params_of(
     LocalShellParams {
         shell: shell.clone(),
         cwd: cwd.clone(),
-        cols: cols.min(u16::MAX as u32) as u16,
-        rows: rows.min(u16::MAX as u32) as u16,
+        cols,
+        rows,
         connect_snippet: device.connect_snippet().map(str::to_string),
     }
 }
@@ -358,22 +317,7 @@ pub async fn write_stdin(
     binary: Option<bool>,
 ) -> Result<(), AppError> {
     let bytes = stdin_bytes(data, binary.unwrap_or(false));
-    // Route to whichever manager owns the session. `owns` locks+releases the
-    // map synchronously (no guard held across the `.await`); the `Arc` is cloned
-    // out before awaiting. An unknown id is a no-op in either manager.
-    if state.session_manager.owns(&session_id) {
-        Arc::clone(&state.session_manager)
-            .write_stdin(&session_id, bytes)
-            .await;
-    } else if state.local_shell_manager.owns(&session_id) {
-        Arc::clone(&state.local_shell_manager)
-            .write_stdin(&session_id, bytes)
-            .await;
-    } else {
-        Arc::clone(&state.serial_manager)
-            .write_stdin(&session_id, bytes)
-            .await;
-    }
+    state.sessions.write_stdin(&session_id, bytes).await;
     Ok(())
 }
 
@@ -398,38 +342,15 @@ pub async fn resize_pty(
     cols: u32,
     rows: u32,
 ) -> Result<(), AppError> {
-    if state.session_manager.owns(&session_id) {
-        Arc::clone(&state.session_manager)
-            .resize_pty(&session_id, cols, rows)
-            .await;
-    } else if state.local_shell_manager.owns(&session_id) {
-        state
-            .local_shell_manager
-            .resize_pty(&session_id, cols, rows)
-            .await;
-    } else {
-        state.serial_manager.resize_pty(&session_id, cols, rows);
-    }
+    state.sessions.resize_pty(&session_id, cols, rows);
     Ok(())
 }
 
 /// Gracefully disconnect a session (SPEC §5). Idempotent: an unknown
-/// `sessionId` is a no-op. Routes to whichever manager owns it.
+/// `sessionId` is a no-op.
 #[tauri::command]
 pub async fn disconnect(state: State<'_, AppState>, session_id: String) -> Result<(), AppError> {
-    if state.session_manager.owns(&session_id) {
-        Arc::clone(&state.session_manager)
-            .disconnect(&session_id)
-            .await;
-    } else if state.local_shell_manager.owns(&session_id) {
-        Arc::clone(&state.local_shell_manager)
-            .disconnect(&session_id)
-            .await;
-    } else {
-        Arc::clone(&state.serial_manager)
-            .disconnect(&session_id)
-            .await;
-    }
+    state.sessions.disconnect(&session_id);
     Ok(())
 }
 
@@ -446,32 +367,15 @@ pub async fn test_connection(
 ) -> Result<(), AppError> {
     device.validate()?;
     match &device.connection {
-        Connection::Ssh {
-            host,
-            port,
-            username,
-            ..
-        } => {
-            let creds = resolve_test_credentials(&state, &device, secret).await?;
-            let jump = resolve_jump_hop(&state, &device).await?;
-            let manager = Arc::clone(&state.session_manager);
-            let sink: Arc<dyn SessionSink> = Arc::new(TauriSessionSink {
-                app,
-                session_id: format!("test-{}", device.id),
-                output: None,
-                recorder: None,
-            });
-            manager
-                .test_connection(host.clone(), *port, username.clone(), creds, jump, sink)
-                .await
+        Connection::Ssh { .. } => {
+            let target = test_target_of(&state, &device, secret).await?;
+            let prompter = Arc::new(TauriPrompter { app });
+            session::test_connection(&state.ssh, target, prompter).await
         }
         // Serial has no auth or host key: "connected" simply means the port
         // opened. No sink is needed (nothing streams).
         Connection::Serial { .. } => {
-            state
-                .serial_manager
-                .test_connection(serial_params_of(&device.connection, None))
-                .await
+            serial::test_connection(serial_params_of(&device.connection, None)).await
         }
         // A local shell has nothing to test ahead of time — it either spawns at
         // connect time or reports an error then. Treat "test" as always OK.

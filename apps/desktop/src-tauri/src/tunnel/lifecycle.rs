@@ -1,7 +1,6 @@
 //! One tunnel task from connect to teardown.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use russh::client;
 use tokio::sync::mpsc;
@@ -15,15 +14,13 @@ use crate::device::Forward;
 use crate::error::AppError;
 use crate::relay::Pace;
 use crate::remote_forward::RemoteRoutes;
-use crate::ssh::establish::{close_jump, establish_target, JumpConnection};
+use crate::ssh::connector::{SshConnection, SshConnector};
 use crate::ssh::handler::SshHandler;
-use crate::ssh::params::Endpoint;
 
-/// A tunnel's deadlines (the TCP connect, the whole establish flow) and the
-/// pace its forwarded connections' local clients must keep.
-pub(super) struct TunnelTimeouts {
-    pub(super) connect: Duration,
-    pub(super) overall: Duration,
+/// How a tunnel connects, and the pace its forwarded connections' local
+/// clients must keep.
+pub(super) struct TunnelContext {
+    pub(super) ssh: Arc<SshConnector>,
     pub(super) pace: Pace,
 }
 
@@ -36,30 +33,25 @@ pub(super) async fn run_tunnel(
     mut params: TunnelParams,
     mut handler: SshHandler,
     routes: Arc<RemoteRoutes>,
-    timeouts: TunnelTimeouts,
+    TunnelContext { ssh, pace }: TunnelContext,
     publisher: Publisher,
     mut controls: Controls,
 ) -> Result<(), AppError> {
     // Abandons a pending host-key prompt if this returns mid-handshake.
     let _owner = handler.take_owner_token();
-    // `jump_handle` (for a jumped tunnel) is closed only after the forwards:
-    // the tunnel's connection rides a channel over it.
     let connected =
-        connect_until_stop(&mut params, handler, &timeouts, &mut controls, &publisher).await?;
-    let Some((handle, jump_handle)) = connected else {
+        connect_until_stop(&mut params, handler, &ssh, &mut controls, &publisher).await?;
+    let Some(connection) = connected else {
         return Ok(());
     };
-    let handle = Arc::new(handle);
-    let mut active = ActiveForwards::new(Arc::clone(&handle), routes, timeouts.pace);
-    let end = bind_and_serve(&handle, &mut active, &params, &mut controls, &publisher).await;
+    let handle = connection.handle();
+    let mut active = ActiveForwards::new(Arc::clone(handle), routes, pace);
+    let end = bind_and_serve(handle, &mut active, &params, &mut controls, &publisher).await;
 
     // Abort every listener (which cascades to their in-flight connection tasks),
     // then close the SSH transport cleanly.
     active.clear().await;
-    let _ = handle
-        .disconnect(russh::Disconnect::ByApplication, "", "")
-        .await;
-    close_jump(jump_handle.as_ref()).await;
+    connection.close().await;
     end?.into_result()
 }
 
@@ -69,29 +61,18 @@ pub(super) async fn run_tunnel(
 async fn connect_until_stop(
     params: &mut TunnelParams,
     handler: SshHandler,
-    timeouts: &TunnelTimeouts,
+    ssh: &SshConnector,
     controls: &mut Controls,
     publisher: &Publisher,
-) -> Result<Option<(client::Handle<SshHandler>, Option<JumpConnection>)>, AppError> {
-    let target = Endpoint {
-        host: &params.host,
-        port: params.port,
-        username: &params.username,
-        creds: &params.creds,
-    };
+) -> Result<Option<SshConnection>, AppError> {
+    let target = &params.target;
     tokio::select! {
         biased;
         // A stop (or every forward released) during the handshake aborts:
         // dropping the `establish` future drops the handler (and any
         // PromptGuard within), cleaning up a pending host-key prompt too.
         _ = queue_until_stop(controls, &mut params.forwards, publisher) => Ok(None),
-        result = establish_target(
-            target,
-            params.jump.as_ref(),
-            handler,
-            timeouts.connect,
-            timeouts.overall,
-        ) => result.map(Some),
+        result = ssh.connect(target.endpoint(), target.jump.as_ref(), handler) => result.map(Some),
     }
 }
 
@@ -110,7 +91,7 @@ async fn bind_and_serve(
         return Err(active.none_started());
     }
     publisher.listening(active);
-    let keepalive = params.keepalive;
+    let keepalive = params.target.keepalive;
     Ok(serve_until_stopped(handle, controls, keepalive, active, publisher).await)
 }
 

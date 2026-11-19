@@ -52,8 +52,8 @@ pub type AuthAnswers = Option<Zeroizing<Vec<String>>>;
 
 /// Where a handshake's prompts go — the only thing a connection surfaces to
 /// the frontend while it is established. Object-safe
-/// (`Arc<dyn ConnectPrompter>`); the shell and tunnel sinks extend it, and an
-/// SFTP connection needs nothing more.
+/// (`Arc<dyn ConnectPrompter>`); every connect is given one, apart from the
+/// shell or tunnel sink it reports to.
 pub trait ConnectPrompter: Send + Sync {
     /// An unknown/changed host key needs the user's decision →
     /// `host_key_prompt` event.
@@ -83,7 +83,7 @@ impl<T> Default for PromptRegistry<T> {
     }
 }
 
-/// A manager's prompt registries, answered by the `respond_host_key` and
+/// The connector's prompt registries, answered by the `respond_host_key` and
 /// `respond_auth_prompt` commands; `auth_on_screen` hears from
 /// `auth_prompt_shown` when the dialog shows an auth prompt.
 #[derive(Default)]

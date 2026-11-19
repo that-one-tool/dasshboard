@@ -28,15 +28,28 @@ Testing). Module names differ per side (`commands/host_keys.rs` ↔
   hosts are `Unverifiable` (loud prompt).
 - `secret.rs` — OS keychain (service `DaSSHboard`).
 - `ssh/` — shared SSH connect: parameters, auth (incl. keyboard-interactive),
-  prompts, connect deadline, TCP socket options, host-key handler, jump host.
+  prompts, connect deadline, TCP socket options, host-key handler, jump host,
+  `close` (every SSH teardown, each goodbye bounded). `connector` —
+  `SshConnector` (`AppState.ssh`): the one trust store, prompt registry and
+  timeouts; shells, tunnels and SFTP connect and close only through it.
+  Each connect gets its `ConnectPrompter` apart from its sink; in production
+  `commands/host_keys.rs` `TauriPrompter`. `commands/device_access.rs`
+  `ssh_target_of` resolves a saved device into its `SshTarget` (credentials,
+  jump hop, keepalive), which shell, tunnel and SFTP params carry as
+  `target`; `test_connection` resolves its own.
   `conn_log` writes its lifecycle lines (connect timing, auth outcome, host-key
   verdict, why a link ended); the handler's `with_purpose` names the use.
 - `app_log.rs` — diagnostic log (`info`/`warn`/`error`): last 2000 lines in
   memory plus stderr; use it, not `eprintln!`. It escapes control characters
   (server text). Never secrets, prompt answers or terminal data.
   `commands/logs.rs` reads, clears and takes frontend lines.
-- Terminal sessions: `session.rs` (SSH shells), `serial.rs`, `local_shell.rs`
-  (local PTY). All report to the frontend through `session_sink.rs`.
+- Terminal sessions: `session.rs` (SSH shells: `spawn_shell`,
+  `test_connection`), `serial.rs`, `local_shell.rs` (local PTY).
+  `session_registry.rs` (`AppState.sessions`) owns every Session: ids,
+  lifecycle (cleanup survives a runner panic), write/resize/disconnect; each
+  kind gives only its runner, behind a small spawn helper. Input is a bounded
+  queue; size and stop are latest-value watches, never stuck behind input.
+  All report to the frontend through `session_sink.rs`.
   `output_stream.rs` keeps output until the frontend reads it.
   `session_recording.rs` records raw output to a file.
 - Forwards: `tunnel/` — `manager` (registry), `lifecycle` + `serve` (one

@@ -37,7 +37,7 @@ mod workspace_store;
 
 // These modules are `pub` (not private `mod`) solely so the in-process
 // integration tests in `tests/` — a separate crate — can reach the types they
-// drive (`SessionManager`, `SftpManager`, `TunnelManager`, their param structs,
+// drive (`SessionRegistry`, `SftpManager`, `TunnelManager`, their param structs,
 // etc.). `#[doc(hidden)]` keeps them out of the public docs; this lib is
 // consumed only by the app's own binary, never as an external dependency.
 #[doc(hidden)]
@@ -48,6 +48,8 @@ pub mod error;
 pub mod known_hosts;
 #[doc(hidden)]
 pub mod session;
+#[doc(hidden)]
+pub mod session_registry;
 #[doc(hidden)]
 pub mod session_sink;
 #[doc(hidden)]
@@ -72,12 +74,10 @@ use tauri::{AppHandle, Manager, RunEvent, Runtime};
 use bookmark_store::BookmarkStore;
 use command_library::CommandStore;
 use known_hosts::KnownHostsStore;
-use local_shell::LocalShellManager;
 use profile_store::ProfileStore;
 use secret::KeyringSecretStore;
-use serial::SerialSessionManager;
-use session::SessionManager;
 use settings::SettingsStore;
+use ssh::connector::{ConnectTimeouts, SshConnector};
 use state::AppState;
 use store::DeviceStore;
 use tunnel::TunnelManager;
@@ -142,22 +142,12 @@ pub fn run() {
             // Per-device SFTP bookmarks (saved remote paths). Same app-config dir.
             let bookmark_store = BookmarkStore::load(config_dir.clone());
             let command_store = CommandStore::load(config_dir.clone());
-            // Host-key TOFU store + SSH session manager (SPEC.md §3/§6). The
-            // manager owns the known-hosts store (behind an `Arc`) so its
-            // session tasks can consult/persist trust decisions.
+            // Shells, tunnels and SFTP connect through one connector, so a
+            // host-key trust decision applies to all of them alike.
             let known_hosts = Arc::new(KnownHostsStore::load(config_dir.clone()));
-            let session_manager = Arc::new(SessionManager::with_defaults(known_hosts));
-            // Tunnels (local port-forwarding) share the SSH manager's host-key
-            // TOFU store, so a trust decision applies to shells and tunnels to
-            // the same host alike (SPEC tunnels §2/§4).
-            let tunnel_manager =
-                Arc::new(TunnelManager::with_defaults(session_manager.known_hosts()));
-            // SFTP connections (the Files drawer) likewise share the host-key
-            // TOFU store, so trust decisions are consistent across shells,
-            // tunnels and SFTP to the same host.
-            let sftp_manager = Arc::new(sftp::SftpManager::with_defaults(
-                session_manager.known_hosts(),
-            ));
+            let ssh = Arc::new(SshConnector::new(known_hosts, ConnectTimeouts::default()));
+            let tunnel_manager = Arc::new(TunnelManager::new(Arc::clone(&ssh)));
+            let sftp_manager = Arc::new(sftp::SftpManager::new(Arc::clone(&ssh)));
             // Local copies of SFTP files open for editing. The cache dir is per
             // user, and under Flatpak the host sees it at the same path, so a
             // host editor can open the copies.
@@ -169,10 +159,8 @@ pub fn run() {
                 sftp_edit::sweep_stale_copies(&sweep_dir, sftp_edit::STALE_COPY_AGE)
             });
             let edit_manager = sftp_edit::EditManager::new(edit_dir);
-            // Serial/COM sessions live in their own manager, alongside the SSH one.
-            let serial_manager = Arc::new(SerialSessionManager::new());
-            // Local shell sessions (PTY-backed) live in their own manager too.
-            let local_shell_manager = Arc::new(LocalShellManager::new());
+            // Every live terminal Session: SSH, serial and local shell.
+            let sessions = Arc::new(session_registry::SessionRegistry::new());
             let secret_store: Arc<dyn secret::SecretStore> = Arc::new(KeyringSecretStore);
             app.manage(AppState {
                 device_store,
@@ -180,12 +168,11 @@ pub fn run() {
                 settings_store,
                 workspace_store,
                 secret_store,
-                session_manager,
+                ssh,
                 tunnel_manager,
                 sftp_manager,
                 edit_manager,
-                serial_manager,
-                local_shell_manager,
+                sessions,
                 bookmark_store,
                 command_store,
             });

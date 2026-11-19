@@ -42,7 +42,7 @@ fn reload_config_impl(state: &AppState) {
     state.device_store.reload();
     state.profile_store.reload();
     state.settings_store.reload();
-    state.session_manager.known_hosts().reload();
+    state.ssh.known_hosts().reload();
     state.bookmark_store.reload();
     state.command_store.reload();
 }
@@ -152,14 +152,14 @@ mod tests {
         // This instance starts empty across all stores.
         assert!(list_devices_impl(&state).is_empty());
         assert!(list_profiles_impl(&state).profiles.is_empty());
-        assert_eq!(state.session_manager.known_hosts().list().len(), 0);
+        assert_eq!(state.ssh.known_hosts().list().len(), 0);
 
         // A second instance (same config dir) writes to each config file.
         let other = test_state(dir.path());
         save_device_impl(&other, sample_device(), Some("pw".to_string())).unwrap();
         save_profile_impl(&other, profile_referencing("dev-1")).unwrap();
         other
-            .session_manager
+            .ssh
             .known_hosts()
             .trust(
                 "h",
@@ -188,7 +188,7 @@ mod tests {
 
         assert_eq!(list_devices_impl(&state).len(), 1);
         assert_eq!(list_profiles_impl(&state).profiles.len(), 1);
-        assert_eq!(state.session_manager.known_hosts().list().len(), 1);
+        assert_eq!(state.ssh.known_hosts().list().len(), 1);
         assert_eq!(state.bookmark_store.list("dev-1"), ["/etc"]);
         assert_eq!(state.command_store.list().len(), 1);
     }

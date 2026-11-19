@@ -5,13 +5,11 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use super::auth_prompts::{emit_auth_prompt, emit_auth_prompt_closed};
 use super::client_ids::{client_chosen_id, id_in_use};
-use super::device_access::{find_device, keepalive_config, resolve_credentials, resolve_jump_hop};
-use super::host_keys::{emit_host_key_prompt_closed, HOST_KEY_PROMPT_EVENT};
+use super::device_access::{find_device, ssh_target_of};
+use super::host_keys::TauriPrompter;
 use crate::device::{Connection, Device, Forward};
 use crate::error::AppError;
-use crate::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPromptPayload};
 use crate::state::AppState;
 use crate::tunnel::{ForwardStatus, TunnelInfo, TunnelParams, TunnelSink, TunnelStatus};
 
@@ -33,10 +31,8 @@ struct TunnelStatusPayload {
     forwards: Vec<ForwardStatus>,
 }
 
-/// Production [`TunnelSink`]: emits `tunnel_status` events and reuses the shared
-/// `host_key_prompt` event so a tunnel's first-contact trust prompt drives the
-/// same dialog a shell session does. Carries only the tunnel id and non-secret
-/// payloads — never a credential.
+/// Production [`TunnelSink`]: emits `tunnel_status` events. Carries only the
+/// tunnel id and non-secret payloads — never a credential.
 struct TauriTunnelSink {
     app: AppHandle,
     tunnel_id: String,
@@ -83,41 +79,20 @@ impl TunnelSink for TauriTunnelSink {
     }
 }
 
-impl ConnectPrompter for TauriTunnelSink {
-    fn on_host_key_prompt(&self, payload: HostKeyPromptPayload) {
-        let _ = self.app.emit(HOST_KEY_PROMPT_EVENT, payload);
-    }
-    fn on_host_key_prompt_closed(&self, prompt_id: &str) {
-        emit_host_key_prompt_closed(&self.app, prompt_id);
-    }
-    fn on_auth_prompt(&self, payload: AuthPromptPayload) {
-        emit_auth_prompt(&self.app, payload);
-    }
-    fn on_auth_prompt_closed(&self, prompt_id: &str) {
-        emit_auth_prompt_closed(&self.app, prompt_id);
-    }
-}
-
-/// The SSH connection details + forwards of a device, or an error if the device
-/// is serial (no tunnels) or has no forwards configured (nothing to bind).
-fn tunnel_target_of(device: &Device) -> Result<(&str, u16, &str, &[Forward]), AppError> {
+/// The forwards of a device, or an error if the device is not SSH (no
+/// tunnels) or has no forwards configured (nothing to bind).
+fn tunnel_forwards_of(device: &Device) -> Result<&[Forward], AppError> {
     // Stores load without validating, so a hand-edited devices.json (e.g. a
     // forward bound to 0.0.0.0) is caught here with a clear message.
     device.validate()?;
     match &device.connection {
-        Connection::Ssh {
-            host,
-            port,
-            username,
-            forwards,
-            ..
-        } => {
+        Connection::Ssh { forwards, .. } => {
             if forwards.is_empty() {
                 return Err(AppError::Validation(
                     "this device has no port forwards configured".to_string(),
                 ));
             }
-            Ok((host, *port, username, forwards))
+            Ok(forwards)
         }
         _ => Err(AppError::Validation(
             "only SSH devices support tunnels".to_string(),
@@ -155,32 +130,26 @@ pub async fn start_tunnel(
 ) -> Result<String, AppError> {
     let tunnel_id = client_chosen_id(tunnel_id, |id| id_in_use(&state, id))?;
     let device = find_device(&state, &device_id)?;
-    let (host, port, username, forwards) = tunnel_target_of(&device)?;
-    let host = host.to_string();
-    let username = username.to_string();
-    let forwards = selected_forwards(forwards, &forward_ids)?;
-
-    let creds = resolve_credentials(&state, &device).await?;
-    let jump = resolve_jump_hop(&state, &device).await?;
-    let sink: Arc<dyn TunnelSink> = Arc::new(TauriTunnelSink {
-        app,
-        tunnel_id: tunnel_id.clone(),
-    });
+    let forwards = selected_forwards(tunnel_forwards_of(&device)?, &forward_ids)?;
+    let target = ssh_target_of(&state, &device).await?;
     state.tunnel_manager.spawn_tunnel(
         tunnel_id.clone(),
         TunnelParams {
             device_id,
-            host,
-            port,
-            username,
-            creds,
+            target,
             forwards,
-            keepalive: keepalive_config(&state),
-            jump,
         },
-        sink,
+        tunnel_sink(&app, &tunnel_id),
+        Arc::new(TauriPrompter { app }),
     );
     Ok(tunnel_id)
+}
+
+fn tunnel_sink(app: &AppHandle, tunnel_id: &str) -> Arc<dyn TunnelSink> {
+    Arc::new(TauriTunnelSink {
+        app: app.clone(),
+        tunnel_id: tunnel_id.to_string(),
+    })
 }
 
 /// Stop a tunnel by id (SPEC tunnels §3), releasing its bound local listeners.
@@ -205,8 +174,7 @@ pub async fn start_tunnel_forward(
         .device_of(&tunnel_id)
         .ok_or_else(not_running)?;
     let device = find_device(&state, &device_id)?;
-    let (_, _, _, forwards) = tunnel_target_of(&device)?;
-    let forward = selected_forwards(forwards, &[forward_id])?.remove(0);
+    let forward = selected_forwards(tunnel_forwards_of(&device)?, &[forward_id])?.remove(0);
     if !state.tunnel_manager.add_forward(&tunnel_id, forward).await {
         return Err(not_running());
     }
@@ -257,23 +225,23 @@ mod tests {
     }
 
     #[test]
-    fn tunnel_target_accepts_a_valid_device() {
-        assert!(tunnel_target_of(&device_with_forward("127.0.0.1")).is_ok());
+    fn tunnel_forwards_of_a_valid_device_are_found() {
+        assert!(tunnel_forwards_of(&device_with_forward("127.0.0.1")).is_ok());
     }
 
     #[test]
-    fn tunnel_target_revalidates_a_device_edited_on_disk() {
+    fn tunnel_forwards_revalidate_a_device_edited_on_disk() {
         // devices.json is loaded without validation, so a hand-edited
         // non-loopback forward must be refused when the tunnel starts.
         let device = device_with_forward("0.0.0.0");
-        let err = tunnel_target_of(&device).unwrap_err();
+        let err = tunnel_forwards_of(&device).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
     }
 
     #[test]
     fn selected_forwards_keeps_only_the_requested_existing_ones() {
         let device = device_with_forward("127.0.0.1");
-        let (_, _, _, forwards) = tunnel_target_of(&device).unwrap();
+        let forwards = tunnel_forwards_of(&device).unwrap();
         let ids = ["gone".to_string(), "f1".to_string()];
         let selected = selected_forwards(forwards, &ids).unwrap();
         assert_eq!(selected.len(), 1);

@@ -1,36 +1,17 @@
-//! SSH shell sessions (SPEC.md §3/§6): `SessionManager` owns a
-//! `HashMap<SessionId, SessionHandle>` and one `tokio` task per live session;
-//! connecting and host-key trust live in `crate::ssh`.
+//! SSH shell Sessions: `spawn_shell` runs one in the `SessionRegistry`,
+//! which owns its id and lifecycle; connecting and host-key trust live in
+//! `crate::ssh`.
 //!
-//! **This module is deliberately Tauri-free.** All frontend-facing effects
-//! (streaming terminal bytes, `session_status` events, `host_key_prompt`
-//! events) go through the [`SessionSink`] trait, whose production implementor
-//! lives in `commands/sessions.rs` (wrapping a Tauri `AppHandle` + IPC `Channel`) and
-//! whose test implementor collects into channels. That split lets the whole
-//! SSH stack — connect, auth, PTY/shell, host-key TOFU, cleanup — run in
-//! `cargo test` against an in-process russh server with no Tauri app and no
-//! Docker (SPEC.md §9).
+//! **This module is deliberately Tauri-free.** Frontend-facing effects go
+//! through [`SessionSink`] and [`ConnectPrompter`], so the whole SSH stack runs
+//! in `cargo test` against an in-process russh server (SPEC.md §9).
 //!
-//! ## Locking & anti-deadlock design (the reviewer's focus)
-//!
-//! - The session map is a plain `std::sync::Mutex<HashMap<..>>`. It is only
-//!   ever locked to insert/remove/clone-out an mpsc `Sender`; the guard is
-//!   **never held across an `.await`** (every command clones the `Sender` out
-//!   under the lock, drops the guard, then awaits the send).
-//! - The host-key prompt (inside russh's `check_server_key`, which runs on the
-//!   session task) registers a `oneshot` receiver in the `ConnectPrompts`,
-//!   drops the registry lock, emits the event, then awaits the receiver with a
-//!   timeout. No lock is held while awaiting the user. A RAII `PromptGuard`
-//!   removes the registry entry on every exit path (user reply, timeout, or
-//!   the task being dropped mid-prompt), so nothing leaks and a torn-down
-//!   session's pending prompt simply resolves to "reject" (dropped sender).
-//! - Each session task removes its own map entry when it exits, for *every*
-//!   terminal reason (auth failure, mid-handshake disconnect, channel close,
-//!   error). Cleanup has a single owner.
+//! No lock is held while a host-key or auth prompt awaits the user; a
+//! disconnect mid-handshake drops the connect future, whose `PromptGuard`
+//! abandons the pending prompt.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::future::Future;
+use std::sync::Arc;
 
 use russh::client;
 use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Pty};
@@ -38,15 +19,13 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
 
 use crate::error::AppError;
-use crate::known_hosts::KnownHostsStore;
+use crate::session_registry::{NewSession, Resizes, RunnerControls, SessionRegistry};
 use crate::session_sink::{SessionSink, SessionStatus};
-use crate::ssh::establish::{
-    close_jump, establish_target, overall_establish_timeout, JumpConnection,
-    DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT, DEFAULT_PROMPT_TIMEOUT,
-};
+use crate::ssh::close::CLOSE_GRACE;
+use crate::ssh::connector::{SshConnection, SshConnector};
 use crate::ssh::handler::SshHandler;
-use crate::ssh::params::{AuthCredentials, Endpoint, JumpHop, KeepaliveConfig};
-use crate::ssh::prompts::{AuthAnswers, ConnectPrompts};
+use crate::ssh::params::SshTarget;
+use crate::ssh::prompts::ConnectPrompter;
 use crate::x11::{warning_line, X11Forward, X11Local, X11Request};
 
 /// PTY terminal type requested from the server — SPEC.md §6.
@@ -67,18 +46,8 @@ const PTY_MODES: &[(Pty, u32)] = &[(Pty::IUTF8, 1)];
 /// them (we send `want_reply = false`), which is why `IUTF8` above is the
 /// primary fix and this is the complement for program *output*.
 const LOCALE_ENV: &[(&str, &str)] = &[("LANG", "C.UTF-8"), ("LC_CTYPE", "C.UTF-8")];
-/// Bound on the per-session control channel. Backpressure here means the UI is
-/// producing keystrokes faster than the SSH task drains them, which never
-/// realistically happens; the bound just keeps the channel from being
-/// unbounded (a standing review concern).
-const CONTROL_CHANNEL_CAPACITY: usize = 256;
-/// How long each goodbye at the end of a session (the channel close, then the
-/// SSH disconnect of the target and of the jump host) may take before the
-/// connection is just dropped: a stalled server must not hold up app quit.
-const CLOSE_GRACE: Duration = Duration::from_millis(300);
-
 /// The connection-shaped parameters for a session (as opposed to bookkeeping
-/// like `session_id`/`sink`), bundled so `spawn_session`/`run_session` don't
+/// like `session_id`/`sink`), bundled so `spawn_shell`/`run_session` don't
 /// need six-plus positional parameters of their own (B8). Constructed by the
 /// `connect` command in `commands/sessions.rs`.
 ///
@@ -87,18 +56,11 @@ const CLOSE_GRACE: Duration = Duration::from_millis(300);
 /// of the public docs, as this lib is consumed only by the app's own binary.
 #[doc(hidden)]
 pub struct ConnectParams {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub creds: AuthCredentials,
+    /// The server, its login, the optional jump host (`ProxyJump`) and the
+    /// keepalive, which applies to the jump hop too.
+    pub target: SshTarget,
     pub cols: u32,
     pub rows: u32,
-    /// Optional jump host (`ProxyJump`): connect to this first, then reach
-    /// `host:port` through a direct-tcpip channel over it. `None` ⇒ direct.
-    pub jump: Option<JumpHop>,
-    /// SSH keepalive resolved from user settings, applied to this connection
-    /// (and, for a jumped connection, to the jump hop too).
-    pub keepalive: KeepaliveConfig,
     /// Forward the local SSH agent (`ssh -A`) to the target: accept the server's
     /// agent-forwarding channels and relay them to this machine's agent. Applies
     /// to the target only, never the jump hop.
@@ -112,38 +74,13 @@ pub struct ConnectParams {
     pub x11: Option<Result<X11Local, String>>,
 }
 
-/// What `run_shell` asks of the session channel besides the PTY and shell.
+/// How `run_shell` sets up the session channel: the PTY's `(cols, rows)` and
+/// the requests besides the PTY and shell.
 struct ShellSetup {
+    pty_size: (u32, u32),
     forward_agent: bool,
     x11: Option<X11Request>,
     connect_snippet: Option<String>,
-}
-
-impl ConnectParams {
-    fn endpoint(&self) -> Endpoint<'_> {
-        Endpoint {
-            host: &self.host,
-            port: self.port,
-            username: &self.username,
-            creds: &self.creds,
-        }
-    }
-}
-
-/// Control messages sent to a session task via its mpsc handle.
-enum SessionControl {
-    Write(Vec<u8>),
-    Resize { cols: u32, rows: u32 },
-}
-
-/// The manager's per-session handle. Dropping every clone of `control` makes
-/// the task's `control_rx.recv()` return `None`, which it treats as a
-/// disconnect.
-struct SessionHandle {
-    control: mpsc::Sender<SessionControl>,
-    /// Set by `disconnect`. Out of band, so a disconnect never waits behind
-    /// queued writes that a stalled server isn't taking.
-    stop: watch::Sender<bool>,
 }
 
 /// Open a session channel, request a PTY + shell, then pump bytes both ways
@@ -151,23 +88,23 @@ struct SessionHandle {
 async fn run_shell(
     handle: &client::Handle<SshHandler>,
     sink: Arc<dyn SessionSink>,
-    control_rx: mpsc::Receiver<SessionControl>,
-    stop: watch::Receiver<bool>,
-    size: (u32, u32),
-    setup: ShellSetup,
+    mut controls: RunnerControls,
+    mut setup: ShellSetup,
 ) -> Result<SessionStatus, AppError> {
-    let channel = open_shell(handle, size, &setup).await?;
+    // A pane resized while connecting starts its shell at its latest size.
+    setup.pty_size = controls.resizes.latest().unwrap_or(setup.pty_size);
+    let channel = open_shell(handle, &setup).await?;
     type_connect_snippet(&channel, &setup).await;
-    Ok(pump_shell(channel, sink, control_rx, stop).await)
+    Ok(pump_shell(channel, sink, controls).await)
 }
 
 /// Open a session channel and start a shell on a PTY, sending the forwarding
 /// and locale requests first.
 async fn open_shell(
     handle: &client::Handle<SshHandler>,
-    (cols, rows): (u32, u32),
     setup: &ShellSetup,
 ) -> Result<russh::Channel<client::Msg>, AppError> {
+    let (cols, rows) = setup.pty_size;
     let channel = handle
         .channel_open_session()
         .await
@@ -218,12 +155,15 @@ async fn type_connect_snippet(channel: &russh::Channel<client::Msg>, setup: &She
 async fn pump_shell(
     channel: russh::Channel<client::Msg>,
     sink: Arc<dyn SessionSink>,
-    control_rx: mpsc::Receiver<SessionControl>,
-    mut stop: watch::Receiver<bool>,
+    RunnerControls {
+        input,
+        resizes,
+        mut stop,
+    }: RunnerControls,
 ) -> SessionStatus {
     let (mut reader, writer) = channel.split();
     let writer = Arc::new(writer);
-    let mut writes = tokio::spawn(pump_controls(control_rx, Arc::clone(&writer)));
+    let mut writes = tokio::spawn(pump_controls(input, resizes, Arc::clone(&writer)));
     // Reported by the server just before it closes the channel (after EOF).
     let mut exit_code = None;
     let status = loop {
@@ -272,23 +212,33 @@ async fn close_channel(writer: &ChannelWriteHalf<client::Msg>, reader: &mut Chan
     .await;
 }
 
-/// Send the target, then the jump host, an SSH disconnect, so neither sees a
-/// dropped socket; each within `CLOSE_GRACE`.
-async fn close_connection(handle: &client::Handle<SshHandler>, jump: Option<&JumpConnection>) {
-    let goodbye = handle.disconnect(russh::Disconnect::ByApplication, "", "");
-    let _ = timeout(CLOSE_GRACE, goodbye).await;
-    let _ = timeout(CLOSE_GRACE, close_jump(jump)).await;
-}
-
-/// Apply control messages to the channel until one ends the session; returns
-/// that final status.
+/// Apply writes and resizes to the channel until a write ends the session;
+/// returns that final status.
 async fn pump_controls(
-    mut control_rx: mpsc::Receiver<SessionControl>,
+    mut input: mpsc::Receiver<Vec<u8>>,
+    mut resizes: Resizes,
     writer: Arc<ChannelWriteHalf<client::Msg>>,
 ) -> SessionStatus {
     loop {
-        if let Some(status) = handle_control(control_rx.recv().await, &writer).await {
+        if let Some(status) = apply_next_control(&mut input, &mut resizes, &writer).await {
             return status;
+        }
+    }
+}
+
+/// Apply the next write or resize. Returns the session's final status once it
+/// is over.
+async fn apply_next_control(
+    input: &mut mpsc::Receiver<Vec<u8>>,
+    resizes: &mut Resizes,
+    channel: &ChannelWriteHalf<client::Msg>,
+) -> Option<SessionStatus> {
+    tokio::select! {
+        bytes = input.recv() => write_input(bytes, channel).await,
+        (cols, rows) = resizes.next() => {
+            // A failed window-change isn't fatal to the session.
+            let _ = channel.window_change(cols, rows, 0, 0).await;
+            None
         }
     }
 }
@@ -320,112 +270,103 @@ fn handle_channel_msg(
     }
 }
 
-/// Apply one control message (keystrokes or resize) to the channel. Returns
-/// the session's final status once it is over.
-async fn handle_control(
-    ctrl: Option<SessionControl>,
+/// Send keystrokes. Returns the session's final status once it is over.
+async fn write_input(
+    bytes: Option<Vec<u8>>,
     channel: &ChannelWriteHalf<client::Msg>,
 ) -> Option<SessionStatus> {
-    match ctrl {
-        Some(SessionControl::Write(bytes)) => match channel.data(&bytes[..]).await {
-            Ok(()) => None,
-            Err(_) => Some(SessionStatus::Disconnected),
-        },
-        Some(SessionControl::Resize { cols, rows }) => {
-            // A failed window-change isn't fatal to the session.
-            let _ = channel.window_change(cols, rows, 0, 0).await;
-            None
-        }
-        // The manager dropped the handle.
-        None => Some(SessionStatus::Disconnected),
-    }
+    let Some(bytes) = bytes else {
+        // The registry dropped the handle.
+        return Some(SessionStatus::Disconnected);
+    };
+    channel
+        .data(&bytes[..])
+        .await
+        .err()
+        .map(|_| SessionStatus::Disconnected)
 }
 
-/// Wait for a disconnect (the stop flag, or the manager dropping the handle),
-/// applying the resizes queued before it. Used to race the handshake so a
-/// disconnect requested mid-handshake (even while a host-key prompt is
-/// pending) tears the task down promptly.
-async fn wait_for_stop(
-    rx: &mut mpsc::Receiver<SessionControl>,
-    stop: &mut watch::Receiver<bool>,
-    size: &mut (u32, u32),
-) {
+/// Wait for a disconnect (the stop flag, or the registry dropping the handle).
+/// Used to race the handshake so a disconnect requested mid-handshake (even
+/// while a host-key prompt is pending) tears the task down promptly.
+async fn wait_for_stop(input: &mut mpsc::Receiver<Vec<u8>>, stop: &mut watch::Receiver<bool>) {
     tokio::select! {
         biased;
-        () = track_resizes(rx, size) => {}
+        () = drop_input(input) => {}
         _ = stop.wait_for(|requested| *requested) => {}
     }
 }
 
-/// Keep `size`, the `(cols, rows)` the PTY will be requested with, up to date,
-/// so a pane resized while connecting doesn't start its shell at a stale
-/// width. Keystrokes queued before the shell exists are dropped.
-async fn track_resizes(rx: &mut mpsc::Receiver<SessionControl>, size: &mut (u32, u32)) {
-    while let Some(control) = rx.recv().await {
-        if let SessionControl::Resize { cols, rows } = control {
-            *size = (cols, rows);
-        }
-    }
+/// Keystrokes typed before the shell exists are dropped; returns once the
+/// input closes.
+async fn drop_input(input: &mut mpsc::Receiver<Vec<u8>>) {
+    while input.recv().await.is_some() {}
 }
 
 /// The full lifecycle of one session task: connect+auth (racing an early
 /// disconnect), then shell. Returns the final status for a clean end
 /// (`Disconnected` or `Exited`) and `Err` for a failure that should surface as
-/// `session_status: error`. `overall_timeout`
-/// is the B3 backstop covering the whole handshake+auth flow — see
-/// `establish_target`.
+/// `session_status: error`.
 async fn run_session(
-    params: ConnectParams,
+    mut params: ConnectParams,
     mut handler: SshHandler,
-    connect_timeout: Duration,
-    overall_timeout: Duration,
+    ssh: &SshConnector,
     sink: Arc<dyn SessionSink>,
-    mut control_rx: mpsc::Receiver<SessionControl>,
-    mut stop: watch::Receiver<bool>,
+    mut controls: RunnerControls,
 ) -> Result<SessionStatus, AppError> {
     // Abandons a pending host-key prompt if this returns mid-handshake.
     let _owner = handler.take_owner_token();
-    let x11 = handler.x11_request();
-    let mut pty_size = (params.cols, params.rows);
-    let stop_seen = stop.clone();
-    let (handle, jump) = tokio::select! {
-        biased;
-        // If a disconnect arrives during the handshake, abort: dropping the
-        // `establish_target` future drops the handler(s) (and any PromptGuard
-        // within) plus any jump handle, so a pending host-key prompt and the
-        // jump connection are cleaned up too.
-        _ = wait_for_stop(&mut control_rx, &mut stop, &mut pty_size) => return Ok(SessionStatus::Disconnected),
-        result = establish_target(
-            params.endpoint(),
-            params.jump.as_ref(),
-            handler,
-            connect_timeout,
-            overall_timeout,
-        ) => result?,
+    let setup = take_shell_setup(&mut params, handler.x11_request());
+    let early_stop = wait_for_stop(&mut controls.input, &mut controls.stop);
+    let Some(connection) = connect_or_stop(early_stop, &params, handler, ssh).await? else {
+        return Ok(SessionStatus::Disconnected);
     };
+    let status = serve_shell(connection.handle(), &params, sink, controls, setup).await;
+    connection.close().await;
+    status
+}
 
+/// The shell's setup, taking the connect snippet out of `params`.
+fn take_shell_setup(params: &mut ConnectParams, x11: Option<X11Request>) -> ShellSetup {
+    ShellSetup {
+        pty_size: (params.cols, params.rows),
+        forward_agent: params.forward_agent,
+        x11,
+        connect_snippet: params.connect_snippet.take(),
+    }
+}
+
+/// Connect and authenticate; `None` when `early_stop` comes first.
+async fn connect_or_stop(
+    early_stop: impl Future<Output = ()>,
+    params: &ConnectParams,
+    handler: SshHandler,
+    ssh: &SshConnector,
+) -> Result<Option<SshConnection>, AppError> {
+    tokio::select! {
+        biased;
+        // Dropping the connect future drops the handler(s) (and any
+        // PromptGuard within) plus any jump handle, so a pending host-key
+        // prompt and the jump connection are cleaned up too.
+        () = early_stop => Ok(None),
+        result = ssh.connect(params.target.endpoint(), params.target.jump.as_ref(), handler) => result.map(Some),
+    }
+}
+
+/// Run the shell until it ends, logging why.
+async fn serve_shell(
+    handle: &client::Handle<SshHandler>,
+    params: &ConnectParams,
+    sink: Arc<dyn SessionSink>,
+    controls: RunnerControls,
+    setup: ShellSetup,
+) -> Result<SessionStatus, AppError> {
     sink.on_status(SessionStatus::Connected, None);
-    // `jump` (for a jumped connection) is closed only after the shell:
-    // closing it ends the direct-tcpip channel this session rides on.
-    let status = run_shell(
-        &handle,
-        sink,
-        control_rx,
-        stop,
-        pty_size,
-        ShellSetup {
-            forward_agent: params.forward_agent,
-            x11,
-            connect_snippet: params.connect_snippet,
-        },
-    )
-    .await;
-    let label = format!("shell {}:{}", params.host, params.port);
-    crate::app_log::info(format!(
-        "{label}: {}",
-        shell_end(&status, *stop_seen.borrow())
-    ));
-    close_connection(&handle, jump.as_ref()).await;
+    let stop_seen = controls.stop.clone();
+    let status = run_shell(handle, sink, controls, setup).await;
+    let label = format!("shell {}:{}", params.target.host, params.target.port);
+    let end = shell_end(&status, *stop_seen.borrow());
+    crate::app_log::info(format!("{label}: {end}"));
     status
 }
 
@@ -464,267 +405,56 @@ fn with_x11(
     }
 }
 
-/// Owns all live sessions and the host-key machinery. Lives in Tauri managed
-/// state behind an `Arc` (see `AppState`).
-pub struct SessionManager {
-    sessions: Mutex<HashMap<String, SessionHandle>>,
-    prompts: Arc<ConnectPrompts>,
-    known_hosts: Arc<KnownHostsStore>,
-    connect_timeout: Duration,
-    prompt_timeout: Duration,
-    handshake_timeout: Duration,
+/// Start an SSH shell Session in `registry`, its connect raising prompts on
+/// `prompter`.
+pub fn spawn_shell(
+    registry: &Arc<SessionRegistry>,
+    ssh: &Arc<SshConnector>,
+    session: NewSession,
+    mut params: ConnectParams,
+    prompter: Arc<dyn ConnectPrompter>,
+) {
+    let handler = shell_handler(ssh, &mut params, prompter, Arc::clone(&session.sink));
+    let ssh = Arc::clone(ssh);
+    registry.spawn(session, move |controls, sink| async move {
+        run_session(params, handler, &ssh, sink, controls).await
+    });
 }
 
-impl SessionManager {
-    pub fn new(
-        known_hosts: Arc<KnownHostsStore>,
-        connect_timeout: Duration,
-        prompt_timeout: Duration,
-        handshake_timeout: Duration,
-    ) -> Self {
-        SessionManager {
-            sessions: Mutex::new(HashMap::new()),
-            prompts: Arc::new(ConnectPrompts::default()),
-            known_hosts,
-            connect_timeout,
-            prompt_timeout,
-            handshake_timeout,
-        }
-    }
+/// The shell's handler, taking the X11 display out of `params`.
+fn shell_handler(
+    ssh: &SshConnector,
+    params: &mut ConnectParams,
+    prompter: Arc<dyn ConnectPrompter>,
+    sink: Arc<dyn SessionSink>,
+) -> SshHandler {
+    let target = &params.target;
+    let handler = ssh
+        .handler(target.host.clone(), target.port, target.keepalive, prompter)
+        .with_agent_forwarding(params.forward_agent)
+        .with_purpose("shell");
+    with_x11(handler, params.x11.take(), sink)
+}
 
-    /// Production constructor with the SPEC §6 timeouts (10 s connect,
-    /// 60 s prompt, 30 s handshake/auth slack).
-    pub fn with_defaults(known_hosts: Arc<KnownHostsStore>) -> Self {
-        Self::new(
-            known_hosts,
-            DEFAULT_CONNECT_TIMEOUT,
-            DEFAULT_PROMPT_TIMEOUT,
-            DEFAULT_HANDSHAKE_TIMEOUT,
-        )
-    }
-
-    /// The host-key TOFU store this manager consults and persists to, shared
-    /// (behind an `Arc`) so the management commands (`list_known_hosts` /
-    /// `forget_host`) can read and mutate the same trust store the live
-    /// sessions use.
-    pub fn known_hosts(&self) -> Arc<KnownHostsStore> {
-        Arc::clone(&self.known_hosts)
-    }
-
-    fn overall_establish_timeout(&self) -> Duration {
-        overall_establish_timeout(
-            self.connect_timeout,
-            self.prompt_timeout,
-            self.handshake_timeout,
-        )
-    }
-
-    /// Number of live sessions currently tracked. Used by the app-close handler
-    /// (`lib.rs`) to decide whether a graceful `disconnect_all` is needed, by
-    /// `disconnect_all` itself to poll teardown to completion, and by Phase 3's
-    /// leak tests to assert cleanup.
-    pub fn session_count(&self) -> usize {
-        self.lock_sessions().len()
-    }
-
-    /// Whether this manager owns `session_id`. Lets the command layer route
-    /// write/resize/disconnect to the right manager (SSH vs serial) by
-    /// ownership. Locks only to check membership; never across an await.
-    pub fn owns(&self, session_id: &str) -> bool {
-        self.lock_sessions().contains_key(session_id)
-    }
-
-    fn lock_sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, SessionHandle>> {
-        self.sessions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// Clone out a session's control `Sender` (lock held only for the clone,
-    /// never across the subsequent await).
-    fn control_of(&self, session_id: &str) -> Option<mpsc::Sender<SessionControl>> {
-        self.lock_sessions()
-            .get(session_id)
-            .map(|h| h.control.clone())
-    }
-
-    fn build_handler(
-        &self,
-        host: String,
-        port: u16,
-        sink: Arc<dyn SessionSink>,
-        keepalive: KeepaliveConfig,
-        forward_agent: bool,
-    ) -> SshHandler {
-        SshHandler::new(
-            sink,
-            Arc::clone(&self.known_hosts),
-            Arc::clone(&self.prompts),
-            host,
-            port,
-            self.prompt_timeout,
-            keepalive,
-        )
-        .with_agent_forwarding(forward_agent)
-    }
-
-    /// Spawn a live shell session. Inserts the handle synchronously (so the map
-    /// reflects the session the instant this returns) and drives the rest on a
-    /// tokio task that removes its own entry on exit.
-    ///
-    pub fn spawn_session(
-        self: &Arc<Self>,
-        session_id: String,
-        mut params: ConnectParams,
-        sink: Arc<dyn SessionSink>,
-    ) {
-        let (control_tx, control_rx) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
-        let (stop_tx, stop_rx) = watch::channel(false);
-        self.lock_sessions().insert(
-            session_id.clone(),
-            SessionHandle {
-                control: control_tx,
-                stop: stop_tx,
-            },
-        );
-
-        let handler = self
-            .build_handler(
-                params.host.clone(),
-                params.port,
-                Arc::clone(&sink),
-                params.keepalive,
-                params.forward_agent,
-            )
-            .with_purpose("shell");
-        let handler = with_x11(handler, params.x11.take(), Arc::clone(&sink));
-        let manager = Arc::clone(self);
-        let connect_timeout = self.connect_timeout;
-        let overall_timeout = self.overall_establish_timeout();
-
-        tokio::spawn(async move {
-            sink.on_status(SessionStatus::Connecting, None);
-
-            let result = run_session(
-                params,
-                handler,
-                connect_timeout,
-                overall_timeout,
-                Arc::clone(&sink),
-                control_rx,
-                stop_rx,
-            )
-            .await;
-
-            match result {
-                Ok(status) => sink.on_status(status, None),
-                // AppError messages are always secret-free (see error.rs).
-                Err(err) => sink.on_error(&err),
-            }
-
-            // Single owner of cleanup: the task removes its own entry for every
-            // terminal reason (success, auth fail, mid-handshake drop, error).
-            manager.lock_sessions().remove(&session_id);
-        });
-    }
-
-    /// Send keystrokes to a session. Unknown/closed session ⇒ silently ignored.
-    pub async fn write_stdin(&self, session_id: &str, data: Vec<u8>) {
-        if let Some(control) = self.control_of(session_id) {
-            // Waits for room however long it takes: input given up on would
-            // reach the shell with keys missing.
-            let _ = control.send(SessionControl::Write(data)).await;
-        }
-    }
-
-    /// Resize a session's PTY. Unknown/closed session ⇒ ignored.
-    pub async fn resize_pty(&self, session_id: &str, cols: u32, rows: u32) {
-        if let Some(control) = self.control_of(session_id) {
-            let _ = control.send(SessionControl::Resize { cols, rows }).await;
-        }
-    }
-
-    /// Request a graceful disconnect. Idempotent: an unknown `session_id` is a
-    /// no-op (SPEC §5). The task performs the actual map removal when it exits.
-    pub async fn disconnect(&self, session_id: &str) {
-        if let Some(handle) = self.lock_sessions().get(session_id) {
-            handle.stop.send_replace(true);
-        }
-    }
-
-    /// Gracefully disconnect *every* live session and wait (briefly) for their
-    /// tasks to tear down, so closing the app closes SSH cleanly rather than
-    /// dropping the TCP sockets on process exit (SPEC §7 "App close"). Bounded by
-    /// a short timeout so a stuck session can never block the window from closing.
-    pub async fn disconnect_all(&self) {
-        let ids: Vec<String> = self.lock_sessions().keys().cloned().collect();
-        for id in &ids {
-            self.disconnect(id).await;
-        }
-        // Each task removes its own map entry on exit; wait up to ~1s for that.
-        for _ in 0..50 {
-            if self.session_count() == 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }
-
-    /// Resolve a pending host-key trust prompt (SPEC §5, `respond_host_key`).
-    pub fn respond_host_key(&self, prompt_id: &str, accept: bool) {
-        self.prompts.respond_host_key(prompt_id, accept);
-    }
-
-    /// Resolve a pending keyboard-interactive prompt; `false` if it isn't ours.
-    pub fn respond_auth(&self, prompt_id: &str, answers: AuthAnswers) -> bool {
-        self.prompts.respond_auth(prompt_id, answers)
-    }
-
-    /// The dialog shows an auth prompt; `false` if it isn't ours.
-    pub fn mark_auth_shown(&self, prompt_id: &str) -> bool {
-        self.prompts.mark_auth_shown(prompt_id)
-    }
-
-    /// Connect + authenticate + close, no shell (SPEC §5, `test_connection`).
-    /// Uses the same host-key path as a real connect, so a first-contact test
-    /// can raise a trust prompt just like a live session. Bounded by the same
-    /// overall `establish` deadline as a live session (B3), so an
-    /// unresponsive-but-TCP-accepting host can no longer hang this forever.
-    /// Goes through `jump` when the device has one, exactly like a connect.
-    pub async fn test_connection(
-        &self,
-        host: String,
-        port: u16,
-        username: String,
-        creds: AuthCredentials,
-        jump: Option<JumpHop>,
-        sink: Arc<dyn SessionSink>,
-    ) -> Result<(), AppError> {
-        let handler = self
-            .build_handler(host.clone(), port, sink, KeepaliveConfig::disabled(), false)
-            .with_purpose("connection test");
-        let target = Endpoint {
-            host: &host,
-            port,
-            username: &username,
-            creds: &creds,
-        };
-        let (handle, jump_handle) = establish_target(
-            target,
-            jump.as_ref(),
-            handler,
-            self.connect_timeout,
-            self.overall_establish_timeout(),
-        )
-        .await?;
-        // Best-effort clean close; the result of `test_connection` is the auth
-        // outcome, not the teardown.
-        let _ = handle
-            .disconnect(russh::Disconnect::ByApplication, "", "")
-            .await;
-        close_jump(jump_handle.as_ref()).await;
-        Ok(())
-    }
+/// Connect + authenticate + close, no shell (SPEC §5, `test_connection`).
+/// Uses the same host-key path as a real connect, so a first-contact test
+/// can raise a trust prompt just like a live session. Bounded like one:
+/// the connect by the connector's overall deadline, the close by
+/// `CLOSE_GRACE` per hop, so an unresponsive host can't hang it.
+/// Goes through the target's jump host when it has one, exactly like a
+/// connect. The result is the auth outcome, not the teardown.
+pub async fn test_connection(
+    ssh: &SshConnector,
+    target: SshTarget,
+    prompter: Arc<dyn ConnectPrompter>,
+) -> Result<(), AppError> {
+    let handler = ssh
+        .handler(target.host.clone(), target.port, target.keepalive, prompter)
+        .with_purpose("connection test");
+    let jump = target.jump.as_ref();
+    let connection = ssh.connect(target.endpoint(), jump, handler).await?;
+    connection.close().await;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -745,27 +475,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_resize_during_the_handshake_sets_the_pty_size() {
-        let (tx, mut rx) = mpsc::channel(8);
-        for control in [
-            SessionControl::Resize {
-                cols: 100,
-                rows: 30,
-            },
-            SessionControl::Write(b"x".to_vec()),
-            SessionControl::Resize {
-                cols: 132,
-                rows: 43,
-            },
-        ] {
-            tx.send(control).await.unwrap();
-        }
-        let (stop_tx, mut stop_rx) = watch::channel(false);
+    async fn keystrokes_typed_while_connecting_are_dropped() {
+        let (input_tx, mut input) = mpsc::channel(4);
+        input_tx.send(b"early".to_vec()).await.unwrap();
+        let (stop_tx, mut stop) = watch::channel(false);
         stop_tx.send_replace(true);
-        let mut size = (80, 24);
 
-        wait_for_stop(&mut rx, &mut stop_rx, &mut size).await;
+        wait_for_stop(&mut input, &mut stop).await;
 
-        assert_eq!(size, (132, 43));
+        assert!(input.try_recv().is_err());
     }
 }

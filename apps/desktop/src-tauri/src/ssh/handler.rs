@@ -88,11 +88,8 @@ pub(crate) struct SshHandler {
 pub(crate) struct HandshakeOwner(#[allow(dead_code)] watch::Sender<()>);
 
 impl SshHandler {
-    /// Construct a handler. Used by `SessionManager::build_handler` and, for
-    /// tunnels, by `tunnel/` (which shares the same known-hosts store + prompt
-    /// registry so host-key trust decisions are consistent across shells and
-    /// tunnels). Agent forwarding is off unless [`Self::with_agent_forwarding`]
-    /// turns it on.
+    /// Construct a handler; built only by `SshConnector::handler`. Agent
+    /// forwarding is off unless [`Self::with_agent_forwarding`] turns it on.
     pub(crate) fn new(
         prompter: Arc<dyn ConnectPrompter>,
         known_hosts: Arc<KnownHostsStore>,

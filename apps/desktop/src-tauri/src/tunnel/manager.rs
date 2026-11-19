@@ -6,20 +6,16 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 
-use super::lifecycle::{run_tunnel, TunnelTimeouts};
+use super::lifecycle::{run_tunnel, TunnelContext};
 use super::status::{forward_ids, lock_snapshot, ForwardSnapshot, Publisher};
 use super::{TunnelControl, TunnelInfo, TunnelParams, TunnelSink, TunnelStatus};
 use crate::device::Forward;
 use crate::error::AppError;
-use crate::known_hosts::KnownHostsStore;
 use crate::relay::Pace;
 use crate::remote_forward::RemoteRoutes;
-use crate::ssh::establish::{
-    overall_establish_timeout, DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT,
-    DEFAULT_PROMPT_TIMEOUT,
-};
+use crate::ssh::connector::SshConnector;
 use crate::ssh::handler::SshHandler;
-use crate::ssh::prompts::{AuthAnswers, ConnectPrompter, ConnectPrompts};
+use crate::ssh::prompts::ConnectPrompter;
 
 /// Control-channel bound. A tunnel's control channel carries the occasional
 /// user-driven forward add/remove and a final `Stop`; the bound just keeps it
@@ -47,34 +43,18 @@ pub(super) struct Controls {
 }
 
 /// Owns all live tunnels. Lives in Tauri managed state behind an `Arc` (see
-/// `AppState`). Shares the host-key TOFU store with `SessionManager` so a trust
-/// decision made for a shell applies to a tunnel to the same host and vice
-/// versa; its own `ConnectPrompts` is resolved by the `respond_host_key` command
-/// fanning a response out to both managers.
+/// `AppState`).
 pub struct TunnelManager {
     tunnels: Mutex<HashMap<String, TunnelHandle>>,
-    prompts: Arc<ConnectPrompts>,
-    known_hosts: Arc<KnownHostsStore>,
-    connect_timeout: Duration,
-    prompt_timeout: Duration,
-    handshake_timeout: Duration,
+    ssh: Arc<SshConnector>,
     pace: Pace,
 }
 
 impl TunnelManager {
-    pub fn new(
-        known_hosts: Arc<KnownHostsStore>,
-        connect_timeout: Duration,
-        prompt_timeout: Duration,
-        handshake_timeout: Duration,
-    ) -> Self {
+    pub fn new(ssh: Arc<SshConnector>) -> Self {
         TunnelManager {
             tunnels: Mutex::new(HashMap::new()),
-            prompts: Arc::new(ConnectPrompts::default()),
-            known_hosts,
-            connect_timeout,
-            prompt_timeout,
-            handshake_timeout,
+            ssh,
             pace: Pace::DEFAULT,
         }
     }
@@ -91,24 +71,6 @@ impl TunnelManager {
     pub fn with_stall_timeout(mut self, timeout: Duration) -> Self {
         self.pace.stall = timeout;
         self
-    }
-
-    /// Production constructor with the same SPEC §6 timeouts as a shell session.
-    pub fn with_defaults(known_hosts: Arc<KnownHostsStore>) -> Self {
-        Self::new(
-            known_hosts,
-            DEFAULT_CONNECT_TIMEOUT,
-            DEFAULT_PROMPT_TIMEOUT,
-            DEFAULT_HANDSHAKE_TIMEOUT,
-        )
-    }
-
-    fn overall_establish_timeout(&self) -> Duration {
-        overall_establish_timeout(
-            self.connect_timeout,
-            self.prompt_timeout,
-            self.handshake_timeout,
-        )
     }
 
     /// Number of live tunnels currently tracked. Used by the app-close handler
@@ -159,23 +121,6 @@ impl TunnelManager {
             .map(|h| h.control.clone())
     }
 
-    /// Resolve a pending host-key trust prompt raised by a tunnel. Returns
-    /// whether a prompt with that id was actually waiting here, so the command
-    /// layer can fan the response out to both managers and know which owned it.
-    pub fn respond_host_key(&self, prompt_id: &str, accept: bool) -> bool {
-        self.prompts.respond_host_key(prompt_id, accept)
-    }
-
-    /// Resolve a pending keyboard-interactive prompt; `false` if it isn't ours.
-    pub fn respond_auth(&self, prompt_id: &str, answers: AuthAnswers) -> bool {
-        self.prompts.respond_auth(prompt_id, answers)
-    }
-
-    /// The dialog shows an auth prompt; `false` if it isn't ours.
-    pub fn mark_auth_shown(&self, prompt_id: &str) -> bool {
-        self.prompts.mark_auth_shown(prompt_id)
-    }
-
     /// Spawn a live tunnel. Inserts the handle synchronously (so the map reflects
     /// the tunnel the instant this returns) and drives the rest on a tokio task
     /// that removes its own entry on exit.
@@ -184,12 +129,13 @@ impl TunnelManager {
         tunnel_id: String,
         params: TunnelParams,
         sink: Arc<dyn TunnelSink>,
+        prompter: Arc<dyn ConnectPrompter>,
     ) {
         let (controls, snapshot) = self.register(&tunnel_id, &params);
         let routes = Arc::new(RemoteRoutes::new(self.pace));
-        let handler = self.handler_for(&params, &sink, &routes);
+        let handler = self.handler_for(&params, prompter, &routes);
         let manager = Arc::clone(self);
-        let timeouts = self.timeouts();
+        let tunnel_context = self.tunnel_context();
 
         tokio::spawn(async move {
             sink.on_status(TunnelStatus::Connecting, None, Vec::new());
@@ -198,7 +144,8 @@ impl TunnelManager {
                 sink: Arc::clone(&sink),
                 snapshot,
             };
-            let result = run_tunnel(params, handler, routes, timeouts, publisher, controls).await;
+            let result =
+                run_tunnel(params, handler, routes, tunnel_context, publisher, controls).await;
             report_end(sink.as_ref(), result);
 
             manager.lock_tunnels().remove(&tunnel_id);
@@ -231,27 +178,20 @@ impl TunnelManager {
     fn handler_for(
         &self,
         params: &TunnelParams,
-        sink: &Arc<dyn TunnelSink>,
+        prompter: Arc<dyn ConnectPrompter>,
         routes: &Arc<RemoteRoutes>,
     ) -> SshHandler {
         // Tunnels never forward the SSH agent.
-        SshHandler::new(
-            Arc::clone(sink) as Arc<dyn ConnectPrompter>,
-            Arc::clone(&self.known_hosts),
-            Arc::clone(&self.prompts),
-            params.host.clone(),
-            params.port,
-            self.prompt_timeout,
-            params.keepalive,
-        )
-        .with_remote_routes(Arc::clone(routes))
-        .with_purpose("tunnel")
+        let target = &params.target;
+        self.ssh
+            .handler(target.host.clone(), target.port, target.keepalive, prompter)
+            .with_remote_routes(Arc::clone(routes))
+            .with_purpose("tunnel")
     }
 
-    fn timeouts(&self) -> TunnelTimeouts {
-        TunnelTimeouts {
-            connect: self.connect_timeout,
-            overall: self.overall_establish_timeout(),
+    fn tunnel_context(&self) -> TunnelContext {
+        TunnelContext {
+            ssh: Arc::clone(&self.ssh),
             pace: self.pace,
         }
     }

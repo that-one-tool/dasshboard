@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -20,12 +21,13 @@ use russh::{Channel, ChannelId};
 use russh_sftp::protocol::{
     File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
 };
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex as TokioMutex;
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 
 use dasshboard_lib::known_hosts::{KnownHost, KnownHostsStore};
 use dasshboard_lib::sftp::{SftpManager, SftpParams};
-use dasshboard_lib::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig};
+use dasshboard_lib::ssh::connector::{ConnectTimeouts, SshConnector};
+use dasshboard_lib::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig, SshTarget};
 use dasshboard_lib::ssh::prompts::{AuthPromptPayload, ConnectPrompter, HostKeyPromptPayload};
 
 const TEST_USER: &str = "tester";
@@ -486,6 +488,31 @@ impl russh_sftp::server::Handler for SftpFsHandler {
 #[derive(Clone)]
 struct SftpTestServer {
     fs: MemFs,
+    fault: Fault,
+    freeze: Option<FreezeSwitch>,
+}
+
+/// Makes a server stop reading its socket on the next data once `told`, and
+/// says so on `frozen`.
+#[derive(Clone)]
+struct FreezeSwitch {
+    told: Arc<AtomicBool>,
+    frozen: mpsc::UnboundedSender<()>,
+}
+
+/// The test's end of a `FreezeSwitch`.
+struct FreezeControl {
+    told: Arc<AtomicBool>,
+    frozen: mpsc::UnboundedReceiver<()>,
+}
+
+/// How a misbehaving server stops answering.
+#[derive(Clone, Copy, Default)]
+enum Fault {
+    #[default]
+    None,
+    /// Never answers the `sftp` subsystem request.
+    SilentSubsystem,
 }
 
 impl server::Server for SftpTestServer {
@@ -494,6 +521,8 @@ impl server::Server for SftpTestServer {
         SftpServerHandler {
             fs: self.fs.clone(),
             channels: Arc::new(TokioMutex::new(HashMap::new())),
+            fault: self.fault,
+            freeze: self.freeze.clone(),
         }
     }
 }
@@ -501,6 +530,8 @@ impl server::Server for SftpTestServer {
 struct SftpServerHandler {
     fs: MemFs,
     channels: Arc<TokioMutex<HashMap<ChannelId, Channel<Msg>>>>,
+    fault: Fault,
+    freeze: Option<FreezeSwitch>,
 }
 
 impl server::Handler for SftpServerHandler {
@@ -531,6 +562,9 @@ impl server::Handler for SftpServerHandler {
         name: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if matches!(self.fault, Fault::SilentSubsystem) {
+            std::future::pending::<()>().await;
+        }
         if name == "sftp" {
             let channel = self.channels.lock().await.remove(&channel_id);
             if let Some(channel) = channel {
@@ -542,6 +576,22 @@ impl server::Handler for SftpServerHandler {
             }
         } else {
             session.channel_failure(channel_id)?;
+        }
+        Ok(())
+    }
+
+    async fn data(
+        &mut self,
+        _channel: ChannelId,
+        _data: &[u8],
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let Some(freeze) = &self.freeze else {
+            return Ok(());
+        };
+        if freeze.told.load(Ordering::Relaxed) {
+            let _ = freeze.frozen.send(());
+            std::future::pending::<()>().await;
         }
         Ok(())
     }
@@ -562,29 +612,80 @@ async fn spawn_sftp_server_with_inactivity(inactivity: Duration) -> (u16, String
 /// Like `spawn_sftp_server`, serving `fs` (seeded by the test, e.g. with
 /// symlinks the client API can't create).
 async fn spawn_sftp_server_on(fs: MemFs, inactivity: Duration) -> (u16, String) {
-    let host_key = PrivateKey::from_openssh(TEST_HOST_KEY).expect("valid test host key");
-    let fingerprint = host_key
-        .public_key()
-        .fingerprint(HashAlg::Sha256)
-        .to_string();
+    let server = SftpTestServer {
+        fs,
+        fault: Fault::None,
+        freeze: None,
+    };
+    run_sftp_server(server, sftp_server_config(inactivity)).await
+}
 
-    let config = Arc::new(server::Config {
+/// A server that misbehaves as `fault` says.
+async fn spawn_faulty_sftp_server(fault: Fault) -> (u16, String) {
+    let server = SftpTestServer {
+        fs: MemFs::new(),
+        fault,
+        freeze: None,
+    };
+    run_sftp_server(server, sftp_server_config(Duration::from_secs(30))).await
+}
+
+/// A server that stops reading when told, with a window wide enough that a
+/// client fills the socket buffers instead of waiting on a window adjust.
+async fn spawn_freezable_sftp_server() -> (u16, String, FreezeControl) {
+    let (frozen_tx, frozen) = mpsc::unbounded_channel();
+    let told = Arc::new(AtomicBool::new(false));
+    let switch = FreezeSwitch {
+        told: Arc::clone(&told),
+        frozen: frozen_tx,
+    };
+    let server = SftpTestServer {
+        fs: MemFs::new(),
+        fault: Fault::None,
+        freeze: Some(switch),
+    };
+    let config = server::Config {
+        window_size: 16 << 20,
+        ..sftp_server_config(Duration::from_secs(30))
+    };
+    let (port, fingerprint) = run_sftp_server(server, config).await;
+    (port, fingerprint, FreezeControl { told, frozen })
+}
+
+fn sftp_server_config(inactivity: Duration) -> server::Config {
+    let host_key = PrivateKey::from_openssh(TEST_HOST_KEY).expect("valid test host key");
+    server::Config {
         keys: vec![host_key],
         auth_rejection_time: Duration::from_millis(10),
         auth_rejection_time_initial: Some(Duration::ZERO),
         inactivity_timeout: Some(inactivity),
         ..Default::default()
-    });
+    }
+}
 
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+async fn run_sftp_server(mut server: SftpTestServer, config: server::Config) -> (u16, String) {
+    let fingerprint = config.keys[0]
+        .public_key()
+        .fingerprint(HashAlg::Sha256)
+        .to_string();
+    let listener = listen_with_small_receive_buffer();
     let port = listener.local_addr().expect("addr").port();
-
     tokio::spawn(async move {
-        let mut server = SftpTestServer { fs };
-        let _ = server.run_on_socket(config, &listener).await;
+        let _ = server.run_on_socket(Arc::new(config), &listener).await;
     });
-
     (port, fingerprint)
+}
+
+/// Bind an ephemeral local port whose accepted sockets keep a fixed, small
+/// receive buffer: autotuning would grow it to tens of MiB, enough to absorb
+/// what a client sends a server that stopped reading.
+fn listen_with_small_receive_buffer() -> TcpListener {
+    let socket = TcpSocket::new_v4().expect("socket");
+    socket
+        .set_recv_buffer_size(64 << 10)
+        .expect("receive buffer");
+    socket.bind(([127, 0, 0, 1], 0).into()).expect("bind");
+    socket.listen(128).expect("listen")
 }
 
 /// A jump host (`ProxyJump`): accepts the test user and bridges every
@@ -666,6 +767,30 @@ fn manager_with_trust(dir: &std::path::Path, port: u16, fingerprint: &str) -> Sf
 }
 
 fn manager_trusting(dir: &std::path::Path, ports: &[u16], fingerprint: &str) -> SftpManager {
+    let timeouts = ConnectTimeouts {
+        connect: Duration::from_secs(10),
+        prompt: Duration::from_secs(60),
+        handshake: Duration::from_secs(10),
+    };
+    manager_on(trusting_store(dir, ports, fingerprint), timeouts)
+}
+
+/// A manager whose every timeout is one second.
+fn impatient_manager(dir: &std::path::Path, port: u16, fingerprint: &str) -> SftpManager {
+    let second = Duration::from_secs(1);
+    let timeouts = ConnectTimeouts {
+        connect: second,
+        prompt: second,
+        handshake: second,
+    };
+    manager_on(trusting_store(dir, &[port], fingerprint), timeouts)
+}
+
+fn manager_on(known_hosts: Arc<KnownHostsStore>, timeouts: ConnectTimeouts) -> SftpManager {
+    SftpManager::new(Arc::new(SshConnector::new(known_hosts, timeouts)))
+}
+
+fn trusting_store(dir: &std::path::Path, ports: &[u16], fingerprint: &str) -> Arc<KnownHostsStore> {
     let known_hosts = KnownHostsStore::load(dir.to_path_buf());
     for &port in ports {
         known_hosts
@@ -679,28 +804,28 @@ fn manager_trusting(dir: &std::path::Path, ports: &[u16], fingerprint: &str) -> 
             )
             .expect("seed trusted host key");
     }
-    SftpManager::new(
-        Arc::new(known_hosts),
-        Duration::from_secs(10),
-        Duration::from_secs(60),
-        Duration::from_secs(10),
-    )
+    Arc::new(known_hosts)
+}
+
+/// SFTP params for `device_id` on the local test server as `TEST_USER`,
+/// through `jump` if any.
+fn sftp_params(device_id: &str, port: u16, jump: Option<JumpHop>) -> SftpParams {
+    SftpParams {
+        device_id: device_id.to_string(),
+        target: SshTarget {
+            host: "127.0.0.1".to_string(),
+            port,
+            username: TEST_USER.to_string(),
+            creds: AuthCredentials::Password(TEST_PASSWORD.to_string()),
+            jump,
+            keepalive: KeepaliveConfig::disabled(),
+        },
+    }
 }
 
 async fn connect(manager: &SftpManager, device_id: &str, port: u16) -> String {
     manager
-        .connect(
-            SftpParams {
-                device_id: device_id.to_string(),
-                host: "127.0.0.1".to_string(),
-                port,
-                username: TEST_USER.to_string(),
-                creds: AuthCredentials::Password(TEST_PASSWORD.to_string()),
-                keepalive: KeepaliveConfig::disabled(),
-                jump: None,
-            },
-            Arc::new(NoopPrompter),
-        )
+        .connect(sftp_params(device_id, port, None), Arc::new(NoopPrompter))
         .await
         .expect("SFTP connect")
 }
@@ -715,20 +840,16 @@ async fn connect_via_jump(
 ) -> Result<String, AppError> {
     manager
         .connect(
-            SftpParams {
-                device_id: "dev-1".to_string(),
-                host: "127.0.0.1".to_string(),
+            sftp_params(
+                "dev-1",
                 port,
-                username: TEST_USER.to_string(),
-                creds: AuthCredentials::Password(TEST_PASSWORD.to_string()),
-                keepalive: KeepaliveConfig::disabled(),
-                jump: Some(JumpHop {
+                Some(JumpHop {
                     host: "127.0.0.1".to_string(),
                     port: jump_port,
                     username: TEST_USER.to_string(),
                     creds: AuthCredentials::Password(jump_password.to_string()),
                 }),
-            },
+            ),
             Arc::new(NoopPrompter),
         )
         .await
@@ -806,6 +927,150 @@ async fn jump_host_auth_failure_is_attributed_to_the_jump_host() {
         err.to_string().contains("jump host"),
         "error should name the jump host, got: {err}"
     );
+    assert_eq!(manager.connection_count(), 0);
+}
+
+struct Upload {
+    device_id: String,
+    path: String,
+    payload: Arc<[u8]>,
+}
+
+/// Run `upload`, counting each chunk written.
+fn spawn_upload(manager: Arc<SftpManager>, upload: Upload, chunks: Arc<AtomicUsize>) {
+    tokio::spawn(async move {
+        let count_chunk = move |_: u64, _: u64| {
+            chunks.fetch_add(1, Ordering::Relaxed);
+        };
+        let _ = manager
+            .write_file(
+                &upload.device_id,
+                &upload.path,
+                &upload.payload,
+                &count_chunk,
+            )
+            .await;
+    });
+}
+
+/// Uploads running at once, each with a 32 KiB write in flight: together more
+/// than the test server's bounded socket buffers hold.
+const STALLED_UPLOADS: usize = 64;
+/// Chunks written before the uploads count as in full flow.
+const FLOWING_CHUNKS: usize = 256;
+
+/// Start `STALLED_UPLOADS` uploads on each of `device_ids`, returning their
+/// written-chunk count.
+fn spawn_uploads(manager: &Arc<SftpManager>, device_ids: &[&str]) -> Arc<AtomicUsize> {
+    let chunks = Arc::new(AtomicUsize::new(0));
+    let payload: Arc<[u8]> = vec![0u8; 4 << 20].into();
+    let uploads = device_ids
+        .iter()
+        .flat_map(|device_id| (0..STALLED_UPLOADS).map(move |file| (device_id, file)));
+    for (device_id, file) in uploads {
+        let upload = Upload {
+            device_id: device_id.to_string(),
+            path: format!("/upload-{device_id}-{file}"),
+            payload: Arc::clone(&payload),
+        };
+        spawn_upload(Arc::clone(manager), upload, Arc::clone(&chunks));
+    }
+    chunks
+}
+
+/// Freeze the server once the uploads are in full flow, then wait until it
+/// froze and they stopped moving: the client's outbound path is full, so any
+/// goodbye has to queue.
+async fn freeze_mid_flow(freeze: &mut FreezeControl, chunks: &AtomicUsize) {
+    let patience = Duration::from_secs(10);
+    tokio::time::timeout(patience, await_past(chunks, FLOWING_CHUNKS))
+        .await
+        .expect("the uploads never got going");
+    freeze.told.store(true, Ordering::Relaxed);
+    let froze = tokio::time::timeout(patience, freeze.frozen.recv()).await;
+    assert!(
+        matches!(froze, Ok(Some(()))),
+        "the server never stopped reading"
+    );
+    tokio::time::timeout(patience, await_still(chunks))
+        .await
+        .expect("the uploads never backed up");
+}
+
+async fn await_past(counter: &AtomicUsize, floor: usize) {
+    while counter.load(Ordering::Relaxed) <= floor {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Return once `counter` stayed put for a while.
+async fn await_still(counter: &AtomicUsize) {
+    let mut last = counter.load(Ordering::Relaxed);
+    loop {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let now = counter.load(Ordering::Relaxed);
+        if now == last {
+            return;
+        }
+        last = now;
+    }
+}
+
+/// russh's disconnect only queues behind the data the stuck connection could
+/// not send: closing must not wait on it (it holds up app quit).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disconnecting_from_a_server_that_stopped_reading_returns() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp, mut freeze) = spawn_freezable_sftp_server().await;
+    let manager = Arc::new(manager_with_trust(dir.path(), port, &fp));
+    connect(&manager, "dev-1", port).await;
+    let chunks = spawn_uploads(&manager, &["dev-1"]);
+    freeze_mid_flow(&mut freeze, &chunks).await;
+
+    let closed = tokio::time::timeout(Duration::from_secs(2), manager.disconnect("dev-1")).await;
+
+    assert!(
+        closed.is_ok(),
+        "the disconnect must not wait on the stuck server"
+    );
+}
+
+/// App quit waits on `disconnect_all`: stuck connections close side by side,
+/// each within one close grace (~300 ms), not one after the other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disconnecting_all_closes_stuck_connections_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp, mut freeze) = spawn_freezable_sftp_server().await;
+    let manager = Arc::new(manager_with_trust(dir.path(), port, &fp));
+    connect(&manager, "dev-1", port).await;
+    connect(&manager, "dev-2", port).await;
+    let chunks = spawn_uploads(&manager, &["dev-1", "dev-2"]);
+    freeze_mid_flow(&mut freeze, &chunks).await;
+    let started = std::time::Instant::now();
+
+    manager.disconnect_all().await;
+
+    let one_close = Duration::from_millis(300);
+    let took = started.elapsed();
+    assert!(took < one_close * 3 / 2, "closing took {took:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_that_never_opens_sftp_times_the_connect_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, fp) = spawn_faulty_sftp_server(Fault::SilentSubsystem).await;
+    let manager = impatient_manager(dir.path(), port, &fp);
+
+    let params = sftp_params("dev-1", port, None);
+    let connecting = manager.connect(params, Arc::new(NoopPrompter));
+    let result = tokio::time::timeout(Duration::from_secs(5), connecting)
+        .await
+        .expect("the connect must give up on its own");
+
+    match result {
+        Err(AppError::SshConnect(message)) => assert!(message.contains("timed out"), "{message}"),
+        other => panic!("expected a connect timeout, got {other:?}"),
+    }
     assert_eq!(manager.connection_count(), 0);
 }
 

@@ -126,13 +126,37 @@ impl std::fmt::Debug for AuthCredentials {
     }
 }
 
-/// The SSH server a connection authenticates to, as [`establish_target`](super::establish::establish_target) takes
+/// The SSH server a connection authenticates to, as [`SshConnector::connect`](super::connector::SshConnector::connect) takes
 /// it — borrowed from a shell's, tunnel's or SFTP connection's own params.
 pub(crate) struct Endpoint<'a> {
     pub(crate) host: &'a str,
     pub(crate) port: u16,
     pub(crate) username: &'a str,
     pub(crate) creds: &'a AuthCredentials,
+}
+
+/// Everything an SSH connection to a device needs, resolved: shells, tunnels
+/// and SFTP build their parameters from it. `pub` + `#[doc(hidden)]` for the
+/// same integration-test reason as `ConnectParams`.
+#[doc(hidden)]
+pub struct SshTarget {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub creds: AuthCredentials,
+    pub jump: Option<JumpHop>,
+    pub keepalive: KeepaliveConfig,
+}
+
+impl SshTarget {
+    pub(crate) fn endpoint(&self) -> Endpoint<'_> {
+        Endpoint {
+            host: &self.host,
+            port: self.port,
+            username: &self.username,
+            creds: &self.creds,
+        }
+    }
 }
 
 /// The resolved connection parameters for a single jump hop (`ProxyJump`),

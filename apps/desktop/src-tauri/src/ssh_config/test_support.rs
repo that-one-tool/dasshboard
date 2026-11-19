@@ -7,9 +7,8 @@ use crate::device::{Auth, Connection, Device, X11Mode};
 use crate::known_hosts::KnownHostsStore;
 use crate::profile_store::ProfileStore;
 use crate::secret::InMemorySecretStore;
-use crate::serial::SerialSessionManager;
-use crate::session::SessionManager;
 use crate::settings::SettingsStore;
+use crate::ssh::connector::{ConnectTimeouts, SshConnector};
 use crate::state::AppState;
 use crate::store::DeviceStore;
 use crate::tunnel::TunnelManager;
@@ -18,23 +17,20 @@ use crate::tunnel::TunnelManager;
 /// stores plus an in-memory keyring, no Tauri runtime required.
 pub(super) fn test_state(dir: &std::path::Path) -> AppState {
     let known_hosts = Arc::new(KnownHostsStore::load(dir.to_path_buf()));
-    let session_manager = Arc::new(SessionManager::with_defaults(known_hosts));
-    let tunnel_manager = Arc::new(TunnelManager::with_defaults(session_manager.known_hosts()));
-    let sftp_manager = Arc::new(crate::sftp::SftpManager::with_defaults(
-        session_manager.known_hosts(),
-    ));
+    let ssh = Arc::new(SshConnector::new(known_hosts, ConnectTimeouts::default()));
+    let tunnel_manager = Arc::new(TunnelManager::new(Arc::clone(&ssh)));
+    let sftp_manager = Arc::new(crate::sftp::SftpManager::new(Arc::clone(&ssh)));
     AppState {
         device_store: DeviceStore::load(dir.to_path_buf()),
         profile_store: ProfileStore::load(dir.to_path_buf()),
         settings_store: SettingsStore::load(dir.to_path_buf()),
         workspace_store: crate::workspace_store::WorkspaceStore::load(dir.to_path_buf()),
         secret_store: Arc::new(InMemorySecretStore::new()),
-        session_manager,
+        ssh,
         tunnel_manager,
         sftp_manager,
         edit_manager: crate::sftp_edit::EditManager::new(dir.join("sftp-edit")),
-        serial_manager: Arc::new(SerialSessionManager::new()),
-        local_shell_manager: Arc::new(crate::local_shell::LocalShellManager::new()),
+        sessions: Arc::new(crate::session_registry::SessionRegistry::new()),
         bookmark_store: crate::bookmark_store::BookmarkStore::load(dir.to_path_buf()),
         command_store: crate::command_library::CommandStore::load(dir.to_path_buf()),
     }

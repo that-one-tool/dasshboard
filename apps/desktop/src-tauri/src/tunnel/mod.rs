@@ -1,7 +1,7 @@
 //! SSH port-forwarding (`ssh -L` / `ssh -D` / `ssh -R`) — the tunnel analogue of `session.rs`
 //! (SPEC tunnels §2). A [`TunnelManager`] owns a `HashMap<TunnelId, TunnelHandle>`,
 //! one `tokio` task per live tunnel, and reuses `ssh`'s connect + auth +
-//! host-key-TOFU path verbatim, jump host included (`establish_target`). It
+//! host-key-TOFU path verbatim, jump host included (`SshConnector::connect`). It
 //! diverges only *after* authentication: instead of requesting a PTY + shell,
 //! it binds a local `TcpListener` for each configured forward and pumps every
 //! accepted connection
@@ -39,7 +39,7 @@
 //!   SSH connection; one far behind that stops reading altogether is closed.
 //! - Each tunnel task removes its own map entry on **every** terminal reason
 //!   (auth failure, all binds failing, stop, transport drop). Cleanup has a
-//!   single owner, exactly as `SessionManager` does.
+//!   single owner, exactly as in `SessionRegistry`.
 
 mod dynamic;
 mod forwards;
@@ -54,8 +54,7 @@ use serde::Serialize;
 
 use crate::device::Forward;
 use crate::error::AppError;
-use crate::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig};
-use crate::ssh::prompts::ConnectPrompter;
+use crate::ssh::params::SshTarget;
 
 pub use manager::TunnelManager;
 
@@ -110,11 +109,10 @@ pub struct TunnelInfo {
     pub forwards: Vec<ForwardStatus>,
 }
 
-/// Sink for everything the tunnel core surfaces to the frontend (its host-key
-/// prompts — the same event a shell raises — through [`ConnectPrompter`]).
-/// The production impl emits `tunnel_status` events; the test impl records
-/// into channels. Kept object-safe (`Arc<dyn TunnelSink>`).
-pub trait TunnelSink: ConnectPrompter {
+/// Sink for the tunnel's lifecycle; its prompts go to the prompter it is
+/// spawned with. The production impl emits `tunnel_status` events; the test
+/// impl records into channels. Kept object-safe (`Arc<dyn TunnelSink>`).
+pub trait TunnelSink: Send + Sync {
     /// A lifecycle change → `tunnel_status` event. `forwards` carries per-forward
     /// bind state on a `Listening` status and is empty otherwise.
     fn on_status(
@@ -139,18 +137,11 @@ pub trait TunnelSink: ConnectPrompter {
 #[doc(hidden)]
 pub struct TunnelParams {
     pub device_id: String,
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub creds: AuthCredentials,
+    /// The server, its login, the optional jump host (`ProxyJump`) and the
+    /// keepalive, which applies to the jump hop too.
+    pub target: SshTarget,
     /// The forwards to bind. Non-empty (the command rejects a device with none).
     pub forwards: Vec<Forward>,
-    /// SSH keepalive resolved from user settings, applied to the tunnel's
-    /// connection (same semantics as a shell session).
-    pub keepalive: KeepaliveConfig,
-    /// Optional jump host (`ProxyJump`): the tunnel's connection to `host:port`
-    /// rides a direct-tcpip channel over it. `None` ⇒ direct.
-    pub jump: Option<JumpHop>,
 }
 
 /// Control messages sent to a tunnel task via its mpsc handle. A stop goes

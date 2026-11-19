@@ -1,11 +1,13 @@
 //! Resolving a device (saved, or as edited for a test) into what a connection
 //! needs: the device itself, its credentials (keyring read off the async
-//! runtime), its jump host, and the keepalive settings.
+//! runtime), its jump host, and the keepalive settings — together, its
+//! [`SshTarget`].
 
 use std::sync::Arc;
 
 use crate::device::{Auth, Connection, Device};
 use crate::error::AppError;
+pub(super) use crate::ssh::params::SshTarget;
 use crate::ssh::params::{AuthCredentials, JumpHop, KeepaliveConfig};
 use crate::state::AppState;
 
@@ -17,6 +19,59 @@ pub(super) fn find_device(state: &AppState, device_id: &str) -> Result<Device, A
         .into_iter()
         .find(|d| d.id == device_id)
         .ok_or_else(|| AppError::NotFound(format!("no device with id {device_id}")))
+}
+
+/// Resolve a saved SSH device into its [`SshTarget`]. The jump host is
+/// resolved up front, so a misconfigured one fails the connect rather than
+/// leaving it half open.
+pub(super) async fn ssh_target_of(
+    state: &AppState,
+    device: &Device,
+) -> Result<SshTarget, AppError> {
+    let (host, port, username) = ssh_endpoint_of(device)?;
+    Ok(SshTarget {
+        host: host.to_string(),
+        port,
+        username: username.to_string(),
+        creds: resolve_credentials(state, device).await?,
+        jump: resolve_jump_hop(state, device).await?,
+        keepalive: keepalive_config(state),
+    })
+}
+
+/// The [`SshTarget`] to test a device as edited (see
+/// [`resolve_test_credentials`]). No keepalive: the test only connects and
+/// closes.
+pub(super) async fn test_target_of(
+    state: &AppState,
+    device: &Device,
+    typed: Option<String>,
+) -> Result<SshTarget, AppError> {
+    let (host, port, username) = ssh_endpoint_of(device)?;
+    Ok(SshTarget {
+        host: host.to_string(),
+        port,
+        username: username.to_string(),
+        creds: resolve_test_credentials(state, device, typed).await?,
+        jump: resolve_jump_hop(state, device).await?,
+        keepalive: KeepaliveConfig::disabled(),
+    })
+}
+
+/// The SSH endpoint (host, port, username) of a device, or an error for any
+/// other device kind.
+fn ssh_endpoint_of(device: &Device) -> Result<(&str, u16, &str), AppError> {
+    match &device.connection {
+        Connection::Ssh {
+            host,
+            port,
+            username,
+            ..
+        } => Ok((host, *port, username)),
+        _ => Err(AppError::Validation(
+            "only SSH devices can open an SSH connection".to_string(),
+        )),
+    }
 }
 
 /// The key file a typed key path names: trimmed, with a leading `~` expanded
@@ -68,7 +123,7 @@ fn credentials_from(auth: &Auth, stored: Option<String>) -> Result<AuthCredentia
 /// runtime — a slow/contended keyring must never stall other sessions' PTY I/O
 /// or keepalives. No lock is held across the `.await` (the `Arc<dyn
 /// SecretStore>` is cloned out first).
-pub(super) async fn resolve_credentials(
+async fn resolve_credentials(
     state: &AppState,
     device: &Device,
 ) -> Result<AuthCredentials, AppError> {
@@ -87,7 +142,7 @@ async fn read_stored_secret(state: &AppState, device_id: &str) -> Result<Option<
 /// Credentials to test a device as edited, saved or not: the typed secret, else
 /// the stored one — unless the auth method changed, as a password is no key
 /// passphrase (the rule `save_device` follows).
-pub(super) async fn resolve_test_credentials(
+async fn resolve_test_credentials(
     state: &AppState,
     device: &Device,
     typed: Option<String>,
@@ -191,7 +246,7 @@ fn ssh_auth_of(device: &Device) -> Result<&Auth, AppError> {
 /// Resolve the app-wide SSH keepalive settings into a [`KeepaliveConfig`] for a
 /// new connection. Read fresh from the settings store on each connect, so a
 /// changed keepalive applies to connections opened afterwards.
-pub(super) fn keepalive_config(state: &AppState) -> KeepaliveConfig {
+fn keepalive_config(state: &AppState) -> KeepaliveConfig {
     let k = state.settings_store.get().keepalive;
     KeepaliveConfig::from_secs(k.interval_secs, k.count_max)
 }
@@ -423,6 +478,81 @@ mod tests {
             !message.contains("device editor"),
             "the user is already in the editor, got: {message}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_test_target_uses_the_typed_secret_and_no_keepalive() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+
+        let target = test_target_of(&state, &sample_device(), Some("pw".to_string()))
+            .await
+            .unwrap();
+
+        assert_eq!((target.host.as_str(), target.port), ("192.168.1.10", 22));
+        assert_eq!(target.username, "admin");
+        assert_eq!(password_of(&target.creds), Some("pw"));
+        assert!(target.jump.is_none());
+        assert_eq!(target.keepalive.interval, None);
+    }
+
+    fn local_shell_device() -> Device {
+        Device {
+            connection: Connection::LocalShell {
+                shell: None,
+                cwd: None,
+            },
+            ..sample_device()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_serial_or_local_shell_device_has_no_ssh_target() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        for device in [sample_serial_device(), local_shell_device()] {
+            let result = ssh_target_of(&state, &device).await;
+            assert!(matches!(result, Err(AppError::Validation(_))));
+        }
+    }
+
+    fn save_keepalive(state: &AppState, interval_secs: u32, count_max: u32) {
+        let mut settings = state.settings_store.get();
+        settings.keepalive.interval_secs = interval_secs;
+        settings.keepalive.count_max = count_max;
+        state.settings_store.save(settings).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_ssh_target_carries_endpoint_credentials_jump_hop_and_keepalive() {
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path());
+        save_keepalive(&state, 15, 5);
+        let bastion = Device {
+            name: "bastion".to_string(),
+            ..sample_device()
+        };
+        let bastion = save_device_impl(&state, bastion, Some("jump-pw".to_string())).unwrap();
+        let mut device = sample_device();
+        if let Connection::Ssh { proxy_jump, .. } = &mut device.connection {
+            *proxy_jump = Some(bastion.id.clone());
+        }
+        let device = save_device_impl(&state, device, Some("hunter2".to_string())).unwrap();
+
+        let target = ssh_target_of(&state, &device).await.unwrap();
+
+        assert_eq!(
+            (target.host.as_str(), target.port, target.username.as_str()),
+            ("192.168.1.10", 22, "admin")
+        );
+        assert_eq!(password_of(&target.creds), Some("hunter2"));
+        let jump = target.jump.expect("the jump hop");
+        assert_eq!(password_of(&jump.creds), Some("jump-pw"));
+        assert_eq!(
+            target.keepalive.interval,
+            Some(std::time::Duration::from_secs(15))
+        );
+        assert_eq!(target.keepalive.max, 5);
     }
 
     #[test]

@@ -2,7 +2,6 @@
 //! its lifecycle [`SessionStatus`] and the [`SessionSink`] it streams into.
 
 use crate::error::AppError;
-use crate::ssh::prompts::ConnectPrompter;
 
 /// Lifecycle status mirrored to the frontend `session_status` event
 /// (SPEC.md §5). Serializes to the exact lowercase strings in the spec.
@@ -47,11 +46,11 @@ impl SessionStatus {
     }
 }
 
-/// Sink for everything a terminal session surfaces to the frontend (its
-/// host-key prompts through [`ConnectPrompter`]). The production impl emits
-/// Tauri events / streams over the IPC channel; the test impl records into
-/// channels. Kept object-safe (`Arc<dyn SessionSink>`).
-pub trait SessionSink: ConnectPrompter {
+/// Sink for everything a terminal session surfaces to the frontend; an SSH
+/// session's prompts go to the prompter it is spawned with. The production
+/// impl emits Tauri events / streams over the IPC channel; the test impl
+/// records into channels. Kept object-safe (`Arc<dyn SessionSink>`).
+pub trait SessionSink: Send + Sync {
     /// Verbatim server output bytes → per-session IPC channel (SPEC.md §3).
     fn on_data(&self, bytes: &[u8]);
     /// A lifecycle change → `session_status` event.
@@ -62,6 +61,44 @@ pub trait SessionSink: ConnectPrompter {
     /// password, a rejected host key).
     fn on_error(&self, err: &AppError) {
         self.on_status(SessionStatus::Error, Some(err.to_string()));
+    }
+}
+
+/// A sink that records what a session reports, for the session tests.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::sync::Mutex;
+
+    use super::{SessionSink, SessionStatus};
+
+    #[derive(Default)]
+    pub(crate) struct RecordingSink {
+        data: Mutex<Vec<u8>>,
+        statuses: Mutex<Vec<SessionStatus>>,
+    }
+
+    impl RecordingSink {
+        pub(crate) fn data(&self) -> Vec<u8> {
+            self.data.lock().unwrap().clone()
+        }
+
+        pub(crate) fn text(&self) -> String {
+            String::from_utf8_lossy(&self.data()).into_owned()
+        }
+
+        pub(crate) fn statuses(&self) -> Vec<SessionStatus> {
+            self.statuses.lock().unwrap().clone()
+        }
+    }
+
+    impl SessionSink for RecordingSink {
+        fn on_data(&self, bytes: &[u8]) {
+            self.data.lock().unwrap().extend_from_slice(bytes);
+        }
+
+        fn on_status(&self, status: SessionStatus, _message: Option<String>) {
+            self.statuses.lock().unwrap().push(status);
+        }
     }
 }
 
