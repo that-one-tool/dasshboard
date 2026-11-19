@@ -1,6 +1,6 @@
 /**
  * A pane's lines in the diagnostic log: input stalls, lost input and unanswered output
- * reads, named by device, never with terminal data.
+ * reads, failed closes, named by device, never with terminal data.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const { logMock, warnMock } = vi.hoisted(() => ({ logMock: vi.fn(), warnMock: vi.fn() }));
 vi.mock("../../ipc", () => ({ logToBackend: logMock, warnThrottled: warnMock }));
 
-import { logInputHealth, logReadTimeout, shellLabel } from "./paneLog";
+import { logCloseFailed, logInputHealth, logReadTimeout, shellLabel } from "./paneLog";
 
 beforeEach(() => {
   logMock.mockReset();
@@ -41,5 +41,10 @@ describe("paneLog", () => {
   it("logs unanswered reads throttled per device", () => {
     logReadTimeout("web-1", 3);
     expect(warnMock).toHaveBeenCalledWith("read timeout web-1", "shell web-1: output read unanswered (3 in a row)");
+  });
+
+  it("logs a failed close as a warning", () => {
+    logCloseFailed("web-1", "backend gone");
+    expect(logMock).toHaveBeenCalledWith("warn", "shell web-1: close failed: backend gone");
   });
 });

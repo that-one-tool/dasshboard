@@ -22,3 +22,7 @@ export function logReadTimeout(deviceName: string, unanswered: number): void {
   const line = `${shellLabel(deviceName)}: output read unanswered (${unanswered} in a row)`;
   warnThrottled(`read timeout ${deviceName}`, line);
 }
+
+export function logCloseFailed(deviceName: string, message: string): void {
+  logToBackend("warn", `${shellLabel(deviceName)}: close failed: ${message}`);
+}

@@ -38,7 +38,7 @@ export default defineConfig(async () => ({
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
-      exclude: ["src/**/*.test.ts"],
+      exclude: ["src/**/*.test.ts", "src/**/*.testing.ts"],
       reporter: ["text-summary", "html"],
       // A floor at the measured baseline (target 90%): raise it, never lower it.
       thresholds: { statements: 93, branches: 89, functions: 91, lines: 94 },

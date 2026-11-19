@@ -22,7 +22,8 @@ Docs: `README.md` (users, one line per feature), `apps/desktop/README.md`
 ## Rules
 
 - TDD: write the failing test first, then make it pass. Each new `.ts` module
-  gets a `*.test.ts` beside it (except `main.ts` and `i18n/`).
+  gets a `*.test.ts` beside it (except `main.ts`, `i18n/` and `*.testing.ts`
+  test fakes).
 - After each change, run the gate from the repo root until green:
   `npm run check` (desktop), `npm run site:check` (website),
   `npm run check:all` (both).

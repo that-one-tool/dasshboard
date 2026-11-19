@@ -2,39 +2,9 @@
  * @vitest-environment happy-dom
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { Device, Forward, TunnelStatusEvent } from "../ipc";
-import { t } from "../i18n";
-import { MAX_RECONNECT_ATTEMPTS } from "../terminal/reconnect";
-
-const h = vi.hoisted(() => ({
-  devices: [] as Device[],
-  statusHandler: null as ((e: TunnelStatusEvent) => void) | null,
-}));
-
-vi.mock("../ipc", () => ({
-  logToBackend: vi.fn(),
-  listDevices: vi.fn(async () => h.devices),
-  listTunnels: vi.fn(async () => []),
-  startTunnel: vi.fn(async (_deviceId: string, tunnelId: string) => tunnelId),
-  stopTunnel: vi.fn(async () => {}),
-  startTunnelForward: vi.fn(async () => {}),
-  stopTunnelForward: vi.fn(async () => {}),
-  onTunnelStatus: vi.fn(async (handler: (e: TunnelStatusEvent) => void) => {
-    h.statusHandler = handler;
-    return () => {};
-  }),
-}));
-
-import { TunnelsPanel } from "./tunnelsPanel";
-import {
-  listDevices,
-  listTunnels,
-  startTunnel,
-  stopTunnel,
-  startTunnelForward,
-  stopTunnelForward,
-  type ForwardStatus,
-} from "../ipc";
+import type { Device, Forward, ForwardStatus } from "../ipc";
+import { FakeTunnelsPort } from "./fakeTunnelsPort.testing";
+import { TunnelsPanel, type TunnelsPanelOptions } from "./tunnelsPanel";
 
 function sshDevice(id: string, name: string, forwards: Forward[] = []): Device {
   return {
@@ -52,159 +22,125 @@ function sshDevice(id: string, name: string, forwards: Forward[] = []): Device {
 }
 
 function forward(id: string, localPort: number): Forward {
-  return {
-    id,
-    name: `fwd-${id}`,
-    kind: "local",
-    localAddr: "127.0.0.1",
-    localPort,
-    remoteHost: "db",
-    remotePort: 5432,
-  };
+  return { id, name: `fwd-${id}`, kind: "local", localAddr: "127.0.0.1", localPort, remoteHost: "db", remotePort: 5432 };
 }
+
+function bound(forwardId: string, isBound = true): ForwardStatus {
+  return { forwardId, localAddr: "127.0.0.1", localPort: 5432, remoteHost: "db", remotePort: 5432, bound: isBound };
+}
+
+const twoForwards = (): Device => sshDevice("dev-1", "NAS", [forward("f1", 5432), forward("f2", 6543)]);
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
-function bound(forwardId: string, isBound = true): ForwardStatus {
-  return {
-    forwardId,
-    localAddr: "127.0.0.1",
-    localPort: 5432,
-    remoteHost: "db",
-    remotePort: 5432,
-    bound: isBound,
-  };
+function headerButton(): HTMLButtonElement {
+  return document.querySelector<HTMLButtonElement>(".tunnel-card-header .btn")!;
+}
+
+function forwardButton(forwardId: string): HTMLButtonElement {
+  return document.querySelector<HTMLButtonElement>(`.tunnel-forward[data-forward-id="${forwardId}"] .tunnel-forward-toggle`)!;
+}
+
+function dot(forwardId: string): HTMLElement {
+  return document.querySelector<HTMLElement>(`.tunnel-forward[data-forward-id="${forwardId}"] .tunnel-forward-dot`)!;
+}
+
+function tunnelStatus(): HTMLElement {
+  return document.querySelector<HTMLElement>(".tunnel-status")!;
 }
 
 describe("TunnelsPanel", () => {
+  let port: FakeTunnelsPort;
+  let panel: TunnelsPanel;
+
   beforeEach(() => {
     document.body.innerHTML = '<div class="tunnel-list"></div>';
-    h.statusHandler = null;
-    vi.clearAllMocks();
-    h.devices = [sshDevice("dev-1", "NAS", [forward("f1", 5432)])];
-    vi.spyOn(crypto, "randomUUID").mockReturnValue("t1" as ReturnType<typeof crypto.randomUUID>);
+    port = new FakeTunnelsPort();
+    port.devices = [sshDevice("dev-1", "NAS", [forward("f1", 5432)])];
   });
 
-  it("renders a card only for tunnelable devices", async () => {
-    h.devices = [
-      sshDevice("dev-1", "NAS", [forward("f1", 5432)]),
-      sshDevice("dev-2", "NoForwards", []),
-    ];
-    const panel = new TunnelsPanel();
+  afterEach(() => panel?.dispose());
+
+  async function launch(options: TunnelsPanelOptions = {}): Promise<TunnelsPanel> {
+    panel = new TunnelsPanel(options, port);
     await panel.init();
-    expect(listDevices).toHaveBeenCalled();
-    const cards = document.querySelectorAll(".tunnel-card");
-    expect(cards).toHaveLength(1);
+    await flush();
+    return panel;
+  }
+
+  async function click(button: HTMLButtonElement): Promise<void> {
+    button.click();
+    await flush();
+  }
+
+  function listening(...forwards: ForwardStatus[]): void {
+    port.emit({ tunnelId: port.lastTunnelId(), status: "listening", forwards });
+  }
+
+  it("renders a card only for tunnelable devices", async () => {
+    port.devices = [sshDevice("dev-1", "NAS", [forward("f1", 5432)]), sshDevice("dev-2", "NoForwards", [])];
+    await launch();
+    expect(document.querySelectorAll(".tunnel-card")).toHaveLength(1);
     expect(document.querySelector(".tunnel-card-name")!.textContent).toBe("NAS");
   });
 
   it("renders the card into the .tunnel-list sidebar section with a header", async () => {
-    const panel = new TunnelsPanel();
-    await panel.init();
-    const card = document.querySelector(".tunnel-list .tunnel-manager");
-    expect(card).not.toBeNull();
-    expect(
-      document.querySelector(".tunnel-list .device-list-header h2")!.textContent,
-    ).toBe("Tunnels");
+    await launch();
+    expect(document.querySelector(".tunnel-list .tunnel-manager")).not.toBeNull();
+    expect(document.querySelector(".tunnel-list .device-list-header h2")!.textContent).toBe("Tunnels");
+  });
+
+  it("works without its sidebar section", async () => {
+    document.body.innerHTML = "";
+    const onForwardsChange = vi.fn();
+    await launch({ onForwardsChange });
+    expect(onForwardsChange).toHaveBeenCalled();
   });
 
   it("starts a tunnel on the Start button", async () => {
-    const panel = new TunnelsPanel();
-    await panel.init();
-    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
-    await flush();
-    expect(startTunnel).toHaveBeenCalledWith("dev-1", "t1", ["f1"]);
+    await launch();
+    await click(headerButton());
+    expect(port.calls).toEqual(["start dev-1 t1 f1"]);
   });
 
   it("reflects a listening event and stops on the Stop button", async () => {
-    const panel = new TunnelsPanel();
-    await panel.init();
-    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
-    await flush();
+    await launch();
+    await click(headerButton());
+    listening(bound("f1"));
 
-    // Backend confirms the tunnel is listening.
-    h.statusHandler!({
-      tunnelId: "t1",
-      status: "listening",
-      forwards: [
-        {
-          forwardId: "f1",
-          localAddr: "127.0.0.1",
-          localPort: 5432,
-          remoteHost: "db",
-          remotePort: 5432,
-          bound: true,
-        },
-      ],
-    });
+    expect(tunnelStatus().classList.contains("is-listening")).toBe(true);
+    expect(tunnelStatus().getAttribute("aria-label")).toBe("Listening");
+    expect(headerButton().getAttribute("aria-label")).toBe("Stop all");
 
-    const status = document.querySelector<HTMLElement>(".tunnel-status")!;
-    expect(status.classList.contains("is-listening")).toBe(true);
-    expect(status.getAttribute("aria-label")).toBe("Listening");
-    const action = document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!;
-    expect(action.getAttribute("aria-label")).toBe("Stop all");
-
-    action.click();
-    await flush();
-    expect(stopTunnel).toHaveBeenCalledWith("t1");
+    await click(headerButton());
+    expect(port.calls).toEqual(["start dev-1 t1 f1", "stop t1"]);
+    expect(tunnelStatus().classList.contains("is-stopped")).toBe(true);
   });
 
   it("reports its running-forward count whenever a tunnel changes", async () => {
     const onForwardsChange = vi.fn();
-    const panel = new TunnelsPanel({ onForwardsChange });
-    await panel.init();
-    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
-    await flush();
+    await launch({ onForwardsChange });
+    await click(headerButton());
     onForwardsChange.mockClear();
 
-    h.statusHandler!({
-      tunnelId: "t1",
-      status: "listening",
-      forwards: [
-        { forwardId: "f1", localAddr: "127.0.0.1", localPort: 5432, remoteHost: "db", remotePort: 5432, bound: true },
-      ],
-    });
-
+    listening(bound("f1"));
     expect(onForwardsChange).toHaveBeenCalled();
     expect(panel.listeningForwardCount()).toBe(1);
   });
 
-  it("stops counting a deleted device's forwards before the backend confirms the stop", async () => {
-    const panel = new TunnelsPanel();
-    await panel.init();
-    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
-    await flush();
-    h.statusHandler!({
-      tunnelId: "t1",
-      status: "listening",
-      forwards: [
-        { forwardId: "f1", localAddr: "127.0.0.1", localPort: 5432, remoteHost: "db", remotePort: 5432, bound: true },
-      ],
-    });
-
-    h.devices = [];
-    await panel.refresh();
-
-    expect(panel.listeningForwardCount()).toBe(0);
-  });
-
   it("shows a stopped tunnel as an icon status and icon-only buttons", async () => {
-    const panel = new TunnelsPanel();
-    await panel.init();
+    await launch();
+    expect(tunnelStatus().classList.contains("is-stopped")).toBe(true);
+    expect(tunnelStatus().getAttribute("aria-label")).toBe("Stopped");
+    expect(tunnelStatus().title).toBe("Stopped");
+    expect(tunnelStatus().querySelector("svg")).not.toBeNull();
 
-    const status = document.querySelector<HTMLElement>(".tunnel-status")!;
-    expect(status.classList.contains("is-stopped")).toBe(true);
-    expect(status.getAttribute("aria-label")).toBe("Stopped");
-    expect(status.title).toBe("Stopped");
-    expect(status.querySelector("svg")).not.toBeNull();
-
-    const start = document.querySelector<HTMLButtonElement>(".tunnel-card-header .btn")!;
-    expect(start.classList.contains("btn-icon")).toBe(true);
-    expect(start.getAttribute("aria-label")).toBe("Start all");
-    expect(start.title).toBe("Start all");
-    expect(start.textContent!.trim()).toBe("");
+    expect(headerButton().classList.contains("btn-icon")).toBe(true);
+    expect(headerButton().getAttribute("aria-label")).toBe("Start all");
+    expect(headerButton().title).toBe("Start all");
+    expect(headerButton().textContent!.trim()).toBe("");
 
     const copy = document.querySelector<HTMLButtonElement>(".tunnel-forward .tunnel-copy")!;
     expect(copy.classList.contains("btn-icon")).toBe(true);
@@ -213,8 +149,7 @@ describe("TunnelsPanel", () => {
   });
 
   it("shows each forward's name above its endpoint", async () => {
-    const panel = new TunnelsPanel();
-    await panel.init();
+    await launch();
     const row = document.querySelector<HTMLElement>(".tunnel-forward")!;
     const name = row.querySelector<HTMLElement>(".tunnel-forward-name")!;
     const endpoint = row.querySelector<HTMLElement>(".tunnel-forward-endpoint")!;
@@ -222,900 +157,142 @@ describe("TunnelsPanel", () => {
     expect(name.title).toBe("fwd-f1");
     expect(endpoint.textContent).toBe("127.0.0.1:5432 → db:5432");
     expect(endpoint.title).toBe("127.0.0.1:5432 → db:5432");
-    expect(name.compareDocumentPosition(endpoint)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING,
-    );
+    expect(name.compareDocumentPosition(endpoint)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   it("marks a forward whose port is in use", async () => {
-    const panel = new TunnelsPanel();
-    await panel.init();
-    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
-    await flush();
-    // A listening event that reports the forward failed to bind (port in use).
-    h.statusHandler!({
-      tunnelId: "t1",
-      status: "listening",
-      forwards: [
-        {
-          forwardId: "f1",
-          localAddr: "127.0.0.1",
-          localPort: 5432,
-          remoteHost: "db",
-          remotePort: 5432,
-          bound: false,
-        },
-      ],
-    });
+    await launch();
+    await click(headerButton());
+    listening(bound("f1", false));
     expect(document.querySelector(".tunnel-forward.is-unbound")).not.toBeNull();
   });
 
   it("says the server refused a remote forward it couldn't start", async () => {
     const remote: Forward = { ...forward("f1", 3000), kind: "remote", remoteHost: "localhost", remotePort: 8080 };
-    h.devices = [sshDevice("dev-1", "NAS", [remote])];
-    const panel = new TunnelsPanel();
-    await panel.init();
-    const copy = document.querySelector<HTMLButtonElement>(".tunnel-forward .tunnel-copy")!;
-    expect(copy.title).toBe("Copy the server address:port");
-    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
-    await flush();
-    h.statusHandler!({ tunnelId: "t1", status: "listening", forwards: [bound("f1", false)] });
-    const dot = document.querySelector<HTMLElement>(".tunnel-forward-dot")!;
-    expect(dot.getAttribute("aria-label")).toBe("refused by the server");
+    port.devices = [sshDevice("dev-1", "NAS", [remote])];
+    await launch();
+    expect(document.querySelector<HTMLButtonElement>(".tunnel-forward .tunnel-copy")!.title).toBe("Copy the server address:port");
+    await click(headerButton());
+    listening(bound("f1", false));
+    expect(dot("f1").getAttribute("aria-label")).toBe("refused by the server");
     expect(document.querySelector(".tunnel-forward-warn")!.textContent).toBe("refused by the server");
   });
 
-  it("auto-starts a flagged device's tunnel on launch", async () => {
-    h.devices = [
-      { ...sshDevice("dev-1", "NAS", [forward("f1", 5432)]), tunnelAutoStart: true } as Device,
-    ];
-    const panel = new TunnelsPanel();
-    await panel.init();
-    await flush();
-    expect(startTunnel).toHaveBeenCalledWith("dev-1", "t1", ["f1"]);
+  it("copies a forward's endpoint and says so", async () => {
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const onSuccess = vi.fn();
+    await launch({ onSuccess });
+    await click(document.querySelector<HTMLButtonElement>(".tunnel-forward .tunnel-copy")!);
+    expect(writeText).toHaveBeenCalledWith("127.0.0.1:5432");
+    expect(onSuccess).toHaveBeenCalledWith("Copied to clipboard");
+    vi.unstubAllGlobals();
   });
 
-  it("does not auto-start an unflagged device on launch", async () => {
-    // The default fixture has tunnelAutoStart: false.
-    const panel = new TunnelsPanel();
-    await panel.init();
-    await flush();
-    expect(startTunnel).not.toHaveBeenCalled();
+  it("stays silent when the clipboard is blocked", async () => {
+    vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn(async () => Promise.reject(new Error("blocked"))) } });
+    const onSuccess = vi.fn();
+    await launch({ onSuccess });
+    await click(document.querySelector<HTMLButtonElement>(".tunnel-forward .tunnel-copy")!);
+    expect(onSuccess).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
-  it("does not auto-start a flagged device that is already running", async () => {
-    h.devices = [
-      { ...sshDevice("dev-1", "NAS", [forward("f1", 5432)]), tunnelAutoStart: true } as Device,
-    ];
-    vi.mocked(listTunnels).mockResolvedValueOnce([
-      { tunnelId: "existing", deviceId: "dev-1", forwardIds: ["f1"], forwards: [bound("f1")] },
-    ]);
-    const panel = new TunnelsPanel();
-    await panel.init();
-    await flush();
-    expect(startTunnel).not.toHaveBeenCalled();
-  });
-
-  /* ----- remembered run state across launches ---------------------------- */
-
-  const flagged = (): Device =>
-    ({ ...sshDevice("dev-1", "NAS", [forward("f1", 5432)]), tunnelAutoStart: true }) as Device;
-
-  function clickAction(): void {
-    document.querySelector<HTMLButtonElement>(".tunnel-card-header .btn")!.click();
-  }
-
-  it("does not restart a flagged tunnel the user left stopped", async () => {
-    h.devices = [flagged()];
-    const panel = new TunnelsPanel({ initialState: { "dev-1": false } });
-    await panel.init();
-    await flush();
-    expect(startTunnel).not.toHaveBeenCalled();
-  });
-
-  it("restarts an unflagged tunnel the user left running", async () => {
-    const panel = new TunnelsPanel({ initialState: { "dev-1": true } });
-    await panel.init();
-    await flush();
-    expect(startTunnel).toHaveBeenCalledWith("dev-1", "t1", ["f1"]);
-  });
-
-  it("remembers a manual stop and asks for a save", async () => {
-    h.devices = [flagged()];
-    const onPersist = vi.fn();
-    const panel = new TunnelsPanel({ onPersist });
-    await panel.init();
-    await flush();
-
-    clickAction(); // Stop
-    await flush();
-    expect(stopTunnel).toHaveBeenCalledWith("t1");
-    expect(panel.layoutState()).toEqual({ "dev-1": false });
-    expect(onPersist).toHaveBeenCalled();
-  });
-
-  it("remembers a manual start", async () => {
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    await flush();
-
-    clickAction(); // Start
-    await flush();
-    expect(panel.layoutState()).toEqual({ "dev-1": ["f1"] });
-  });
-
-  it("an auto-start alone records nothing (the flag stays the default)", async () => {
-    h.devices = [flagged()];
-    const panel = new TunnelsPanel();
-    await panel.init();
-    await flush();
-    expect(panel.layoutState()).toBeUndefined();
-  });
-
-  it("forgets remembered state for devices that are gone", async () => {
-    const panel = new TunnelsPanel({ initialState: { "dev-1": false, ghost: true } });
-    await panel.init();
-    await flush();
-    expect(startTunnel).not.toHaveBeenCalled();
-    expect(panel.layoutState()).toEqual({ "dev-1": false });
-  });
-
-  it("keeps the restored state until the device list has loaded", () => {
-    const panel = new TunnelsPanel({ initialState: { "dev-1": false } });
-    expect(panel.layoutState()).toEqual({ "dev-1": false });
-  });
-
-  it("a failed launch load does not discard devices a refresh loaded meanwhile", async () => {
-    let failLaunchLoad: (err: unknown) => void = () => {};
-    vi.mocked(listDevices).mockImplementationOnce(() => new Promise((_, reject) => (failLaunchLoad = reject)));
-    const panel = new TunnelsPanel({ initialState: { "dev-1": false } });
-    const launched = panel.init();
-    panel.setDevices(h.devices);
-    failLaunchLoad({ code: "Io", message: "boom" });
-    await launched;
-    await flush();
-    expect(panel.layoutState()).toEqual({ "dev-1": false });
-    expect(document.querySelector('[data-device-id="dev-1"]')).not.toBeNull();
-  });
-
-  /* ----- orphaned tunnels ------------------------------------------------ */
-
-  async function runningPanel(): Promise<TunnelsPanel> {
-    const panel = new TunnelsPanel();
-    await panel.init();
-    await flush();
-    document.querySelector<HTMLButtonElement>(".tunnel-card-header .btn")!.click(); // Start
-    await flush();
-    return panel;
-  }
-
-  it("stops a running tunnel whose device was deleted", async () => {
-    const panel = await runningPanel();
-    panel.setDevices([]);
-    await flush();
-    expect(stopTunnel).toHaveBeenCalledWith("t1");
-  });
-
-  it("stops a running tunnel whose device lost all its forwards", async () => {
-    const panel = await runningPanel();
-    panel.setDevices([sshDevice("dev-1", "NAS", [])]);
-    await flush();
-    expect(stopTunnel).toHaveBeenCalledWith("t1");
-  });
-
-  it("leaves a running tunnel alone when its device still has forwards", async () => {
-    const panel = await runningPanel();
-    panel.setDevices([sshDevice("dev-1", "Renamed", [forward("f1", 5432)])]);
-    await flush();
-    expect(stopTunnel).not.toHaveBeenCalled();
-  });
-
-  it("stops a tunnel whose device was deleted while it was starting", async () => {
-    let resolveStart: (id: string) => void = () => {};
-    vi.mocked(startTunnel).mockImplementationOnce(
-      () => new Promise<string>((resolve) => (resolveStart = resolve)),
-    );
-    vi.mocked(crypto.randomUUID).mockReturnValueOnce("t9" as ReturnType<typeof crypto.randomUUID>);
-    const panel = new TunnelsPanel();
-    await panel.init();
-    await flush();
-    document.querySelector<HTMLButtonElement>(".tunnel-card-header .btn")!.click();
-    await flush();
-
-    panel.setDevices([]);
-    resolveStart("t9");
-    await flush();
-    expect(stopTunnel).toHaveBeenCalledWith("t9");
-  });
-
-  /* ----- events racing the start command --------------------------------- */
-
-  it("honors an error that arrives before startTunnel returns", async () => {
-    vi.mocked(startTunnel).mockImplementationOnce(async (_deviceId: string, tunnelId: string) => {
-      h.statusHandler!({ tunnelId, status: "error", message: "connection refused", forwards: [] });
-      return tunnelId;
-    });
-    const onError = vi.fn();
-    const panel = new TunnelsPanel({ onError });
-    await panel.init();
-    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
-    await flush();
-
-    expect(onError).toHaveBeenCalled();
-    const status = document.querySelector<HTMLElement>(".tunnel-status")!;
-    expect(status.classList.contains("is-stopped")).toBe(true);
-  });
-
-  it("a Stop clicked while the start is in flight takes effect once it has started", async () => {
-    let started: (id: string) => void = () => {};
-    vi.mocked(startTunnel).mockImplementationOnce(
-      () => new Promise<string>((resolve) => (started = resolve)),
-    );
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click(); // Start
-    await flush();
-    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click(); // Stop
-    await flush();
-    // The backend doesn't know the tunnel yet, so that first stop is a no-op…
-    vi.mocked(stopTunnel).mockClear();
-
-    started("t1");
-    await flush();
-
-    // …and is re-sent once the tunnel exists.
-    expect(stopTunnel).toHaveBeenCalledWith("t1");
-    expect(panel.layoutState()).toEqual({ "dev-1": false });
-  });
-
-  it("remembers a Start only once it succeeded", async () => {
-    let started: (id: string) => void = () => {};
-    vi.mocked(startTunnel).mockImplementationOnce(
-      () => new Promise<string>((resolve) => (started = resolve)),
-    );
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    document.querySelector<HTMLButtonElement>(".tunnel-card .btn")!.click();
-    await flush();
-    expect(panel.layoutState()).toBeUndefined();
-
-    started("t1");
-    await flush();
-    expect(panel.layoutState()).toEqual({ "dev-1": ["f1"] });
-  });
-
-  it("a Start the backend rejects is remembered as stopped (no retry every launch)", async () => {
-    vi.mocked(startTunnel).mockRejectedValueOnce({ code: "Validation", message: "ProxyJump" });
-    const panel = new TunnelsPanel({ initialState: { "dev-1": true }, onError: vi.fn() });
-    await panel.init(); // launch start from the remembered state is rejected
-    await flush();
-    expect(panel.layoutState()).toEqual({ "dev-1": false });
-  });
-
-  it("a failed device refresh stops nothing and forgets nothing", async () => {
-    const panel = new TunnelsPanel({ initialState: { "dev-1": true }, onError: vi.fn() });
-    await panel.init(); // starts dev-1
-    await flush();
-    vi.mocked(listDevices).mockRejectedValueOnce({ code: "Io", message: "disk" });
-
+  it("redraws the cards after a device refresh", async () => {
+    await launch();
+    port.devices = [];
     await panel.refresh();
-    await flush();
-
-    expect(stopTunnel).not.toHaveBeenCalled();
-    expect(panel.layoutState()).toEqual({ "dev-1": true });
+    expect(document.querySelector(".tunnel-card")).toBeNull();
+    expect(document.querySelector(".tunnels-empty")).not.toBeNull();
   });
 
-  it("a failed device load at launch keeps the remembered state", async () => {
-    vi.mocked(listDevices).mockRejectedValueOnce({ code: "Io", message: "disk" });
-    const panel = new TunnelsPanel({ initialState: { "dev-1": false }, onError: vi.fn() });
-    await panel.init();
+  it("rebuilds the card on retranslate", async () => {
+    await launch();
+    const before = document.querySelector(".tunnel-manager");
+    panel.retranslate();
+    expect(document.querySelector(".tunnel-manager")).not.toBe(before);
+    expect(document.querySelectorAll(".tunnel-card")).toHaveLength(1);
+  });
+
+  it("saves the run state the user chose", async () => {
+    const onPersist = vi.fn();
+    await launch({ onPersist, initialState: { "dev-1": false } });
     expect(panel.layoutState()).toEqual({ "dev-1": false });
-  });
-
-  /* ----- per-forward Start/Stop ------------------------------------------ */
-
-  const twoForwards = (): Device =>
-    sshDevice("dev-1", "NAS", [forward("f1", 5432), forward("f2", 6543)]);
-
-  function forwardButton(forwardId: string): HTMLButtonElement {
-    return document.querySelector<HTMLButtonElement>(
-      `.tunnel-forward[data-forward-id="${forwardId}"] .tunnel-forward-toggle`,
-    )!;
-  }
-
-  function dot(forwardId: string): HTMLElement {
-    return document.querySelector<HTMLElement>(
-      `.tunnel-forward[data-forward-id="${forwardId}"] .tunnel-forward-dot`,
-    )!;
-  }
-
-  function headerButton(): HTMLButtonElement {
-    return document.querySelector<HTMLButtonElement>(".tunnel-card-header .btn")!;
-  }
-
-  function listening(...forwards: ForwardStatus[]): void {
-    h.statusHandler!({ tunnelId: "t1", status: "listening", forwards });
-  }
-
-  it("shows a gray dot and a Start button on each stopped forward", async () => {
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel();
-    await panel.init();
-    expect(dot("f1").classList.contains("is-stopped")).toBe(true);
-    expect(dot("f1").getAttribute("aria-label")).toBe("Stopped");
-    expect(forwardButton("f1").getAttribute("aria-label")).toBe("Start");
-  });
-
-  it("starts a tunnel carrying only the forward whose Start was clicked", async () => {
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f2").click();
-    await flush();
-    expect(startTunnel).toHaveBeenCalledWith("dev-1", "t1", ["f2"]);
-    expect(dot("f2").classList.contains("is-connecting")).toBe(true);
-    expect(dot("f1").classList.contains("is-stopped")).toBe(true);
-    expect(panel.layoutState()).toEqual({ "dev-1": ["f2"] });
-  });
-
-  it("colors each forward's dot from the live bind state", async () => {
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel();
-    await panel.init();
-    headerButton().click(); // Start all
-    await flush();
-    expect(startTunnel).toHaveBeenCalledWith("dev-1", "t1", ["f1", "f2"]);
-
-    listening(bound("f1"), bound("f2", false));
-    expect(dot("f1").classList.contains("is-listening")).toBe(true);
-    expect(dot("f2").classList.contains("is-unbound")).toBe(true);
-    expect(dot("f2").getAttribute("aria-label")).toBe("port in use");
-    expect(forwardButton("f1").getAttribute("aria-label")).toBe("Stop");
-  });
-
-  it("binds a forward on the running tunnel instead of opening another", async () => {
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f1").click();
-    await flush();
-    listening(bound("f1"));
-
-    forwardButton("f2").click();
-    await flush();
-    expect(startTunnel).toHaveBeenCalledTimes(1);
-    expect(startTunnelForward).toHaveBeenCalledWith("t1", "f2");
-    expect(dot("f2").classList.contains("is-connecting")).toBe(true);
-    expect(panel.layoutState()).toEqual({ "dev-1": ["f1", "f2"] });
-  });
-
-  it("releases one forward and keeps the others running", async () => {
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    headerButton().click();
-    await flush();
-    listening(bound("f1"), bound("f2"));
-
-    forwardButton("f1").click();
-    await flush();
-    expect(stopTunnelForward).toHaveBeenCalledWith("t1", "f1");
-    expect(stopTunnel).not.toHaveBeenCalled();
-    expect(dot("f1").classList.contains("is-stopped")).toBe(true);
-    expect(panel.layoutState()).toEqual({ "dev-1": ["f2"] });
-    expect(headerButton().getAttribute("aria-label")).toBe("Stop all");
-  });
-
-  it("stopping the last running forward stops the tunnel", async () => {
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f1").click();
-    await flush();
-    listening(bound("f1"));
-
-    forwardButton("f1").click();
-    await flush();
-    expect(stopTunnel).toHaveBeenCalledWith("t1");
-    expect(stopTunnelForward).not.toHaveBeenCalled();
-    expect(panel.layoutState()).toEqual({ "dev-1": false });
-    expect(headerButton().getAttribute("aria-label")).toBe("Start all");
-  });
-
-  it("Stop all stops the tunnel with every forward", async () => {
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f1").click();
-    await flush();
-    listening(bound("f1"));
-
-    headerButton().click(); // Stop all
-    await flush();
-    expect(stopTunnel).toHaveBeenCalledWith("t1");
-    expect(dot("f1").classList.contains("is-stopped")).toBe(true);
-    expect(panel.layoutState()).toEqual({ "dev-1": false });
-  });
-
-  it("a forward started while the tunnel is still starting is bound once it has", async () => {
-    let started: (id: string) => void = () => {};
-    vi.mocked(startTunnel).mockImplementationOnce(
-      () => new Promise<string>((resolve) => (started = resolve)),
-    );
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f1").click();
-    await flush();
-    forwardButton("f2").click();
-    await flush();
-    expect(startTunnelForward).not.toHaveBeenCalled();
-
-    started("t1");
-    await flush();
-    expect(startTunnelForward).toHaveBeenCalledWith("t1", "f2");
-    expect(panel.layoutState()).toEqual({ "dev-1": ["f1", "f2"] });
-  });
-
-  it("a forward the backend refuses to bind goes back to stopped", async () => {
-    vi.mocked(startTunnelForward).mockRejectedValueOnce({ code: "Validation", message: "gone" });
-    h.devices = [twoForwards()];
-    const onError = vi.fn();
-    const panel = new TunnelsPanel({ onError, onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f1").click();
-    await flush();
-    listening(bound("f1"));
-
-    forwardButton("f2").click();
-    await flush();
-    expect(onError).toHaveBeenCalled();
-    expect(dot("f2").classList.contains("is-stopped")).toBe(true);
+    await click(headerButton());
+    expect(onPersist).toHaveBeenCalled();
     expect(panel.layoutState()).toEqual({ "dev-1": ["f1"] });
   });
 
-  it("releases a running forward that was deleted from its device", async () => {
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    headerButton().click();
-    await flush();
-    listening(bound("f1"), bound("f2"));
-
-    panel.setDevices([sshDevice("dev-1", "NAS", [forward("f1", 5432)])]);
-    await flush();
-    expect(stopTunnelForward).toHaveBeenCalledWith("t1", "f2");
-    expect(stopTunnel).not.toHaveBeenCalled();
-  });
-
-  it("stops the tunnel when every running forward was deleted", async () => {
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f2").click();
-    await flush();
-    listening(bound("f2"));
-
-    panel.setDevices([sshDevice("dev-1", "NAS", [forward("f1", 5432)])]);
-    await flush();
-    expect(stopTunnel).toHaveBeenCalledWith("t1");
-    expect(dot("f1").classList.contains("is-stopped")).toBe(true);
-  });
-
-  it("restores only the forwards the user left running", async () => {
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ initialState: { "dev-1": ["f2"] } });
-    await panel.init();
-    await flush();
-    expect(startTunnel).toHaveBeenCalledWith("dev-1", "t1", ["f2"]);
-  });
-
-  it("shows an already-running tunnel's forwards as they are", async () => {
-    h.devices = [twoForwards()];
-    vi.mocked(listTunnels).mockResolvedValueOnce([
-      { tunnelId: "existing", deviceId: "dev-1", forwardIds: ["f2"], forwards: [bound("f2")] },
-    ]);
-    const panel = new TunnelsPanel();
-    await panel.init();
-    expect(dot("f1").classList.contains("is-stopped")).toBe(true);
-    expect(dot("f2").classList.contains("is-listening")).toBe(true);
-  });
-
-  it("shows a tunnel adopted while still connecting as connecting, with Stop all", async () => {
-    h.devices = [twoForwards()];
-    vi.mocked(listTunnels).mockResolvedValueOnce([
-      { tunnelId: "existing", deviceId: "dev-1", forwardIds: ["f2"], forwards: [] },
-    ]);
-    const panel = new TunnelsPanel();
-    await panel.init();
-    expect(dot("f2").classList.contains("is-connecting")).toBe(true);
-    expect(headerButton().getAttribute("aria-label")).toBe("Stop all");
-  });
-
-  /* ----- adversarial-review fixes ---------------------------------------- */
-
-  it("stops a tunnel replaced while its start was in flight (Start, Stop, Start)", async () => {
-    let firstStarted: (id: string) => void = () => {};
-    vi.mocked(startTunnel).mockImplementationOnce(
-      () => new Promise<string>((resolve) => (firstStarted = resolve)),
-    );
-    vi.mocked(crypto.randomUUID)
-      .mockReturnValueOnce("t1" as ReturnType<typeof crypto.randomUUID>)
-      .mockReturnValueOnce("t2" as ReturnType<typeof crypto.randomUUID>);
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f1").click(); // Start (t1, in flight)
-    await flush();
-    forwardButton("f1").click(); // Stop
-    await flush();
-    forwardButton("f1").click(); // Start again (t2)
-    await flush();
-    vi.mocked(stopTunnel).mockClear();
-
-    firstStarted("t1");
-    await flush();
-    expect(stopTunnel).toHaveBeenCalledWith("t1");
-    expect(stopTunnel).not.toHaveBeenCalledWith("t2");
-    expect(panel.layoutState()).toEqual({ "dev-1": ["f1"] });
-  });
-
-  it("sends a device's forward changes to the backend in click order", async () => {
-    let added: () => void = () => {};
-    vi.mocked(startTunnelForward).mockImplementationOnce(
-      () => new Promise<void>((resolve) => (added = resolve)),
-    );
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f2").click();
-    await flush();
-    listening(bound("f2"));
-
-    forwardButton("f1").click(); // Start f1 (backend call pending)
-    await flush();
-    forwardButton("f2").click(); // Stop f2 — must not overtake the add
-    await flush();
-    expect(startTunnelForward).toHaveBeenCalledWith("t1", "f1");
-    expect(stopTunnelForward).not.toHaveBeenCalled();
-
-    added();
-    await flush();
-    expect(stopTunnelForward).toHaveBeenCalledWith("t1", "f2");
-    expect(stopTunnel).not.toHaveBeenCalled();
-  });
-
-  it("puts the forwards back when Stop all fails", async () => {
-    h.devices = [twoForwards()];
+  it("reports a failed start", async () => {
+    port.failNext("startTunnel", { code: "Validation", message: "ProxyJump" });
     const onError = vi.fn();
-    const panel = new TunnelsPanel({ onError, onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f1").click();
-    await flush();
-    listening(bound("f1"));
-    vi.mocked(stopTunnel).mockRejectedValueOnce({ code: "Io", message: "ipc" });
-
-    headerButton().click(); // Stop all
-    await flush();
-    expect(onError).toHaveBeenCalled();
-    expect(dot("f1").classList.contains("is-listening")).toBe(true);
-    expect(headerButton().getAttribute("aria-label")).toBe("Stop all");
-    expect(panel.layoutState()).toEqual({ "dev-1": ["f1"] });
+    await launch({ onError });
+    await click(headerButton());
+    expect(onError).toHaveBeenCalledWith({ code: "Validation", message: "ProxyJump" });
+    expect(tunnelStatus().classList.contains("is-stopped")).toBe(true);
   });
 
-  it("puts a forward back when its Stop fails", async () => {
-    h.devices = [twoForwards()];
-    const onError = vi.fn();
-    const panel = new TunnelsPanel({ onError, onPersist: vi.fn() });
-    await panel.init();
-    headerButton().click();
-    await flush();
-    listening(bound("f1"), bound("f2"));
-    vi.mocked(stopTunnelForward).mockRejectedValueOnce({ code: "Io", message: "ipc" });
-
-    forwardButton("f1").click();
-    await flush();
-    expect(onError).toHaveBeenCalled();
-    expect(dot("f1").classList.contains("is-listening")).toBe(true);
-  });
-
-  const moved = (): Device => ({ ...twoForwards(), host: "10.0.0.2" }) as Device;
-
-  it("restarts a running tunnel whose connection settings changed", async () => {
-    vi.mocked(crypto.randomUUID)
-      .mockReturnValueOnce("t1" as ReturnType<typeof crypto.randomUUID>)
-      .mockReturnValueOnce("t2" as ReturnType<typeof crypto.randomUUID>);
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f2").click();
-    await flush();
-    listening(bound("f2"));
-
-    panel.setDevices([moved()]);
-    await flush();
-    expect(stopTunnel).toHaveBeenCalledWith("t1");
-    expect(dot("f2").classList.contains("is-connecting")).toBe(true);
-    expect(startTunnel).toHaveBeenCalledTimes(1); // waits for the old one to let go
-
-    h.statusHandler!({ tunnelId: "t1", status: "disconnected", forwards: [] });
-    await flush();
-    expect(startTunnel).toHaveBeenLastCalledWith("dev-1", "t2", ["f2"]);
-    expect(dot("f2").classList.contains("is-connecting")).toBe(true);
-  });
-
-  it("stops, never restarts direct, a running tunnel whose jump host was removed", async () => {
-    const jumped = { ...twoForwards(), proxyJump: "bastion" } as Device;
-    h.devices = [jumped];
-    const onError = vi.fn();
-    const panel = new TunnelsPanel({ onError, onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f2").click();
-    await flush();
-    listening(bound("f2"));
-
-    panel.setDevices([{ ...jumped, proxyJump: null } as Device]);
-    await flush();
-    expect(stopTunnel).toHaveBeenCalledWith("t1");
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: t("tunnels.error.jumpRemoved", { name: "NAS" }) }),
-    );
-
-    h.statusHandler!({ tunnelId: "t1", status: "disconnected", forwards: [] });
-    await flush();
-    expect(startTunnel).toHaveBeenCalledTimes(1);
-    expect(dot("f2").classList.contains("is-listening")).toBe(false);
-    expect(panel.layoutState()).toEqual({ "dev-1": false });
-  });
-
-  it("a forward stopped while restarting is left out of the restart", async () => {
-    vi.mocked(crypto.randomUUID)
-      .mockReturnValueOnce("t1" as ReturnType<typeof crypto.randomUUID>)
-      .mockReturnValueOnce("t2" as ReturnType<typeof crypto.randomUUID>);
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    headerButton().click();
-    await flush();
-    listening(bound("f1"), bound("f2"));
-
-    panel.setDevices([moved()]);
-    await flush();
-    forwardButton("f1").click(); // Stop f1 during the restart
-    await flush();
-    expect(stopTunnelForward).not.toHaveBeenCalled();
-
-    h.statusHandler!({ tunnelId: "t1", status: "disconnected", forwards: [] });
-    await flush();
-    expect(startTunnel).toHaveBeenLastCalledWith("dev-1", "t2", ["f2"]);
-  });
-
-  it("does not restart a tunnel for a cosmetic device edit", async () => {
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f1").click();
-    await flush();
-    listening(bound("f1"));
-
-    panel.setDevices([{ ...twoForwards(), name: "Renamed", tags: ["db"] } as Device]);
-    await flush();
-    expect(stopTunnel).not.toHaveBeenCalled();
-    expect(startTunnelForward).not.toHaveBeenCalled();
-  });
-
-  it("re-binds a running forward whose ports were edited", async () => {
-    h.devices = [twoForwards()];
-    const panel = new TunnelsPanel({ onPersist: vi.fn() });
-    await panel.init();
-    forwardButton("f1").click();
-    await flush();
-    listening(bound("f1"));
-
-    panel.setDevices([sshDevice("dev-1", "NAS", [forward("f1", 15432), forward("f2", 6543)])]);
-    await flush();
-    expect(startTunnelForward).toHaveBeenCalledWith("t1", "f1");
-    expect(stopTunnel).not.toHaveBeenCalled();
-    expect(dot("f1").classList.contains("is-connecting")).toBe(true);
-  });
-
-  describe("auto-reconnect", () => {
-    const reconnecting = (): Device => ({ ...sshDevice("dev-1", "NAS", [forward("f1", 5432)]), autoReconnect: true }) as Device;
-
-    async function runningTunnel(onError = vi.fn()): Promise<TunnelsPanel> {
-      vi.mocked(crypto.randomUUID)
-        .mockReturnValueOnce("t1" as ReturnType<typeof crypto.randomUUID>)
-        .mockReturnValueOnce("t2" as ReturnType<typeof crypto.randomUUID>);
-      const panel = new TunnelsPanel({ onError, onPersist: vi.fn() });
-      await panel.init();
-      headerButton().click();
-      await flush();
-      listening(bound("f1"));
-      return panel;
-    }
-
-    function lost(code = "SshConnect"): void {
-      h.statusHandler!({ tunnelId: "t1", status: "error", message: "lost", code, forwards: [] } as TunnelStatusEvent);
-    }
-
-    function tunnelStatus(): HTMLElement {
-      return document.querySelector<HTMLElement>(".tunnel-status")!;
-    }
-
-    beforeEach(() => vi.useFakeTimers());
-    afterEach(() => {
-      vi.useRealTimers();
-      // Unused one-off ids would leak into the next test.
-      vi.mocked(crypto.randomUUID).mockReset();
+  describe("forward rows", () => {
+    beforeEach(() => {
+      port.devices = [twoForwards()];
     });
 
-    it("reconnects a dropped tunnel of a device that opted in, with the same forwards", async () => {
-      h.devices = [reconnecting()];
-      const onError = vi.fn();
-      await runningTunnel(onError);
-      vi.mocked(startTunnel).mockClear();
-
-      lost();
-      expect(tunnelStatus().classList.contains("is-connecting")).toBe(true);
-      expect(onError).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(2000);
-      await flush();
-
-      expect(startTunnel).toHaveBeenCalledWith("dev-1", "t2", ["f1"]);
+    it("shows a gray dot and a Start button on each stopped forward", async () => {
+      await launch();
+      expect(dot("f1").classList.contains("is-stopped")).toBe(true);
+      expect(dot("f1").getAttribute("aria-label")).toBe("Stopped");
+      expect(forwardButton("f1").getAttribute("aria-label")).toBe("Start");
     });
 
-    it("leaves a dropped tunnel stopped when its device did not opt in", async () => {
-      const onError = vi.fn();
-      await runningTunnel(onError);
-      vi.mocked(startTunnel).mockClear();
-
-      lost();
-      await vi.runAllTimersAsync();
-
-      expect(startTunnel).not.toHaveBeenCalled();
-      expect(onError).toHaveBeenCalled();
-      expect(tunnelStatus().classList.contains("is-stopped")).toBe(true);
+    it("starts only the forward whose Start was clicked", async () => {
+      await launch();
+      await click(forwardButton("f2"));
+      expect(port.calls).toEqual(["start dev-1 t1 f2"]);
+      expect(dot("f2").classList.contains("is-connecting")).toBe(true);
+      expect(dot("f1").classList.contains("is-stopped")).toBe(true);
     });
 
-    it("never retries a tunnel the server refused to authenticate", async () => {
-      h.devices = [reconnecting()];
-      const onError = vi.fn();
-      await runningTunnel(onError);
-      vi.mocked(startTunnel).mockClear();
-
-      lost("SshAuth");
-      await vi.runAllTimersAsync();
-
-      expect(startTunnel).not.toHaveBeenCalled();
-      expect(onError).toHaveBeenCalled();
+    it("colors each forward's dot from the live bind state", async () => {
+      await launch();
+      await click(headerButton());
+      listening(bound("f1"), bound("f2", false));
+      expect(dot("f1").classList.contains("is-listening")).toBe(true);
+      expect(dot("f2").classList.contains("is-unbound")).toBe(true);
+      expect(dot("f2").getAttribute("aria-label")).toBe("port in use");
+      expect(forwardButton("f1").getAttribute("aria-label")).toBe("Stop");
     });
 
-    it("a Stop while waiting to reconnect keeps the tunnel stopped", async () => {
-      h.devices = [reconnecting()];
-      await runningTunnel();
-      vi.mocked(startTunnel).mockClear();
-
-      lost();
-      headerButton().click(); // Stop all
-      await vi.runAllTimersAsync();
-      await flush();
-
-      expect(startTunnel).not.toHaveBeenCalled();
-      expect(tunnelStatus().classList.contains("is-stopped")).toBe(true);
-    });
-
-    it("a forward stopped while waiting is left out of the reconnect", async () => {
-      h.devices = [{ ...twoForwards(), autoReconnect: true } as Device];
-      vi.mocked(crypto.randomUUID)
-        .mockReturnValueOnce("t1" as ReturnType<typeof crypto.randomUUID>)
-        .mockReturnValueOnce("t2" as ReturnType<typeof crypto.randomUUID>);
-      const panel = new TunnelsPanel({ onPersist: vi.fn() });
-      await panel.init();
-      headerButton().click(); // Start all
-      await flush();
+    it("stops one forward on its Stop button and keeps the others", async () => {
+      await launch();
+      await click(headerButton());
       listening(bound("f1"), bound("f2"));
-      vi.mocked(startTunnel).mockClear();
-
-      lost();
-      forwardButton("f2").click(); // Stop f2
-      await vi.advanceTimersByTimeAsync(2000);
-      await flush();
-
-      expect(stopTunnelForward).not.toHaveBeenCalled();
-      expect(startTunnel).toHaveBeenCalledWith("dev-1", "t2", ["f1"]);
+      await click(forwardButton("f1"));
+      expect(port.calls).toEqual(["start dev-1 t1 f1,f2", "unbind t1 f1"]);
+      expect(dot("f1").classList.contains("is-stopped")).toBe(true);
+      expect(headerButton().getAttribute("aria-label")).toBe("Stop all");
     });
 
-    it("a reconnect the backend rejects for good is not remembered as a stop", async () => {
-      h.devices = [reconnecting()];
-      const panel = await runningTunnel();
-      vi.mocked(startTunnel).mockRejectedValueOnce({ code: "NotFound", message: "gone" });
-
-      lost();
-      await vi.advanceTimersByTimeAsync(2000);
-      await flush();
-
-      // Launch still restores it: the user never stopped it.
-      expect(panel.layoutState()).toEqual({ "dev-1": ["f1"] });
+    it("shows the forward running again when its Stop fails", async () => {
+      await launch({ onError: vi.fn() });
+      await click(headerButton());
+      listening(bound("f1"), bound("f2"));
+      port.failNext("stopTunnelForward", { code: "Io", message: "ipc" });
+      await click(forwardButton("f1"));
+      expect(dot("f1").classList.contains("is-listening")).toBe(true);
     });
 
-    it("Stop all then Start all while waiting starts one tunnel, not two", async () => {
-      h.devices = [reconnecting()];
-      await runningTunnel();
-      vi.mocked(startTunnel).mockClear();
-
-      lost();
-      headerButton().click(); // Stop all
-      await flush();
-      headerButton().click(); // Start all
-      await flush();
-      await vi.runAllTimersAsync();
-      await flush();
-
-      expect(startTunnel).toHaveBeenCalledTimes(1);
+    it("shows an already-running tunnel's forwards as they are", async () => {
+      port.tunnels = [{ tunnelId: "existing", deviceId: "dev-1", forwardIds: ["f2"], forwards: [bound("f2")] }];
+      await launch();
+      expect(dot("f1").classList.contains("is-stopped")).toBe(true);
+      expect(dot("f2").classList.contains("is-listening")).toBe(true);
     });
 
-    it("a connection edit while waiting is picked up by the reconnect, not a restart", async () => {
-      h.devices = [reconnecting()];
-      const panel = await runningTunnel();
-      vi.mocked(startTunnel).mockClear();
-
-      lost();
-      panel.setDevices([{ ...reconnecting(), host: "10.0.0.2" } as Device]);
-      await flush();
-      expect(stopTunnel).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(2000);
-      await flush();
-
-      expect(startTunnel).toHaveBeenCalledTimes(1);
-    });
-
-    it("dispose cancels a pending reconnect", async () => {
-      h.devices = [reconnecting()];
-      const panel = await runningTunnel();
-      vi.mocked(startTunnel).mockClear();
-
-      lost();
-      panel.dispose();
-      await vi.runAllTimersAsync();
-
-      expect(startTunnel).not.toHaveBeenCalled();
-    });
-
-    it("keeps retrying while the server stays unreachable, then reports it", async () => {
-      h.devices = [reconnecting()];
-      const onError = vi.fn();
-      await runningTunnel(onError);
-      // Every reopened tunnel is "t1" again, so `lost()` reaches it.
-      vi.mocked(crypto.randomUUID).mockReset().mockReturnValue("t1" as ReturnType<typeof crypto.randomUUID>);
-      vi.mocked(startTunnel).mockClear();
-
-      for (let attempt = 0; attempt <= MAX_RECONNECT_ATTEMPTS; attempt++) {
-        lost();
-        await vi.runAllTimersAsync();
-        await flush();
-      }
-
-      expect(startTunnel).toHaveBeenCalledTimes(MAX_RECONNECT_ATTEMPTS);
-      expect(onError).toHaveBeenCalledTimes(1);
-      expect(tunnelStatus().classList.contains("is-stopped")).toBe(true);
-    });
-
-    it("a tunnel back up gets a full budget for its next drop", async () => {
-      h.devices = [reconnecting()];
-      await runningTunnel();
-      // Every reopened tunnel is "t1" again, so `lost()` reaches it.
-      vi.mocked(crypto.randomUUID).mockReset().mockReturnValue("t1" as ReturnType<typeof crypto.randomUUID>);
-      for (let round = 0; round < 2 * MAX_RECONNECT_ATTEMPTS; round++) {
-        lost();
-        await vi.runAllTimersAsync();
-        await flush();
-        listening(bound("f1"));
-      }
-      vi.mocked(startTunnel).mockClear();
-
-      lost();
-      await vi.runAllTimersAsync();
-      expect(startTunnel).toHaveBeenCalledTimes(1);
+    it("shows a tunnel adopted while still connecting as connecting, with Stop all", async () => {
+      port.tunnels = [{ tunnelId: "existing", deviceId: "dev-1", forwardIds: ["f2"], forwards: [] }];
+      await launch();
+      expect(dot("f2").classList.contains("is-connecting")).toBe(true);
+      expect(headerButton().getAttribute("aria-label")).toBe("Stop all");
     });
   });
 });

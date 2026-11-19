@@ -105,7 +105,7 @@ import {
   warnThrottled,
   writeStdin,
 } from "../ipc";
-import type { Device, ErrorCode, OutputChunk } from "../ipc";
+import type { Device, OutputChunk } from "../ipc";
 import { setLocale } from "../i18n";
 
 const readText = vi.fn(async () => "PASTED");
@@ -332,96 +332,9 @@ describe("TerminalPane native paste (Cmd+V / Edit → Paste)", () => {
   });
 });
 
-describe("TerminalPane.startSession re-entrancy guard", () => {
-  beforeEach(() => {
-    h.statusHandler = null;
-    vi.mocked(listDevices).mockResolvedValue([h.device]);
-    vi.mocked(connect).mockClear();
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { readText, writeText: vi.fn(async () => {}) },
-    });
-    document.body.innerHTML = '<div id="pane-root"></div>';
-  });
-
-  // Guards F1: a double-click on Connect used to re-enter startSession() while
-  // the first call was suspended at `await connect(...)`, disposing the
-  // in-flight terminal, cross-wiring the channel's onmessage, and orphaning a
-  // second backend session. FAILS (connect called twice) without the
-  // `connecting` guard.
-  it("ignores a second startSession() call while the first is still awaiting connect()", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await pane.init();
-    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
-
-    let resolveConnect: (id: string) => void = () => {};
-    vi.mocked(connect).mockImplementationOnce(
-      () =>
-        new Promise<string>((res) => {
-          resolveConnect = res;
-        }),
-    );
-
-    const start = () =>
-      (pane as unknown as { startSession(): Promise<void> }).startSession();
-
-    // Call A starts and suspends at `await connect(...)`; call B fires while A
-    // is still in flight (the synchronous portion of A — including tearing
-    // down/creating the terminal — has already run by the time B is invoked).
-    const terminalBefore = (pane as unknown as { terminal: unknown }).terminal;
-    const pA = start();
-    const pB = start();
-
-    resolveConnect(h.sessionId);
-    await Promise.all([pA, pB]);
-    await flush();
-
-    expect(vi.mocked(connect)).toHaveBeenCalledTimes(1);
-    // The terminal created by call A is still the live one — B did not tear it
-    // down and replace it with a second terminal.
-    const terminalAfter = (pane as unknown as { terminal: unknown }).terminal;
-    expect(terminalAfter).not.toBe(terminalBefore);
-    expect(pane.hasLiveSession()).toBe(true);
-  });
-});
-
-describe("TerminalPane.dispose", () => {
-  beforeEach(() => {
-    h.statusHandler = null;
-    vi.mocked(disconnect).mockClear();
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { readText, writeText: vi.fn(async () => {}) },
-    });
-    document.body.innerHTML = '<div id="pane-root"></div>';
-  });
-
-  // Guards the Phase 3 behavior that `dispose()` closes any live backend session
-  // (SPEC §7). FAILS if the `disconnect(sessionId)` call is removed from
-  // `TerminalPane.dispose()` — nothing else in this flow calls `disconnect`.
-  it("disconnects the live backend session on dispose", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await pane.init();
-    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
-
-    await (
-      pane as unknown as { startSession(): Promise<void> }
-    ).startSession();
-    await flush();
-    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
-
-    expect(pane.hasLiveSession()).toBe(true);
-
-    pane.dispose();
-
-    expect(vi.mocked(disconnect)).toHaveBeenCalledWith(h.sessionId);
-    expect(pane.hasLiveSession()).toBe(false);
-  });
-});
-
-describe("TerminalPane auto-reconnect (Phase 5)", () => {
+// The connection rules (races, reconnect budget) are tested DOM-free in
+// `connection/terminalConnection.test.ts`; these check what the pane shows and wires.
+describe("TerminalPane connection: overlay, chip and buttons", () => {
   const start = (pane: TerminalPane) =>
     (pane as unknown as { startSession(): Promise<void> }).startSession();
   const terminalOf = (pane: TerminalPane) =>
@@ -469,84 +382,20 @@ describe("TerminalPane auto-reconnect (Phase 5)", () => {
     expect(vi.mocked(connect)).toHaveBeenCalledTimes(1); // reconnect attempt fired
   });
 
-  async function failFirstConnect(pane: TerminalPane, code: ErrorCode): Promise<void> {
+  it("reports a failed connect and shows its error", async () => {
+    vi.mocked(listDevices).mockResolvedValue([h.device]); // no auto-reconnect
+    const onError = vi.fn();
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { onError });
     await pane.init();
     pane.assignDevice(h.device.id);
+    vi.mocked(connect).mockRejectedValueOnce({ code: "SshConnect", message: "refused" });
+
     await start(pane);
-    await flush();
-    h.statusHandler?.({ sessionId: h.sessionId, status: "error", message: "it failed", code });
-  }
 
-  it("does not reconnect a wrong password or a rejected host key (lockout, re-prompts)", async () => {
-    for (const code of ["SshAuth", "HostKeyRejected"] as const) {
-      document.body.innerHTML = '<div id="pane-root"></div>';
-      const root = q<HTMLElement>(document, "#pane-root");
-      await failFirstConnect(new TerminalPane(root), code);
-
-      expect(q<HTMLElement>(root, ".overlay-detail").textContent).toContain("it failed");
-      vi.mocked(connect).mockClear();
-      await vi.advanceTimersByTimeAsync(60000);
-      expect(vi.mocked(connect), code).not.toHaveBeenCalled();
-    }
-  });
-
-  it("retries a first connect that couldn't reach the server (e.g. down at launch)", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    await failFirstConnect(new TerminalPane(root), "SshConnect");
-
-    expect(q<HTMLElement>(root, ".overlay-detail").textContent).toContain("Attempt 1 of 5");
-  });
-
-  it("retries a keychain failure once, then stops", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    await failFirstConnect(new TerminalPane(root), "Keyring");
-    expect(q<HTMLElement>(root, ".overlay-detail").textContent).toContain("Attempt 1 of 5");
-
-    await vi.advanceTimersByTimeAsync(2000); // the one retry fires
-    await flush();
-    h.statusHandler?.({ sessionId: h.sessionId, status: "error", message: "locked", code: "Keyring" });
-
-    vi.mocked(connect).mockClear();
-    await vi.advanceTimersByTimeAsync(60000);
-    expect(vi.mocked(connect)).not.toHaveBeenCalled();
-  });
-
-  it("keeps reconnecting when a reconnect attempt can't reach the server", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await connectThenDrop(pane);
-    await vi.advanceTimersByTimeAsync(2000); // attempt 1 fires
-    await flush();
-    h.statusHandler?.({ sessionId: h.sessionId, status: "error", message: "refused", code: "SshConnect" });
-
-    expect(q<HTMLElement>(root, ".overlay-detail").textContent).toContain("Attempt 2 of 5");
-  });
-
-  it("stops reconnecting when an attempt is refused by the server's auth", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await connectThenDrop(pane);
-    await vi.advanceTimersByTimeAsync(2000); // attempt 1 fires
-    await flush();
-    h.statusHandler?.({ sessionId: h.sessionId, status: "error", message: "auth failed", code: "SshAuth" });
-
-    vi.mocked(connect).mockClear();
-    await vi.advanceTimersByTimeAsync(60000);
-    expect(vi.mocked(connect)).not.toHaveBeenCalled();
-  });
-
-  it("Cancel stops a pending reconnect (no further attempts)", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await connectThenDrop(pane);
-
-    q<HTMLButtonElement>(root, ".overlay-cancel").dispatchEvent(
-      new MouseEvent("click", { bubbles: true }),
-    );
-    vi.mocked(connect).mockClear();
-    await vi.advanceTimersByTimeAsync(10000);
-    await flush();
-    expect(vi.mocked(connect)).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith("refused");
+    expect(q<HTMLElement>(root, ".overlay-detail").textContent).toBe("refused");
+    expect(q<HTMLElement>(root, ".pane-status-label").textContent).toBe("Error");
   });
 
   it("Cancel leaves the status chip on disconnected, not connecting", async () => {
@@ -597,17 +446,6 @@ describe("TerminalPane auto-reconnect (Phase 5)", () => {
 
     const detail = q<HTMLElement>(root, ".overlay-detail");
     expect(detail.textContent ?? "").not.toContain("Attempt");
-    vi.mocked(connect).mockClear();
-    await vi.advanceTimersByTimeAsync(10000);
-    expect(vi.mocked(connect)).not.toHaveBeenCalled();
-  });
-
-  it("dispose() cancels a pending reconnect (no attempt after teardown)", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await connectThenDrop(pane); // reconnect scheduled
-
-    pane.dispose();
     vi.mocked(connect).mockClear();
     await vi.advanceTimersByTimeAsync(10000);
     expect(vi.mocked(connect)).not.toHaveBeenCalled();
@@ -674,30 +512,6 @@ describe("TerminalPane auto-reconnect (Phase 5)", () => {
     expect(writeSpy).toHaveBeenCalledWith(new TextEncoder().encode("$ "), expect.any(Function));
   });
 
-  it("output from a replaced session never reaches the new terminal", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await pane.init();
-    pane.assignDevice(h.device.id);
-    const replies: Array<(c: OutputChunk) => void> = [];
-    vi.mocked(readOutput).mockImplementation(
-      () => new Promise<OutputChunk>((resolve) => replies.push(resolve)),
-    );
-
-    await start(pane);
-    await flush();
-    const first = terminalOf(pane);
-    await start(pane); // a fresh session (e.g. Retry) — new terminal
-    await flush();
-    const second = terminalOf(pane);
-    const writeSpy = vi.spyOn(second!, "write");
-
-    replies[0]?.({ start: 0, bytes: new TextEncoder().encode("stale"), end: false });
-    await flush();
-    expect(first).not.toBe(second);
-    expect(writeSpy).not.toHaveBeenCalled();
-  });
-
   it("honors a failure that arrives before connect() returns", async () => {
     vi.mocked(listDevices).mockResolvedValue([h.device]); // no auto-reconnect
     const root = q<HTMLElement>(document, "#pane-root");
@@ -713,55 +527,6 @@ describe("TerminalPane auto-reconnect (Phase 5)", () => {
     await flush();
 
     expect(q<HTMLElement>(root, ".overlay-detail").textContent).toBe("COM3 not found");
-    expect(pane.hasLiveSession()).toBe(false);
-  });
-
-  it("honors a connected status that arrives before connect() returns", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await pane.init();
-    pane.assignDevice(h.device.id);
-    vi.mocked(connect).mockImplementationOnce(async (sessionId: string) => {
-      h.statusHandler?.({ sessionId, status: "connected" });
-      return sessionId;
-    });
-
-    await start(pane);
-    await flush();
-
-    expect(pane.isConnected()).toBe(true);
-  });
-
-  it("counts a connect in flight as a live session", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await pane.init();
-    pane.assignDevice(h.device.id);
-    vi.mocked(connect).mockImplementationOnce(() => new Promise<string>(() => {}));
-
-    void start(pane);
-    await flush();
-    expect(pane.hasLiveSession()).toBe(true);
-  });
-
-  it("closes a session that finishes opening after the pane was disposed", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await pane.init();
-    pane.assignDevice(h.device.id);
-    let resolveConnect: (id: string) => void = () => {};
-    vi.mocked(connect).mockImplementationOnce(
-      () => new Promise<string>((resolve) => (resolveConnect = resolve)),
-    );
-    vi.mocked(disconnect).mockClear();
-
-    void start(pane);
-    await flush();
-    pane.dispose();
-    resolveConnect(h.sessionId);
-    await flush();
-
-    expect(vi.mocked(disconnect)).toHaveBeenCalledWith(h.sessionId);
     expect(pane.hasLiveSession()).toBe(false);
   });
 
@@ -783,24 +548,6 @@ describe("TerminalPane auto-reconnect (Phase 5)", () => {
     await vi.advanceTimersByTimeAsync(2000); // attempt s2: opened, still handshaking
     await flush();
   }
-
-  it("Cancel closes the reconnect attempt that is still handshaking", async () => {
-    distinctSessionIds();
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await dropThenReconnectAttempt(pane);
-    vi.mocked(disconnect).mockClear();
-
-    q<HTMLButtonElement>(root, ".overlay-cancel").dispatchEvent(
-      new MouseEvent("click", { bubbles: true }),
-    );
-    await flush();
-
-    expect(vi.mocked(disconnect)).toHaveBeenCalledWith("s2");
-    h.statusHandler?.({ sessionId: "s2", status: "connected" }); // too late: ignored
-    expect(pane.isConnected()).toBe(false);
-    expect(pane.hasLiveSession()).toBe(false);
-  });
 
   it("Retry after Cancel runs only the new session", async () => {
     distinctSessionIds();
@@ -826,91 +573,6 @@ describe("TerminalPane auto-reconnect (Phase 5)", () => {
     expect(vi.mocked(connect)).not.toHaveBeenCalled(); // no stray reconnect
   });
 
-  it("a manual connect closes the session it replaces", async () => {
-    distinctSessionIds();
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await pane.init();
-    pane.assignDevice(h.device.id);
-    await start(pane); // s1 opened, not yet connected
-    await flush();
-    vi.mocked(disconnect).mockClear();
-
-    await start(pane); // e.g. Connect clicked again from a stale overlay
-    await flush();
-
-    expect(vi.mocked(disconnect)).toHaveBeenCalledWith("s1");
-  });
-
-  it("a cancelled attempt that finishes opening afterwards is closed", async () => {
-    distinctSessionIds();
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await pane.init();
-    pane.assignDevice(h.device.id);
-    let resolveS2: (id: string) => void = () => {};
-    vi.mocked(connect)
-      .mockImplementationOnce(async (id: string) => id) // s1
-      .mockImplementationOnce(() => new Promise<string>((resolve) => (resolveS2 = resolve)));
-    await start(pane);
-    await flush();
-    h.statusHandler?.({ sessionId: "s1", status: "connected" });
-    h.statusHandler?.({ sessionId: "s1", status: "disconnected" });
-    await vi.advanceTimersByTimeAsync(2000); // s2: connect() still in flight
-    await flush();
-
-    q<HTMLButtonElement>(root, ".overlay-cancel").dispatchEvent(
-      new MouseEvent("click", { bubbles: true }),
-    );
-    vi.mocked(disconnect).mockClear();
-    resolveS2("s2");
-    await flush();
-
-    expect(vi.mocked(disconnect)).toHaveBeenCalledWith("s2");
-    expect(pane.hasLiveSession()).toBe(false);
-  });
-
-  it("Cancel during an in-flight reconnect attempt does not resume auto-reconnect", async () => {
-    const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
-    await pane.init();
-    pane.assignDevice(h.device.id);
-
-    // Initial connect succeeds; the reconnect attempt hangs until we reject it.
-    let rejectAttempt: (reason: unknown) => void = () => {};
-    vi.mocked(connect)
-      .mockImplementationOnce(async () => h.sessionId)
-      .mockImplementationOnce(
-        () =>
-          new Promise<string>((_res, rej) => {
-            rejectAttempt = rej;
-          }),
-      );
-
-    await start(pane);
-    await flush();
-    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
-    h.statusHandler?.({ sessionId: h.sessionId, status: "disconnected" }); // drop → schedule
-
-    await vi.advanceTimersByTimeAsync(2000); // backoff fires → reconnect connect() in flight
-    await flush();
-
-    // Cancel WHILE the attempt is in flight.
-    q<HTMLButtonElement>(root, ".overlay-cancel").dispatchEvent(
-      new MouseEvent("click", { bubbles: true }),
-    );
-    // The in-flight attempt now fails.
-    rejectAttempt({ code: "SshConnect", message: "boom" });
-    await flush();
-
-    // Must NOT have re-entered auto-reconnect.
-    expect(q<HTMLElement>(root, ".overlay-detail").textContent ?? "").not.toContain(
-      "Attempt",
-    );
-    vi.mocked(connect).mockClear();
-    await vi.advanceTimersByTimeAsync(10000);
-    expect(vi.mocked(connect)).not.toHaveBeenCalled();
-  });
 });
 
 describe("TerminalPane terminal settings (Phase 5)", () => {

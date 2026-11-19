@@ -45,20 +45,28 @@ describe("TunnelRegistry", () => {
     expect(registry.findState("d1")).toBeUndefined();
   });
 
-  it("unroute stops a tunnel's events reaching its device, keeping its state", () => {
-    registry.track("d1", tunnel("t1"));
-    registry.unroute("t1");
-    expect(registry.findDevice("t1")).toBeUndefined();
-    expect(registry.findState("d1")?.tunnelId).toBe("t1");
-  });
-
   it("defers forward changes while a tunnel starts, restarts or waits to reconnect", () => {
     expect(registry.isDeferred("t1")).toBe(false);
-    for (const set of [registry.starting, registry.restarting, registry.waiting]) {
-      set.add("t1");
-      expect(registry.isDeferred("t1")).toBe(true);
-      set.delete("t1");
-    }
+    registry.markStarting("t1");
+    expect(registry.isDeferred("t1")).toBe(true);
+    registry.clearStarting("t1");
+    registry.markRestarting("t1");
+    expect(registry.isRestarting("t1")).toBe(true);
+    expect(registry.isDeferred("t1")).toBe(true);
+    expect(registry.clearRestarting("t1")).toBe(true);
+    expect(registry.clearRestarting("t1")).toBe(false);
+    expect(registry.isDeferred("t1")).toBe(false);
+  });
+
+  it("a tunnel waiting to reconnect keeps its state but gets no events", () => {
+    registry.track("d1", tunnel("t1"));
+    registry.markWaiting("t1");
+    expect(registry.isWaiting("t1")).toBe(true);
+    expect(registry.isDeferred("t1")).toBe(true);
+    expect(registry.findDevice("t1")).toBeUndefined();
+    expect(registry.findState("d1")?.tunnelId).toBe("t1");
+    expect(registry.clearWaiting("t1")).toBe(true);
+    expect(registry.clearWaiting("t1")).toBe(false);
     expect(registry.isDeferred("t1")).toBe(false);
   });
 });

@@ -18,17 +18,27 @@ Vite + vanilla TypeScript (no framework), xterm.js. Vitest + happy-dom.
 
 - `grid.ts`, `gridModel.ts` — the pane grid. DOM parts in `grid/`: toolbar,
   splitters.
-- `terminal/` — terminal pane. Its parts live in `pane/`: overlay, reconnect,
-  paste, host-key and auth-prompt dialogs, search bar, links, save output,
-  output recording. `inputQueue` and `outputReader` keep input and output in
-  order. A send late past 10 s stalls `inputQueue` (chip: Not responding; keys
-  wait and go out in order if it answers); one that fails or hangs past 30 s
-  stops input for good (chip asks to reconnect; later keys are dropped, a new
-  session gets a new queue). `timeout` (`withTimeout`) bounds a read.
+- `terminal/` — terminal pane. `pane.ts` only renders and wires; its parts
+  live in `pane/`: overlay, paste, host-key and auth-prompt dialogs, search
+  bar, links, save output, output recording. `connection/terminalConnection`
+  (DOM-free) owns the session: connect, disconnect, cancel, send, resize,
+  dispose → `onChange`, `state()`; adopt/stale sessions (`sessionSlot`),
+  user vs unexpected drop, reconnect budget. It talks to the backend through
+  `connection/sessionsPort` (`ipcSessionsPort`; tests use a fake). Test its
+  rules there, not through the DOM. `inputQueue` and `outputReader` keep input
+  and output in order. A send late past 10 s stalls `inputQueue` (chip: Not
+  responding; keys wait and go out in order if it answers); one that fails
+  or hangs past 30 s stops input for good (chip asks to reconnect; later keys
+  are dropped, a new session gets a new queue). `timeout` (`withTimeout`)
+  bounds a read.
 - `devices/` — device editor, validation, port-forward editor, import risks.
   `deviceManager` only wires its parts in `manager/`; `form/` reads, fills and
   builds the device dialog's form.
-- `tunnels/` — Tunnels sidebar card (start/stop forwards, status, reconnect).
+- `tunnels/` — Tunnels sidebar card. `tunnelSupervisor` (DOM-free) runs
+  start/stop, status, edits and reconnect, and emits "changed";
+  `tunnelsPanel` only renders cards on it and passes clicks. Backend behind
+  `tunnelsPort` (`ipcTunnelsPort`; tests use `FakeTunnelsPort` from
+  `fakeTunnelsPort.testing.ts`).
 - `sftp/` — Files panel (browser, transfer queue, bookmarks, edit in place).
   `sftpPanel` only wires its parts in `sftp/panel/`.
 - `tabs/` — each tab keeps its `Grid` and sessions alive. `tabStrip`,

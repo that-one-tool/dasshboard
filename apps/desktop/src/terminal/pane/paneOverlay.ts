@@ -6,8 +6,21 @@
 
 import { t } from "../../i18n";
 import { requireEl } from "../../ui/dom";
-import type { OverlayState } from "../overlay";
+import { overlayForStatus, type OverlayState } from "../overlay";
 import { MAX_RECONNECT_ATTEMPTS } from "../reconnect";
+import type { Notice } from "../connection/terminalConnection";
+
+type NoticeOf<K extends Notice["kind"]> = Extract<Notice, { kind: K }>;
+type NoticeDraws = { [K in Notice["kind"]]: (overlay: PaneOverlay, notice: NoticeOf<K>) => void };
+
+const NOTICE_DRAWS: NoticeDraws = {
+  hidden: (overlay) => overlay.hide(),
+  reconnecting: (overlay, notice) => overlay.showReconnecting(notice.attempt),
+  status: (overlay, notice) => overlay.show(() => overlayForStatus(notice.status, notice.message)),
+  deviceGone: (overlay) => overlay.show(() => overlayForStatus("error", t("pane.overlay.deviceGone"))),
+  reconnectCancelled: (overlay) =>
+    overlay.show(() => overlayForStatus("disconnected", t("pane.overlay.reconnectCancelled"))),
+};
 
 interface OverlayEls {
   overlay: HTMLElement;
@@ -40,6 +53,12 @@ export class PaneOverlay {
   /** Auto-reconnect attempt `attempt` of the budget, with Cancel. */
   showReconnecting(attempt: number): void {
     this.drawWith(() => this.drawReconnecting(attempt));
+  }
+
+  /** What a terminal connection asks to show. */
+  showNotice(notice: Notice): void {
+    const draw = NOTICE_DRAWS[notice.kind] as (overlay: PaneOverlay, notice: Notice) => void;
+    draw(this, notice);
   }
 
   hide(): void {

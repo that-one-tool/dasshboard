@@ -81,6 +81,20 @@ describe("PaneOverlay", () => {
     expect(el(root, ".overlay-title").textContent).not.toBe(english);
   });
 
+  it("shows each connection notice", () => {
+    overlay.showNotice({ kind: "status", status: "error", message: "boom" });
+    expect(el(root, ".overlay-detail").textContent).toBe("boom");
+    overlay.showNotice({ kind: "reconnecting", attempt: 2 });
+    expect(el(root, ".overlay-cancel").hidden).toBe(false);
+    overlay.showNotice({ kind: "deviceGone" });
+    expect(el(root, ".overlay-detail").textContent).toBe(t("pane.overlay.deviceGone"));
+    overlay.showNotice({ kind: "reconnectCancelled" });
+    expect(el(root, ".overlay-detail").textContent).toBe(t("pane.overlay.reconnectCancelled"));
+    expect(el(root, ".overlay-retry").hidden).toBe(false);
+    overlay.showNotice({ kind: "hidden" });
+    expect(isShown()).toBe(false);
+  });
+
   it("retranslate keeps a hidden overlay hidden", () => {
     overlay.retranslate();
     expect(isShown()).toBe(false);
