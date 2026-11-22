@@ -4,6 +4,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Device, Forward, ForwardStatus } from "../ipc";
 import { FakeTunnelsPort } from "./fakeTunnelsPort.testing";
+import { DeviceCatalog } from "../devices/deviceCatalog";
+import { FakeDevicesPort } from "../devices/fakeDevicesPort.testing";
 import { TunnelsPanel, type TunnelsPanelOptions } from "./tunnelsPanel";
 
 function sshDevice(id: string, name: string, forwards: Forward[] = []): Device {
@@ -53,18 +55,23 @@ function tunnelStatus(): HTMLElement {
 
 describe("TunnelsPanel", () => {
   let port: FakeTunnelsPort;
+  let devicesPort: FakeDevicesPort;
+  let catalog: DeviceCatalog;
   let panel: TunnelsPanel;
 
   beforeEach(() => {
     document.body.innerHTML = '<div class="tunnel-list"></div>';
     port = new FakeTunnelsPort();
-    port.devices = [sshDevice("dev-1", "NAS", [forward("f1", 5432)])];
+    devicesPort = new FakeDevicesPort();
+    catalog = new DeviceCatalog(devicesPort);
+    devicesPort.devices = [sshDevice("dev-1", "NAS", [forward("f1", 5432)])];
   });
 
   afterEach(() => panel?.dispose());
 
-  async function launch(options: TunnelsPanelOptions = {}): Promise<TunnelsPanel> {
-    panel = new TunnelsPanel(options, port);
+  async function launch(options: Omit<TunnelsPanelOptions, "catalog"> = {}): Promise<TunnelsPanel> {
+    await catalog.refresh();
+    panel = new TunnelsPanel({ ...options, catalog }, port);
     await panel.init();
     await flush();
     return panel;
@@ -80,7 +87,7 @@ describe("TunnelsPanel", () => {
   }
 
   it("renders a card only for tunnelable devices", async () => {
-    port.devices = [sshDevice("dev-1", "NAS", [forward("f1", 5432)]), sshDevice("dev-2", "NoForwards", [])];
+    devicesPort.devices = [sshDevice("dev-1", "NAS", [forward("f1", 5432)]), sshDevice("dev-2", "NoForwards", [])];
     await launch();
     expect(document.querySelectorAll(".tunnel-card")).toHaveLength(1);
     expect(document.querySelector(".tunnel-card-name")!.textContent).toBe("NAS");
@@ -169,7 +176,7 @@ describe("TunnelsPanel", () => {
 
   it("says the server refused a remote forward it couldn't start", async () => {
     const remote: Forward = { ...forward("f1", 3000), kind: "remote", remoteHost: "localhost", remotePort: 8080 };
-    port.devices = [sshDevice("dev-1", "NAS", [remote])];
+    devicesPort.devices = [sshDevice("dev-1", "NAS", [remote])];
     await launch();
     expect(document.querySelector<HTMLButtonElement>(".tunnel-forward .tunnel-copy")!.title).toBe("Copy the server address:port");
     await click(headerButton());
@@ -200,8 +207,8 @@ describe("TunnelsPanel", () => {
 
   it("redraws the cards after a device refresh", async () => {
     await launch();
-    port.devices = [];
-    await panel.refresh();
+    devicesPort.devices = [];
+    await catalog.refresh();
     expect(document.querySelector(".tunnel-card")).toBeNull();
     expect(document.querySelector(".tunnels-empty")).not.toBeNull();
   });
@@ -234,7 +241,7 @@ describe("TunnelsPanel", () => {
 
   describe("forward rows", () => {
     beforeEach(() => {
-      port.devices = [twoForwards()];
+      devicesPort.devices = [twoForwards()];
     });
 
     it("shows a gray dot and a Start button on each stopped forward", async () => {

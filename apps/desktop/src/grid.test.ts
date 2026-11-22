@@ -47,7 +47,9 @@ vi.mock("./ipc", () => ({
 
 // Imported after the mock is registered so the module graph uses it.
 import { Grid } from "./grid";
-import { listDevices } from "./ipc";
+import { listDevices, onSessionStatus } from "./ipc";
+import { DeviceCatalog } from "./devices/deviceCatalog";
+import { ipcDevicesPort } from "./devices/devicesPort";
 import type { WorkspaceSnapshot } from "./profiles/workspace";
 import type { TerminalPane } from "./terminal/pane";
 
@@ -75,15 +77,76 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 }
 
+/** The device list every grid under test reads (over the mocked `listDevices`). */
+let catalog: DeviceCatalog;
+
+beforeEach(async () => {
+  catalog = new DeviceCatalog(ipcDevicesPort);
+  await catalog.refresh();
+});
+
 function makeGrid(): Grid {
   const root = document.querySelector<HTMLElement>("#pane-root");
   if (!root) throw new Error("test: #pane-root not found");
-  return new Grid(root);
+  return new Grid(root, { catalog });
+}
+
+/** The next pane's init waits until `release` runs: a build held mid-way. */
+function holdNextPaneInit(): () => void {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  vi.mocked(onSessionStatus).mockImplementationOnce(async () => {
+    await gate;
+    return () => {};
+  });
+  return release;
+}
+
+function optionIds(cell: HTMLElement): string[] {
+  return [...cell.querySelectorAll<HTMLOptionElement>(".pane-device-select option")].map((o) => o.value);
 }
 
 describe("Grid pane teardown", () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  /** The unsubscribe of each pane built from now on, in build order. */
+  function trackUnsubscribes(): Array<ReturnType<typeof vi.fn>> {
+    const unsubscribes: Array<ReturnType<typeof vi.fn>> = [];
+    const subscribe = catalog.subscribe.bind(catalog);
+    vi.spyOn(catalog, "subscribe").mockImplementation((listener) => {
+      const unsubscribe = vi.fn(subscribe(listener));
+      unsubscribes.push(unsubscribe);
+      return unsubscribe;
+    });
+    return unsubscribes;
+  }
+
+  it("disposes the cells already built when a later one fails, and keeps its own", async () => {
+    const grid = makeGrid();
+    await grid.init();
+    const unsubscribes = trackUnsubscribes();
+    vi.mocked(onSessionStatus)
+      .mockResolvedValueOnce(() => {})
+      .mockResolvedValueOnce(() => {})
+      .mockRejectedValueOnce(new Error("no listener"));
+
+    await expect(internals(grid).setPreset("2x2")).rejects.toThrow("no listener");
+
+    expect(unsubscribes.map((unsubscribe) => unsubscribe.mock.calls.length)).toEqual([1, 1, 1]);
+    expect(internals(grid).cells).toHaveLength(1);
+    expect(domCellCount()).toBe(1);
+  });
+
+  it("disposes a pane whose init fails, so it stops following the catalog", async () => {
+    const unsubscribes = trackUnsubscribes();
+    vi.mocked(onSessionStatus).mockRejectedValueOnce(new Error("no listener"));
+
+    await expect(makeGrid().init()).rejects.toThrow("no listener");
+
+    expect(unsubscribes).toHaveLength(1);
+    expect(unsubscribes[0]).toHaveBeenCalledTimes(1);
   });
 
   it("disposes every dropped pane and leaves no orphaned cells on a shrink", async () => {
@@ -370,7 +433,7 @@ describe("Grid profiles (Phase 4)", () => {
     connectMock.mockImplementation(() => new Promise((resolve) => (finishConnect = resolve)));
     const onChange = vi.fn();
     const root = document.querySelector<HTMLElement>("#pane-root")!;
-    const grid = new Grid(root, { onChange });
+    const grid = new Grid(root, { catalog, onChange });
     await grid.init();
 
     const applied = grid.applySnapshot(profileTab(), { confirmTeardown: false });
@@ -386,12 +449,7 @@ describe("Grid profiles (Phase 4)", () => {
     const grid = makeGrid();
     await grid.init();
     expect(grid.isSnapshotComplete()).toBe(true);
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    vi.mocked(listDevices).mockImplementationOnce(async () => {
-      await gate;
-      return [];
-    });
+    const release = holdNextPaneInit();
 
     const applied = grid.applySnapshot(profileTab(), { confirmTeardown: false });
     await vi.waitFor(() => expect(internals(grid).model.cols).toBe(2));
@@ -407,12 +465,7 @@ describe("Grid profiles (Phase 4)", () => {
   it("snapshots what it is loading while the load builds its panes", async () => {
     const grid = makeGrid();
     await grid.init();
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    vi.mocked(listDevices).mockImplementationOnce(async () => {
-      await gate;
-      return [];
-    });
+    const release = holdNextPaneInit();
 
     const applied = grid.applySnapshot(profileTab(), { confirmTeardown: false });
     await vi.waitFor(() => expect(internals(grid).model.cols).toBe(2));
@@ -425,12 +478,7 @@ describe("Grid profiles (Phase 4)", () => {
   it("connects nothing when disposed while a load is still building its panes", async () => {
     const grid = makeGrid();
     await grid.init();
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    vi.mocked(listDevices).mockImplementationOnce(async () => {
-      await gate;
-      return [];
-    });
+    const release = holdNextPaneInit();
 
     const applied = grid.applySnapshot(profileTab(), { confirmTeardown: false });
     await vi.waitFor(() => expect(internals(grid).model.cols).toBe(2));
@@ -442,6 +490,26 @@ describe("Grid profiles (Phase 4)", () => {
     expect(connectMock).not.toHaveBeenCalled();
     expect(internals(grid).cells).toEqual([]);
     expect(domCellCount()).toBe(0);
+  });
+
+  // Panes used to fetch the list one by one while a build ran: an edit landing
+  // mid-build left the panes built before it stale.
+  it("gives every pane of a build the device list an edit made mid-build", async () => {
+    const grid = makeGrid();
+    await grid.init();
+    const release = holdNextPaneInit();
+    const applied = grid.applySnapshot(profileTab(), { confirmTeardown: false });
+    await vi.waitFor(() => expect(internals(grid).model.cols).toBe(2));
+
+    vi.mocked(listDevices).mockResolvedValueOnce([
+      { id: "dev-3", name: "C", host: "h", port: 22, username: "u", auth: { method: "password" } } as never,
+    ]);
+    await catalog.refresh();
+    release();
+    await applied;
+
+    expect(internals(grid).cells).toHaveLength(2);
+    for (const cell of internals(grid).cells) expect(optionIds(cell.wrapper)).toContain("dev-3");
   });
 
   it("lists the devices of the panes showing connected", async () => {
@@ -457,7 +525,7 @@ describe("Grid profiles (Phase 4)", () => {
   it("reports pane status changes as connection changes", async () => {
     const onConnectionChange = vi.fn();
     const root = document.querySelector<HTMLElement>("#pane-root")!;
-    const grid = new Grid(root, { onConnectionChange });
+    const grid = new Grid(root, { catalog, onConnectionChange });
     await grid.init();
 
     await grid.applySnapshot(profileTab(), { confirmTeardown: false });

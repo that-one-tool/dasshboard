@@ -15,13 +15,16 @@
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { listDevices, saveTextFile, type Device, type TerminalSettings } from "../ipc";
+import { saveTextFile, type Device, type TerminalSettings } from "../ipc";
+import type { DeviceCatalog, DeviceChange } from "../devices/deviceCatalog";
+import { SettingsNotice } from "../ui/settingsNotice";
 import { isTerminalReply } from "./terminalReplies";
 import type { InputHealth } from "./inputQueue";
 import { DEFAULT_TERMINAL_SETTINGS } from "./terminalSettings";
 import {
   TerminalConnection,
   type ConnectionHost,
+  type ConnectionState,
   type ConnectionStatus,
   type Notice,
   type SessionTerminal,
@@ -50,6 +53,10 @@ export { deviceEndpoint };
 export { deviceOptionLabel } from "./pane/deviceSelect";
 
 export interface TerminalPaneOptions {
+  /** The window's device list: the dropdown shows it, and its changes reach
+   * the pane (a deletion abandons the session, a settings edit offers a
+   * reconnect). Read at each use, so a pane built mid-edit is never stale. */
+  catalog: DeviceCatalog;
   onError?: (message: string) => void;
   /**
    * Fired when this pane's saved-state (its assigned device) changes — i.e. the
@@ -105,7 +112,6 @@ const INPUT_HEALTH_STATUS: Partial<Record<InputHealth, ShownStatus>> = {
 export class TerminalPane {
   private readonly root: HTMLElement;
   private readonly options: TerminalPaneOptions;
-  private devices: Device[] = [];
 
   private terminal: Terminal | null = null;
   private fitAddon: FitAddon | null = null;
@@ -116,6 +122,8 @@ export class TerminalPane {
   private readonly clipboard: PaneClipboard;
   private readonly recording: PaneRecording;
   private readonly connection: TerminalConnection;
+  private readonly settingsNotice = new SettingsNotice((deviceId) => void this.connection.connect(deviceId));
+  private readonly unsubscribeDevices: () => void;
   /** The overlay drawn last: redrawn only when the connection asks again. */
   private shownNotice: Notice;
   private shownStatus: ConnectionStatus = "idle";
@@ -132,7 +140,7 @@ export class TerminalPane {
   // deferred to drag end (see grid.ts) to avoid spamming the backend.
   private resizeThrottled = false;
 
-  constructor(root: HTMLElement, options: TerminalPaneOptions = {}) {
+  constructor(root: HTMLElement, options: TerminalPaneOptions) {
     this.root = root;
     this.options = options;
     root.innerHTML = paneMarkup();
@@ -143,14 +151,16 @@ export class TerminalPane {
     this.recording = this.makeRecording();
     this.connection = new TerminalConnection(ipcSessionsPort, this.connectionHost());
     this.shownNotice = this.connection.state().notice;
+    requireEl<HTMLElement>(root, ".pane-body").append(this.settingsNotice.element);
     this.renderStatus();
     this.wireButtons();
+    this.renderDevices();
+    this.unsubscribeDevices = options.catalog.subscribe((change) => this.onDevicesChanged(change));
   }
 
   async init(): Promise<void> {
     await this.connection.listen();
     await this.recording.listen();
-    await this.refreshDevices();
   }
 
   private connectionHost(): ConnectionHost {
@@ -166,35 +176,49 @@ export class TerminalPane {
     };
   }
 
-  /** Reloads the device dropdown (call after devices are added/edited/deleted). */
-  async refreshDevices(): Promise<void> {
-    // A failed load is not "every device deleted": keep the list we have, or a
-    // transient IPC error would drop every pane's live session.
-    const devices = await listDevices().catch(() => null);
-    if (devices) this.applyDevices(devices);
-    this.deviceSelect.render(this.devices, this.deviceId);
+  /** The catalog only changes on a successful load: a failed one keeps its
+   * list, so a transient IPC error never reads as "every device deleted". */
+  private onDevicesChanged(change: DeviceChange): void {
+    if (this.deviceId) this.applyToAssigned(this.deviceId, change);
+    this.renderDevices();
+  }
+
+  private applyToAssigned(deviceId: string, { changedIds }: DeviceChange): void {
+    if (this.assignedDevice() === undefined) return this.dropDeletedDevice();
+    if (changedIds.includes(deviceId)) this.showSettingsChanged(deviceId);
+  }
+
+  private renderDevices(): void {
+    this.deviceSelect.render(this.devices(), this.deviceId);
     this.updateControls();
   }
 
-  private applyDevices(devices: Device[]): void {
-    this.devices = devices;
-    // If the assigned device was deleted, drop the stale reference so it can't be
-    // re-persisted into a profile on the next Save (referential integrity: the
-    // backend already nulled it out of profiles.json, and getDeviceId() feeds the
-    // profile snapshot). `onChange` lets the dirty-state dot recompute.
-    if (!this.assignedDeviceWasDeleted()) return;
+  /** Drop the stale reference so it can't be re-persisted into a profile on the
+   * next Save (the backend already nulled it out of profiles.json, and
+   * getDeviceId() feeds the profile snapshot). `onChange` lets the dirty-state
+   * dot recompute. */
+  private dropDeletedDevice(): void {
     this.deviceId = null;
+    this.settingsNotice.hide();
     // Nothing to reconnect to; a session left open would make the idle pane lie.
     this.connection.abandon();
     this.options.onChange?.();
   }
 
-  private assignedDeviceWasDeleted(): boolean {
-    return !!this.deviceId && this.assignedDevice() === undefined;
+  /** The settings apply on the next connect: offer one over a connected
+   * session, or once a connecting one is connected. */
+  private showSettingsChanged(deviceId: string): void {
+    const { connected, live } = this.connection.state();
+    if (connected) return this.settingsNotice.show(deviceId);
+    if (live) this.settingsNotice.markPending(deviceId);
+  }
+
+  private devices(): Device[] {
+    return this.options.catalog.list();
   }
 
   private assignedDevice(): Device | undefined {
-    return this.devices.find((d) => d.id === this.deviceId);
+    return this.deviceId ? this.options.catalog.get(this.deviceId) : undefined;
   }
 
   private makeSearchBar(): TerminalSearchBar {
@@ -250,6 +274,8 @@ export class TerminalPane {
 
   /** Records the target device as this pane's assignment. */
   private claimDevice(deviceId: string): void {
+    // A new attempt reads the device's current settings.
+    this.settingsNotice.hide();
     const deviceChanged = this.deviceId !== deviceId;
     this.deviceId = deviceId;
     // Connecting a device to a previously-empty pane changes the saved-state.
@@ -261,9 +287,15 @@ export class TerminalPane {
     this.renderStatus();
     this.updateControls();
     this.syncResizeObserver(state.open);
+    this.renderSettingsNotice(state);
     this.renderNotice(state.notice);
     this.onStatusShown(state.status);
     this.options.onStatusChange?.();
+  }
+
+  private renderSettingsNotice({ connected, live }: ConnectionState): void {
+    if (!live) return this.settingsNotice.hide();
+    if (connected) this.settingsNotice.showPending();
   }
 
   private renderNotice(notice: Notice): void {
@@ -289,7 +321,7 @@ export class TerminalPane {
     const { open, locked } = this.connection.state();
     const connectBtn = requireEl<HTMLButtonElement>(this.root, ".pane-connect");
     connectBtn.hidden = open;
-    connectBtn.disabled = this.devices.length === 0;
+    connectBtn.disabled = this.devices().length === 0;
     requireEl<HTMLButtonElement>(this.root, ".pane-disconnect").hidden = !open;
     // The device can't change while a session is open or still opening.
     this.deviceSelect.setLocked(locked);
@@ -432,10 +464,11 @@ export class TerminalPane {
   retranslate(): void {
     relabelPane(this.root);
     this.searchBar.retranslate();
-    this.deviceSelect.render(this.devices, this.deviceId);
+    this.deviceSelect.render(this.devices(), this.deviceId);
     this.renderStatus();
     this.recording.render();
     this.overlay.retranslate();
+    this.settingsNotice.retranslate();
   }
 
   /** Moves keyboard focus into this pane's terminal (no-op if none yet). */
@@ -572,6 +605,7 @@ export class TerminalPane {
    * drops this pane on a shrink (SPEC §7). Safe to call twice.
    */
   dispose(): void {
+    this.unsubscribeDevices();
     this.clipboard.dispose();
     this.recording.dispose();
     this.connection.dispose();

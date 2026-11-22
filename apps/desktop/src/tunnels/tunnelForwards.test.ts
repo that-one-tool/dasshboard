@@ -5,7 +5,7 @@ import {
   forwardEndpoint,
   forwardIdsToRun,
   forwardState,
-  isConnectionChanged,
+  isTunnelConnectionChanged,
   isForwardEdited,
   isJumpHostLost,
   listeningForwardCount,
@@ -158,12 +158,12 @@ describe("edit detection", () => {
   const device = sshDevice("dev-1", "NAS", [forward("f1", 1), forward("f2", 2)]) as SshDevice;
 
   it("a changed host, port, user, auth or jump host changes the connection", () => {
-    expect(isConnectionChanged(device, { ...device, name: "renamed" })).toBe(false);
-    expect(isConnectionChanged(device, { ...device, host: "10.0.0.2" })).toBe(true);
-    expect(isConnectionChanged(device, { ...device, port: 2222 })).toBe(true);
-    expect(isConnectionChanged(device, { ...device, username: "root" })).toBe(true);
-    expect(isConnectionChanged(device, { ...device, auth: { method: "agent" } } as SshDevice)).toBe(true);
-    expect(isConnectionChanged(device, { ...device, proxyJump: "jump" })).toBe(true);
+    expect(isTunnelConnectionChanged(device, { ...device, name: "renamed" })).toBe(false);
+    expect(isTunnelConnectionChanged(device, { ...device, host: "10.0.0.2" })).toBe(true);
+    expect(isTunnelConnectionChanged(device, { ...device, port: 2222 })).toBe(true);
+    expect(isTunnelConnectionChanged(device, { ...device, username: "root" })).toBe(true);
+    expect(isTunnelConnectionChanged(device, { ...device, auth: { method: "agent" } } as SshDevice)).toBe(true);
+    expect(isTunnelConnectionChanged(device, { ...device, proxyJump: "jump" })).toBe(true);
   });
 
   it("only removing the jump host loses it", () => {

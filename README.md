@@ -37,6 +37,8 @@
 - **Command library** — saved commands sent with a click to the focused pane, or
   to every broadcasting pane; import/export as JSON.
 - **Broadcast input** — type into several panes at once.
+- **Edited devices** — a live terminal or Files panel shows "Settings changed —
+  reconnect to apply" when its device's or jump host's connection settings change.
 - **In the terminal** — find text in the scrollback (Ctrl+Shift+F, Cmd+F on
   macOS), Ctrl+click (Cmd+click) a URL to open it, save a pane's output to
   a text file, or record everything a session prints to a log file.

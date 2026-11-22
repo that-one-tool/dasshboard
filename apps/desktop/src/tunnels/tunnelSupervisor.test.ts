@@ -3,6 +3,8 @@ import type { AppError, Device, Forward, ForwardStatus, SshDevice, TunnelStatusE
 import { t } from "../i18n";
 import { MAX_RECONNECT_ATTEMPTS } from "../terminal/reconnect";
 import { FakeTunnelsPort } from "./fakeTunnelsPort.testing";
+import { DeviceCatalog } from "../devices/deviceCatalog";
+import { FakeDevicesPort } from "../devices/fakeDevicesPort.testing";
 import { forwardState, type TunnelRunState } from "./tunnelForwards";
 import { TunnelSupervisor } from "./tunnelSupervisor";
 
@@ -40,13 +42,17 @@ async function flush(): Promise<void> {
 
 describe("TunnelSupervisor", () => {
   let port: FakeTunnelsPort;
+  let devicesPort: FakeDevicesPort;
+  let catalog: DeviceCatalog;
   let onError: ReturnType<typeof vi.fn<(error: AppError) => void>>;
   let onPersist: ReturnType<typeof vi.fn<() => void>>;
   let supervisor: TunnelSupervisor;
 
   beforeEach(() => {
     port = new FakeTunnelsPort();
-    port.devices = [oneForward()];
+    devicesPort = new FakeDevicesPort();
+    catalog = new DeviceCatalog(devicesPort);
+    devicesPort.devices = [oneForward()];
     onError = vi.fn();
     onPersist = vi.fn();
   });
@@ -54,11 +60,12 @@ describe("TunnelSupervisor", () => {
   afterEach(() => supervisor?.dispose());
 
   function create(initialState?: TunnelRunState): TunnelSupervisor {
-    supervisor = new TunnelSupervisor(port, { initialState, onError, onPersist });
+    supervisor = new TunnelSupervisor(port, catalog, { initialState, onError, onPersist });
     return supervisor;
   }
 
   async function launch(initialState?: TunnelRunState): Promise<TunnelSupervisor> {
+    await catalog.refresh();
     create(initialState);
     await supervisor.init();
     await flush();
@@ -97,13 +104,13 @@ describe("TunnelSupervisor", () => {
 
   describe("launch", () => {
     it("lists only tunnelable devices", async () => {
-      port.devices = [oneForward(), sshDevice("dev-2", "NoForwards", [])];
+      devicesPort.devices = [oneForward(), sshDevice("dev-2", "NoForwards", [])];
       await launch();
       expect(supervisor.tunnelableDevices().map((d) => d.id)).toEqual(["dev-1"]);
     });
 
     it("auto-starts a flagged device's tunnel", async () => {
-      port.devices = [flagged()];
+      devicesPort.devices = [flagged()];
       await launch();
       expect(port.calls).toEqual(["start dev-1 t1 f1"]);
     });
@@ -114,14 +121,14 @@ describe("TunnelSupervisor", () => {
     });
 
     it("does not auto-start a flagged device that is already running", async () => {
-      port.devices = [flagged()];
+      devicesPort.devices = [flagged()];
       port.tunnels = [{ tunnelId: "existing", deviceId: "dev-1", forwardIds: ["f1"], forwards: [bound("f1")] }];
       await launch();
       expect(port.calls).toEqual([]);
     });
 
     it("does not restart a flagged tunnel the user left stopped", async () => {
-      port.devices = [flagged()];
+      devicesPort.devices = [flagged()];
       await launch({ "dev-1": false });
       expect(port.calls).toEqual([]);
     });
@@ -132,13 +139,13 @@ describe("TunnelSupervisor", () => {
     });
 
     it("restores only the forwards the user left running", async () => {
-      port.devices = [twoForwards()];
+      devicesPort.devices = [twoForwards()];
       await launch({ "dev-1": ["f2"] });
       expect(port.calls).toEqual(["start dev-1 t1 f2"]);
     });
 
     it("shows an already-running tunnel's forwards as they are", async () => {
-      port.devices = [twoForwards()];
+      devicesPort.devices = [twoForwards()];
       port.tunnels = [{ tunnelId: "existing", deviceId: "dev-1", forwardIds: ["f2"], forwards: [bound("f2")] }];
       await launch();
       expect(dot("f1")).toBe("stopped");
@@ -146,7 +153,7 @@ describe("TunnelSupervisor", () => {
     });
 
     it("shows a tunnel adopted while still connecting as connecting", async () => {
-      port.devices = [twoForwards()];
+      devicesPort.devices = [twoForwards()];
       port.tunnels = [{ tunnelId: "existing", deviceId: "dev-1", forwardIds: ["f2"], forwards: [] }];
       await launch();
       expect(dot("f2")).toBe("connecting");
@@ -170,7 +177,7 @@ describe("TunnelSupervisor", () => {
 
   describe("remembered run state", () => {
     it("remembers a manual stop and asks for a save", async () => {
-      port.devices = [flagged()];
+      devicesPort.devices = [flagged()];
       await launch();
       await click(() => supervisor.stopDevice("dev-1"));
       expect(port.calls).toEqual(["start dev-1 t1 f1", "stop t1"]);
@@ -185,7 +192,7 @@ describe("TunnelSupervisor", () => {
     });
 
     it("an auto-start alone records nothing (the flag stays the default)", async () => {
-      port.devices = [flagged()];
+      devicesPort.devices = [flagged()];
       await launch();
       expect(supervisor.layoutState()).toBeUndefined();
     });
@@ -201,38 +208,49 @@ describe("TunnelSupervisor", () => {
       expect(supervisor.layoutState()).toEqual({ "dev-1": false });
     });
 
-    it("a failed launch load does not discard devices a refresh loaded meanwhile", async () => {
-      const load = port.hold("listDevices");
+    it("applies a device list the catalog loads after a failed launch load", async () => {
+      devicesPort.failNext({ code: "Io", message: "boom" });
+      await catalog.refresh();
       create({ "dev-1": false });
-      const launched = supervisor.init();
-      supervisor.setDevices(port.devices);
-      load.fail({ code: "Io", message: "boom" });
-      await launched;
+      await supervisor.init();
+      expect(supervisor.tunnelableDevices()).toEqual([]);
+      await catalog.refresh();
       await flush();
       expect(supervisor.layoutState()).toEqual({ "dev-1": false });
       expect(supervisor.tunnelableDevices().map((d) => d.id)).toEqual(["dev-1"]);
     });
 
-    it("a failed device load at launch keeps the remembered state", async () => {
-      port.failNext("listDevices", { code: "Io", message: "disk" });
-      await launch({ "dev-1": false });
+    it("a failed device load at launch keeps the remembered state and reports nothing itself", async () => {
+      devicesPort.failNext({ code: "Io", message: "disk" });
+      await catalog.refresh();
+      create({ "dev-1": false });
+      await supervisor.init();
+      await flush();
       expect(supervisor.layoutState()).toEqual({ "dev-1": false });
-      expect(onError).toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
     });
 
     it("a failed device refresh stops nothing and forgets nothing", async () => {
       await launch({ "dev-1": true });
-      port.failNext("listDevices", { code: "Io", message: "disk" });
-      await supervisor.refresh();
+      devicesPort.failNext({ code: "Io", message: "disk" });
+      await catalog.refresh();
       await flush();
       expect(port.calls).toEqual(["start dev-1 t1 f1"]);
       expect(supervisor.layoutState()).toEqual({ "dev-1": true });
     });
 
+    it("stops following the catalog once disposed", async () => {
+      await launch();
+      supervisor.dispose();
+      devicesPort.devices = [];
+      await catalog.refresh();
+      expect(supervisor.tunnelableDevices().map((d) => d.id)).toEqual(["dev-1"]);
+    });
+
     it("a refresh applies the reloaded device list", async () => {
       await launch();
-      port.devices = [];
-      await supervisor.refresh();
+      devicesPort.devices = [];
+      await catalog.refresh();
       expect(supervisor.tunnelableDevices()).toEqual([]);
     });
 
@@ -267,7 +285,7 @@ describe("TunnelSupervisor", () => {
     });
 
     it("colors each forward from the live bind state", async () => {
-      port.devices = [twoForwards()];
+      devicesPort.devices = [twoForwards()];
       await launch();
       await startAll();
       expect(port.calls).toEqual(["start dev-1 t1 f1,f2"]);
@@ -359,7 +377,7 @@ describe("TunnelSupervisor", () => {
 
   describe("per-forward Start/Stop", () => {
     beforeEach(() => {
-      port.devices = [twoForwards()];
+      devicesPort.devices = [twoForwards()];
     });
 
     async function runningWith(...forwardIds: string[]): Promise<void> {
@@ -485,7 +503,7 @@ describe("TunnelSupervisor", () => {
     });
 
     it("a Stop while the start is in flight takes effect once it has started", async () => {
-      port.devices = [oneForward()];
+      devicesPort.devices = [oneForward()];
       await launch();
       const start = port.hold("startTunnel");
       await startAll();
@@ -539,7 +557,7 @@ describe("TunnelSupervisor", () => {
 
   describe("device edits", () => {
     beforeEach(() => {
-      port.devices = [twoForwards()];
+      devicesPort.devices = [twoForwards()];
     });
 
     async function runningWith(...forwardIds: string[]): Promise<void> {
@@ -571,7 +589,7 @@ describe("TunnelSupervisor", () => {
 
     it("stops, never restarts direct, a running tunnel whose jump host was removed", async () => {
       const jumped = { ...twoForwards(), proxyJump: "bastion" } as Device;
-      port.devices = [jumped];
+      devicesPort.devices = [jumped];
       await runningWith("f2");
       await click(() => supervisor.setDevices([{ ...jumped, proxyJump: null } as Device]));
       expect(port.calls).toEqual(["stop t1"]);
@@ -669,7 +687,7 @@ describe("TunnelSupervisor", () => {
 
     beforeEach(() => {
       vi.useFakeTimers();
-      port.devices = [reconnecting()];
+      devicesPort.devices = [reconnecting()];
     });
     afterEach(() => vi.useRealTimers());
 
@@ -684,7 +702,7 @@ describe("TunnelSupervisor", () => {
     });
 
     it("leaves a dropped tunnel stopped when its device did not opt in", async () => {
-      port.devices = [oneForward()];
+      devicesPort.devices = [oneForward()];
       await runningTunnel();
       lost();
       await vi.runAllTimersAsync();
@@ -719,7 +737,7 @@ describe("TunnelSupervisor", () => {
     });
 
     it("a forward stopped while waiting is left out of the reconnect", async () => {
-      port.devices = [{ ...twoForwards(), autoReconnect: true } as Device];
+      devicesPort.devices = [{ ...twoForwards(), autoReconnect: true } as Device];
       await launch();
       await startAll();
       listening(bound("f1"), bound("f2"));
@@ -733,7 +751,7 @@ describe("TunnelSupervisor", () => {
     });
 
     it("a forward started while waiting joins the reconnect", async () => {
-      port.devices = [{ ...twoForwards(), autoReconnect: true } as Device];
+      devicesPort.devices = [{ ...twoForwards(), autoReconnect: true } as Device];
       await launch();
       await click(() => supervisor.startForward("dev-1", "f1"));
       listening(bound("f1"));
@@ -874,7 +892,7 @@ describe("TunnelSupervisor", () => {
     });
 
     it("tells its listeners once a forward bind failed", async () => {
-      port.devices = [twoForwards()];
+      devicesPort.devices = [twoForwards()];
       await launch();
       await click(() => supervisor.startForward("dev-1", "f1"));
       listening(bound("f1"));
@@ -895,7 +913,7 @@ describe("TunnelSupervisor", () => {
 
     it("tells its listeners when a reconnect timer fires", async () => {
       vi.useFakeTimers();
-      port.devices = [{ ...oneForward(), autoReconnect: true } as Device];
+      devicesPort.devices = [{ ...oneForward(), autoReconnect: true } as Device];
       await launch();
       await startAll();
       listening(bound("f1"));

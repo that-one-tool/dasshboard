@@ -326,10 +326,10 @@ export class TerminalConnection {
     this.showStopped("disconnected", { kind: "reconnectCancelled" });
   }
 
-  /** The device is gone: no reconnect, and no session left open while the
-   * pane reads idle. */
+  /** The device is gone: no reconnect, and no session left open or opening
+   * while the pane reads idle. */
   abandon(): void {
-    this.closeCurrentSession();
+    this.releaseSession();
     this.showStopped("idle", { kind: "hidden" });
   }
 

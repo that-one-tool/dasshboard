@@ -9,6 +9,8 @@ import {
 	type WorkspaceState,
 } from "./ipc";
 import { initDeviceManager } from "./devices/deviceManager";
+import { DeviceCatalog } from "./devices/deviceCatalog";
+import { ipcDevicesPort } from "./devices/devicesPort";
 import { TabManager } from "./tabs/tabManager";
 import { ProfileManager, type ProfileWorkspace } from "./profiles/profileManager";
 import { SettingsController } from "./settings/settingsController";
@@ -28,7 +30,7 @@ import { openLogsDialog } from "./settings/logsDialog";
 import { showToast } from "./ui/toast";
 import { helpIcon, reloadIcon, lockIcon, gearIcon, filesIcon, logsIcon } from "./ui/icons";
 import { applyDomTranslations, onLocaleChange, t } from "./i18n";
-import { refreshDevicesAll, reloadConfigAll, retranslateAll, type LiveView } from "./app/liveViews";
+import { reloadConfigAll, retranslateAll, type LiveView } from "./app/liveViews";
 
 /** Injects the SVG glyph into each header action button (kept in one place so
  * the icons stay consistent with the app's Lucide icon set). A missing
@@ -68,12 +70,13 @@ async function initApp(): Promise<void> {
 	// First: it applies the UI language, so every view built afterwards renders in it.
 	const settings = new SettingsController({ onError: showError });
 	await settings.init();
-	const tabs = createTabs(paneRoot, settings);
+	const catalog = await loadDeviceCatalog();
+	const tabs = createTabs(paneRoot, settings, catalog);
 	const updates = initUpdates(tabs);
 	const workspace = await loadWorkspace();
 	const rail = initSidebar(paneRoot, tabs, workspace);
 	await tabs.init(workspace.tabs.length > 0 ? workspace : undefined);
-	const views = await initViews({ tabs, settings, updates, rail, workspace });
+	const views = await initViews({ tabs, settings, updates, rail, workspace, catalog });
 	wireConfigReload(views);
 	wireLocaleChange(views);
 	void initTrayLabels();
@@ -94,11 +97,19 @@ function initChrome(): void {
 	initAuthPromptDialog();
 }
 
+/** The window's one device list, loaded before any view reads it. Every
+ * view subscribes to it; device writes and config reloads refresh it. */
+async function loadDeviceCatalog(): Promise<DeviceCatalog> {
+	const catalog = new DeviceCatalog(ipcDevicesPort, showAppError);
+	await catalog.refresh();
+	return catalog;
+}
+
 /** Each tab owns an independent grid of terminals; hidden tabs keep their
  * sessions running. Profile/settings actions target the active tab's grid. */
-function createTabs(paneRoot: HTMLElement, settings: SettingsController): TabManager {
+function createTabs(paneRoot: HTMLElement, settings: SettingsController, catalog: DeviceCatalog): TabManager {
 	const tabs = new TabManager(paneRoot, {
-		grid: { onError: showError, getTerminalSettings: () => settings.terminalSettings() },
+		grid: { catalog, onError: showError, getTerminalSettings: () => settings.terminalSettings() },
 		// Per-instance UI state — plain save, not routed through the config watcher.
 		persist: (state) => saveWorkspaceState(state).catch(showAppError),
 		// The app-action buttons move into the tab-strip row (no separate header).
@@ -185,15 +196,16 @@ interface AppParts {
 	updates: UpdateController;
 	rail: SidebarRail | null;
 	workspace: WorkspaceState;
+	catalog: DeviceCatalog;
 }
 
-/** Builds the views around the tabs; each one a device change, a config
- * reload or a language change has to reach. */
+/** Builds the views around the tabs; each one a config reload or a language
+ * change has to reach (device changes reach them through the catalog). */
 async function initViews(parts: AppParts): Promise<LiveView[]> {
-	const { tabs, settings } = parts;
+	const { tabs, settings, catalog } = parts;
 	const views: LiveView[] = [
+		{ reloadConfig: () => catalog.refresh() },
 		{
-			refreshDevices: () => Promise.allSettled(tabs.mapGrids((g) => g.refreshDevices())),
 			retranslate: () => {
 				tabs.forEachGrid((g) => g.retranslate());
 				tabs.retranslate();
@@ -205,13 +217,13 @@ async function initViews(parts: AppParts): Promise<LiveView[]> {
 	views.push(initTunnels(parts));
 	views.push(await initCommands(parts));
 	views.push(initSftp(parts));
-	const devices = initDevices(parts, views);
+	const devices = initDevices(parts);
 	if (devices) views.push(devices);
 	return views;
 }
 
 /** The sidebar profile list + Save/Save As, acting on the active tab's grid. */
-async function initProfiles({ tabs, settings, workspace }: AppParts): Promise<LiveView> {
+async function initProfiles({ tabs, settings, workspace, catalog }: AppParts): Promise<LiveView> {
 	const profileManager = new ProfileManager({
 		workspace: makeProfileWorkspace(tabs),
 		onError: showError,
@@ -223,7 +235,10 @@ async function initProfiles({ tabs, settings, workspace }: AppParts): Promise<Li
 	tabs.onActiveTabChange(() => profileManager.onActiveTabChanged());
 	tabs.setTabStateResolver((id) => profileManager.resolveTabState(id));
 	await profileManager.init(settings.lastProfileId(), { loadStart: workspace.tabs.length === 0 });
-	return { refreshDevices: () => profileManager.reload(), retranslate: () => profileManager.retranslate() };
+	// A deleted device is nulled out of profiles backend-side; a config reload
+	// refreshes the catalog too, so this also picks up profiles changed on disk.
+	catalog.subscribe(() => void profileManager.reload());
+	return { retranslate: () => profileManager.retranslate() };
 }
 
 function makeProfileWorkspace(tabs: TabManager): ProfileWorkspace {
@@ -242,8 +257,9 @@ function makeProfileWorkspace(tabs: TabManager): ProfileWorkspace {
 }
 
 /** Port forwards: Start/Stop per device with live status. */
-function initTunnels({ tabs, rail, workspace }: AppParts): LiveView {
+function initTunnels({ tabs, rail, workspace, catalog }: AppParts): LiveView {
 	const tunnelsPanel = initTunnelsPanel({
+		catalog,
 		onError: showAppError,
 		onSuccess: showSuccess,
 		initialState: workspace.tunnels,
@@ -252,7 +268,7 @@ function initTunnels({ tabs, rail, workspace }: AppParts): LiveView {
 	});
 	tabs.addStateContributor(() => ({ tunnels: tunnelsPanel.layoutState() }));
 	rail?.countForwardsWith(() => tunnelsPanel.listeningForwardCount());
-	return { refreshDevices: () => tunnelsPanel.refresh(), retranslate: () => tunnelsPanel.retranslate() };
+	return { retranslate: () => tunnelsPanel.retranslate() };
 }
 
 /** The command library, sent to the active tab's focused pane or broadcast set. */
@@ -274,8 +290,9 @@ async function initCommands({ tabs }: AppParts): Promise<LiveView> {
 }
 
 /** The Files panel docked right of the grid; opening/resizing it re-fits the grid. */
-function initSftp({ tabs, settings, updates, workspace }: AppParts): LiveView {
+function initSftp({ tabs, settings, updates, workspace, catalog }: AppParts): LiveView {
 	const sftpPanel = initSftpPanel({
+		catalog,
 		onError: showAppError,
 		onSuccess: showSuccess,
 		getIdleDisconnectMins: () => settings.sftpSettings().idleDisconnectMins,
@@ -289,27 +306,25 @@ function initSftp({ tabs, settings, updates, workspace }: AppParts): LiveView {
 	updates.onInstallError(() => void sftpPanel.resyncConnection());
 	tabs.addStateContributor(() => ({ sftp: sftpPanel.layoutState() }));
 	wireClick("#sftp-btn", () => sftpPanel.toggle());
-	return { refreshDevices: () => sftpPanel.refresh(), retranslate: () => sftpPanel.retranslate() };
+	return { reloadConfig: () => sftpPanel.reloadConfig(), retranslate: () => sftpPanel.retranslate() };
 }
 
-/** The device list and editor: a change reaches every view showing devices
- * (a deleted device is also nulled out of profiles backend-side). */
-function initDevices({ tabs, workspace }: AppParts, views: readonly LiveView[]): LiveView | null {
+/** The device list and editor: its writes refresh the catalog, which every
+ * view showing devices follows. */
+function initDevices({ tabs, workspace, catalog }: AppParts): LiveView | null {
 	const deviceManager = initDeviceManager({
+		catalog,
 		onError: (error: AppError) => {
 			console.error("Device error:", error);
 			showAppError(error);
 		},
-		onSuccess: (message: string) => {
-			showSuccess(message);
-			void refreshDevicesAll(views);
-		},
+		onSuccess: showSuccess,
 		initialCollapsedGroups: workspace.collapsedDeviceGroups,
 		onPersist: () => tabs.scheduleSave(),
 	});
 	if (!deviceManager) return null;
 	tabs.addStateContributor(() => ({ collapsedDeviceGroups: deviceManager.collapsedGroups() }));
-	return { reloadConfig: () => deviceManager.reload(), retranslate: () => deviceManager.retranslate() };
+	return { retranslate: () => deviceManager.retranslate() };
 }
 
 /**

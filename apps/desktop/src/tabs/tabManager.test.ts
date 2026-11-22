@@ -19,7 +19,6 @@ interface FakeGrid {
   refit: Mock;
   focus: Mock;
   dispose: Mock;
-  refreshDevices: Mock;
   retranslate: Mock;
   applyTerminalSettings: Mock;
   liveSessionCount: Mock;
@@ -46,7 +45,6 @@ const { gridInstances, FakeGridClass, initGate } = vi.hoisted(() => {
     refit = vi.fn();
     focus = vi.fn();
     dispose = vi.fn();
-    refreshDevices = vi.fn(async () => {});
     retranslate = vi.fn();
     applyTerminalSettings = vi.fn();
     liveSessionCount = vi.fn(function (this: FakeGrid) {
@@ -80,12 +78,14 @@ import { TabManager, type TabManagerOptions } from "./tabManager";
 import type { WorkspaceState } from "../ipc";
 import type { Grid } from "../grid";
 import { setLocale } from "../i18n";
+import { DeviceCatalog } from "../devices/deviceCatalog";
+import { FakeDevicesPort } from "../devices/fakeDevicesPort.testing";
 
 function makeManager(extra: Partial<Omit<TabManagerOptions, "grid">> = {}): TabManager {
   const root = document.createElement("div");
   document.body.appendChild(root);
   return new TabManager(root, {
-    grid: { onError: vi.fn(), getTerminalSettings: vi.fn() },
+    grid: { catalog: new DeviceCatalog(new FakeDevicesPort()), onError: vi.fn(), getTerminalSettings: vi.fn() },
     ...extra,
   });
 }
@@ -1008,7 +1008,7 @@ describe("TabManager.connectedDeviceCount", () => {
   });
 });
 
-describe("TabManager.forEachGrid / mapGrids", () => {
+describe("TabManager.forEachGrid", () => {
   it("fans an action across every tab's grid", async () => {
     const tm = makeManager();
     await tm.init();
@@ -1018,6 +1018,5 @@ describe("TabManager.forEachGrid / mapGrids", () => {
 
     expect(gridInstances[0]?.retranslate).toHaveBeenCalledOnce();
     expect(gridInstances[1]?.retranslate).toHaveBeenCalledOnce();
-    expect(tm.mapGrids((g) => g)).toHaveLength(2);
   });
 });

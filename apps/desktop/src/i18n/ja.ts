@@ -115,6 +115,10 @@ export const ja: Messages = {
 	"pane.link.hint": "Ctrl+クリックでリンクを開く",
 	"pane.link.hintMac": "Cmd+クリックでリンクを開く",
 
+	/* -- settings-changed notice (ui/settingsNotice.ts) ---------------------- */
+	"settingsNotice.text": "設定が変更されました — 再接続すると反映されます",
+	"settingsNotice.reconnect": "再接続",
+
 	/* -- settings dialog ---------------------------------------------------- */
 	"settings.title": "設定",
 	"settings.tab.general": "一般",

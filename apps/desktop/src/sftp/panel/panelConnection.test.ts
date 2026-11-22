@@ -38,6 +38,7 @@ function setup(unsynced = 0) {
     syncPicker: vi.fn(),
     clearIdle: vi.fn(),
     persist: vi.fn(),
+    onSettled: vi.fn(),
   };
   return { els, session, hooks, deps, connection: new PanelConnection(deps) };
 }
@@ -109,6 +110,125 @@ describe("PanelConnection", () => {
     expect(session.activeDeviceId).toBe("a");
     expect(deps.syncPicker).toHaveBeenCalled();
     expect(sftpConnect).toHaveBeenCalledOnce();
+  });
+
+  /** The next close waits; the panel is already free for another action. */
+  function holdClose(): () => void {
+    const pending = deferred<void>();
+    vi.mocked(sftpDisconnect).mockReturnValueOnce(pending.promise);
+    return () => pending.resolve();
+  }
+
+  const connectedTo = (): string[] => vi.mocked(sftpConnect).mock.calls.map(([deviceId]) => deviceId);
+
+  it("restart closes the connection and opens it again", async () => {
+    const { session, connection } = setup();
+    await connection.select("a");
+    await connection.restart("a");
+    expect(sftpDisconnect).toHaveBeenCalledExactlyOnceWith("a");
+    expect(connectedTo()).toEqual(["a", "a"]);
+    expect(session.activeDeviceId).toBe("a");
+  });
+
+  it("restart does not connect behind a panel closed during the close", async () => {
+    const { session, connection } = setup();
+    await connection.select("a");
+    const finishClose = holdClose();
+    const restarting = connection.restart("a");
+    await Promise.resolve();
+    await Promise.resolve();
+    await connection.disconnectActive(); // what hiding the panel does
+    finishClose();
+    await restarting;
+    expect(connectedTo()).toEqual(["a"]);
+    expect(session.isConnected()).toBe(false);
+  });
+
+  it("restart leaves alone the device picked during the close", async () => {
+    const { session, connection } = setup();
+    await connection.select("a");
+    const finishClose = holdClose();
+    const restarting = connection.restart("a");
+    await vi.waitFor(() => expect(sftpDisconnect).toHaveBeenCalled());
+    await connection.select("b");
+    finishClose();
+    await restarting;
+    expect(connectedTo()).toEqual(["a", "b"]);
+    expect(session.activeDeviceId).toBe("b");
+  });
+
+  it("restart does nothing once the panel moved on during the confirm", async () => {
+    const answer = deferred<boolean>();
+    const { session, connection } = setup(1);
+    await connection.select("a");
+    vi.mocked(confirm).mockReturnValueOnce(answer.promise);
+    const restarting = connection.restart("a");
+    await connection.disconnectActive();
+    answer.resolve(true);
+    await restarting;
+    expect(connectedTo()).toEqual(["a"]);
+    expect(session.isConnected()).toBe(false);
+  });
+
+  it("restart ignores a device that is not the one connected", async () => {
+    const { connection } = setup();
+    await connection.select("a");
+    await connection.restart("b");
+    expect(sftpDisconnect).not.toHaveBeenCalled();
+    expect(connectedTo()).toEqual(["a"]);
+  });
+
+  it("restart, like the toggle, waits out the first listing", async () => {
+    const listing = deferred<void>();
+    const { deps, connection } = setup();
+    deps.onConnected.mockReturnValueOnce(listing.promise as Promise<void>);
+    const selecting = connection.select("a");
+    await vi.waitFor(() => expect(deps.onConnected).toHaveBeenCalled());
+    await connection.restart("a");
+    expect(sftpDisconnect).not.toHaveBeenCalled();
+    listing.resolve();
+    await selecting;
+    expect(connectedTo()).toEqual(["a"]);
+  });
+
+  it("switching does not connect behind a panel closed during the close", async () => {
+    const { session, deps, connection } = setup();
+    await connection.select("a");
+    const finishClose = holdClose();
+    const switching = connection.select("b");
+    await vi.waitFor(() => expect(sftpDisconnect).toHaveBeenCalled());
+    await connection.disconnectActive();
+    finishClose();
+    await switching;
+    expect(connectedTo()).toEqual(["a"]);
+    expect(session.isConnected()).toBe(false);
+    expect(deps.syncPicker).toHaveBeenCalledTimes(2); // back on the device picked
+  });
+
+  it("switching leaves alone another device picked during the close", async () => {
+    const { session, connection } = setup();
+    await connection.select("a");
+    const finishClose = holdClose();
+    const switching = connection.select("b");
+    await vi.waitFor(() => expect(sftpDisconnect).toHaveBeenCalled());
+    await connection.select("c");
+    finishClose();
+    await switching;
+    expect(connectedTo()).toEqual(["a", "c"]);
+    expect(session.activeDeviceId).toBe("c");
+  });
+
+  it("settles only once the first listing is done", async () => {
+    const listing = deferred<void>();
+    const { session, deps, connection } = setup();
+    deps.onConnected.mockReturnValueOnce(listing.promise as Promise<void>);
+    deps.onSettled.mockImplementation(() => expect(session.connecting).toBe(false));
+    const selecting = connection.select("a");
+    await vi.waitFor(() => expect(deps.onConnected).toHaveBeenCalled());
+    expect(deps.onSettled).not.toHaveBeenCalled();
+    listing.resolve();
+    await selecting;
+    expect(deps.onSettled).toHaveBeenCalledOnce();
   });
 
   it("a failed connect is reported and shows the disconnected state", async () => {

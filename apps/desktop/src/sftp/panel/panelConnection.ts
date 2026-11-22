@@ -31,6 +31,8 @@ export interface ConnectionDeps {
   syncPicker: () => void;
   clearIdle: () => void;
   persist: () => void;
+  /** A connect attempt ended, either way, first listing included. */
+  onSettled: () => void;
 }
 
 export class PanelConnection {
@@ -52,6 +54,31 @@ export class PanelConnection {
     if (session.connecting) return;
     if (session.isConnected()) void this.confirmThenDisconnect();
     else this.reconnect();
+  }
+
+  /** Reconnect `deviceId` (its settings changed) if it is the one connected,
+   * asking first like a Disconnect would when edits have changes not uploaded. */
+  async restart(deviceId: string): Promise<void> {
+    if (!(await this.mayRestart(deviceId))) return;
+    if (await this.leaveActive()) await this.connect(deviceId);
+  }
+
+  private async mayRestart(deviceId: string): Promise<boolean> {
+    return this.isSettledOn(deviceId) && (await this.confirmEndEdits()) && this.isSettledOn(deviceId);
+  }
+
+  /** Connected to `deviceId`, its first listing done. */
+  private isSettledOn(deviceId: string): boolean {
+    return !this.deps.session.connecting && this.deps.session.isConnectedTo(deviceId);
+  }
+
+  /** Disconnect, to connect next: `false` when the user moved on during the
+   * close (closed the panel, or connected a device). */
+  private async leaveActive(): Promise<boolean> {
+    const closing = this.disconnectActive();
+    const attempt = this.attempts.current();
+    await closing;
+    return this.attempts.isCurrent(attempt);
   }
 
   /** Whether closing the active connection may end its edits: true unless some
@@ -119,12 +146,15 @@ export class PanelConnection {
     if (await this.confirmEndEdits()) await this.disconnect();
   }
 
-  /** Disconnect another device first; `false` when the user keeps it. */
+  /** Disconnect another device first; `false` when the user keeps it, or
+   * moves on meanwhile. */
   private async leaveOther(deviceId: string): Promise<boolean> {
     if (!this.showsOther(deviceId)) return true;
-    if (!(await this.confirmEndEdits())) return this.keepCurrent();
-    await this.disconnectActive();
-    return true;
+    return (await this.confirmThenLeave()) || this.keepCurrent();
+  }
+
+  private async confirmThenLeave(): Promise<boolean> {
+    return (await this.confirmEndEdits()) && this.leaveActive();
   }
 
   private showsOther(deviceId: string): boolean {
@@ -186,6 +216,7 @@ export class PanelConnection {
     this.deps.controls.setBusy(false);
     this.deps.controls.updateConnToggle();
     this.deps.persist(); // remember the (now-)selected device
+    this.deps.onSettled();
   }
 
   /** Close a connection that finished opening after the user moved on (closed

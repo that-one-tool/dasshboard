@@ -540,6 +540,19 @@ describe("TerminalConnection", () => {
       await staysDown();
     });
 
+    it("abandoning the device closes the session still opening instead of adopting it", async () => {
+      const attempt = connection.connect("dev-1");
+      const { sessionId, resolve } = backend.last();
+
+      connection.abandon();
+      expect(backend.closed).toContain(sessionId);
+
+      resolve();
+      await attempt;
+      backend.status(sessionId, "connected");
+      expect(connection.state()).toMatchObject({ status: "idle", live: false, connected: false });
+    });
+
     it("abandoning the device cancels a reconnect and ends idle", async () => {
       await connectedThenDropped();
       connection.abandon();

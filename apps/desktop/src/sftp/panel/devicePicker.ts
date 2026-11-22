@@ -25,11 +25,6 @@ export class DevicePicker {
     this.render();
   }
 
-  /** Whether `deviceId` is still a saved device (of any kind). */
-  hasDevice(deviceId: string): boolean {
-    return this.devices.some((device) => device.id === deviceId);
-  }
-
   /** `deviceId` when it is a browsable device, else `null`. */
   knownBrowsable(deviceId: string | null): string | null {
     const known = browsableDevices(this.devices).some((device) => device.id === deviceId);

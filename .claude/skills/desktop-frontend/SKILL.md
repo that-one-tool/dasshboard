@@ -11,8 +11,17 @@ Vite + vanilla TypeScript (no framework), xterm.js. Vitest + happy-dom.
 
 - `main.ts` bootstraps. Later parts register with earlier parts (listeners),
   not with late-bound callbacks.
-- `app/liveViews` lists the long-lived views. Device changes, config reloads
-  and language changes go to these views.
+- `app/liveViews` lists the long-lived views. Config reloads and language
+  changes go to these views.
+- `devices/deviceCatalog` is the window's one device list, built in `main.ts`.
+  Views read it and `subscribe` (`{devices, changedIds}`); they never fetch
+  devices themselves. A view's device is deleted when the list lacks it. Device
+  writes and config reloads call `refresh()` (one fetch at a time, coalesced; a
+  failure keeps the last list and is reported once).
+  A throwing listener is logged and skipped. `changedIds`: connection settings
+  edited (`connectionSettings.ts`), or what a hop uses of the jump host's (one
+  hop); a pane or the SFTP panel then shows `ui/settingsNotice` (Reconnect, only
+  to that device), once connected.
 
 ## Modules
 
@@ -33,7 +42,8 @@ Vite + vanilla TypeScript (no framework), xterm.js. Vitest + happy-dom.
   bounds a read.
 - `devices/` — device editor, validation, port-forward editor, import risks.
   `deviceManager` only wires its parts in `manager/`; `form/` reads, fills and
-  builds the device dialog's form.
+  builds the device dialog's form. `deviceCatalog` behind `devicesPort`
+  (`ipcDevicesPort`; tests use `FakeDevicesPort`).
 - `tunnels/` — Tunnels sidebar card. `tunnelSupervisor` (DOM-free) runs
   start/stop, status, edits and reconnect, and emits "changed";
   `tunnelsPanel` only renders cards on it and passes clicks. Backend behind

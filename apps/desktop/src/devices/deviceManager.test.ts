@@ -41,6 +41,8 @@ vi.mock("@tauri-apps/api/path", () => ({
 
 // Imported after the mock is registered so the module graph uses it.
 import { DeviceManagerImpl } from "./deviceManager";
+import { DeviceCatalog } from "./deviceCatalog";
+import { ipcDevicesPort } from "./devicesPort";
 
 const deviceA: Device = {
   id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -99,6 +101,46 @@ function q<T extends Element>(root: ParentNode, selector: string): T {
   return el;
 }
 
+describe("device list from the catalog", () => {
+  it("shows the list the catalog loads, without fetching on its own", async () => {
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string) => (cmd === "list_devices" ? [deviceA] : undefined));
+    const { container, catalog } = await setupManager();
+    expect(container.textContent).toContain("Alpha");
+
+    invokeMock.mockImplementation(async (cmd: string) => (cmd === "list_devices" ? [deviceB] : undefined));
+    await catalog.refresh();
+
+    expect(container.textContent).toContain("Bravo");
+    expect(container.textContent).not.toContain("Alpha");
+    expect(invokeMock.mock.calls.filter((c) => c[0] === "list_devices").length).toBe(2);
+  });
+
+  it("leaves a failed load to the catalog to report", async () => {
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string) => (cmd === "list_devices" ? [deviceA] : undefined));
+    const onError = vi.fn();
+    const { container, catalog } = await setupManager({ onError });
+
+    invokeMock.mockRejectedValueOnce({ code: "Io", message: "disk" });
+    await catalog.refresh();
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Alpha");
+  });
+
+  it("re-renders the catalog's list in a new language without fetching", async () => {
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string) => (cmd === "list_devices" ? [deviceA] : undefined));
+    const { container, manager } = await setupManager();
+
+    manager.retranslate();
+
+    expect(container.textContent).toContain("Alpha");
+    expect(invokeMock.mock.calls.filter((c) => c[0] === "list_devices").length).toBe(1);
+  });
+});
+
 describe("device list markup", () => {
   // `escapeHtml` used to leave quotes alone, so a quote in an id or tag ended
   // the `data-*` attribute it was written into.
@@ -122,13 +164,15 @@ async function setup(): Promise<HTMLElement> {
 }
 
 async function setupManager(
-  options: ConstructorParameters<typeof DeviceManagerImpl>[1] = {},
-): Promise<{ container: HTMLElement; manager: DeviceManagerImpl }> {
+  options: Omit<ConstructorParameters<typeof DeviceManagerImpl>[1], "catalog"> = {},
+): Promise<{ container: HTMLElement; manager: DeviceManagerImpl; catalog: DeviceCatalog }> {
   document.body.innerHTML = '<div class="device-list"></div>';
   const container = q<HTMLElement>(document, ".device-list");
-  const manager = new DeviceManagerImpl(container, options);
-  await manager.init();
-  return { container, manager };
+  const catalog = new DeviceCatalog(ipcDevicesPort);
+  await catalog.refresh();
+  const manager = new DeviceManagerImpl(container, { ...options, catalog });
+  manager.init();
+  return { container, manager, catalog };
 }
 
 function clickCancel(container: HTMLElement): void {
@@ -432,6 +476,18 @@ describe("device import/export", () => {
     expect(callsTo("export_devices").length).toBe(0);
   });
 
+  it("an export refreshes no device list", async () => {
+    saveMock.mockResolvedValue("C:/out/dasshboard-devices.json");
+    const onSuccess = vi.fn();
+    const { container } = await setupManager({ onSuccess });
+
+    q<HTMLButtonElement>(container, ".device-export-btn").click();
+    await flush();
+
+    expect(onSuccess).toHaveBeenCalled();
+    expect(callsTo("list_devices").length).toBe(1);
+  });
+
   it("Import click opens a file then calls import_devices and reloads the list", async () => {
     openMock.mockResolvedValue("C:/in/dasshboard-devices.json");
     const container = await setup();
@@ -693,10 +749,7 @@ describe("device save failure (F10)", () => {
 
   it("surfaces a save failure via onError and never via a dead field-error node", async () => {
     const onError = vi.fn();
-    document.body.innerHTML = '<div class="device-list"></div>';
-    const el = q<HTMLElement>(document, ".device-list");
-    const manager = new DeviceManagerImpl(el, { onError });
-    await manager.init();
+    const el = (await setupManager({ onError })).container;
 
     q<HTMLButtonElement>(el, `.btn-edit[data-device-id="${deviceA.id}"]`).click();
     const form = q<HTMLFormElement>(el, "#device-form");

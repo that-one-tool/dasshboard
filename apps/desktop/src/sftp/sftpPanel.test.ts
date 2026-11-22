@@ -106,6 +106,8 @@ vi.mock("@tauri-apps/api/path", () => ({
 }));
 
 import { SftpPanel, browsableDevices, type SftpPanelOptions } from "./sftpPanel";
+import { DeviceCatalog } from "../devices/deviceCatalog";
+import { ipcDevicesPort } from "../devices/devicesPort";
 import {
   listDevices,
   sftpConnect,
@@ -134,7 +136,7 @@ import { chooseConflict, confirm, prompt } from "../ui/confirm";
 import { pickDownloadDirPath } from "../ui/fileDialog";
 import type { AppError } from "../ipc";
 import { connectIcon, disconnectIcon } from "../ui/icons";
-import { t } from "../i18n";
+import { setLocale, t } from "../i18n";
 
 function sshDevice(id: string, name: string): Device {
   return {
@@ -181,10 +183,14 @@ function mountShell(): void {
 
 /** The panel under test, so `browse()` can drive its picker. */
 let activePanel: SftpPanel;
+/** The device list the panel under test reads (over the mocked `listDevices`). */
+let catalog: DeviceCatalog;
 
-async function setup(options: SftpPanelOptions = {}): Promise<SftpPanel> {
+async function setup(options: Omit<SftpPanelOptions, "catalog"> = {}): Promise<SftpPanel> {
   mountShell();
-  const panel = new SftpPanel(options);
+  catalog = new DeviceCatalog(ipcDevicesPort);
+  await catalog.refresh();
+  const panel = new SftpPanel({ ...options, catalog });
   await panel.init();
   await flush();
   activePanel = panel;
@@ -358,14 +364,233 @@ describe("SftpPanel", () => {
   });
 
   it("stays connected when the device list can't be read on refresh", async () => {
-    const panel = await setup();
+    await setup();
     await browse();
     vi.mocked(listDevices).mockRejectedValueOnce({ code: "Io", message: "busy" });
 
-    await panel.refresh();
+    await catalog.refresh();
+    await flush();
 
     expect(sftpDisconnect).not.toHaveBeenCalled();
     expect(q<HTMLInputElement>(".sftp-path").value).toBe("/home/j");
+  });
+
+  describe("a device edited or deleted while connected", () => {
+    function notice(): HTMLElement {
+      return q<HTMLElement>(".sftp-panel .settings-notice");
+    }
+
+    async function editDevice(edit: Partial<Device>): Promise<void> {
+      h.devices = [{ ...sshDevice("a", "Alpha"), ...edit } as Device];
+      await catalog.refresh();
+      await flush();
+    }
+
+    it("keeps browsing and offers Reconnect when its connection settings change", async () => {
+      await setup();
+      await browse();
+
+      await editDevice({ host: "10.0.0.9" });
+
+      expect(notice().hidden).toBe(false);
+      expect(notice().textContent).toContain("Settings changed — reconnect to apply");
+      expect(sftpDisconnect).not.toHaveBeenCalled();
+    });
+
+    it("shows nothing for a rename", async () => {
+      await setup();
+      await browse();
+
+      await editDevice({ name: "Renamed" });
+
+      expect(notice().hidden).toBe(true);
+    });
+
+    it("shows nothing while not connected", async () => {
+      await setup();
+
+      await editDevice({ host: "10.0.0.9" });
+
+      expect(notice().hidden).toBe(true);
+    });
+
+    it("Reconnect opens a new connection and clears the notice", async () => {
+      await setup();
+      await browse();
+      await editDevice({ host: "10.0.0.9" });
+      vi.mocked(sftpConnect).mockClear();
+
+      q<HTMLButtonElement>(".sftp-panel .settings-notice button").click();
+      await flush();
+
+      expect(sftpDisconnect).toHaveBeenCalledWith("a");
+      expect(sftpConnect).toHaveBeenCalledWith("a");
+      expect(notice().hidden).toBe(true);
+      expect(q<HTMLInputElement>(".sftp-path").value).toBe("/home/j");
+    });
+
+    it("a Disconnect clears the notice", async () => {
+      await setup();
+      await browse();
+      await editDevice({ host: "10.0.0.9" });
+
+      q<HTMLButtonElement>('[data-action="conn-toggle"]').click();
+      await flush();
+
+      expect(notice().hidden).toBe(true);
+    });
+
+    it("relabels the notice in a new language while connected", async () => {
+      const panel = await setup();
+      await browse();
+      await editDevice({ host: "10.0.0.9" });
+
+      setLocale("fr");
+      panel.retranslate();
+      setLocale("en");
+
+      expect(q<HTMLButtonElement>(".sftp-panel .settings-notice button").textContent).toBe("Reconnecter");
+    });
+
+    it("holds an edit made while connecting until the connection opens", async () => {
+      let finishConnect = (): void => {};
+      vi.mocked(sftpConnect).mockImplementationOnce(
+        () => new Promise<string>((resolve) => (finishConnect = () => resolve("/home/j"))),
+      );
+      await setup();
+      await browse();
+
+      await editDevice({ host: "10.0.0.9" });
+      expect(notice().hidden).toBe(true);
+
+      finishConnect();
+      await flush();
+
+      expect(notice().hidden).toBe(false);
+    });
+
+    it("holds an edit made during the first listing until it is shown", async () => {
+      let finishListing = (): void => {};
+      vi.mocked(sftpList).mockImplementationOnce(
+        () => new Promise((resolve) => (finishListing = () => resolve([]))),
+      );
+      await setup();
+      await browse();
+
+      await editDevice({ host: "10.0.0.9" });
+      expect(notice().hidden).toBe(true);
+
+      finishListing();
+      await flush();
+      expect(notice().hidden).toBe(false);
+    });
+
+    it("Reconnect waits out a listing in flight", async () => {
+      await setup();
+      await browse();
+      await editDevice({ host: "10.0.0.9" });
+      vi.mocked(sftpList).mockImplementationOnce(() => new Promise(() => {}));
+      q<HTMLButtonElement>('[data-action="refresh"]').click();
+
+      q<HTMLButtonElement>(".sftp-panel .settings-notice button").click();
+      await flush();
+
+      expect(sftpDisconnect).not.toHaveBeenCalled();
+    });
+
+    it("Reconnect does not connect behind a panel closed during the close", async () => {
+      let finishClose = (): void => {};
+      const panel = await setup();
+      await browse();
+      await editDevice({ host: "10.0.0.9" });
+      vi.mocked(sftpConnect).mockClear();
+      vi.mocked(sftpDisconnect).mockImplementationOnce(() => new Promise<void>((resolve) => (finishClose = resolve)));
+
+      q<HTMLButtonElement>(".sftp-panel .settings-notice button").click();
+      await flush();
+      panel.toggle();
+      await flush();
+      finishClose();
+      await flush();
+
+      expect(panel.isOpen()).toBe(false);
+      expect(sftpConnect).not.toHaveBeenCalled();
+    });
+
+    it("disconnects a device deleted while it was connecting", async () => {
+      let finishConnect = (): void => {};
+      vi.mocked(sftpConnect).mockImplementationOnce(
+        () => new Promise<string>((resolve) => (finishConnect = () => resolve("/home/j"))),
+      );
+      await setup();
+      await browse();
+      await editDevice({ host: "10.0.0.9" });
+      h.devices = [];
+      await catalog.refresh();
+
+      finishConnect();
+      await flush();
+
+      expect(sftpDisconnect).toHaveBeenCalledWith("a");
+      expect(q<HTMLInputElement>(".sftp-path").value).toBe("");
+      expect(q<HTMLButtonElement>('[data-action="conn-toggle"]').classList.contains("is-connected")).toBe(false);
+      expect(notice().hidden).toBe(true);
+    });
+
+    it("forgets an edit made while connecting when that connect fails", async () => {
+      let failConnect = (): void => {};
+      vi.mocked(sftpConnect).mockImplementationOnce(
+        () => new Promise<string>((_resolve, reject) => (failConnect = () => reject({ code: "Io", message: "refused" }))),
+      );
+      await setup({ onError: vi.fn() });
+      await browse();
+      await editDevice({ host: "10.0.0.9" });
+
+      failConnect();
+      await flush();
+      q<HTMLButtonElement>('[data-action="conn-toggle"]').click();
+      await flush();
+
+      expect(notice().hidden).toBe(true);
+    });
+
+    it("offers Reconnect when its jump host's connection settings change", async () => {
+      h.devices = [sshDevice("jump", "Jump"), { ...sshDevice("a", "Alpha"), proxyJump: "jump" } as Device];
+      await setup();
+      await browse();
+
+      h.devices = [{ ...sshDevice("jump", "Jump"), port: 2222 } as Device, { ...sshDevice("a", "Alpha"), proxyJump: "jump" } as Device];
+      await catalog.refresh();
+      await flush();
+
+      expect(notice().hidden).toBe(false);
+    });
+
+    it("reports a failed disconnect after its device is deleted", async () => {
+      const onError = vi.fn();
+      const panel = await setup({ onError });
+      await browse();
+      const failure = { code: "Io", message: "stuck" };
+      const connection = (panel as unknown as { connection: { disconnect(): Promise<void> } }).connection;
+      vi.spyOn(connection, "disconnect").mockRejectedValueOnce(failure);
+
+      h.devices = [];
+      await catalog.refresh();
+      await flush();
+
+      expect(onError).toHaveBeenCalledWith(failure);
+    });
+
+    it("disconnects when its device is deleted", async () => {
+      await setup();
+      await browse();
+
+      h.devices = [];
+      await catalog.refresh();
+      await flush();
+
+      expect(sftpDisconnect).toHaveBeenCalledWith("a");
+    });
   });
 
   it("typing a directory path and pressing Enter navigates there", async () => {
@@ -1196,6 +1421,7 @@ describe("SftpPanel", () => {
       const options = { onError: vi.fn(), onSuccess: vi.fn(), onLayoutChange: vi.fn(), onPersist: vi.fn() };
       const panel = new SftpPanel({
         ...options,
+        catalog: new DeviceCatalog(ipcDevicesPort),
         initialState: { open: true, collapsed: false, width: 360, deviceId: "a" },
       });
 
@@ -1205,7 +1431,7 @@ describe("SftpPanel", () => {
       panel.toggle();
       panel.retranslate();
       panel.onIdleSettingChange();
-      await panel.refresh();
+      await panel.reloadConfig();
       await panel.resyncConnection();
       await flush();
 
@@ -1238,7 +1464,7 @@ describe("SftpPanel", () => {
         h.progressHandler = handler;
         return unlisten;
       });
-      const panel = new SftpPanel();
+      const panel = new SftpPanel({ catalog: new DeviceCatalog(ipcDevicesPort) });
       const init = panel.init();
       panel.retranslate(); // before the subscription resolved
       panel.retranslate();
@@ -1599,7 +1825,7 @@ describe("SftpPanel", () => {
     await browse();
     h.bookmarks = ["/srv"];
 
-    await panel.refresh();
+    await panel.reloadConfig();
 
     const labels = [...document.querySelectorAll(".sftp-bookmark-go")].map((e) => e.textContent);
     expect(labels).toEqual(["srv"]);

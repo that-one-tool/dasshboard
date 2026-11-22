@@ -60,11 +60,9 @@ describe("DevicePicker", () => {
     expect(els.deviceSelect.value).toBe("b");
   });
 
-  it("knows saved devices of any kind, but only browsable ones for a restore", () => {
+  it("knows only browsable devices for a restore", () => {
     const { picker } = setup();
     picker.setDevices([ssh("a", "Alpha"), serial("s")]);
-    expect(picker.hasDevice("s")).toBe(true);
-    expect(picker.hasDevice("gone")).toBe(false);
     expect(picker.knownBrowsable("a")).toBe("a");
     expect(picker.knownBrowsable("s")).toBeNull();
     expect(picker.knownBrowsable(null)).toBeNull();

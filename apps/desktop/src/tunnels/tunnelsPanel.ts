@@ -16,9 +16,12 @@ import { t } from "../i18n";
 import { TunnelSupervisor } from "./tunnelSupervisor";
 import { ipcTunnelsPort, type TunnelsPort } from "./tunnelsPort";
 import type { TunnelRunState } from "./tunnelForwards";
+import type { DeviceCatalog } from "../devices/deviceCatalog";
 import { renderTunnelCards, makeTunnelCardShell, type TunnelCardActions } from "./tunnelCardView";
 
 export interface TunnelsPanelOptions {
+  /** The window's device list; device edits reach the tunnels through it. */
+  catalog: DeviceCatalog;
   onError?: (error: AppError) => void;
   onSuccess?: (message: string) => void;
   /** The remembered run state to restore on launch. */
@@ -43,14 +46,14 @@ export class TunnelsPanel {
   };
 
   constructor(
-    private readonly options: TunnelsPanelOptions = {},
+    private readonly options: TunnelsPanelOptions,
     port: TunnelsPort = ipcTunnelsPort,
   ) {
     // The sidebar card container (mirrors how the device/profile managers bind
     // to their `.device-list` / `.profile-list` sections).
     this.container = document.querySelector<HTMLElement>(".tunnel-list");
-    const { onError, initialState, onPersist } = options;
-    this.supervisor = new TunnelSupervisor(port, { onError, initialState, onPersist });
+    const { catalog, onError, initialState, onPersist } = options;
+    this.supervisor = new TunnelSupervisor(port, catalog, { onError, initialState, onPersist });
     this.supervisor.onChanged(() => this.render());
   }
 
@@ -67,11 +70,6 @@ export class TunnelsPanel {
   /** How many forwards are listening right now (the side menu's chip). */
   listeningForwardCount(): number {
     return this.supervisor.listeningForwardCount();
-  }
-
-  /** Re-fetch devices from the backend (device CRUD happened). */
-  refresh(): Promise<void> {
-    return this.supervisor.refresh();
   }
 
   /** Rebuild the card shell + rows in the current locale (language change). */
@@ -109,9 +107,7 @@ export class TunnelsPanel {
 }
 
 /** Constructs and initializes the Tunnels panel. */
-export function initTunnelsPanel(
-  options: TunnelsPanelOptions = {},
-): TunnelsPanel {
+export function initTunnelsPanel(options: TunnelsPanelOptions): TunnelsPanel {
   const panel = new TunnelsPanel(options);
   void panel.init();
   return panel;

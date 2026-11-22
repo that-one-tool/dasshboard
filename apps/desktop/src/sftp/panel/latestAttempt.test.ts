@@ -11,6 +11,15 @@ describe("LatestAttempt", () => {
     expect(attempts.isCurrent(second)).toBe(true);
   });
 
+  it("names the attempt that is current", () => {
+    const attempts = new LatestAttempt();
+    const attempt = attempts.begin();
+    expect(attempts.current()).toBe(attempt);
+    attempts.invalidate();
+    expect(attempts.isCurrent(attempts.current())).toBe(true);
+    expect(attempts.current()).not.toBe(attempt);
+  });
+
   it("makes the attempt in flight stale on invalidate", () => {
     const attempts = new LatestAttempt();
     const attempt = attempts.begin();

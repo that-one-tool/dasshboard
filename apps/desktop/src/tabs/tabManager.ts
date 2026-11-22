@@ -581,12 +581,6 @@ export class TabManager {
     for (const tab of this.tabs) fn(tab.grid);
   }
 
-  /** Map every tab's grid to a value — e.g. collecting the `refreshDevices()`
-   * promises for a `Promise.allSettled` in the reload path. */
-  mapGrids<T>(fn: (grid: Grid) => T): T[] {
-    return this.tabs.map((tab) => fn(tab.grid));
-  }
-
   /* -------------------------------------------------------------------------
    * Strip rendering
    * ---------------------------------------------------------------------- */

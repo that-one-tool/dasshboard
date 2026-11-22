@@ -1,11 +1,10 @@
 /** An in-memory `TunnelsPort` for tests: logs each backend call, hands out
  * tunnel ids t1, t2, …, pushes status events, and can hold or fail a call. */
 
-import type { AppError, Device, TunnelInfo, TunnelStatusEvent } from "../ipc";
+import type { AppError, TunnelInfo, TunnelStatusEvent } from "../ipc";
 import type { TunnelsPort } from "./tunnelsPort";
 
 type ScriptedMethod =
-  | "listDevices"
   | "listTunnels"
   | "startTunnel"
   | "stopTunnel"
@@ -19,7 +18,6 @@ export interface HeldCall {
 }
 
 export class FakeTunnelsPort implements TunnelsPort {
-  devices: Device[] = [];
   tunnels: TunnelInfo[] = [];
   /** Backend calls in order: `start dev-1 t1 f1,f2`, `stop t1`, `bind t1 f2`,
    * `unbind t1 f2`. */
@@ -60,11 +58,6 @@ export class FakeTunnelsPort implements TunnelsPort {
   newTunnelId(): string {
     this.idCount += 1;
     return this.lastTunnelId();
-  }
-
-  async listDevices(): Promise<Device[]> {
-    await this.run("listDevices");
-    return this.devices;
   }
 
   async listTunnels(): Promise<TunnelInfo[]> {

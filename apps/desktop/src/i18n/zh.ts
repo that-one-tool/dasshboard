@@ -115,6 +115,10 @@ export const zh: Messages = {
 	"pane.link.hint": "Ctrl+单击打开链接",
 	"pane.link.hintMac": "Cmd+单击打开链接",
 
+	/* -- settings-changed notice (ui/settingsNotice.ts) ---------------------- */
+	"settingsNotice.text": "设置已更改 — 重新连接后生效",
+	"settingsNotice.reconnect": "重新连接",
+
 	/* -- settings dialog ---------------------------------------------------- */
 	"settings.title": "设置",
 	"settings.tab.general": "常规",

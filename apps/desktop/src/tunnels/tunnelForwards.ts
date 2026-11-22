@@ -4,6 +4,7 @@
 import type { Device, Forward, ForwardStatus, SshDevice, TunnelStatus } from "../ipc";
 import { t } from "../i18n";
 import type { MessageKey } from "../i18n/en";
+import { connectionKeyOf, type SshConnectionField } from "../devices/connectionSettings";
 
 /** Per-device tunnel state the panel tracks between renders. */
 export interface DeviceTunnelState {
@@ -99,16 +100,14 @@ export function runningInOrder(device: SshDevice, running: Set<string>): string[
   return device.forwards.map((f) => f.id).filter((id) => running.has(id));
 }
 
+/** A tunnel forwards ports only: agent and X11 forwarding don't apply to it. */
+const TUNNEL_CONNECTION_FIELDS: readonly SshConnectionField[] = ["host", "port", "username", "auth", "proxyJump"];
+
 /** Whether the edit changed what a tunnel's SSH connection depends on, which
  * restarts it. (A new password needs no restart — the open connection already
  * authenticated — and the frontend never sees it anyway.) */
-export function isConnectionChanged(before: SshDevice, after: SshDevice): boolean {
-  return connectionKey(before) !== connectionKey(after);
-}
-
-function connectionKey(device: SshDevice): string {
-  const { host, port, username, auth, proxyJump } = device;
-  return JSON.stringify([host, port, username, auth, proxyJump]);
+export function isTunnelConnectionChanged(before: SshDevice, after: SshDevice): boolean {
+  return connectionKeyOf(before, TUNNEL_CONNECTION_FIELDS) !== connectionKeyOf(after, TUNNEL_CONNECTION_FIELDS);
 }
 
 /** Whether forward `id` exists in both versions of a device but was edited. */

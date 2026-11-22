@@ -1,0 +1,18 @@
+/* "Settings changed — reconnect to apply": a device's connection settings
+ * were edited under a live session. Its places (pane, Files panel) set the
+ * position. */
+.settings-notice {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.25rem 0.25rem 0.25rem 0.5rem;
+	background-color: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	color: var(--text-primary);
+	font-size: 0.8rem;
+}
+
+.settings-notice[hidden] {
+	display: none;
+}

@@ -107,6 +107,18 @@ import {
 } from "../ipc";
 import type { Device, OutputChunk } from "../ipc";
 import { setLocale } from "../i18n";
+import { DeviceCatalog } from "../devices/deviceCatalog";
+import { ipcDevicesPort } from "../devices/devicesPort";
+
+/** The device list of the pane built last (over the mocked `listDevices`). */
+let catalog: DeviceCatalog;
+
+/** A catalog loaded from the mocked `listDevices` as it is now. */
+async function loadCatalog(): Promise<DeviceCatalog> {
+  catalog = new DeviceCatalog(ipcDevicesPort);
+  await catalog.refresh();
+  return catalog;
+}
 
 const readText = vi.fn(async () => "PASTED");
 
@@ -179,7 +191,7 @@ describe("TerminalPane right-click paste listener", () => {
 
   it("fires exactly one paste per right-click after a reconnect", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
 
     // Pick the device (happy-dom doesn't auto-select the first <option>).
@@ -222,7 +234,7 @@ describe("TerminalPane native paste (Cmd+V / Edit → Paste)", () => {
 
   async function connectedPane(): Promise<{ root: HTMLElement; paste: ReturnType<typeof vi.fn> }> {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
     await (pane as unknown as { startSession(): Promise<void> }).startSession();
@@ -368,7 +380,7 @@ describe("TerminalPane connection: overlay, chip and buttons", () => {
 
   it("schedules a backoff reconnect on an unexpected drop and retries when it fires", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await connectThenDrop(pane);
 
     const detail = q<HTMLElement>(root, ".overlay-detail");
@@ -386,7 +398,7 @@ describe("TerminalPane connection: overlay, chip and buttons", () => {
     vi.mocked(listDevices).mockResolvedValue([h.device]); // no auto-reconnect
     const onError = vi.fn();
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root, { onError });
+    const pane = new TerminalPane(root, { catalog: await loadCatalog(), onError });
     await pane.init();
     pane.assignDevice(h.device.id);
     vi.mocked(connect).mockRejectedValueOnce({ code: "SshConnect", message: "refused" });
@@ -400,7 +412,7 @@ describe("TerminalPane connection: overlay, chip and buttons", () => {
 
   it("Cancel leaves the status chip on disconnected, not connecting", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await connectThenDrop(pane);
 
     q<HTMLButtonElement>(root, ".overlay-cancel").dispatchEvent(
@@ -412,7 +424,7 @@ describe("TerminalPane connection: overlay, chip and buttons", () => {
 
   it("does not reconnect a shell that exited on its own (exit / logout)", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     pane.assignDevice(h.device.id);
     await start(pane);
@@ -430,7 +442,7 @@ describe("TerminalPane connection: overlay, chip and buttons", () => {
 
   it("does not reconnect a user-initiated disconnect", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     pane.assignDevice(h.device.id);
     await start(pane);
@@ -458,7 +470,7 @@ describe("TerminalPane connection: overlay, chip and buttons", () => {
       { ...h.device, id: "dev-2", name: "Other", autoReconnect: true },
     ]);
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await connectThenDrop(pane); // reconnecting toward dev-1
     expect(q<HTMLElement>(root, ".overlay-detail").textContent).toContain("Attempt 1");
 
@@ -466,7 +478,7 @@ describe("TerminalPane connection: overlay, chip and buttons", () => {
     vi.mocked(listDevices).mockResolvedValue([
       { ...h.device, id: "dev-2", name: "Other", autoReconnect: true },
     ]);
-    await pane.refreshDevices();
+    await catalog.refresh();
     expect(pane.getDeviceId()).toBeNull();
 
     vi.mocked(connect).mockClear();
@@ -477,7 +489,7 @@ describe("TerminalPane connection: overlay, chip and buttons", () => {
 
   it("a manual Connect during the reconnect wait replaces the pending attempt", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await connectThenDrop(pane); // reconnect scheduled
 
     vi.mocked(connect).mockClear();
@@ -494,7 +506,7 @@ describe("TerminalPane connection: overlay, chip and buttons", () => {
 
   it("shows the session's output in its terminal", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     pane.assignDevice(h.device.id);
     const replies: Array<(c: OutputChunk) => void> = [];
@@ -515,7 +527,7 @@ describe("TerminalPane connection: overlay, chip and buttons", () => {
   it("honors a failure that arrives before connect() returns", async () => {
     vi.mocked(listDevices).mockResolvedValue([h.device]); // no auto-reconnect
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     pane.assignDevice(h.device.id);
     vi.mocked(connect).mockImplementationOnce(async (sessionId: string) => {
@@ -552,7 +564,7 @@ describe("TerminalPane connection: overlay, chip and buttons", () => {
   it("Retry after Cancel runs only the new session", async () => {
     distinctSessionIds();
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await dropThenReconnectAttempt(pane);
     q<HTMLButtonElement>(root, ".overlay-cancel").dispatchEvent(
       new MouseEvent("click", { bubbles: true }),
@@ -599,7 +611,7 @@ describe("TerminalPane terminal settings (Phase 5)", () => {
       scrollback: 1000,
     };
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root, { getTerminalSettings: () => current });
+    const pane = new TerminalPane(root, { catalog: await loadCatalog(), getTerminalSettings: () => current });
     await pane.init();
     pane.assignDevice(h.device.id);
 
@@ -614,7 +626,7 @@ describe("TerminalPane terminal settings (Phase 5)", () => {
 
   it("applyTerminalSettings updates a live terminal", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root, {
+    const pane = new TerminalPane(root, { catalog: await loadCatalog(),
       getTerminalSettings: () => ({
         fontSize: 14,
         fontFamily: "A",
@@ -657,7 +669,7 @@ describe("TerminalPane PTY size on connect", () => {
   /** Opens a session, then makes the next fit land on a new size — as when the
    * layout settles while the pane is still connecting. */
   async function paneResizedWhileConnecting(): Promise<TerminalPane> {
-    const pane = new TerminalPane(q<HTMLElement>(document, "#pane-root"));
+    const pane = new TerminalPane(q<HTMLElement>(document, "#pane-root"), { catalog: await loadCatalog() });
     await pane.init();
     pane.assignDevice(h.device.id);
     await internals(pane).startSession();
@@ -677,7 +689,7 @@ describe("TerminalPane PTY size on connect", () => {
   });
 
   it("pushes the size when connected arrives before connect() returns", async () => {
-    const pane = new TerminalPane(q<HTMLElement>(document, "#pane-root"));
+    const pane = new TerminalPane(q<HTMLElement>(document, "#pane-root"), { catalog: await loadCatalog() });
     await pane.init();
     pane.assignDevice(h.device.id);
     vi.mocked(connect).mockImplementationOnce(async () => {
@@ -713,7 +725,7 @@ describe("TerminalPane layout resizes", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   async function connectedPane(): Promise<TerminalPane> {
-    const pane = new TerminalPane(q<HTMLElement>(document, "#pane-root"));
+    const pane = new TerminalPane(q<HTMLElement>(document, "#pane-root"), { catalog: await loadCatalog() });
     await pane.init();
     pane.assignDevice(h.device.id);
     await (pane as unknown as { startSession(): Promise<void> }).startSession();
@@ -767,7 +779,7 @@ describe("TerminalPane wide-character support", () => {
   // addon isn't loaded/activated in createSessionTerminal().
   it("activates the Unicode 11 width table on a new session terminal", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     pane.assignDevice(h.device.id);
 
@@ -791,7 +803,7 @@ describe("TerminalPane broadcast input", () => {
 
   it("sendInput writes to the PTY only once connected", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     pane.assignDevice(h.device.id);
 
@@ -814,7 +826,7 @@ describe("TerminalPane broadcast input", () => {
   // the next one only goes once the one before it is done.
   it("sends input in order, one write at a time", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     pane.assignDevice(h.device.id);
     await start(pane);
@@ -838,7 +850,7 @@ describe("TerminalPane broadcast input", () => {
   it("fires onInput for locally-typed input while connected", async () => {
     const onInput = vi.fn();
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root, { onInput });
+    const pane = new TerminalPane(root, { catalog: await loadCatalog(), onInput });
     await pane.init();
     pane.assignDevice(h.device.id);
     await start(pane);
@@ -858,7 +870,7 @@ describe("TerminalPane broadcast input", () => {
   it("does not broadcast the terminal's own replies (e.g. a device-attributes answer)", async () => {
     const onInput = vi.fn();
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root, { onInput });
+    const pane = new TerminalPane(root, { catalog: await loadCatalog(), onInput });
     await pane.init();
     pane.assignDevice(h.device.id);
     await start(pane);
@@ -883,7 +895,7 @@ describe("TerminalPane broadcast input", () => {
     // other would loop forever.
     const onInput = vi.fn();
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root, { onInput });
+    const pane = new TerminalPane(root, { catalog: await loadCatalog(), onInput });
     await pane.init();
     pane.assignDevice(h.device.id);
     await start(pane);
@@ -901,6 +913,247 @@ describe("TerminalPane broadcast input", () => {
   });
 });
 
+describe("TerminalPane device list from the catalog", () => {
+  beforeEach(() => {
+    h.statusHandler = null;
+    vi.mocked(listDevices).mockClear();
+    vi.mocked(listDevices).mockResolvedValue([h.device]);
+    vi.mocked(disconnect).mockClear();
+    document.body.innerHTML = '<div id="pane-root"></div>';
+  });
+
+  function optionIds(root: HTMLElement): string[] {
+    return [...root.querySelectorAll<HTMLOptionElement>(".pane-device-select option")].map((o) => o.value);
+  }
+
+  function notice(root: HTMLElement): HTMLElement {
+    return q<HTMLElement>(root, ".pane-body .settings-notice");
+  }
+
+  async function connectedPane(): Promise<{ root: HTMLElement; pane: TerminalPane }> {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+    await (pane as unknown as { startSession(): Promise<void> }).startSession();
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    return { root, pane };
+  }
+
+  async function editDevice(edit: Partial<Device>): Promise<void> {
+    vi.mocked(listDevices).mockResolvedValue([{ ...h.device, ...edit } as Device]);
+    await catalog.refresh();
+  }
+
+  it("shows the catalog's devices without fetching them itself", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
+    await pane.init();
+
+    expect(optionIds(root)).toContain(h.device.id);
+    expect(listDevices).toHaveBeenCalledTimes(1);
+  });
+
+  it("adds a device the catalog gains to its dropdown", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
+    await pane.init();
+
+    vi.mocked(listDevices).mockResolvedValue([h.device, { ...h.device, id: "dev-2", name: "Other" }]);
+    await catalog.refresh();
+
+    expect(optionIds(root)).toContain("dev-2");
+  });
+
+  it("stops following the catalog once disposed", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
+    await pane.init();
+    pane.dispose();
+
+    vi.mocked(listDevices).mockResolvedValue([h.device, { ...h.device, id: "dev-2", name: "Other" }]);
+    await catalog.refresh();
+
+    expect(optionIds(root)).not.toContain("dev-2");
+  });
+
+  it("keeps its session and offers Reconnect when its device's connection settings change", async () => {
+    const { root, pane } = await connectedPane();
+    expect(notice(root).hidden).toBe(true);
+
+    await editDevice({ host: "10.0.0.9" });
+
+    expect(notice(root).hidden).toBe(false);
+    expect(notice(root).textContent).toContain("Settings changed — reconnect to apply");
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(pane.isConnected()).toBe(true);
+  });
+
+  it("shows nothing for a rename", async () => {
+    const { root } = await connectedPane();
+
+    await editDevice({ name: "Renamed" });
+
+    expect(notice(root).hidden).toBe(true);
+  });
+
+  it("shows nothing while no session is open", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
+    await pane.init();
+    pane.assignDevice(h.device.id);
+
+    await editDevice({ host: "10.0.0.9" });
+
+    expect(notice(root).hidden).toBe(true);
+  });
+
+  /** A pane whose connect waits until the returned function is called. */
+  async function connectingPane(): Promise<{ root: HTMLElement; finishConnect: () => void }> {
+    let finishConnect = (): void => {};
+    vi.mocked(connect).mockImplementationOnce(
+      () => new Promise<string>((resolve) => (finishConnect = () => resolve(h.sessionId))),
+    );
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+    void (pane as unknown as { startSession(): Promise<void> }).startSession();
+    await flush();
+    return { root, finishConnect: () => finishConnect() };
+  }
+
+  it("holds a settings edit made while connecting until the session opens", async () => {
+    const { root, finishConnect } = await connectingPane();
+
+    await editDevice({ host: "10.0.0.9" });
+    expect(notice(root).hidden).toBe(true);
+
+    finishConnect();
+    await flush();
+    expect(notice(root).hidden).toBe(true);
+
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    expect(notice(root).hidden).toBe(false);
+  });
+
+  // `connect()` only starts the session: the SSH handshake comes after it.
+  it("holds a settings edit made during the handshake until the session is connected", async () => {
+    const { root, finishConnect } = await connectingPane();
+    finishConnect();
+    await flush();
+
+    await editDevice({ host: "10.0.0.9" });
+    expect(notice(root).hidden).toBe(true);
+
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+    expect(notice(root).hidden).toBe(false);
+  });
+
+  it("drops a settings edit made while connecting when the connect fails", async () => {
+    let failConnect = (): void => {};
+    vi.mocked(connect).mockImplementationOnce(
+      () => new Promise<string>((_resolve, reject) => (failConnect = () => reject(new Error("refused")))),
+    );
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
+    await pane.init();
+    q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
+    const attempt = (pane as unknown as { startSession(): Promise<void> }).startSession();
+    await flush();
+    await editDevice({ host: "10.0.0.9" });
+
+    failConnect();
+    await attempt;
+    await (pane as unknown as { startSession(): Promise<void> }).startSession();
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+
+    expect(notice(root).hidden).toBe(true);
+  });
+
+  it("drops a held edit, and the opening session, when the device is then deleted", async () => {
+    const { root, finishConnect } = await connectingPane();
+    await editDevice({ host: "10.0.0.9" });
+    vi.mocked(listDevices).mockResolvedValue([{ ...h.device, id: "dev-2", name: "Other" }]);
+    await catalog.refresh();
+
+    finishConnect();
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
+
+    expect(disconnect).toHaveBeenCalledWith(h.sessionId);
+    expect(notice(root).hidden).toBe(true);
+  });
+
+  it("drops the shown notice when the device is then deleted", async () => {
+    const { root } = await connectedPane();
+    await editDevice({ host: "10.0.0.9" });
+    vi.mocked(listDevices).mockResolvedValue([]);
+    await catalog.refresh();
+
+    expect(notice(root).hidden).toBe(true);
+  });
+
+  it("Reconnect only ever connects the device the notice is about", async () => {
+    const { root, pane } = await connectedPane();
+    await editDevice({ host: "10.0.0.9" });
+    pane.assignDevice("dev-2");
+    vi.mocked(connect).mockClear();
+
+    q<HTMLButtonElement>(notice(root), "button").click();
+    await flush();
+
+    expect(vi.mocked(connect).mock.calls.map((call) => call[1])).toEqual([h.device.id]);
+  });
+
+  it("offers Reconnect when the jump host's connection settings change", async () => {
+    const jump = { ...h.device, id: "jump", name: "Jump" };
+    vi.mocked(listDevices).mockResolvedValue([jump, { ...h.device, proxyJump: "jump" }]);
+    const { root } = await connectedPane();
+
+    vi.mocked(listDevices).mockResolvedValue([{ ...jump, port: 2222 }, { ...h.device, proxyJump: "jump" }]);
+    await catalog.refresh();
+
+    expect(notice(root).hidden).toBe(false);
+  });
+
+  it("Reconnect opens a new session and clears the notice", async () => {
+    const { root } = await connectedPane();
+    await editDevice({ host: "10.0.0.9" });
+    vi.mocked(connect).mockClear();
+
+    q<HTMLButtonElement>(notice(root), "button").click();
+    await flush();
+
+    expect(connect).toHaveBeenCalled();
+    expect(notice(root).hidden).toBe(true);
+  });
+
+  it("a Disconnect clears the notice", async () => {
+    const { root } = await connectedPane();
+    await editDevice({ host: "10.0.0.9" });
+
+    q<HTMLButtonElement>(root, ".pane-disconnect").click();
+    await flush();
+    h.statusHandler?.({ sessionId: h.sessionId, status: "disconnected" });
+
+    expect(notice(root).hidden).toBe(true);
+  });
+
+  it("relabels the notice in a new language", async () => {
+    const { root, pane } = await connectedPane();
+    await editDevice({ host: "10.0.0.9" });
+
+    setLocale("fr");
+    pane.retranslate();
+    setLocale("en");
+
+    expect(q<HTMLButtonElement>(notice(root), "button").textContent).toBe("Reconnecter");
+  });
+});
+
 describe("TerminalPane referential cleanup (Phase 4)", () => {
   beforeEach(() => {
     vi.mocked(listDevices).mockClear();
@@ -910,18 +1163,29 @@ describe("TerminalPane referential cleanup (Phase 4)", () => {
 
   // Guards the Phase 4 Blocking finding: a deleted device's id must not survive
   // in the pane's saved-state, else the next Save re-persists a dangling
-  // reference the backend just cleaned up. FAILS if `refreshDevices()` doesn't
+  // reference the backend just cleaned up. FAILS if a catalog change doesn't
   // clear `deviceId` when the assigned device leaves the list.
-  it("drops a deleted device's id on refreshDevices so it can't be re-saved", async () => {
+  it("drops a deleted device's id when the catalog loses it, so it can't be re-saved", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     pane.assignDevice(h.device.id);
     expect(pane.getDeviceId()).toBe(h.device.id);
 
     // The device is deleted → the next device list no longer contains it.
     vi.mocked(listDevices).mockResolvedValueOnce([]);
-    await pane.refreshDevices();
+    await catalog.refresh();
+
+    expect(pane.getDeviceId()).toBeNull();
+  });
+
+  it("drops an assigned id the device list never had", async () => {
+    const root = q<HTMLElement>(document, "#pane-root");
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
+    await pane.init();
+    pane.assignDevice("never-saved");
+
+    await catalog.refresh();
 
     expect(pane.getDeviceId()).toBeNull();
   });
@@ -934,7 +1198,7 @@ describe("TerminalPane referential cleanup (Phase 4)", () => {
   // device disappears mid-session.
   it("force-disconnects a live session when its device is deleted, and reflects idle honestly", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
 
@@ -947,7 +1211,7 @@ describe("TerminalPane referential cleanup (Phase 4)", () => {
 
     vi.mocked(disconnect).mockClear();
     vi.mocked(listDevices).mockResolvedValueOnce([]);
-    await pane.refreshDevices();
+    await catalog.refresh();
 
     expect(pane.getDeviceId()).toBeNull();
     expect(pane.hasLiveSession()).toBe(false);
@@ -970,7 +1234,7 @@ describe("TerminalPane status chip", () => {
 
   async function connectedPane(): Promise<{ root: HTMLElement; pane: TerminalPane }> {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
     await (pane as unknown as { startSession(): Promise<void> }).startSession();
@@ -981,7 +1245,7 @@ describe("TerminalPane status chip", () => {
 
   it("starts idle, labelled Idle", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    await new TerminalPane(root).init();
+    await new TerminalPane(root, { catalog: await loadCatalog() }).init();
 
     const chip = q<HTMLElement>(root, ".pane-status");
     expect(chip.classList.contains("pane-status-idle")).toBe(true);
@@ -1003,7 +1267,7 @@ describe("TerminalPane status chip", () => {
 
   it("uses icon buttons for connect/disconnect, labelled for hover and assistive tech", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
 
     const connect = q<HTMLButtonElement>(root, ".pane-connect");
@@ -1048,7 +1312,7 @@ describe("TerminalPane connection status (side-menu count)", () => {
 
   async function connectedPane(onStatusChange: () => void): Promise<TerminalPane> {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root, { onStatusChange });
+    const pane = new TerminalPane(root, { catalog: await loadCatalog(), onStatusChange });
     await pane.init();
     q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
     await (pane as unknown as { startSession(): Promise<void> }).startSession();
@@ -1096,7 +1360,7 @@ describe("TerminalPane device picker and device reloads", () => {
 
   it("locks the device picker while a connect is in flight, and unlocks it when that fails", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     const select = q<HTMLSelectElement>(root, ".pane-device-select");
     select.value = h.device.id;
@@ -1117,7 +1381,7 @@ describe("TerminalPane device picker and device reloads", () => {
 
   it("keeps its device and live session when reloading the device list fails", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
     await start(pane);
@@ -1125,7 +1389,7 @@ describe("TerminalPane device picker and device reloads", () => {
     h.statusHandler?.({ sessionId: h.sessionId, status: "connected" });
 
     vi.mocked(listDevices).mockRejectedValueOnce({ code: "ipc", message: "busy" });
-    await pane.refreshDevices();
+    await catalog.refresh();
 
     expect(vi.mocked(disconnect)).not.toHaveBeenCalled();
     expect(pane.getDeviceId()).toBe(h.device.id);
@@ -1141,7 +1405,7 @@ describe("TerminalPane device name", () => {
 
   it("sends through a session sender only while that same session is live", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
     await (pane as unknown as { startSession(): Promise<void> }).startSession();
@@ -1168,7 +1432,7 @@ describe("TerminalPane device name", () => {
   });
 
   it("names its assigned device, and is blank when it has none", async () => {
-    const pane = new TerminalPane(q<HTMLElement>(document, "#pane-root"));
+    const pane = new TerminalPane(q<HTMLElement>(document, "#pane-root"), { catalog: await loadCatalog() });
     await pane.init();
     expect(pane.getDeviceName()).toBe("");
     pane.assignDevice(h.device.id);
@@ -1188,7 +1452,7 @@ describe("TerminalPane find and save output", () => {
 
   async function newPane(): Promise<{ root: HTMLElement; pane: TerminalPane }> {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
     return { root, pane };
@@ -1247,7 +1511,7 @@ describe("TerminalPane find and save output", () => {
     vi.mocked(saveTextFile).mockRejectedValue({ code: "Io", message: "disk full" });
     const onError = vi.fn();
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root, { onError });
+    const pane = new TerminalPane(root, { catalog: await loadCatalog(), onError });
     await pane.init();
     q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
     await connectPane(pane);
@@ -1273,7 +1537,7 @@ describe("TerminalPane output recording", () => {
 
   async function connectedPane(onError?: (message: string) => void): Promise<{ root: HTMLElement; pane: TerminalPane }> {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root, { onError });
+    const pane = new TerminalPane(root, { catalog: await loadCatalog(), onError });
     await pane.init();
     pane.assignDevice(h.device.id);
     await start(pane);
@@ -1289,7 +1553,7 @@ describe("TerminalPane output recording", () => {
 
   it("can record once a session is open", async () => {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     expect(recordButton(root).disabled).toBe(true);
     pane.assignDevice(h.device.id);
@@ -1349,7 +1613,7 @@ describe("TerminalPane terminal keys, links and copy-on-select", () => {
 
   async function connectedPane(): Promise<{ root: HTMLElement; pane: TerminalPane; terminal: Internals["terminal"] }> {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     q<HTMLSelectElement>(root, ".pane-device-select").value = h.device.id;
     await (pane as unknown as Internals).startSession();
@@ -1430,7 +1694,7 @@ describe("TerminalPane input that stops getting through", () => {
 
   async function connectedPane(): Promise<{ chip: HTMLElement; pane: TerminalPane }> {
     const root = q<HTMLElement>(document, "#pane-root");
-    const pane = new TerminalPane(root);
+    const pane = new TerminalPane(root, { catalog: await loadCatalog() });
     await pane.init();
     pane.assignDevice(h.device.id);
     await (pane as unknown as { startSession(): Promise<void> }).startSession();

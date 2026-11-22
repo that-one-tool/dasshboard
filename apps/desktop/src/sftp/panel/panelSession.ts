@@ -25,6 +25,11 @@ export class PanelSession {
     return this.connectInFlight;
   }
 
+  /** The device being connected to (null when no connect is in flight). */
+  get connectingDeviceId(): string | null {
+    return this.connectInFlight ? this.picked : null;
+  }
+
   /** True after an idle-timeout disconnect, so the disconnected state can say so. */
   get idleDisconnected(): boolean {
     return this.droppedWhenIdle;

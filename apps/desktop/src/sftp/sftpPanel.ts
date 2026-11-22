@@ -20,14 +20,9 @@
  */
 
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import {
-  listDevices,
-  onSftpEditChanged,
-  onSftpProgress,
-  type AppError,
-  type Device,
-  type SftpPanelState,
-} from "../ipc";
+import { onSftpEditChanged, onSftpProgress, type AppError, type SftpPanelState } from "../ipc";
+import type { DeviceCatalog, DeviceChange } from "../devices/deviceCatalog";
+import { SettingsNotice } from "../ui/settingsNotice";
 import { t } from "../i18n";
 import { confirm, chooseEditConflict } from "../ui/confirm";
 import { EditSessions } from "./editSessions";
@@ -56,6 +51,9 @@ import { TransferActions } from "./panel/transferActions";
 export { browsableDevices } from "./panel/devicePicker";
 
 export interface SftpPanelOptions {
+  /** The window's device list: the picker shows it; an edit or deletion of
+   * the connected device reaches the panel through it. */
+  catalog: DeviceCatalog;
   onError?: (error: AppError) => void;
   onSuccess?: (message: string) => void;
   /**
@@ -106,6 +104,9 @@ export class SftpPanel {
     onCommit: () => this.persist(),
   });
   private readonly picker = new DevicePicker(() => this.els, this.session);
+  private readonly settingsNotice = new SettingsNotice((deviceId) =>
+    this.whenIdle(() => this.connection.restart(deviceId)),
+  );
   private readonly queue = new QueueController({
     els: () => this.els,
     feedback: this.feedback,
@@ -182,10 +183,11 @@ export class SftpPanel {
     onConnected: (deviceId, startDir) => this.onConnected(deviceId, startDir),
     onReleased: (deviceId) => this.releaseDevice(deviceId),
     showDisconnected: () => this.browser.showDisconnected(),
-    showConnecting: (deviceId) => this.browser.showConnecting(this.picker.nameOf(deviceId)),
+    showConnecting: (deviceId) => this.onConnecting(deviceId),
     syncPicker: () => this.picker.sync(),
     clearIdle: () => this.idle.clear(),
     persist: () => this.persist(),
+    onSettled: () => this.settleNotice(),
   });
   private readonly idle: IdleDisconnect = new IdleDisconnect({
     session: this.session,
@@ -199,6 +201,7 @@ export class SftpPanel {
   /** Backend event subscriptions (`sftp_progress`, `sftp_edit_changed`), live
    * while the panel exists. */
   private subscriptions: Promise<UnlistenFn>[] = [];
+  private unsubscribeDevices: (() => void) | null = null;
 
   private readonly clickActions = new Map<string, (target: Element) => void>([
     ["hide", () => void this.hide()],
@@ -228,14 +231,17 @@ export class SftpPanel {
     ["bulk-clear", () => this.list.clearSelection()],
   ]);
 
-  constructor(private readonly options: SftpPanelOptions = {}) {
+  constructor(private readonly options: SftpPanelOptions) {
     if (this.root) this.listen(this.root);
   }
 
   async init(): Promise<void> {
     if (!this.root) return;
     this.build(this.root);
-    this.picker.setDevices((await this.listDevicesOrNull()) ?? []);
+    this.picker.setDevices(this.options.catalog.list());
+    this.unsubscribeDevices ??= this.options.catalog.subscribe(
+      (change) => void this.feedback.attempt(() => this.applyDevices(change)),
+    );
     this.applyInitialState();
   }
 
@@ -245,20 +251,11 @@ export class SftpPanel {
     return this.shell.layout.persisted(this.session.shownDeviceId());
   }
 
-  /** Re-fetch devices and refresh the picker (device CRUD happened), and the
-   * connected device's bookmarks (config reload). */
-  async refresh(): Promise<void> {
-    if (this.root) await this.reloadDevices();
-  }
-
-  private async reloadDevices(): Promise<void> {
-    // Unreadable list: keep what we have rather than take the connected
-    // device for deleted.
-    const devices = await this.listDevicesOrNull();
-    if (devices) await this.applyDevices(devices);
-    // Another instance may have changed its bookmarks.
+  /** Config reload: another instance may have changed the connected
+   * device's bookmarks. */
+  async reloadConfig(): Promise<void> {
     const deviceId = this.session.activeDeviceId;
-    if (deviceId) await this.bookmarks.load(deviceId);
+    if (this.root && deviceId) await this.bookmarks.load(deviceId);
   }
 
   /** Drop to the disconnected state if the backend no longer holds this
@@ -273,6 +270,7 @@ export class SftpPanel {
    * language change is initiated from the settings dialog.
    */
   retranslate(): void {
+    this.settingsNotice.retranslate();
     const root = this.rebuildableRoot();
     if (!root) return;
     this.build(root);
@@ -292,6 +290,8 @@ export class SftpPanel {
   /** Stop listening for progress events + clear timers (tests; the app keeps the
    * panel for its lifetime). */
   dispose(): void {
+    this.unsubscribeDevices?.();
+    this.unsubscribeDevices = null;
     const subscriptions = this.subscriptions;
     this.subscriptions = [];
     for (const subscription of subscriptions) void subscription.then((unlisten) => unlisten());
@@ -354,6 +354,7 @@ export class SftpPanel {
 
   private build(root: HTMLElement): void {
     this.els = buildPanelElements(root);
+    this.els.status.before(this.settingsNotice.element);
     this.queue.render();
     this.renderEdits();
     wireControlEvents(this.els, {
@@ -384,21 +385,40 @@ export class SftpPanel {
     this.notifyLayout();
   }
 
-  private async applyDevices(devices: Device[]): Promise<void> {
-    this.picker.setDevices(devices);
-    // The active device may have been deleted out from under us.
-    const deviceId = this.session.activeDeviceId;
-    if (deviceId && !this.picker.hasDevice(deviceId)) await this.connection.disconnect();
+  private async applyDevices(change: DeviceChange): Promise<void> {
+    this.picker.setDevices(change.devices);
+    if (this.isActiveGone()) await this.connection.disconnect();
+    else this.offerReconnect(change);
   }
 
-  /** The saved devices, or `null` (reported) when they can't be read. */
-  private async listDevicesOrNull(): Promise<Device[] | null> {
-    try {
-      return await listDevices();
-    } catch (err) {
-      this.feedback.notify(err);
-      return null;
-    }
+  private isActiveGone(): boolean {
+    const deviceId = this.session.activeDeviceId;
+    return deviceId !== null && !this.isListed(deviceId);
+  }
+
+  private isListed(deviceId: string): boolean {
+    return this.options.catalog.get(deviceId) !== undefined;
+  }
+
+  private offerReconnect({ changedIds }: DeviceChange): void {
+    const deviceId = this.liveDeviceId();
+    if (deviceId && changedIds.includes(deviceId)) this.showSettingsChanged(deviceId);
+  }
+
+  /** The device connected, or being connected to. */
+  private liveDeviceId(): string | null {
+    return this.session.activeDeviceId ?? this.session.connectingDeviceId;
+  }
+
+  /** The settings apply on the next connect: offer one, once the current one
+   * has settled (Reconnect is blocked until then, like the connect toggle). */
+  private showSettingsChanged(deviceId: string): void {
+    if (this.session.connecting) this.settingsNotice.markPending(deviceId);
+    else this.settingsNotice.show(deviceId);
+  }
+
+  private settleNotice(): void {
+    if (this.session.isConnected()) this.settingsNotice.showPending();
   }
 
   /** Run `action` unless a connect/list/transfer is in flight. */
@@ -446,13 +466,20 @@ export class SftpPanel {
     this.controls.updateConnToggle();
   }
 
+  private onConnecting(deviceId: string): void {
+    this.settingsNotice.hide(); // a new attempt reads the current settings
+    this.browser.showConnecting(this.picker.nameOf(deviceId));
+  }
+
   private async onConnected(deviceId: string, startDir: string): Promise<void> {
+    if (!this.isListed(deviceId)) return this.connection.disconnect(); // deleted meanwhile
     await this.bookmarks.load(deviceId);
     await this.browser.goTo(startDir);
   }
 
   /** Drop what belonged to the closing connection. */
   private releaseDevice(deviceId: string | null): void {
+    this.settingsNotice.hide();
     this.clipboard.clear(); // a pending move is tied to this connection
     this.bookmarks.clear();
     if (!deviceId) return;
@@ -485,7 +512,7 @@ export class SftpPanel {
 }
 
 /** Constructs and initializes the Files (SFTP) panel. */
-export function initSftpPanel(options: SftpPanelOptions = {}): SftpPanel {
+export function initSftpPanel(options: SftpPanelOptions): SftpPanel {
   const panel = new SftpPanel(options);
   void panel.init();
   return panel;

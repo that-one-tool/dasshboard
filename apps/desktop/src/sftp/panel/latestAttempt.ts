@@ -10,6 +10,10 @@ export class LatestAttempt {
     return this.latest;
   }
 
+  current(): number {
+    return this.latest;
+  }
+
   isCurrent(attempt: number): boolean {
     return attempt === this.latest;
   }

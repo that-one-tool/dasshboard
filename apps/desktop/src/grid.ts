@@ -20,6 +20,7 @@ import { shouldConfirmTeardown, type WorkspaceSnapshot } from "./profiles/worksp
 import { requireEl } from "./ui/dom";
 import { t } from "./i18n";
 import type { TerminalSettings } from "./ipc";
+import type { DeviceCatalog } from "./devices/deviceCatalog";
 import { draggedModel, layoutGrid, type DragAxis, type SplitterDrag } from "./grid/gridSplitters";
 import {
   markActivePreset,
@@ -30,6 +31,8 @@ import {
 import { confirmSessionTeardown } from "./ui/sessionTeardown";
 
 export interface GridOptions {
+  /** The window's device list, handed to each pane. */
+  catalog: DeviceCatalog;
   onError?: (message: string) => void;
   /**
    * Fired after any change to the saved-state of the workspace (grid shape,
@@ -85,7 +88,7 @@ export class Grid {
   private dragPointer = { x: 0, y: 0 };
   private dragRaf = 0;
 
-  constructor(root: HTMLElement, options: GridOptions = {}) {
+  constructor(root: HTMLElement, options: GridOptions) {
     this.root = root;
     this.options = options;
     this.model = presetToModel("1x1");
@@ -107,11 +110,6 @@ export class Grid {
     this.container.append(...this.cells.map((c) => c.wrapper));
     this.applyLayout();
     this.setFocus(0, false);
-  }
-
-  /** Reloads every pane's device dropdown (after a device add/edit/delete). */
-  async refreshDevices(): Promise<void> {
-    await Promise.all(this.cells.map((c) => c.pane.refreshDevices()));
   }
 
   /** Re-render the toolbar and every pane's chrome in the current locale
@@ -459,9 +457,18 @@ export class Grid {
 
   /** Creates `count` cells, or `null` when the grid is disposed meanwhile:
    * those cells were never in `cells`, so `dispose()` missed them and they are
-   * disposed here instead. */
+   * disposed here instead. Likewise when a later cell fails to start. */
   private async createLiveCells(count: number): Promise<Cell[] | null> {
     const cells: Cell[] = [];
+    try {
+      return await this.fillLiveCells(cells, count);
+    } catch (error) {
+      disposeAbandoned(cells);
+      throw error;
+    }
+  }
+
+  private async fillLiveCells(cells: Cell[], count: number): Promise<Cell[] | null> {
     for (let i = 0; i < count; i++) {
       cells.push(await this.createCell());
       if (this.disposed) return disposeAbandoned(cells);
@@ -472,7 +479,8 @@ export class Grid {
   private async createCell(): Promise<Cell> {
     const wrapper = document.createElement("div");
     wrapper.className = "grid-cell";
-    const pane = new TerminalPane(wrapper, {
+    const pane: TerminalPane = new TerminalPane(wrapper, {
+      catalog: this.options.catalog,
       onError: this.options.onError,
       onChange: () => this.emitChange(),
       onStatusChange: () => this.options.onConnectionChange?.(),
@@ -481,18 +489,19 @@ export class Grid {
       // `const` has been initialised (once a live terminal emits input).
       onInput: (data) => this.onPaneInput(pane, data),
     });
-    // Clicking a cell focuses it (ring + keyboard focus into the terminal),
-    // unless the click landed on a header control (device select / buttons),
-    // in which case the native control keeps focus.
-    wrapper.addEventListener("mousedown", (e) => {
-      const index = this.indexOfWrapper(wrapper);
-      if (index < 0) return;
-      const onHeaderControl =
-        e.target instanceof HTMLElement && e.target.closest(".pane-header");
-      this.setFocus(index, !onHeaderControl);
-    });
-    await pane.init();
+    wrapper.addEventListener("mousedown", (event) => this.focusClickedCell(wrapper, event));
+    await initOrDispose(pane);
     return { wrapper, pane };
+  }
+
+  /** Clicking a cell focuses it (ring + keyboard focus into the terminal),
+   * unless the click landed on a header control (device select / buttons),
+   * in which case the native control keeps focus. */
+  private focusClickedCell(wrapper: HTMLElement, event: MouseEvent): void {
+    const index = this.indexOfWrapper(wrapper);
+    if (index < 0) return;
+    const onHeaderControl = event.target instanceof HTMLElement && event.target.closest(".pane-header");
+    this.setFocus(index, !onHeaderControl);
   }
 
   private indexOfWrapper(wrapper: HTMLElement): number {
@@ -629,8 +638,19 @@ function destroyCell(cell: Cell): void {
   cell.wrapper.remove();
 }
 
-/** Disposes cells a disposed grid never adopted; always `null`. */
+/** Disposes cells the grid never adopted; always `null`. */
 function disposeAbandoned(cells: Cell[]): null {
   for (const cell of cells) cell.pane.dispose();
   return null;
+}
+
+/** A pane that failed to start is never adopted, so nothing else would end
+ * its catalog subscription. */
+async function initOrDispose(pane: TerminalPane): Promise<void> {
+  try {
+    await pane.init();
+  } catch (error) {
+    pane.dispose();
+    throw error;
+  }
 }

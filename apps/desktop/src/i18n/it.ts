@@ -114,6 +114,10 @@ export const it: Messages = {
 	"pane.link.hint": "Ctrl+clic per aprire il link",
 	"pane.link.hintMac": "Cmd+clic per aprire il link",
 
+	/* -- settings-changed notice (ui/settingsNotice.ts) ---------------------- */
+	"settingsNotice.text": "Impostazioni modificate: riconnetti per applicarle",
+	"settingsNotice.reconnect": "Riconnetti",
+
 	/* -- settings dialog ---------------------------------------------------- */
 	"settings.title": "Impostazioni",
 	"settings.tab.general": "Generali",

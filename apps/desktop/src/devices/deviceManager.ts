@@ -5,7 +5,8 @@
  * dialog, the editor's buttons and the import/export actions.
  */
 
-import { deleteDevice, listDevices, type AppError, type Device } from "../ipc";
+import { deleteDevice, type AppError, type Device } from "../ipc";
+import type { DeviceCatalog } from "./deviceCatalog";
 import { deviceManagerMarkup } from "./deviceDialogTemplate";
 import { confirm } from "../ui/confirm";
 import { listen } from "../ui/dom";
@@ -17,6 +18,8 @@ import { DeviceFormActions } from "./manager/deviceFormActions";
 import { DeviceList } from "./manager/deviceList";
 
 export interface DeviceManagerOptions {
+  /** The window's device list: shown here, refreshed after each device write. */
+  catalog: DeviceCatalog;
   onError?: (error: AppError) => void;
   onSuccess?: (message: string) => void;
   /** Keys (`deviceGroupKey`) of the tag sections to start collapsed. */
@@ -27,9 +30,6 @@ export interface DeviceManagerOptions {
 
 /** Handle returned by `initDeviceManager` for driving it after construction. */
 export interface DeviceManagerHandle {
-  /** Re-fetches the device list from the backend and re-renders the sidebar.
-   * Used by the config-reload path (multi-instance sync). */
-  reload(): Promise<void>;
   /** Rebuild the sidebar + dialog markup in the current locale (language change). */
   retranslate(): void;
   /** The collapsed tag sections to persist (undefined when none are). */
@@ -38,19 +38,16 @@ export interface DeviceManagerHandle {
 
 /**
  * Initializes the device manager UI: sidebar with device list and dialogs.
- * Returns a handle whose `reload()` re-syncs the sidebar from the backend, or
- * `null` when the sidebar container is absent (nothing to manage).
+ * Returns its handle, or `null` when the sidebar container is absent (nothing
+ * to manage).
  */
-export function initDeviceManager(
-  options: DeviceManagerOptions = {},
-): DeviceManagerHandle | null {
+export function initDeviceManager(options: DeviceManagerOptions): DeviceManagerHandle | null {
   const deviceListEl = document.querySelector<HTMLElement>(".device-list");
   if (!deviceListEl) return null;
 
   const manager = new DeviceManagerImpl(deviceListEl, options);
   manager.init();
   return {
-    reload: () => manager.reload(),
     retranslate: () => manager.retranslate(),
     collapsedGroups: () => manager.collapsedGroups(),
   };
@@ -61,11 +58,13 @@ export class DeviceManagerImpl {
   private readonly list: DeviceList;
   private readonly dialog: DeviceDialog;
   private readonly formActions: DeviceFormActions;
+  private readonly catalog: DeviceCatalog;
 
   constructor(
     private readonly container: HTMLElement,
     options: DeviceManagerOptions,
   ) {
+    this.catalog = options.catalog;
     this.feedback = deviceFeedback(options);
     this.list = new DeviceList(container, {
       onEdit: (id) => this.dialog.open(id, this.list.all()),
@@ -73,22 +72,15 @@ export class DeviceManagerImpl {
       onPersist: () => options.onPersist?.(),
     }, options.initialCollapsedGroups);
     this.dialog = new DeviceDialog(container);
-    this.formActions = new DeviceFormActions(container, this.dialog, this.feedback, () => this.loadDevices());
+    this.formActions = new DeviceFormActions(container, this.dialog, this.feedback, () => this.catalog.refresh());
   }
 
-  async init(): Promise<void> {
+  /** Each catalog change rebuilds only the list, so an open edit dialog is
+   * undisturbed; it picks up the new data the next time it opens. */
+  init(): void {
     this.renderUI();
-    await this.loadDevices();
-  }
-
-  /**
-   * Re-fetches the device list from the backend and re-renders the sidebar
-   * (the config-reload / multi-instance-sync entry point). The static dialog
-   * markup is left intact — only the list is rebuilt — so an open edit dialog
-   * is undisturbed; the refreshed data is picked up the next time a dialog opens.
-   */
-  async reload(): Promise<void> {
-    await this.loadDevices();
+    this.showDevices();
+    this.catalog.subscribe(({ devices }) => this.list.show(devices));
   }
 
   /**
@@ -99,7 +91,7 @@ export class DeviceManagerImpl {
    */
   retranslate(): void {
     this.renderUI();
-    void this.loadDevices();
+    this.showDevices();
   }
 
   collapsedGroups(): string[] | undefined {
@@ -116,18 +108,14 @@ export class DeviceManagerImpl {
 
   private wireToolbar(): void {
     listen(this.container, ".device-add-btn", "click", () => this.dialog.open(null, this.list.all()));
-    const context = { feedback: this.feedback, reload: () => this.loadDevices() };
+    const context = { feedback: this.feedback, reload: () => this.catalog.refresh() };
     for (const action of FILE_ACTIONS) {
       listen(this.container, action.selector, "click", () => void runFileAction(action, context));
     }
   }
 
-  private async loadDevices(): Promise<void> {
-    try {
-      this.list.show(await listDevices());
-    } catch (err) {
-      this.feedback.error(err);
-    }
+  private showDevices(): void {
+    this.list.show(this.catalog.list());
   }
 
   private async deleteDevice(deviceId: string): Promise<void> {
@@ -140,7 +128,7 @@ export class DeviceManagerImpl {
     try {
       await deleteDevice(deviceId);
       this.feedback.success(t("devices.deleted"));
-      await this.loadDevices();
+      await this.catalog.refresh();
     } catch (err) {
       this.feedback.error(err);
     }

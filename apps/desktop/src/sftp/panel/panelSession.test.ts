@@ -38,6 +38,16 @@ describe("PanelSession", () => {
     expect(session.connecting).toBe(false);
   });
 
+  it("names the device being connected to only while the connect is in flight", () => {
+    const session = new PanelSession();
+    session.pickDevice("a");
+    expect(session.connectingDeviceId).toBeNull();
+    session.startConnecting();
+    expect(session.connectingDeviceId).toBe("a");
+    session.stopConnecting();
+    expect(session.connectingDeviceId).toBeNull();
+  });
+
   it("remembers an idle disconnect until cleared", () => {
     const session = new PanelSession();
     session.markIdleDisconnected();

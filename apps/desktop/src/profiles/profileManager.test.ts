@@ -500,7 +500,7 @@ describe("ProfileManager dirty state + save", () => {
 
   it("Save after a device deletion persists the nulled pane, not the stale id", async () => {
     // The pane already dropped the deleted device from the snapshot (see
-    // pane.ts refreshDevices); the manager must persist that null, never
+    // pane.ts dropDeletedDevice); the manager must persist that null, never
     // resurrect the id.
     const ws = fakeTabs();
     wireStore([profile(["dev-1", "dev-2"])], "p1");

@@ -121,6 +121,10 @@ export const en = {
 	"pane.link.hint": "Ctrl+click to open the link",
 	"pane.link.hintMac": "Cmd+click to open the link",
 
+	/* -- settings-changed notice (ui/settingsNotice.ts) ---------------------- */
+	"settingsNotice.text": "Settings changed — reconnect to apply",
+	"settingsNotice.reconnect": "Reconnect",
+
 	/* -- settings dialog (settings/settingsController.ts) ------------------- */
 	"settings.title": "Settings",
 	"settings.tab.general": "General",

@@ -343,6 +343,11 @@ body.splitter-resizing {
 	visibility: visible;
 }
 
+.sftp-panel .settings-notice {
+	flex: 0 0 auto;
+	margin: 0.5rem 1rem 0;
+}
+
 .sftp-status {
 	flex: 0 0 auto;
 	padding: 8px 16px;

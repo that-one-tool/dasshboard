@@ -1,24 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
-import { reloadConfigAll, refreshDevicesAll, retranslateAll, type LiveView } from "./liveViews";
-
-describe("refreshDevicesAll", () => {
-  it("refreshes every view that shows devices", async () => {
-    const grids = { refreshDevices: vi.fn(async () => {}) };
-    const settings = { reloadConfig: vi.fn(async () => {}) };
-    await refreshDevicesAll([grids, settings]);
-    expect(grids.refreshDevices).toHaveBeenCalledOnce();
-    expect(settings.reloadConfig).not.toHaveBeenCalled();
-  });
-});
+import { reloadConfigAll, retranslateAll, type LiveView } from "./liveViews";
 
 describe("reloadConfigAll", () => {
-  it("reloads each view, falling back to its device refresh", async () => {
-    const deviceList = { reloadConfig: vi.fn(async () => {}), refreshDevices: vi.fn() };
-    const profiles = { refreshDevices: vi.fn(async () => {}) };
-    await reloadConfigAll([deviceList, profiles, { retranslate: vi.fn() }]);
+  it("reloads each view that reloads config", async () => {
+    const deviceList = { reloadConfig: vi.fn(async () => {}) };
+    const settings = { reloadConfig: vi.fn(async () => {}) };
+    await reloadConfigAll([deviceList, { retranslate: vi.fn() }, settings]);
     expect(deviceList.reloadConfig).toHaveBeenCalledOnce();
-    expect(deviceList.refreshDevices).not.toHaveBeenCalled();
-    expect(profiles.refreshDevices).toHaveBeenCalledOnce();
+    expect(settings.reloadConfig).toHaveBeenCalledOnce();
   });
 
   it("one view failing doesn't stop the others", async () => {
@@ -29,14 +18,14 @@ describe("reloadConfigAll", () => {
   });
 
   it("a view that throws right away doesn't stop the others either", async () => {
-    const after = { refreshDevices: vi.fn() };
+    const after = { reloadConfig: vi.fn() };
     const failing: LiveView = {
-      refreshDevices: () => {
+      reloadConfig: () => {
         throw new Error("sync");
       },
     };
     await expect(reloadConfigAll([failing, after])).resolves.toBeUndefined();
-    expect(after.refreshDevices).toHaveBeenCalledOnce();
+    expect(after.reloadConfig).toHaveBeenCalledOnce();
   });
 });
 
@@ -45,7 +34,7 @@ describe("retranslateAll", () => {
     const order: string[] = [];
     retranslateAll([
       { retranslate: () => order.push("first") },
-      { refreshDevices: vi.fn() },
+      { reloadConfig: vi.fn() },
       { retranslate: () => order.push("second") },
     ]);
     expect(order).toEqual(["first", "second"]);

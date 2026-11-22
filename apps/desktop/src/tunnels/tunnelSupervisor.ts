@@ -19,7 +19,10 @@
  * Stop cancels it.
  *
  * The rules live in `tunnelForwards`; the bookkeeping in `tunnelRegistry` /
- * `tunnelRunMemory` / `deviceCallQueue`; the backend behind `TunnelsPort`.
+ * `tunnelRunMemory` / `deviceCallQueue`; the backend behind `TunnelsPort`;
+ * the devices come from the window's `DeviceCatalog`. It keeps its own last
+ * list to diff each new one: an edit's restart/re-bind needs the device
+ * before and after.
  */
 
 import type { AppError, Device, ErrorCode, ForwardStatus, SshDevice, TunnelInfo, TunnelStatus, TunnelStatusEvent } from "../ipc";
@@ -28,7 +31,7 @@ import { errorCodeOf } from "../terminal/reconnect";
 import { TunnelReconnects } from "./tunnelReconnect";
 import {
   forwardIdsToRun,
-  isConnectionChanged,
+  isTunnelConnectionChanged,
   isForwardEdited,
   isJumpHostLost,
   listeningForwardCount,
@@ -42,6 +45,7 @@ import { TunnelRegistry } from "./tunnelRegistry";
 import { TunnelRunMemory } from "./tunnelRunMemory";
 import { DeviceCallQueue } from "./deviceCallQueue";
 import type { TunnelsPort } from "./tunnelsPort";
+import type { DeviceCatalog } from "../devices/deviceCatalog";
 
 export interface TunnelSupervisorOptions {
   onError?: (error: AppError) => void;
@@ -63,10 +67,12 @@ export class TunnelSupervisor {
   private readonly reconnects = new TunnelReconnects((deviceId) => this.notifyAfter(() => this.reconnect(deviceId)));
   private readonly listeners = new Set<() => void>();
   private unlisten: (() => void) | null = null;
+  private unsubscribeDevices: (() => void) | null = null;
   private disposed = false;
 
   constructor(
     private readonly port: TunnelsPort,
+    private readonly catalog: DeviceCatalog,
     private readonly options: TunnelSupervisorOptions = {},
   ) {
     this.memory = new TunnelRunMemory(options.initialState, () => this.options.onPersist?.());
@@ -79,7 +85,8 @@ export class TunnelSupervisor {
   }
 
   async init(): Promise<void> {
-    this.adoptLaunchDevices(await this.safeListDevices());
+    this.adoptLaunchDevices();
+    this.unsubscribeDevices = this.catalog.subscribe(({ devices }) => this.setDevices(devices));
     await this.adoptRunningTunnels();
     this.subscribe();
     this.emitChanged();
@@ -91,6 +98,8 @@ export class TunnelSupervisor {
     this.disposed = true;
     this.unlisten?.();
     this.unlisten = null;
+    this.unsubscribeDevices?.();
+    this.unsubscribeDevices = null;
     this.reconnects.dispose();
   }
 
@@ -123,10 +132,10 @@ export class TunnelSupervisor {
   /* ----- launch ----------------------------------------------------------- */
 
   /** A failed load is not "no devices": it leaves the remembered state
-   * unpruned, and the list a refresh may have loaded meanwhile. */
-  private adoptLaunchDevices(devices: Device[] | null): void {
-    if (!devices) return;
-    this.devices = devices;
+   * unpruned until the catalog loads. */
+  private adoptLaunchDevices(): void {
+    if (!this.catalog.hasLoaded()) return;
+    this.devices = this.catalog.list();
     this.memory.markLoaded();
   }
 
@@ -177,13 +186,6 @@ export class TunnelSupervisor {
 
   /* ----- device list ------------------------------------------------------ */
 
-  /** Re-fetch devices (device CRUD happened). A failed fetch changes nothing —
-   * it must not read as "every device gone". */
-  async refresh(): Promise<void> {
-    const devices = await this.safeListDevices();
-    if (devices) this.setDevices(devices);
-  }
-
   /** Apply a new device list: stop what lost its device or forward, restart
    * or re-bind what was edited. */
   setDevices(devices: Device[]): void {
@@ -197,16 +199,6 @@ export class TunnelSupervisor {
     this.stopOrphans();
     this.releaseDeletedForwards();
     this.applyEdits(previous);
-  }
-
-  /** The device list, or `null` when it couldn't be loaded (error reported). */
-  private async safeListDevices(): Promise<Device[] | null> {
-    try {
-      return await this.port.listDevices();
-    } catch (err) {
-      this.reportError(err);
-      return null;
-    }
   }
 
   /** Stop every running tunnel whose device was deleted or no longer has
@@ -257,7 +249,7 @@ export class TunnelSupervisor {
   }
 
   private applyConnectionEdit(before: SshDevice, after: SshDevice, state: DeviceTunnelState): void {
-    if (isConnectionChanged(before, after)) {
+    if (isTunnelConnectionChanged(before, after)) {
       this.restart(after.id, state);
       return;
     }

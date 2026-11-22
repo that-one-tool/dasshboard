@@ -39,8 +39,8 @@ export const FILE_ACTIONS: readonly FileAction[] = [
   { selector: ".device-export-ssh-btn", pick: pickSshConfigSavePath, run: exportSsh, reloads: false },
 ];
 
-/** Runs `action`; the success toast comes before the reload, so `main.ts`
- * refreshes the pane dropdowns and profiles too. */
+/** Runs `action`; the success toast comes before the reload (a device catalog
+ * refresh, which every view follows). */
 export async function runFileAction(action: FileAction, context: FileActionContext): Promise<void> {
   try {
     await completeFileAction(action, context);

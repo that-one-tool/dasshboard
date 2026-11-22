@@ -22,6 +22,7 @@ const EXPECTED_ORDER = [
 	"dialog",
 	"forms",
 	"toast",
+	"settings-notice",
 	"scrollbars",
 	"profiles",
 	"icons",
